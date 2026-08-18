@@ -1,0 +1,1 @@
+"""harkeniq.heartbeat.protocol — stub."""

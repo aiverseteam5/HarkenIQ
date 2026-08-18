@@ -1,0 +1,1 @@
+"""harkeniq.skills — stub."""

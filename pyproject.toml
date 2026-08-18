@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harkeniq"
+version = "0.1.0"
+description = "HarkenIQ: Autonomous hardware diagnostics for data center servers"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+dependencies = [
+    "aiohttp>=3.9",
+    "click>=8.1",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+harken = "harkeniq.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["harkeniq"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__",
+    "pass",
+]

@@ -1,0 +1,1 @@
+"""harkeniq.state.checkpoint — stub."""

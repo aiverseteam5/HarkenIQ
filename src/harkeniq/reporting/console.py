@@ -1,0 +1,1 @@
+"""harkeniq.reporting.console — stub."""

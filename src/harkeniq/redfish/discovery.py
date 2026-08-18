@@ -1,0 +1,1 @@
+"""harkeniq.redfish.discovery — stub."""
