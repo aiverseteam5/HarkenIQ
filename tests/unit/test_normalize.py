@@ -1,5 +1,7 @@
-"""Unit tests for vendor normalization (Dell + health rollup)."""
+"""Unit tests for vendor normalization (Dell + HPE + health rollup)."""
 
+from harkeniq.redfish import dell as dell_norm
+from harkeniq.redfish import hpe as hpe_norm
 from harkeniq.redfish.dell import (
     normalize_disk,
     normalize_fans,
@@ -372,3 +374,137 @@ class TestDellLogNormalization:
     def test_empty_log(self):
         entries = normalize_log_entries({"Members": []})
         assert entries == []
+
+
+# ===========================================================================
+# HPE Normalization Tests
+# ===========================================================================
+
+
+class TestHPEFanNormalization:
+    THERMAL_DATA = {
+        "Fans": [
+            {
+                "FanName": "Fan 1",
+                "Reading": 23,
+                "ReadingUnits": "Percent",
+                "Status": {"State": "Enabled", "Health": "OK"},
+                "LowerThresholdCritical": 480,
+                "PhysicalContext": "Backplane",
+                "Oem": {"Hpe": {"Location": "System", "HotPluggable": True}},
+            }
+        ],
+        "Redundancy": [{"Status": {"Health": "OK"}}],
+    }
+
+    def test_hpe_fan_basic(self):
+        fans = hpe_norm.normalize_fans(self.THERMAL_DATA)
+        assert len(fans) == 1
+        assert fans[0].name == "Fan 1"
+        assert fans[0].speed_rpm == 23  # HPE may report as percentage via ReadingUnits
+        assert fans[0].speed_pct is None  # HPE doesn't expose FanPWM
+        assert fans[0].health == "OK"
+
+    def test_hpe_fan_oem(self):
+        fans = hpe_norm.normalize_fans(self.THERMAL_DATA)
+        assert fans[0].oem_data["location_detail"] == "System"
+        assert fans[0].oem_data["hot_pluggable"] is True
+
+
+class TestHPEDiskNormalization:
+    def test_hpe_disk_standard(self):
+        drive = {
+            "Model": "MO003200KXDZD",
+            "SerialNumber": "PHYF123456",
+            "MediaType": "SSD",
+            "Protocol": "NVMe",
+            "CapacityBytes": 3200631791616,
+            "PredictedMediaLifeLeftPercent": 95,
+            "FailurePredicted": False,
+            "Status": {"Health": "OK"},
+            "Oem": {"Hpe": {"CurrentTemperatureCelsius": 32, "PowerOnHours": 8760}},
+        }
+        disk = hpe_norm.normalize_disk(drive)
+        assert disk.name == "MO003200KXDZD"
+        assert disk.protocol == "NVMe"
+        assert disk.life_left_pct == 95
+        assert disk.temperature_c == 32
+        assert disk.raid_status is None
+
+    def test_hpe_disk_smartstorage(self):
+        """SmartStorage: CapacityMiB → bytes, SSDEndurance → inverted life_left."""
+        drive = {
+            "Model": "EG1800JEMDB",
+            "SerialNumber": "WFK123456",
+            "MediaType": "SSD",
+            "InterfaceType": "SAS",
+            "CapacityMiB": 915715,
+            "SSDEnduranceUtilizationPercentage": 12,
+            "Status": {"Health": "OK"},
+            "CurrentTemperatureCelsius": 28,
+            "Location": "Port 1I Box 1 Bay 1",
+        }
+        disk = hpe_norm.normalize_disk_smartstorage(drive)
+        assert disk.protocol == "SAS"
+        assert disk.capacity_bytes == 915715 * 1048576
+        assert disk.life_left_pct == 88  # 100 - 12
+        assert disk.temperature_c == 28
+
+    def test_hpe_smartstorage_merge(self):
+        """Deduplication: standard drives preferred, SmartStorage adds unique ones."""
+        std = [
+            hpe_norm.normalize_disk({"SerialNumber": "AAA", "Model": "NVMe1", "Status": {"Health": "OK"}}),
+        ]
+        ss = [
+            hpe_norm.normalize_disk_smartstorage({"SerialNumber": "AAA", "Model": "NVMe1-dup", "Status": {"Health": "OK"}}),
+            hpe_norm.normalize_disk_smartstorage({"SerialNumber": "BBB", "Model": "SAS1", "CapacityMiB": 1000, "InterfaceType": "SAS", "Status": {"Health": "OK"}}),
+        ]
+        merged = hpe_norm.merge_standard_and_smartstorage(std, ss)
+        assert len(merged) == 2
+        assert merged[0].serial == "AAA"
+        assert merged[0].name == "NVMe1"  # standard preferred
+        assert merged[1].serial == "BBB"
+
+
+class TestHPEMemoryNormalization:
+    def test_hpe_memory_basic(self):
+        dimm = {
+            "Id": "proc1dimm1",
+            "CapacityMiB": 32768,
+            "MemoryDeviceType": "DDR5",
+            "OperatingSpeedMhz": 4800,
+            "Status": {"State": "Enabled", "Health": "OK"},
+            "MemoryLocation": {"Socket": 1, "Channel": 0, "Slot": 1},
+            "Oem": {"Hpe": {"DIMMStatus": "GoodInUse"}},
+        }
+        metrics = {
+            "HealthData": {"AlarmTrips": {"CorrectableECCError": False, "UncorrectableECCError": False, "Temperature": False}},
+            "LifeTime": {"CorrectableECCErrorCount": 0, "UncorrectableECCErrorCount": 0},
+            "CurrentPeriod": {"CorrectableECCErrorCount": 0},
+        }
+        mem = hpe_norm.normalize_memory(dimm, metrics)
+        assert mem.name == "proc1dimm1"
+        assert mem.type == "DDR5"
+        assert mem.speed_mhz == 4800
+        assert mem.oem_data["dimm_status"] == "GoodInUse"
+
+
+class TestHPELogNormalization:
+    def test_hpe_log_entries(self):
+        iml = {
+            "Members": [
+                {
+                    "Id": "42",
+                    "Created": "2026-09-15T14:30:00Z",
+                    "Severity": "Warning",
+                    "Message": "Fan degraded",
+                    "MessageId": "IML0001",
+                    "Oem": {"Hpe": {"Categories": ["Hardware", "Cooling"], "Code": 17}},
+                }
+            ]
+        }
+        entries = hpe_norm.normalize_log_entries(iml)
+        assert len(entries) == 1
+        assert entries[0].severity == "Warning"
+        assert entries[0].component_id is None  # HPE has no FQDD
+        assert entries[0].category == "Hardware"
