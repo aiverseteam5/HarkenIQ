@@ -28,6 +28,36 @@ harken demo [--speed 1.0] [--scenario all]
 | Mock BMC | localhost:8443 (mock simulator) |
 | Peer 1 | "rack-12-server-03" (simulated heartbeat) |
 | Peer 2 | "rack-12-server-05" (simulated heartbeat) |
+| Baselines | **Pre-seeded** from checkpoint (see §2.3) |
+
+### 2.3 Demo Baseline Pre-Seeding
+
+**Problem:** Trending verdicts require 60+ samples (~1 hour at 60s polling), but the demo runs in 60 seconds. Baselines cannot be learned in real-time during the demo.
+
+**Solution:** The demo pre-seeds the agent's checkpoint database with 24 hours of synthetic healthy baseline data before the demo starts. This gives all sensors confidence = 1.0 from t=0, enabling both threshold verdicts and trending verdicts immediately.
+
+Pre-seeding procedure (handled by `harken demo` automatically):
+1. Create a temporary checkpoint.db with synthetic baselines for all sensors
+2. Each baseline: 1440 samples (24h at 60s), values within healthy range with realistic noise
+3. Trending regression state initialized from the synthetic samples
+4. Agent loads checkpoint at startup, enters OBSERVING with full confidence immediately
+
+**Demo-mode config overrides:**
+```yaml
+# Applied automatically by harken demo (not user-configurable)
+baseline:
+  min_samples: 5              # Reduced from 60 — trending triggers after 5 new samples
+trending:
+  min_samples: 5              # Reduced from 60 — allows trending within demo window
+  r_squared_min: 0.3          # Reduced from 0.5 — fewer samples = noisier fit
+polling:
+  sensor_interval: 2          # 2 seconds instead of 60 — compressed for demo
+```
+
+With these overrides and pre-seeded baselines:
+- Fan RPM decline injected at t=5 produces 5 samples by t=15 → TRENDING verdict at t=15
+- Disk SSD life set at t=15 produces an immediate WARNING (threshold-based, no trending needed)
+- All trending projections use the pre-seeded 24h baseline + new samples for regression
 | Site Manager | Not connected (standalone mode) |
 | Skills | All 5 default skills loaded |
 | Baseline | Pre-seeded with 24 hours of healthy data (confidence = 1.0) |

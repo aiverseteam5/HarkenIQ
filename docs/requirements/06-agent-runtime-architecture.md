@@ -444,6 +444,22 @@ CREATE TABLE log_cursors (
     last_poll_at TEXT NOT NULL
 );
 
+-- Pending and completed actions (D6, D16, D17)
+CREATE TABLE actions (
+    id TEXT PRIMARY KEY,              -- UUID
+    sensor_id TEXT NOT NULL,          -- sensor that triggered the action
+    skill_name TEXT NOT NULL,         -- skill that proposed the action
+    verdict TEXT NOT NULL,            -- verdict that triggered the action
+    action_type TEXT NOT NULL,        -- IDENTIFY_LED, COLLECT_DIAGNOSTICS, FAN_RESET
+    params_json TEXT,                 -- action-specific parameters
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, approved, denied, executing, completed, failed
+    proposed_at TEXT NOT NULL,        -- ISO 8601
+    approved_at TEXT,                 -- ISO 8601, null until approved
+    completed_at TEXT,                -- ISO 8601, null until completed/failed
+    outcome_json TEXT,               -- execution result (success/failure details)
+    approved_by TEXT                  -- "tui" or "cli" (R1), "site_manager" (R2+)
+);
+
 -- Audit trail (append-only, never pruned)
 CREATE TABLE audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

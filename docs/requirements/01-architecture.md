@@ -237,6 +237,32 @@ It exists for four reasons that the Mesh cannot satisfy and Central Command cann
 | Did this rack's thermal excursion cause those device errors? | Site Manager |
 | Does this optic part number fail early across the fleet? | Central Command |
 
+### 4.3.1 Correlation Boundary Rule (Q1 Resolution)
+
+**Added 2026-08-18.** The boundary between node-local detection and Site Manager correlation is defined by the **fault domain rule:**
+
+**Node detects:** Any fault whose root cause lies within a single device. The node has complete observability over its own hardware subsystems (fans, disks, memory, PSUs, thermal sensors). Single-device faults are always diagnosed locally.
+
+| Fault Class | Detected By | Example |
+|-------------|------------|---------|
+| Single-component failure | Node | Fan1A failed, Disk.Bay.2 SMART alert |
+| Single-device trending | Node | Fan RPM declining, SSD wear progressing |
+| Subsystem degradation | Node | PSU redundancy lost, fan redundancy lost |
+| Intra-device correlation | Node | Fan degradation causing thermal rise on same server |
+
+**Site Manager correlates:** Any fault whose root cause spans multiple devices or requires cross-device comparison. The node cannot see other devices' telemetry.
+
+| Fault Class | Correlated By | Example |
+|-------------|--------------|---------|
+| Shared power event | Site Manager | 9 devices on same PDU report PSU voltage drop |
+| Rack thermal excursion | Site Manager | 5 devices in same rack report inlet temp rise |
+| Batch component failure | Site Manager | 3 devices with same SSD model report SMART alerts |
+| Network-vs-device ambiguity | Site Manager (with peer quorum R2) | Is device X down or just unreachable? |
+
+**R1 scope:** Node-local detection only. Site Manager correlation is R2. In R1, the agent detects all single-device faults and intra-device correlations (e.g., fan degradation causing thermal rise). Cross-device correlation requires Site Manager intelligence.
+
+**The rule:** If the fault can be diagnosed using only the data available on one device's Redfish API, the node detects it. If diagnosis requires comparing data from multiple devices, the Site Manager correlates it.
+
 ---
 
 ## 5. Harken Central Command
@@ -339,7 +365,7 @@ Claims 1 and 3 are the ones to test first, and neither requires a complete produ
 
 | # | Question | Blocks |
 |---|---|---|
-| Q1 | Where exactly is the boundary between node-local detection and Site Manager correlation? Stated as altitude here; needs to be specified as a rule. | Detailed design |
+| Q1 | ~~Where exactly is the boundary between node-local detection and Site Manager correlation?~~ **RESOLVED (2026-08-18).** See §4.3.1 below. | Detailed design |
 | Q2 | How is learned knowledge represented such that it can be distributed to constrained nodes and applied locally? | R-C1 |
 | Q3 | What is the minimum node coverage, by topology class, for quorum disambiguation to hold? | Deployment guidance |
 | Q4 | Does the Site Manager run on customer-provided compute in all shapes, or is an appliance required for some? | Go-to-market |

@@ -4,10 +4,12 @@
 **Date:** 2026-07-27
 **Status:** Draft for review
 **Scope:** Requirements for HarkenIQ to validate and rotate static credentials on physical infrastructure, integrating with external credential stores.
+**Release:** **R2.** Credential rotation is deferred to R2 per engineering decision (2026-08-01). This document is the complete spec for R2 implementation. R1 uses local encrypted config (AES-256-GCM) for BMC credentials with no rotation capability. See Doc 06 §3.3 for R1 credential model.
 
 **Deliberately out of scope:** technology stack.
 
 **Revision note (rev 2):** §6.3 two-party attestation added. Requirement identifiers are stable, so R-CR39–R-CR47 appear in §6.2–§6.3 rather than at the end. §6.4–§6.7 renumbered; a `DISPUTED` outcome state was added.
+**Revision note (rev 3, 2026-08-18):** Added release clarification header. This is an R2 spec; R1 does not implement credential rotation.
 
 ---
 
