@@ -1,0 +1,209 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Thermal.Thermal",
+  "@odata.etag": "W/\"44444444\"",
+  "@odata.id": "/redfish/v1/Chassis/1/Thermal",
+  "@odata.type": "#Thermal.v1_6_2.Thermal",
+  "Id": "Thermal",
+  "Name": "Thermal",
+  "Fans": [
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/0",
+      "MemberId": "0",
+      "Name": "Fan 1",
+      "FanName": "Fan 1",
+      "Reading": 9200,
+      "ReadingUnits": "RPM",
+      "LowerThresholdFatal": 0,
+      "MinReadingRange": 0,
+      "MaxReadingRange": 25000,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeServerFan.HpeServerFan",
+          "@odata.type": "#HpeServerFan.v2_0_0.HpeServerFan",
+          "HotPluggable": true,
+          "Location": "System",
+          "CurrentSensorIndex": 0,
+          "Redundant": true
+        }
+      }
+    },
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/1",
+      "MemberId": "1",
+      "Name": "Fan 2",
+      "FanName": "Fan 2",
+      "Reading": 9600,
+      "ReadingUnits": "RPM",
+      "LowerThresholdFatal": 0,
+      "MinReadingRange": 0,
+      "MaxReadingRange": 25000,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeServerFan.HpeServerFan",
+          "@odata.type": "#HpeServerFan.v2_0_0.HpeServerFan",
+          "HotPluggable": true,
+          "Location": "System",
+          "CurrentSensorIndex": 1,
+          "Redundant": true
+        }
+      }
+    },
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/2",
+      "MemberId": "2",
+      "Name": "Fan 3",
+      "FanName": "Fan 3",
+      "Reading": 9400,
+      "ReadingUnits": "RPM",
+      "LowerThresholdFatal": 0,
+      "MinReadingRange": 0,
+      "MaxReadingRange": 25000,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeServerFan.HpeServerFan",
+          "@odata.type": "#HpeServerFan.v2_0_0.HpeServerFan",
+          "HotPluggable": true,
+          "Location": "System",
+          "CurrentSensorIndex": 2,
+          "Redundant": true
+        }
+      }
+    },
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/3",
+      "MemberId": "3",
+      "Name": "Fan 4",
+      "FanName": "Fan 4",
+      "Reading": 9800,
+      "ReadingUnits": "RPM",
+      "LowerThresholdFatal": 0,
+      "MinReadingRange": 0,
+      "MaxReadingRange": 25000,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeServerFan.HpeServerFan",
+          "@odata.type": "#HpeServerFan.v2_0_0.HpeServerFan",
+          "HotPluggable": true,
+          "Location": "System",
+          "CurrentSensorIndex": 3,
+          "Redundant": true
+        }
+      }
+    }
+  ],
+  "Temperatures": [
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Temperatures/0",
+      "MemberId": "0",
+      "Name": "01-Inlet Ambient",
+      "SensorNumber": 1,
+      "ReadingCelsius": 22,
+      "UpperThresholdNonCritical": 42,
+      "UpperThresholdCritical": 47,
+      "UpperThresholdFatal": 50,
+      "PhysicalContext": "Intake",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeSeaOfSensors.HpeSeaOfSensors",
+          "@odata.type": "#HpeSeaOfSensors.v2_0_0.HpeSeaOfSensors",
+          "LocationXmm": 15,
+          "LocationYmm": 0
+        }
+      }
+    },
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Temperatures/1",
+      "MemberId": "1",
+      "Name": "02-CPU 1",
+      "SensorNumber": 2,
+      "ReadingCelsius": 54,
+      "UpperThresholdNonCritical": 90,
+      "UpperThresholdCritical": 98,
+      "UpperThresholdFatal": 105,
+      "PhysicalContext": "CPU",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeSeaOfSensors.HpeSeaOfSensors",
+          "@odata.type": "#HpeSeaOfSensors.v2_0_0.HpeSeaOfSensors",
+          "LocationXmm": 12,
+          "LocationYmm": 5
+        }
+      }
+    },
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Temperatures/2",
+      "MemberId": "2",
+      "Name": "30-System Board",
+      "SensorNumber": 30,
+      "ReadingCelsius": 38,
+      "UpperThresholdNonCritical": 65,
+      "UpperThresholdCritical": 75,
+      "UpperThresholdFatal": 80,
+      "PhysicalContext": "SystemBoard",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeSeaOfSensors.HpeSeaOfSensors",
+          "@odata.type": "#HpeSeaOfSensors.v2_0_0.HpeSeaOfSensors",
+          "LocationXmm": 10,
+          "LocationYmm": 3
+        }
+      }
+    }
+  ],
+  "Redundancy": [
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Thermal#Redundancy/0",
+      "MemberId": "0",
+      "Name": "Fan Redundancy Group 1",
+      "Mode": "N+1",
+      "MaxNumSupported": 6,
+      "MinNumNeeded": 4,
+      "RedundancySet": [
+        {
+          "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/0"
+        },
+        {
+          "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/1"
+        },
+        {
+          "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/2"
+        },
+        {
+          "@odata.id": "/redfish/v1/Chassis/1/Thermal#Fans/3"
+        }
+      ],
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    }
+  ]
+}

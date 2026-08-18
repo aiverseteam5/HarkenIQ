@@ -1,0 +1,7 @@
+{
+  "@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage",
+  "Members": [
+    {"@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Slot.1-1"}
+  ],
+  "Members@odata.count": 1
+}

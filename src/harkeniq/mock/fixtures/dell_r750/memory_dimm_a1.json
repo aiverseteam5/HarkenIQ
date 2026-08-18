@@ -1,0 +1,15 @@
+{
+  "@odata.id": "/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1",
+  "Id": "DIMM.Socket.A1",
+  "Name": "DIMM A1",
+  "CapacityMiB": 32768,
+  "MemoryDeviceType": "DDR4",
+  "OperatingSpeedMhz": 3200,
+  "Manufacturer": "Samsung",
+  "SerialNumber": "12345678",
+  "PartNumber": "M393A4K40DB3-CWE",
+  "ErrorCorrection": "MultiBitECC",
+  "Status": {"State": "Enabled", "Health": "OK"},
+  "MemoryLocation": {"Socket": 1, "Channel": 0, "Slot": 0},
+  "Oem": {"Dell": {"DellMemory": {"BankLabel": "A", "ManufactureDate": "2023-Wk42"}}}
+}

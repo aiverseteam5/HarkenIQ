@@ -1,0 +1,56 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Memory.Memory",
+  "@odata.etag": "W/\"99999999\"",
+  "@odata.id": "/redfish/v1/Systems/1/Memory/proc1dimm1",
+  "@odata.type": "#Memory.v1_7_1.Memory",
+  "Id": "proc1dimm1",
+  "Name": "proc1dimm1",
+  "Description": "DIMM proc1dimm1",
+  "MemoryType": "DRAM",
+  "MemoryDeviceType": "DDR4",
+  "BaseModuleType": "RDIMM",
+  "CapacityMiB": 32768,
+  "DataWidthBits": 72,
+  "BusWidthBits": 72,
+  "RankCount": 2,
+  "DeviceLocator": "PROC 1 DIMM 1",
+  "Manufacturer": "HPE",
+  "PartNumber": "P03052-091",
+  "SerialNumber": "4F2A5C8E",
+  "MemoryLocation": {
+    "Socket": 1,
+    "MemoryController": 0,
+    "Channel": 0,
+    "Slot": 1
+  },
+  "OperatingSpeedMhz": 2933,
+  "AllowedSpeedsMHz": [
+    2133,
+    2400,
+    2666,
+    2933
+  ],
+  "ErrorCorrection": "MultiBitECC",
+  "OperatingMemoryModes": [
+    "Volatile"
+  ],
+  "SecurityCapabilities": {
+    "PassphraseCapable": false,
+    "MaxPassphraseCount": 0,
+    "SecurityStates": []
+  },
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK"
+  },
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeSmartStorageDiskDrive.HpeSmartStorageDiskDrive",
+      "@odata.type": "#HpeMemoryExt.v2_2_0.HpeMemoryExt",
+      "DIMMStatus": "GoodInUse",
+      "MinimumVoltageVoltsX10": 12,
+      "PredictedMediaLifeLeftPercent": null,
+      "ProductName": "HPE SmartMemory 32GB 2Rx4 PC4-2933Y-R Smart Kit"
+    }
+  }
+}

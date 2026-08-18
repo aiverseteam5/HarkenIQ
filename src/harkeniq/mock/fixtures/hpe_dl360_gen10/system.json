@@ -1,0 +1,188 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#ComputerSystem.ComputerSystem",
+  "@odata.etag": "W/\"33333333\"",
+  "@odata.id": "/redfish/v1/Systems/1",
+  "@odata.type": "#ComputerSystem.v1_10_0.ComputerSystem",
+  "Id": "1",
+  "Name": "Computer System",
+  "SystemType": "Physical",
+  "Manufacturer": "HPE",
+  "Model": "ProLiant DL360 Gen10",
+  "SKU": "P19777-B21",
+  "SerialNumber": "MXQ123456",
+  "PartNumber": "",
+  "UUID": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+  "HostName": "dl360-gen10",
+  "AssetTag": "",
+  "BiosVersion": "U32 v2.68 (04/22/2026)",
+  "IndicatorLED": "Off",
+  "PowerState": "On",
+  "Boot": {
+    "BootSourceOverrideEnabled": "Disabled",
+    "BootSourceOverrideMode": "UEFI",
+    "BootSourceOverrideTarget": "None",
+    "BootSourceOverrideTarget@Redfish.AllowableValues": [
+      "None",
+      "Cd",
+      "Hdd",
+      "Usb",
+      "SDCard",
+      "Utilities",
+      "Diags",
+      "BiosSetup",
+      "Pxe",
+      "UefiShell",
+      "UefiHttp",
+      "UefiTarget"
+    ],
+    "UefiTargetBootSourceOverride": "None",
+    "UefiTargetBootSourceOverride@Redfish.AllowableValues": []
+  },
+  "ProcessorSummary": {
+    "Count": 2,
+    "Model": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz",
+    "Status": {
+      "HealthRollup": "OK"
+    }
+  },
+  "MemorySummary": {
+    "TotalSystemMemoryGiB": 512,
+    "TotalSystemPersistentMemoryGiB": 0,
+    "Status": {
+      "HealthRollup": "OK"
+    }
+  },
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "HealthRollup": "OK"
+  },
+  "Bios": {
+    "@odata.id": "/redfish/v1/Systems/1/Bios"
+  },
+  "Memory": {
+    "@odata.id": "/redfish/v1/Systems/1/Memory"
+  },
+  "Processors": {
+    "@odata.id": "/redfish/v1/Systems/1/Processors"
+  },
+  "Storage": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage"
+  },
+  "EthernetInterfaces": {
+    "@odata.id": "/redfish/v1/Systems/1/EthernetInterfaces"
+  },
+  "NetworkInterfaces": {
+    "@odata.id": "/redfish/v1/Systems/1/NetworkInterfaces"
+  },
+  "LogServices": {
+    "@odata.id": "/redfish/v1/Systems/1/LogServices"
+  },
+  "SecureBoot": {
+    "@odata.id": "/redfish/v1/Systems/1/SecureBoot"
+  },
+  "Links": {
+    "Chassis": [
+      {
+        "@odata.id": "/redfish/v1/Chassis/1"
+      }
+    ],
+    "ManagedBy": [
+      {
+        "@odata.id": "/redfish/v1/Managers/1"
+      }
+    ]
+  },
+  "Actions": {
+    "#ComputerSystem.Reset": {
+      "target": "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset",
+      "ResetType@Redfish.AllowableValues": [
+        "On",
+        "ForceOff",
+        "GracefulShutdown",
+        "ForceRestart",
+        "Nmi",
+        "PushPowerButton"
+      ]
+    }
+  },
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeComputerSystemExt.HpeComputerSystemExt",
+      "@odata.type": "#HpeComputerSystemExt.v2_9_0.HpeComputerSystemExt",
+      "AggregateHealthStatus": {
+        "AgentlessManagementService": "Unavailable",
+        "BiosOrHardwareHealth": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "FanRedundancy": "Redundant",
+        "Fans": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "Memory": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "Network": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "PowerSupplies": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "Processors": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "SmartStorageBattery": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "Storage": {
+          "Status": {
+            "Health": "OK"
+          }
+        },
+        "Temperatures": {
+          "Status": {
+            "Health": "OK"
+          }
+        }
+      },
+      "CurrentPowerOnTimeSeconds": 1234567,
+      "PostState": "FinishedPost",
+      "PowerAllocationLimit": 1000,
+      "PowerAutoOn": "Restore",
+      "PowerOnDelay": "Minimum",
+      "PowerOnMinutes": 525600,
+      "PowerRegulatorMode": "Dynamic",
+      "PowerRegulatorModesSupported": [
+        "OSControl",
+        "Dynamic",
+        "Max",
+        "Min"
+      ],
+      "ServerFQDN": "dl360-gen10.example.com",
+      "SmartStorageConfig": [
+        {
+          "@odata.id": "/redfish/v1/Systems/1/SmartStorageConfig"
+        }
+      ],
+      "Links": {
+        "SmartStorage": {
+          "@odata.id": "/redfish/v1/Systems/1/SmartStorage"
+        }
+      }
+    }
+  }
+}

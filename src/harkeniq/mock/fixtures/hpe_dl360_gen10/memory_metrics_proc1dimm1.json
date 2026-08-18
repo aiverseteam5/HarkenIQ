@@ -1,0 +1,39 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#MemoryMetrics.MemoryMetrics",
+  "@odata.etag": "W/\"AAAAAAAA\"",
+  "@odata.id": "/redfish/v1/Systems/1/Memory/proc1dimm1/MemoryMetrics",
+  "@odata.type": "#MemoryMetrics.v1_1_6.MemoryMetrics",
+  "Id": "MemoryMetrics",
+  "Name": "Memory Metrics for proc1dimm1",
+  "Description": "Memory Metrics",
+  "HealthData": {
+    "AlarmTrips": {
+      "AddressParityError": false,
+      "CorrectableECCError": false,
+      "SpareBlock": false,
+      "Temperature": false,
+      "UncorrectableECCError": false
+    },
+    "DataLossDetected": false,
+    "LastShutdownSuccess": true,
+    "PredictedMediaLifeLeftPercent": null,
+    "RemainingSpareBlockPercentage": null
+  },
+  "CurrentPeriod": {
+    "BlocksRead": null,
+    "BlocksWritten": null
+  },
+  "LifeTime": {
+    "BlocksRead": null,
+    "BlocksWritten": null
+  },
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeMemoryMetricsExt.HpeMemoryMetricsExt",
+      "@odata.type": "#HpeMemoryMetricsExt.v2_0_0.HpeMemoryMetricsExt",
+      "DIMMStatus": "GoodInUse",
+      "CorrectedErrorCount": 0,
+      "UncorrectedErrorCount": 0
+    }
+  }
+}

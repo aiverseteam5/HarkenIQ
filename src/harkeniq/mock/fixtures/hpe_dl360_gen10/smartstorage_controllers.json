@@ -1,0 +1,51 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#HpeSmartStorageArrayControllerCollection.HpeSmartStorageArrayControllerCollection",
+  "@odata.etag": "W/\"CCCCCCCC\"",
+  "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers",
+  "@odata.type": "#HpeSmartStorageArrayControllerCollection.HpeSmartStorageArrayControllerCollection",
+  "Name": "HpeSmartStorageArrayControllers",
+  "Description": "HPE Smart Storage Array Controllers View",
+  "Members@odata.count": 1,
+  "Members": [
+    {
+      "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/0"
+    }
+  ],
+  "Oem": {
+    "Hpe": {
+      "Controller": {
+        "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/0",
+        "Id": "0",
+        "Name": "HPE Smart Array P408i-a SR Gen10",
+        "Model": "HPE Smart Array P408i-a SR Gen10",
+        "SerialNumber": "PEYHC0DRHBV0F3",
+        "FirmwareVersion": {
+          "Current": {
+            "VersionString": "2.65"
+          }
+        },
+        "Status": {
+          "State": "Enabled",
+          "Health": "OK"
+        },
+        "Location": "Slot 0",
+        "LocationFormat": "PCISlot",
+        "CacheMemorySizeMiB": 2048,
+        "Links": {
+          "DiskDrives": {
+            "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/0/DiskDrives"
+          },
+          "LogicalDrives": {
+            "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/0/LogicalDrives"
+          },
+          "StorageEnclosures": {
+            "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/0/StorageEnclosures"
+          },
+          "UnconfiguredDrives": {
+            "@odata.id": "/redfish/v1/Systems/1/SmartStorage/ArrayControllers/0/UnconfiguredDrives"
+          }
+        }
+      }
+    }
+  }
+}
