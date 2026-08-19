@@ -23,22 +23,171 @@ def agent():
     pass
 
 
-@agent.command()
-def start():
-    """Start the HarkenIQ agent."""
-    click.echo("Agent start not yet implemented.")
+DEFAULT_PIDFILE = "~/.harkeniq/agent.pid"
+
+
+def _pidfile_path(pidfile):
+    from pathlib import Path
+
+    return Path(pidfile or DEFAULT_PIDFILE).expanduser()
 
 
 @agent.command()
-def stop():
-    """Stop the HarkenIQ agent."""
-    click.echo("Agent stop not yet implemented.")
+@click.option("--config", "config_path", default=None, help="Config file path")
+@click.option("--bmc-ip", default=None, help="BMC IP address or URL")
+@click.option("--bmc-user", default=None, help="BMC username")
+@click.option("--bmc-pass", default=None, help="BMC password")
+@click.option("--peers", "peers_opt", default=None,
+              help="Comma-separated peer list: host[:port],host[:port]")
+@click.option("--site-manager-ip", default=None, help="Site Manager host")
+@click.option("--checkpoint", "checkpoint_path", default=None, help="Checkpoint DB path")
+@click.option("--log-level", default=None,
+              type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]))
+@click.option("--tui", is_flag=True, help="Run with the terminal console UI")
+@click.option("--foreground", is_flag=True, default=False,
+              help="Run in the foreground (R1 always runs foreground; use systemd to daemonize)")
+@click.option("--pidfile", default=None, help=f"Pidfile path [default: {DEFAULT_PIDFILE}]")
+@click.pass_context
+def start(ctx, config_path, bmc_ip, bmc_user, bmc_pass, peers_opt,
+          site_manager_ip, checkpoint_path, log_level, tui, foreground, pidfile):
+    """Start the HarkenIQ agent (runs until SIGTERM/SIGINT)."""
+    import asyncio
+    import logging
+    import os
+
+    from harkeniq.config import load_config, validate_config
+    from harkeniq.errors import ConfigError, HarkenIQError
+
+    overrides = {}
+    if bmc_ip:
+        overrides.setdefault("bmc", {})["host"] = bmc_ip
+    if bmc_user:
+        overrides.setdefault("bmc", {})["username"] = bmc_user
+    if bmc_pass:
+        overrides.setdefault("bmc", {})["password"] = bmc_pass
+    if site_manager_ip:
+        overrides.setdefault("site_manager", {})["host"] = site_manager_ip
+    if checkpoint_path:
+        overrides.setdefault("checkpoint", {})["path"] = checkpoint_path
+    if log_level:
+        overrides.setdefault("agent", {})["log_level"] = log_level
+    if peers_opt:
+        peers = []
+        for entry in peers_opt.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            host, _, port = entry.partition(":")
+            peers.append({"host": host, "port": int(port) if port else 5150})
+        overrides["peers"] = peers
+
+    try:
+        cfg = load_config(config_path, cli_overrides=overrides)
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+    errors = validate_config(cfg)
+    if errors:
+        for err in errors:
+            click.echo(f"ERROR {err}", err=True)
+        ctx.exit(3)
+
+    logging.basicConfig(
+        level=getattr(logging, cfg["agent"]["log_level"]),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    )
+
+    pid_path = _pidfile_path(pidfile)
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(os.getpid()))
+
+    async def _run():
+        from harkeniq.agent import Agent
+
+        agent_obj = Agent(cfg)
+        await agent_obj.start()
+        if tui:
+            from harkeniq.reporting.console import ConsoleUI
+
+            ui = ConsoleUI(agent_obj)
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(agent_obj.run())
+                tg.create_task(ui.run())
+        else:
+            await agent_obj.run()
+
+    try:
+        asyncio.run(_run())
+    except HarkenIQError as e:
+        raise click.ClickException(str(e))
+    finally:
+        pid_path.unlink(missing_ok=True)
 
 
 @agent.command()
-def status():
-    """Show agent status."""
-    click.echo("Agent status not yet implemented.")
+@click.option("--pidfile", default=None, help=f"Pidfile path [default: {DEFAULT_PIDFILE}]")
+def stop(pidfile):
+    """Stop a running agent (sends SIGTERM via pidfile)."""
+    import os
+    import signal as signal_mod
+
+    pid_path = _pidfile_path(pidfile)
+    if not pid_path.is_file():
+        raise click.ClickException(f"No pidfile at {pid_path} (agent not running?)")
+    try:
+        pid = int(pid_path.read_text().strip())
+        os.kill(pid, signal_mod.SIGTERM)
+    except (ValueError, ProcessLookupError) as e:
+        pid_path.unlink(missing_ok=True)
+        raise click.ClickException(f"Stale pidfile {pid_path}: {e}")
+    click.echo(f"Sent SIGTERM to agent (pid {pid})")
+
+
+@agent.command()
+@click.option("--checkpoint", "checkpoint_path", required=True, help="Checkpoint DB path")
+def status(checkpoint_path):
+    """Show last known agent status from the checkpoint DB."""
+    async def _load(cp):
+        return await cp.load_checkpoint(), await cp.load_actions()
+
+    state, actions = _run_on_checkpoint(checkpoint_path, _load)
+    meta = state["agent_meta"]
+    click.echo(f"Agent:   {meta.get('agent_id', '?')}")
+    click.echo(f"State:   {meta.get('state', '?')}")
+    click.echo(f"Sensors: {len(state['sensor_readings'])} readings, "
+               f"{len(state['baselines'])} baselines")
+    for verdict in state["verdicts"]:
+        click.echo(f"  {verdict.severity.value:<9} {verdict.sensor_id}: {verdict.message}")
+    for peer in state["peers"]:
+        click.echo(f"Peer:    {peer.peer_id or peer.host} {peer.status.value} "
+                   f"(last heartbeat {peer.last_heartbeat or 'never'})")
+    from harkeniq.models import ActionStatus
+
+    pending = [a for a in actions if a.status == ActionStatus.PENDING]
+    if pending:
+        click.echo(f"Pending actions: {len(pending)} (see 'harken action list')")
+
+
+@agent.command(name="checkpoint")
+@click.option("--checkpoint", "checkpoint_path", required=True, help="Checkpoint DB path")
+def agent_checkpoint(checkpoint_path):
+    """Show checkpoint DB contents summary."""
+    async def _load(cp):
+        counts = {}
+        for table in ("sensor_readings", "baselines", "verdicts", "peers",
+                      "actions", "audit_log"):
+            counts[table] = cp._conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table}"
+            ).fetchone()["n"]
+        updated = cp._conn.execute(
+            "SELECT MAX(updated_at) AS ts FROM agent_meta"
+        ).fetchone()["ts"]
+        return counts, updated
+
+    counts, updated = _run_on_checkpoint(checkpoint_path, _load)
+    click.echo(f"Checkpoint: {checkpoint_path}")
+    click.echo(f"Last written: {updated or 'never'}")
+    for table, n in counts.items():
+        click.echo(f"  {table:<16} {n}")
 
 
 @main.command()
@@ -48,9 +197,34 @@ def diagnose():
 
 
 @main.command()
-def demo():
-    """Run the 60-second automated showcase."""
-    click.echo("Demo not yet implemented.")
+@click.option("--mock/--no-mock", default=True,
+              help="Run against the built-in mock simulator (R1: mock only)")
+@click.option("--speed", default=1.0, show_default=True, type=float,
+              help="Time compression factor (10 = 6-second run)")
+@click.option("--plain", is_flag=True, help="Line-mode output instead of the TUI")
+def demo(mock, speed, plain):
+    """Run the 60-second automated showcase (Doc 09)."""
+    import asyncio
+    import logging
+    import sys
+
+    from harkeniq.errors import HarkenIQError
+
+    if not mock:
+        raise click.ClickException("R1 supports --mock only (no real-BMC demo)")
+    if speed <= 0:
+        raise click.ClickException("--speed must be > 0")
+    logging.basicConfig(level=logging.ERROR)
+
+    from harkeniq.demo import DemoRunner
+
+    tui = (not plain) and sys.stdout.isatty()
+    try:
+        asyncio.run(DemoRunner(speed=speed, tui=tui).run())
+    except KeyboardInterrupt:
+        pass
+    except HarkenIQError as e:
+        raise click.ClickException(str(e))
 
 
 @main.group()
@@ -114,19 +288,31 @@ def mock():
     pass
 
 
-@mock.command()
+@mock.command(name="start")
 @click.option("--device", default="dell-r750", help="Device profile")
 @click.option("--port", default=8443, type=int, help="HTTPS port")
 @click.option("--no-auth", is_flag=True, help="Disable session authentication")
-def start(device, port, no_auth):
-    """Start the Redfish mock simulator."""
-    click.echo("Mock start not yet implemented.")
+def mock_start(device, port, no_auth):
+    """Start the Redfish mock simulator (runs until Ctrl+C)."""
+    import asyncio
 
+    async def _run():
+        from harkeniq.mock.simulator import MockSimulator
 
-@mock.command(name="stop")
-def mock_stop():
-    """Stop the mock simulator."""
-    click.echo("Mock stop not yet implemented.")
+        sim = MockSimulator(device=device, port=port, no_auth=no_auth)
+        await sim.start()
+        click.echo(f"Mock {device} listening on https://127.0.0.1:{sim.port} "
+                   f"(auth {'disabled' if no_auth else 'admin:password'})")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await sim.stop()
+
+    try:
+        asyncio.run(_run())
+    except (KeyboardInterrupt, ValueError) as e:
+        if isinstance(e, ValueError):
+            raise click.ClickException(str(e))
 
 
 @main.group()
@@ -136,15 +322,68 @@ def config():
 
 
 @config.command()
-def show():
-    """Print effective configuration."""
-    click.echo("Config show not yet implemented.")
+@click.option("--config", "config_path", default=None, help="Config file path")
+@click.option("--no-redact", is_flag=True, help="Show secrets in cleartext")
+def show(config_path, no_redact):
+    """Print effective configuration (defaults + file + env)."""
+    from harkeniq.config import load_config, render_config
+    from harkeniq.errors import ConfigError
+
+    try:
+        effective = load_config(config_path)
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+    click.echo(render_config(effective, redact=not no_redact), nl=False)
+
+
+@config.command(name="validate")
+@click.option("--config", "config_path", default=None, help="Config file path")
+@click.pass_context
+def config_validate(ctx, config_path):
+    """Validate configuration file. Exit 0 if valid, 3 if not."""
+    from harkeniq.config import load_config, validate_config
+    from harkeniq.errors import ConfigError
+
+    try:
+        effective = load_config(config_path)
+    except ConfigError as e:
+        click.echo(f"ERROR {e}", err=True)
+        ctx.exit(3)
+    errors = validate_config(effective)
+    if errors:
+        for err in errors:
+            click.echo(f"ERROR {err}", err=True)
+        click.echo(f"{len(errors)} configuration error(s).", err=True)
+        ctx.exit(3)
+    click.echo("Configuration valid.")
 
 
 @config.command()
-def validate():
-    """Validate configuration file."""
-    click.echo("Config validate not yet implemented.")
+@click.option("--output", "-o", default="config.yaml", show_default=True, help="Output path")
+@click.option("--bmc-host", prompt="BMC host (IP or URL)", help="BMC IP address or URL")
+@click.option("--bmc-user", prompt="BMC username", default="admin", help="BMC username")
+@click.option("--bmc-pass", prompt="BMC password", hide_input=True, help="BMC password")
+@click.option("--name", prompt="Agent name", default="", help="Human-readable agent name")
+@click.option("--force", is_flag=True, help="Overwrite existing file")
+def init(output, bmc_host, bmc_user, bmc_pass, name, force):
+    """First-time setup: generate a config.yaml."""
+    import copy
+    from pathlib import Path
+
+    import yaml
+
+    from harkeniq.config import DEFAULTS
+
+    out = Path(output)
+    if out.exists() and not force:
+        raise click.ClickException(f"{out} already exists (use --force to overwrite)")
+    data = copy.deepcopy(DEFAULTS)
+    data["bmc"]["host"] = bmc_host
+    data["bmc"]["username"] = bmc_user
+    data["bmc"]["password"] = bmc_pass
+    data["agent"]["name"] = name
+    out.write_text(yaml.safe_dump(data, default_flow_style=None, sort_keys=False))
+    click.echo(f"Wrote {out}")
 
 
 @main.group()
@@ -237,21 +476,90 @@ def action():
     pass
 
 
+def _run_on_checkpoint(checkpoint_path, fn):
+    """Open the checkpoint DB, run async fn(checkpoint), and close it."""
+    import asyncio
+
+    from harkeniq.errors import ActionError, CheckpointError
+    from harkeniq.state.checkpoint import CheckpointManager
+
+    async def _run():
+        cp = CheckpointManager(checkpoint_path)
+        try:
+            return await fn(cp)
+        finally:
+            await cp.close()
+
+    try:
+        return asyncio.run(_run())
+    except (ActionError, CheckpointError) as e:
+        raise click.ClickException(str(e))
+
+
 @action.command(name="list")
-def action_list():
-    """Show pending actions."""
-    click.echo("Action list not yet implemented.")
+@click.option("--checkpoint", "checkpoint_path", required=True, help="Checkpoint DB path")
+@click.option("--all", "show_all", is_flag=True, help="Include completed/denied actions")
+def action_list(checkpoint_path, show_all):
+    """Show pending actions (use --all for full history)."""
+    from harkeniq.models import ActionStatus
+
+    async def _list(cp):
+        return await cp.load_actions()
+
+    actions = _run_on_checkpoint(checkpoint_path, _list)
+    if not show_all:
+        actions = [a for a in actions if a.status == ActionStatus.PENDING]
+    if not actions:
+        click.echo("No pending actions." if not show_all else "No actions.")
+        return
+    for a in actions:
+        click.echo(
+            f"{a.id}  {a.status.value:<9}  {a.type.value:<20}  "
+            f"{a.sensor_id}  ({a.skill_name}, proposed {a.proposed_at})"
+        )
+
+
+def _decide_action(checkpoint_path, action_id, decision, approved_by):
+    """Approve or deny a pending action in the checkpoint DB."""
+    import json
+
+    from harkeniq.actions.queue import ActionQueue
+
+    async def _decide(cp):
+        queue = ActionQueue()
+        queue.restore(await cp.load_actions())
+        if decision == "approved":
+            act = queue.approve(action_id)
+        else:
+            act = queue.deny(action_id)
+        await cp.save_actions([act])
+        await cp.save_audit_entry(
+            action=act.type.value,
+            target=act.params.get("target", "") or act.sensor_id,
+            outcome=decision,
+            authorization=approved_by,
+            evidence_json=json.dumps({"action_id": act.id, "sensor_id": act.sensor_id}),
+        )
+        return act
+
+    return _run_on_checkpoint(checkpoint_path, _decide)
 
 
 @action.command()
 @click.argument("action_id")
-def approve(action_id):
-    """Approve a pending action."""
-    click.echo(f"Action approve {action_id} not yet implemented.")
+@click.option("--checkpoint", "checkpoint_path", required=True, help="Checkpoint DB path")
+@click.option("--by", "approved_by", default="operator", show_default=True, help="Approver identity for the audit log")
+def approve(action_id, checkpoint_path, approved_by):
+    """Approve a pending action (takes effect on the agent's next cycle)."""
+    act = _decide_action(checkpoint_path, action_id, "approved", approved_by)
+    click.echo(f"Approved {act.id} ({act.type.value} on {act.sensor_id})")
 
 
 @action.command()
 @click.argument("action_id")
-def deny(action_id):
-    """Deny a pending action."""
-    click.echo(f"Action deny {action_id} not yet implemented.")
+@click.option("--checkpoint", "checkpoint_path", required=True, help="Checkpoint DB path")
+@click.option("--by", "approved_by", default="operator", show_default=True, help="Denier identity for the audit log")
+def deny(action_id, checkpoint_path, approved_by):
+    """Deny a pending action (denied is final)."""
+    act = _decide_action(checkpoint_path, action_id, "denied", approved_by)
+    click.echo(f"Denied {act.id} ({act.type.value} on {act.sensor_id})")

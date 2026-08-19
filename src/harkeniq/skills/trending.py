@@ -52,7 +52,7 @@ class TrendingEngine:
         self.slope_threshold: float = t.get("slope_threshold", 0.05)
         self.r_squared_min: float = t.get("r_squared_min", 0.5)
         self.max_projection_hours: float = t.get("max_projection_days", 90) * 24.0
-        self.expected_interval: float = config.get("poll", {}).get("interval_seconds", 60)
+        self.expected_interval: float = config.get("polling", {}).get("sensor_interval", 60)
 
         self._baselines: dict[str, Baseline] = {}
         # Fixed x-axis epoch per sensor (unix ts of first sample). Using a

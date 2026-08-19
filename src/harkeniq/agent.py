@@ -1,25 +1,36 @@
-"""Agent orchestrator (Doc 06 §2.2, Doc 10 §2.1) — Phase 2 subset.
+"""Agent orchestrator (Doc 06 §2.2, Doc 10 §2.1).
 
 Wires poller -> baseline -> skill evaluation -> trending -> debounce ->
-verdicts, drives the 7-state machine, and checkpoints to SQLite.
-
-Heartbeat, Site Manager reporting, TUI, and action execution are later
-phases; the state machine's action path is traversed (AWAITING_AUTH ->
-REPORTING) but no Redfish action is issued in Phase 2.
+verdicts, drives the 7-state machine, checkpoints to SQLite, and runs
+the continuous asyncio loop: sensor polling, peer heartbeats (UDP),
+Site Manager reporting, and the action approval/execution pipeline.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
+import signal
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from harkeniq.errors import ConfigError
-from harkeniq.models import Action, AgentState, Verdict
+from harkeniq.actions.executor import ActionExecutor
+from harkeniq.actions.queue import ActionQueue
+from harkeniq.errors import ConfigError, HarkenIQError, HeartbeatError
+from harkeniq.heartbeat.protocol import build_packet, parse_packet
+from harkeniq.heartbeat.tracker import PeerTracker
+from harkeniq.models import (
+    Action,
+    AgentState,
+    HeartbeatPacket,
+    Verdict,
+    VerdictSeverity,
+)
 from harkeniq.poller import Poller
 from harkeniq.redfish.client import RedfishClient
+from harkeniq.reporting.grpc_stub import SiteManagerReporter
 from harkeniq.skills.engine import _TARGET_COLLECTIONS, SkillEngine
 from harkeniq.skills.loader import load_skills
 from harkeniq.skills.trending import TrendingEngine
@@ -29,12 +40,42 @@ from harkeniq.state.machine import StateMachine
 logger = logging.getLogger("harkeniq.agent")
 
 DEFAULT_CHECKPOINT_INTERVAL = 600
+DEFAULT_REPORT_INTERVAL = 60
+#: Consecutive poll failures before escalating to ERROR (Doc 06 §15.1).
+POLL_FAILURE_ERROR_THRESHOLD = 5
+
+_SEVERITY_RANK = {
+    VerdictSeverity.HEALTHY: 0,
+    VerdictSeverity.UNKNOWN: 1,
+    VerdictSeverity.TRENDING: 2,
+    VerdictSeverity.WARNING: 3,
+    VerdictSeverity.CRITICAL: 4,
+}
+
+#: Shortest legal path back to OBSERVING from any mid-cycle state.
+_RECOVERY_PATH = {
+    AgentState.EVALUATING: AgentState.DECIDING,
+    AgentState.DECIDING: AgentState.OBSERVING,
+    AgentState.AWAITING_AUTH: AgentState.REPORTING,
+    AgentState.ACTING: AgentState.REPORTING,
+    AgentState.REPORTING: AgentState.OBSERVING,
+}
 
 
 def _iso(ts_unix: float) -> str:
     return datetime.fromtimestamp(ts_unix, tz=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+
+
+class _HeartbeatProtocol(asyncio.DatagramProtocol):
+    """UDP endpoint: forwards received datagrams to the agent."""
+
+    def __init__(self, agent: "Agent") -> None:
+        self.agent = agent
+
+    def datagram_received(self, data: bytes, addr) -> None:
+        self.agent._on_heartbeat_datagram(data, addr)
 
 
 class Agent:
@@ -45,12 +86,14 @@ class Agent:
         if not bmc.get("host"):
             raise ConfigError("bmc.host is required")
         self.config = config
-        self.agent_id: str = config.get("agent_id", "harkeniq-agent")
-        self.skills_dir: str = config.get("skills_dir", "skills")
+        agent_cfg = config.get("agent") or {}
+        self.agent_id: str = agent_cfg.get("id", "harkeniq-agent")
+        self.agent_name: str = agent_cfg.get("name", "")
+        self.skills_dir: str = (config.get("skills") or {}).get("directory", "skills")
         checkpoint_cfg = config.get("checkpoint") or {}
-        self._checkpoint_path: Optional[str] = checkpoint_cfg.get("path")
+        self._checkpoint_path: Optional[str] = checkpoint_cfg.get("path") or None
         self._checkpoint_interval: float = checkpoint_cfg.get(
-            "interval_seconds", DEFAULT_CHECKPOINT_INTERVAL
+            "interval", DEFAULT_CHECKPOINT_INTERVAL
         )
 
         self.state_machine = StateMachine()
@@ -58,16 +101,26 @@ class Agent:
         self.poller: Optional[Poller] = None
         self.skill_engine: Optional[SkillEngine] = None
         self.checkpoint: Optional[CheckpointManager] = None
+        self.tracker: Optional[PeerTracker] = None
+        self.action_queue = ActionQueue()
+        self.executor: Optional[ActionExecutor] = None
+        self.reporter: Optional[SiteManagerReporter] = None
+        self.identity: Any = None
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
         self._last_checkpoint_at: float = 0.0
         self._running = False
+        self._shutdown = asyncio.Event()
+        self._hb_transport: Optional[asyncio.DatagramTransport] = None
+        self._hb_seq = 0
+        self._poll_failures = 0
+        self._reported_severity: dict[str, VerdictSeverity] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
-        """Startup sequence (Doc 06 §14, Phase 2 subset), ends in OBSERVING."""
+        """Startup sequence (Doc 06 §14), ends in OBSERVING."""
         bmc = self.config["bmc"]
 
         # Connect to BMC and detect vendor
@@ -76,20 +129,31 @@ class Agent:
         )
         await self.client.connect(bmc.get("username", ""), bmc.get("password", ""))
         self.poller = Poller(self.client)
-        identity = await self.poller.detect()
+        self.identity = await self.poller.detect()
 
         # Load skills
         skills = load_skills(self.skills_dir)
 
-        # Restore checkpoint (baselines survive restarts, Doc 13 §7)
+        # Peer tracker + Site Manager reporter + action executor
+        self.tracker = PeerTracker(self.config)
+        self.reporter = SiteManagerReporter(self.config)
+        self.executor = ActionExecutor(
+            self.client, self.identity.vendor, self.config, checkpoint=None
+        )
+
+        # Restore checkpoint (baselines, peers, actions survive restarts)
         trending = TrendingEngine(self.config)
         if self._checkpoint_path:
             self.checkpoint = CheckpointManager(self._checkpoint_path)
+            self.executor.checkpoint = self.checkpoint
             state = await self.checkpoint.load_checkpoint()
             if state["baselines"]:
                 trending.restore_baselines(state["baselines"])
                 logger.info("Restored %d baselines from checkpoint",
                             len(state["baselines"]))
+            if state["peers"]:
+                self.tracker.restore_peers(state["peers"])
+            self.action_queue.restore(await self.checkpoint.load_actions())
 
         self.skill_engine = SkillEngine(
             list(skills.values()),
@@ -99,7 +163,7 @@ class Agent:
 
         self.state_machine.transition(
             AgentState.OBSERVING,
-            f"Startup complete: {identity.model}, {len(skills)} skills loaded",
+            f"Startup complete: {self.identity.model}, {len(skills)} skills loaded",
         )
         self._running = True
 
@@ -110,18 +174,189 @@ class Agent:
             await self._write_checkpoint(force=True)
             await self.checkpoint.close()
             self.checkpoint = None
+        if self.reporter:
+            await self.reporter.close()
         if self.client:
             await self.client.close()
             self.client = None
         logger.info("Agent stopped")
 
-    # -- main loop ----------------------------------------------------------
+    # -- continuous run loop (Doc 06 §2, §15) --------------------------------
+
+    def request_shutdown(self) -> None:
+        """Ask the run loop to stop (signal handlers, TUI 'q', tests)."""
+        self._shutdown.set()
+
+    async def run(self, install_signal_handlers: bool = True) -> None:
+        """Run continuously until SIGTERM/SIGINT or request_shutdown()."""
+        if not self._running:
+            await self.start()
+        self._shutdown = asyncio.Event()
+
+        loop = asyncio.get_running_loop()
+        if install_signal_handlers:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, self.request_shutdown)
+            loop.add_signal_handler(signal.SIGHUP, self._on_sighup)
+
+        peers_configured = bool(self.config.get("peers"))
+        if peers_configured:
+            await self._open_heartbeat_endpoint()
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self._poll_loop(), name="poller")
+                if peers_configured:
+                    tg.create_task(self._heartbeat_send_loop(), name="heartbeat")
+                    tg.create_task(self._liveness_loop(), name="liveness")
+                if self.reporter and self.reporter.enabled:
+                    tg.create_task(self._report_loop(), name="reporter")
+        finally:
+            await self._shutdown_sequence(install_signal_handlers, loop)
+
+    async def _shutdown_sequence(self, remove_handlers: bool, loop) -> None:
+        logger.info("Agent shutting down")
+        if self._hb_transport is not None:
+            self._send_heartbeat(state="SHUTTING_DOWN")  # final heartbeat (Doc 06 §15.2)
+            self._hb_transport.close()
+            self._hb_transport = None
+        if self.reporter and self.reporter.enabled:
+            await self.reporter.send_heartbeat("SHUTTING_DOWN", self.health_summary())
+        if remove_handlers:
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                loop.remove_signal_handler(sig)
+        await self.stop()
+
+    def _on_sighup(self) -> None:
+        """SIGHUP: hot-reload skill files (Doc 06 §15.3)."""
+        try:
+            self.reload_skills()
+        except HarkenIQError as e:
+            logger.error("Skill reload failed, keeping previous skills: %s", e)
+
+    async def _pause(self, seconds: float) -> bool:
+        """Sleep unless shutdown is requested; True when shutting down."""
+        try:
+            await asyncio.wait_for(self._shutdown.wait(), timeout=seconds)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    # -- poller loop ---------------------------------------------------------
+
+    async def _poll_loop(self) -> None:
+        interval = (self.config.get("polling") or {}).get("sensor_interval", 60)
+        while not self._shutdown.is_set():
+            try:
+                await self.poll_and_evaluate()
+                self._poll_failures = 0
+            except (HarkenIQError, RuntimeError) as e:
+                self._poll_failures += 1
+                self._recover_to_observing(f"poll failed: {e}")
+                if self._poll_failures >= POLL_FAILURE_ERROR_THRESHOLD:
+                    logger.error(
+                        "Sensor polling failed %d consecutive times: %s",
+                        self._poll_failures, e,
+                    )
+                else:
+                    logger.warning(
+                        "Sensor poll failed (%d consecutive): %s",
+                        self._poll_failures, e,
+                    )
+            if await self._pause(interval):
+                break
+
+    def _recover_to_observing(self, reason: str) -> None:
+        """Walk the state machine back to OBSERVING after a failed cycle."""
+        sm = self.state_machine
+        while sm.current_state in _RECOVERY_PATH:
+            sm.transition(_RECOVERY_PATH[sm.current_state], reason)
+
+    # -- heartbeat loops (Doc 06 §9) -----------------------------------------
+
+    async def _open_heartbeat_endpoint(self) -> None:
+        hb = self.config.get("heartbeat") or {}
+        loop = asyncio.get_running_loop()
+        self._hb_transport, _ = await loop.create_datagram_endpoint(
+            lambda: _HeartbeatProtocol(self),
+            local_addr=("0.0.0.0", hb.get("port", 5150)),
+        )
+        logger.info("Heartbeat UDP endpoint listening on port %d", hb.get("port", 5150))
+
+    def _on_heartbeat_datagram(self, data: bytes, addr) -> None:
+        secret = (self.config.get("heartbeat") or {}).get("secret", "")
+        try:
+            packet = parse_packet(data, secret)
+        except HeartbeatError as e:
+            logger.warning("Invalid heartbeat from %s: %s", addr[0], e)
+            return
+        if self.tracker:
+            self.tracker.record_heartbeat(packet, addr[0], now=time.time())
+
+    def _send_heartbeat(self, state: Optional[str] = None) -> None:
+        if self._hb_transport is None or self._hb_transport.is_closing():
+            return
+        hb = self.config.get("heartbeat") or {}
+        self._hb_seq += 1
+        packet = HeartbeatPacket(
+            v=1,
+            agent_id=self.agent_id,
+            name=self.agent_name,
+            seq=self._hb_seq,
+            ts=time.time(),
+            state=state or self.state_machine.current_state.value,
+            health_summary=self.health_summary(),
+        )
+        try:
+            data = build_packet(packet, hb.get("secret", ""))
+        except HeartbeatError as e:
+            logger.warning("Cannot build heartbeat packet: %s", e)
+            return
+        for peer in self.tracker.get_peers():
+            self._hb_transport.sendto(data, (peer.host, peer.port))
+
+    async def _heartbeat_send_loop(self) -> None:
+        interval = (self.config.get("heartbeat") or {}).get("interval", 10)
+        while not self._shutdown.is_set():
+            self._send_heartbeat()
+            if await self._pause(interval):
+                break
+
+    async def _liveness_loop(self) -> None:
+        interval = (self.config.get("heartbeat") or {}).get("interval", 10)
+        while not self._shutdown.is_set():
+            if await self._pause(interval):
+                break
+            self.tracker.check_liveness(now=time.time())
+
+    # -- Site Manager report loop (Doc 06 §10) -------------------------------
+
+    async def _report_loop(self) -> None:
+        interval = (self.config.get("site_manager") or {}).get(
+            "heartbeat_interval", DEFAULT_REPORT_INTERVAL
+        )
+        while not self._shutdown.is_set():
+            await self.reporter.send_heartbeat(
+                self.state_machine.current_state.value, self.health_summary()
+            )
+            await self._report_changed_verdicts()
+            if await self._pause(interval):
+                break
+
+    async def _report_changed_verdicts(self) -> None:
+        for verdict in self._last_verdicts:
+            if self._reported_severity.get(verdict.sensor_id) == verdict.severity:
+                continue
+            if await self.reporter.report_verdict(verdict):
+                self._reported_severity[verdict.sensor_id] = verdict.severity
+
+    # -- main cycle ----------------------------------------------------------
 
     async def poll_and_evaluate(self, timestamp: Optional[float] = None) -> list[Verdict]:
-        """One full cycle: poll -> evaluate -> decide -> report -> observe.
+        """One full cycle: poll -> evaluate -> decide -> act -> report -> observe.
 
         Drives OBSERVING -> EVALUATING -> DECIDING -> (AWAITING_AUTH ->
-        REPORTING ->) OBSERVING and returns the cycle's verdicts.
+        [ACTING ->] REPORTING ->) OBSERVING and returns the cycle's verdicts.
         """
         if self.state_machine.current_state != AgentState.OBSERVING:
             raise RuntimeError(
@@ -138,23 +373,31 @@ class Agent:
         self._last_verdicts = verdicts
         self.state_machine.transition(AgentState.DECIDING, "verdicts produced")
 
-        pending = self.skill_engine.get_pending_actions()
-        if pending:
+        # Pick up out-of-band approvals/denials (harken action approve/deny)
+        if self.checkpoint:
+            self.action_queue.restore(await self.checkpoint.load_actions())
+
+        proposed = await self._propose_actions(self.skill_engine.get_pending_actions())
+        approved = self.action_queue.approved()
+
+        if proposed or approved:
             self.state_machine.transition(
                 AgentState.AWAITING_AUTH,
-                f"{len(pending)} action(s) require approval",
+                f"{len(proposed) + len(approved)} action(s) in approval pipeline",
             )
-            # Phase 2: no TUI/authorizer — record proposals and report
-            for action in pending:
-                if self.checkpoint:
-                    await self.checkpoint.save_audit_entry(
-                        action=action.type.value,
-                        target=action.sensor_id,
-                        outcome="proposed",
-                    )
-            self.state_machine.transition(
-                AgentState.REPORTING, "no authorizer available (Phase 2)"
-            )
+            if approved:
+                self.state_machine.transition(
+                    AgentState.ACTING, f"executing {len(approved)} approved action(s)"
+                )
+                for action in approved:
+                    await self.executor.execute(action)
+                self.state_machine.transition(AgentState.REPORTING, "actions executed")
+            else:
+                self.state_machine.transition(
+                    AgentState.REPORTING, "awaiting operator approval"
+                )
+            if self.checkpoint:
+                await self.checkpoint.save_actions(self.action_queue.all())
             self.state_machine.transition(AgentState.OBSERVING, "report logged")
         else:
             self.state_machine.transition(AgentState.OBSERVING, "no action needed")
@@ -164,8 +407,48 @@ class Agent:
 
         return verdicts
 
+    async def _propose_actions(self, recommendations: list[Action]) -> list[Action]:
+        """Enqueue newly recommended actions (deduplicated), audit as proposed."""
+        proposed: list[Action] = []
+        for rec in recommendations:
+            action = self.action_queue.enqueue(
+                rec.type, rec.sensor_id, rec.skill_name, rec.verdict_severity,
+                rec.params,
+            )
+            if action is None:
+                continue
+            proposed.append(action)
+            logger.info(
+                "Action proposed: %s %s on %s (%s)",
+                action.id, action.type.value, action.sensor_id, action.skill_name,
+            )
+            if self.checkpoint:
+                await self.checkpoint.save_audit_entry(
+                    action=action.type.value,
+                    target=action.sensor_id,
+                    outcome="proposed",
+                )
+        return proposed
+
     def get_pending_actions(self) -> list[Action]:
-        return self.skill_engine.get_pending_actions() if self.skill_engine else []
+        """Actions awaiting operator approval."""
+        return self.action_queue.pending()
+
+    def health_summary(self) -> dict[str, str]:
+        """Per-subsystem worst-verdict summary for heartbeats (Doc 06 §9.2)."""
+        summary: dict[str, VerdictSeverity] = {
+            t: VerdictSeverity.HEALTHY for t in _TARGET_COLLECTIONS
+        }
+        for verdict in self._last_verdicts:
+            target = verdict.sensor_id.split(":", 1)[0]
+            if target in summary and (
+                _SEVERITY_RANK[verdict.severity] > _SEVERITY_RANK[summary[target]]
+            ):
+                summary[target] = verdict.severity
+        return {
+            t: "OK" if sev == VerdictSeverity.HEALTHY else sev.value
+            for t, sev in summary.items()
+        }
 
     def reload_skills(self) -> None:
         """Reload skill files from disk (SIGHUP semantics)."""
@@ -187,7 +470,7 @@ class Agent:
             baselines=self.skill_engine.trending.get_all_baselines()
             if self.skill_engine else {},
             verdicts=self._last_verdicts,
-            peers=[],
+            peers=self.tracker.get_peers() if self.tracker else [],
             agent_meta={
                 "agent_id": self.agent_id,
                 "state": self.state_machine.current_state.value,

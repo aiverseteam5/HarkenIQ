@@ -54,7 +54,7 @@ def make_config(sim, **overrides):
             "password": "password",
             "verify_ssl": False,
         },
-        "skills_dir": str(REPO / "skills"),
+        "skills": {"directory": str(REPO / "skills")},
     }
     config.update(overrides)
     return config
@@ -331,7 +331,7 @@ class TestAgentWiring:
             await agent.stop()
 
     async def test_checkpoint_restart_restores_baselines(self, dell_sim, tmp_path):
-        checkpoint = {"path": str(tmp_path / "agent.db"), "interval_seconds": 999999}
+        checkpoint = {"path": str(tmp_path / "agent.db"), "interval": 999999}
         t0 = time.time()
 
         agent1 = await make_agent(dell_sim, checkpoint=checkpoint, **FAST_LEARNING)

@@ -1,0 +1,35 @@
+// HarkenIQ agent <-> Site Manager protocol (Doc 06 §10.2).
+// R1 minimal proto; full definitions deferred to pre-R2.
+syntax = "proto3";
+
+package harkeniq.v1;
+
+service AgentService {
+  rpc ReportVerdict(VerdictReport) returns (VerdictAck);
+  rpc Heartbeat(AgentHeartbeat) returns (HeartbeatAck);
+}
+
+message VerdictReport {
+  string agent_id = 1;
+  string sensor_id = 2;
+  string skill_name = 3;
+  string verdict = 4;          // HEALTHY, WARNING, CRITICAL, TRENDING, UNKNOWN
+  string evidence_json = 5;
+  int64 timestamp_unix = 6;
+}
+
+message VerdictAck {
+  bool accepted = 1;
+}
+
+message AgentHeartbeat {
+  string agent_id = 1;
+  string agent_name = 2;
+  string state = 3;            // OBSERVING, EVALUATING, etc.
+  map<string, string> health_summary = 4;
+  int64 timestamp_unix = 5;
+}
+
+message HeartbeatAck {
+  bool accepted = 1;
+}

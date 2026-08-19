@@ -17,6 +17,10 @@ from typing import Any, Optional
 
 from harkeniq.errors import CheckpointReadError, CheckpointWriteError
 from harkeniq.models import (
+    Action,
+    ActionOutcome,
+    ActionStatus,
+    ActionType,
     Baseline,
     Evidence,
     Peer,
@@ -302,6 +306,95 @@ class CheckpointManager:
             "peers": peers,
             "log_cursors": cursors,
         }
+
+    # -- actions ------------------------------------------------------------
+
+    async def save_actions(self, actions: list[Action]) -> None:
+        """Persist actions to the checkpoint (Doc 06 §7.2)."""
+        try:
+            with self._conn:
+                for action in actions:
+                    outcome_json = None
+                    if action.outcome is not None:
+                        payload = dataclasses.asdict(action.outcome)
+                        payload["type"] = action.outcome.type.value
+                        outcome_json = json.dumps(payload)
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO actions "
+                        "(id, sensor_id, skill_name, verdict, action_type, params_json, "
+                        " status, proposed_at, approved_at, completed_at, outcome_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            action.id,
+                            action.sensor_id,
+                            action.skill_name,
+                            action.verdict_severity.value,
+                            action.type.value,
+                            json.dumps(action.params),
+                            action.status.value.lower(),
+                            action.proposed_at,
+                            action.approved_at,
+                            action.completed_at,
+                            outcome_json,
+                        ),
+                    )
+        except sqlite3.Error as e:
+            raise CheckpointWriteError(f"Action write failed: {e}")
+
+    async def load_actions(self) -> list[Action]:
+        """Load persisted actions, oldest first.
+
+        Actions found in EXECUTING state crashed mid-execution: their
+        result is unknowable, so they are recorded as FAILED with an
+        ``unknown`` outcome (Doc 06 §11A.3).
+        """
+        actions: list[Action] = []
+        recovered: list[Action] = []
+        try:
+            for row in self._conn.execute(
+                "SELECT * FROM actions ORDER BY proposed_at, rowid"
+            ):
+                outcome = None
+                if row["outcome_json"]:
+                    payload = json.loads(row["outcome_json"])
+                    payload["type"] = ActionType(payload["type"])
+                    outcome = ActionOutcome(**payload)
+                action = Action(
+                    id=row["id"],
+                    type=ActionType(row["action_type"]),
+                    params=json.loads(row["params_json"] or "{}"),
+                    status=ActionStatus(row["status"].upper()),
+                    sensor_id=row["sensor_id"],
+                    skill_name=row["skill_name"],
+                    verdict_severity=VerdictSeverity(row["verdict"]),
+                    proposed_at=row["proposed_at"],
+                    approved_at=row["approved_at"],
+                    completed_at=row["completed_at"],
+                    outcome=outcome,
+                )
+                if action.status == ActionStatus.EXECUTING:
+                    action.status = ActionStatus.FAILED
+                    action.completed_at = _utc_now()
+                    action.outcome = ActionOutcome(
+                        action_id=action.id,
+                        type=action.type,
+                        target=action.params.get("target", ""),
+                        success=False,
+                        error_message="unknown: agent restarted during execution",
+                        timestamp=action.completed_at,
+                    )
+                    recovered.append(action)
+                actions.append(action)
+        except (sqlite3.Error, ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
+            raise CheckpointReadError(f"Action load failed: {e}")
+
+        if recovered:
+            logger.warning(
+                "Recovered %d action(s) interrupted mid-execution (outcome unknown)",
+                len(recovered),
+            )
+            await self.save_actions(recovered)
+        return actions
 
     # -- audit / cursors ----------------------------------------------------
 

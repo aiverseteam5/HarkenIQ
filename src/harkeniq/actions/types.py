@@ -1,1 +1,0 @@
-"""harkeniq.actions.types — stub."""

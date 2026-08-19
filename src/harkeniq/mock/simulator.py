@@ -65,6 +65,7 @@ class MockSimulator:
         self._site: Optional[web.TCPSite] = None
         self._port: int = 0
         self._state: dict[str, Any] = {}
+        self._action_state: dict[str, Any] = {"led": {}, "diagnostics": [], "fan_reset": []}
         self._sessions: dict[str, dict] = {}
         self._gradual_tasks: list = []
         self._fixtures_path = FIXTURES_DIR / device.replace("-", "_")
@@ -76,6 +77,11 @@ class MockSimulator:
     @property
     def port(self) -> int:
         return self._port
+
+    @property
+    def action_state(self) -> dict[str, Any]:
+        """Applied action state (LED, diagnostics, fan reset) for assertions."""
+        return self._action_state
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -121,6 +127,7 @@ class MockSimulator:
     def _load_fixtures(self):
         """Load all JSON fixture files into mutable in-memory state."""
         self._state = {}
+        self._action_state = {"led": {}, "diagnostics": [], "fan_reset": []}
         if not self._fixtures_path.exists():
             logger.warning("No fixtures directory: %s", self._fixtures_path)
             return
@@ -229,6 +236,7 @@ class MockSimulator:
         r.add_post("/test/inject-log", self._handle_inject_log)
         r.add_post("/test/reset", self._handle_reset)
         r.add_get("/test/state", self._handle_get_state)
+        r.add_get("/test/action-state", self._handle_action_state)
         r.add_post("/test/config", self._handle_config)
 
     def _register_dell_routes(self, r):
@@ -252,6 +260,19 @@ class MockSimulator:
                 f"/redfish/v1/Systems/{sid}/Storage/RAID.Slot.1-1/Drives/{drive_id}",
                 self._handle_fixture(f"drive_{i}"),
             )
+
+        # Action endpoints (Doc 06 §11A.4)
+        r.add_get(f"/redfish/v1/Chassis/{sid}/Drives/{{drive_id}}", self._handle_chassis_drive_get)
+        r.add_patch(f"/redfish/v1/Chassis/{sid}/Drives/{{drive_id}}", self._handle_chassis_drive_patch)
+        r.add_post(
+            f"/redfish/v1/Managers/{mid}/Oem/Dell/DellLCService"
+            "/Actions/DellLCService.ExportSystemConfiguration",
+            self._handle_dell_export_sysconfig,
+        )
+        r.add_patch(
+            f"/redfish/v1/Managers/{mid}/Oem/Dell/DellAttributes/{mid}",
+            self._handle_dell_attributes_patch,
+        )
 
         # Individual DIMMs and MemoryMetrics
         for bank in ("A", "B"):
@@ -283,6 +304,12 @@ class MockSimulator:
                 f"/redfish/v1/Systems/1/Storage/DE009000/Drives/{i}",
                 self._handle_fixture(f"drive_{i}"),
             )
+
+        # Action endpoints (Doc 06 §11A.4)
+        r.add_get("/redfish/v1/Chassis/1/Drives/{drive_id}", self._handle_chassis_drive_get)
+        r.add_patch("/redfish/v1/Chassis/1/Drives/{drive_id}", self._handle_chassis_drive_patch)
+        r.add_get("/redfish/v1/Managers/1/ActiveHealthSystem", self._handle_hpe_ahs)
+        r.add_patch("/redfish/v1/Chassis/1/Thermal", self._handle_hpe_thermal_patch)
 
         # Individual DIMMs and MemoryMetrics (HPE: proc{n}dimm{m})
         for proc in (1, 2):
@@ -368,6 +395,83 @@ class MockSimulator:
         for k in to_remove:
             del self._sessions[k]
         return web.Response(status=200)
+
+    # ------------------------------------------------------------------
+    # Action endpoints (Doc 06 §11A.4)
+    # ------------------------------------------------------------------
+
+    def _find_drive(self, drive_id: str) -> Optional[dict]:
+        """Find a drive fixture by Redfish Id, Name, or Model.
+
+        Model is included because Dell normalization uses it as the
+        human-readable drive name, and skill action targets carry the
+        normalized name.
+        """
+        for key, data in self._state.items():
+            if not key.startswith("drive_"):
+                continue
+            if drive_id in (data.get("Id"), data.get("Name"), data.get("Model")):
+                return data
+        return None
+
+    async def _handle_chassis_drive_get(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        drive = self._find_drive(request.match_info["drive_id"])
+        if drive is None:
+            return web.json_response({"error": {"message": "Drive not found"}}, status=404)
+        return web.json_response(drive)
+
+    async def _handle_chassis_drive_patch(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        drive = self._find_drive(request.match_info["drive_id"])
+        if drive is None:
+            return web.json_response({"error": {"message": "Drive not found"}}, status=404)
+        body = await request.json()
+        if "IndicatorLED" in body:
+            drive["IndicatorLED"] = body["IndicatorLED"]
+            self._action_state["led"][drive.get("Name", drive.get("Id", ""))] = body["IndicatorLED"]
+        return web.json_response(drive)
+
+    async def _handle_dell_export_sysconfig(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        self._action_state["diagnostics"].append({"vendor": "dell", "params": body})
+        return web.json_response(
+            {"Id": "JID_000000000001", "TaskState": "Completed"}, status=202
+        )
+
+    async def _handle_dell_attributes_patch(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        attributes = body.get("Attributes", {})
+        self._action_state["fan_reset"].append({"vendor": "dell", "attributes": attributes})
+        return web.json_response({"Attributes": attributes})
+
+    async def _handle_hpe_ahs(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        self._action_state["diagnostics"].append(
+            {"vendor": "hpe", "resource": "ActiveHealthSystem"}
+        )
+        return web.json_response(
+            {"@odata.id": "/redfish/v1/Managers/1/ActiveHealthSystem",
+             "Name": "Active Health System"}
+        )
+
+    async def _handle_hpe_thermal_patch(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        self._action_state["fan_reset"].append({"vendor": "hpe", "body": body})
+        return web.json_response(self._state.get("thermal", {}))
+
+    async def _handle_action_state(self, request: web.Request) -> web.Response:
+        """Return applied action state for test assertions."""
+        return web.json_response(self._action_state)
 
     # ------------------------------------------------------------------
     # Fault injection (Doc 11 §7)
