@@ -1,7 +1,7 @@
 # Harken Mesh — Release One Design
 
 **Date:** 2026-07-27
-**Status:** Draft
+**Status:** Draft — **2026-08-19: design input to slice R3 (Intelligence + Autonomy), not release one. Governing plan: [docs/requirements/00-platform-spec.md](../requirements/00-platform-spec.md) §7.**
 **Supersedes for release one:** the Trust Layer / credential-first plan in the CEO plan of the same date. Release one is now Harken Mesh.
 
 **Deliberately out of scope:** technology stack. No languages, buses, or storage engines named.

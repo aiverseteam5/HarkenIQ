@@ -1,3 +1,72 @@
+# HarkenIQ — Project Constitution
+
+HarkenIQ is the vendor-neutral AI SRE for data center hardware: an embedded brain for
+every server regardless of vendor ("they bolt on, we build in"). Hardware becomes an
+agentic, intelligent device through three earned tiers — **Observe** (read-only
+diagnosis) → **Approve** (human-approved actions in seconds) → **Autonomy** (proven
+actions run unattended within budgets, with a stop switch).
+
+## Governing spec — read this first
+
+**`docs/requirements/00-platform-spec.md` (dated 2026-08-19) governs all engineering.**
+
+- Detailed requirements: `docs/requirements/01–13` (R-M*/R-S*/R-C*/R-X* IDs authoritative).
+- Product vision/personas/pricing: `HarkenIQ_PRD.md` + `HarkenIQ-Platform-Design.md`.
+- **NOT build order:** doc 02 §8 market phasing, PRD 30/60/90 plan, Platform-Design
+  5-phase plan, and TODOS.md's "release one is Harken Mesh" — all superseded per spec §0.
+- **Change control:** scope changes only by dated amendment to spec §9. A slice may
+  narrow itself; it may never redefine another slice or rename a layer. Do not
+  re-litigate scope at phase boundaries.
+
+## Fixed vocabulary — four layers (spec §1)
+
+| Layer | Name | One line |
+|---|---|---|
+| L1 | **Harken Node (Mesh)** | Per-device agent; detects all single-device faults |
+| L2 | **Site Manager** | Per-site multi-device correlation, incident consolidation, command brokering |
+| L3 | **Central Command** | Per-tenant fleet intelligence, learning, authorization, approvals (= old "Cluster Manager", name retired) |
+| L4 | **Harken Console** | Vendor multi-tenant SaaS: tenants, onboarding, RBAC, billing, support, super admin |
+
+Correlation boundary: single-device fault → node; multi-device comparison → Site Manager
+(spec §1, doc 01 §4.3.1).
+
+## Status ledger (update at every milestone commit)
+
+| Date | Milestone |
+|---|---|
+| 2026-08-19 | **R1 Diagnostic Foundation shipped** — commits `16cfca8` (Phase 2) + `5128fbd` (Phase 3) on origin/main; 498 tests; Dell/HPE Redfish, skills, baselines/trending, state machine, checkpoint, peer heartbeat/witness, action queue + CLI approval, TUI, gRPC reporter stub, `harken demo` |
+| 2026-08-19 | Master spec `00-platform-spec.md` + this constitution adopted |
+| next | **R2a — Site Manager** (spec §7), then R2b Central Command + Console v1 |
+
+## Locked engineering decisions
+
+- **Stack:** Python/FastAPI + SQLAlchemy + PostgreSQL (TimescaleDB for telemetry) for all
+  server-side services; React + TypeScript consoles; existing compiled gRPC proto reused.
+- **Identity:** self-hosted Keycloak — one realm per tenant + a platform realm; same
+  pattern runs air-gapped. 7 fixed roles + tenant custom roles (spec §4).
+- **Billing:** in-house ledger-first core; `PaymentProvider` adapter interface with
+  Razorpay (India/INR) + Stripe (US/EU) routed by tenant region; annual node commit +
+  monthly high-water true-up; delinquency = grace → console restriction → manual suspend
+  (spec §5).
+- **Never remotely disable on-prem agents or Site Managers** — not for non-payment, not
+  for anything (R-H7). Diagnosis is safety infrastructure.
+- **Payment-code rigor:** zero compromise; implement gateway behavior only after reading
+  current Razorpay/Stripe docs; idempotent verified webhooks; no card data stored.
+- **Denied actions are final** (D16); approvals per action class, always audited.
+- Sovereign/air-gapped deployment is a requirement, not an edge case (doc 01 §7):
+  L1–L3 stay single-tenant software; tenancy lives only at L4.
+- Open questions live in spec §8 with an owning slice — answer there, don't re-ask ad hoc.
+
+## Dev conventions
+
+- Tests: `cd /home/vinod/HarkenIQ && source .venv/bin/activate && PYTHONPATH= python -m pytest tests/ -q`
+  (bare `python` is not on PATH; always use the venv).
+- Code layout: agent under `src/harkeniq/`; new services land as `services/site_manager/`,
+  `services/central_command/`, `services/console/` (backend) + `console-ui/` (React).
+- Full suite green before any slice lands. Milestone commits/pushes only on explicit
+  user approval; commit style follows `git log` (short imperative subject).
+- Suggestions are Claude's; **product decisions are Vinod's** — surface options, ask
+  before assuming.
 
 ## Skill routing
 

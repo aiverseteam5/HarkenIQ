@@ -1,5 +1,9 @@
 # HarkenIQ — Open Items
 
+> **2026-08-19: superseded as release plan by [docs/requirements/00-platform-spec.md](docs/requirements/00-platform-spec.md).**
+> R1 shipped as Diagnostic Foundation; the mesh design feeds slice R3. Open items M1–M10
+> are carried into spec §8 with owning slices. This file is retained as historical record.
+
 Items with a decision behind them. Vague intentions are lies; if it is not here, it does not exist.
 
 **Release one is Harken Mesh.** Reversed 2026-07-27, superseding the credential-first plan produced earlier the same day. Design: [docs/design/harken-mesh-release-one.md](docs/design/harken-mesh-release-one.md).
