@@ -232,3 +232,61 @@ class TestProgrammaticAPI:
             async with session.get(f"{sim.url}/redfish/v1/Chassis/System.Embedded.1/Thermal", ssl=ssl_ctx) as resp:
                 data = await resp.json()
                 assert data["Fans"][0]["Status"]["Health"] == "OK"
+
+
+class TestDimmGeneration:
+    """Doc 11 §5: single DIMM template expands to all 16 DIMMs."""
+
+    async def test_dell_16_dimms_generated(self, sim, ssl_ctx):
+        coll = sim._state["memory_collection"]
+        assert coll["Members@odata.count"] == 16
+        ids = [m["@odata.id"] for m in coll["Members"]]
+        assert ids[0].endswith("DIMM.Socket.A1")
+        assert ids[-1].endswith("DIMM.Socket.B8")
+
+        # Generated DIMM has slot-specific ID, name, bank, serial
+        b3 = sim._state["memory_dimm_b3"]
+        assert b3["Id"] == "DIMM.Socket.B3"
+        assert b3["Name"] == "DIMM B3"
+        assert b3["Oem"]["Dell"]["DellMemory"]["BankLabel"] == "B"
+        assert b3["SerialNumber"] != sim._state["memory_dimm_a1"]["SerialNumber"]
+
+        # Metrics generated alongside
+        assert "memory_metrics_b3" in sim._state
+
+        # Serials unique across all 16
+        serials = {
+            sim._state[f"memory_dimm_{b}{s}"]["SerialNumber"]
+            for b in ("a", "b") for s in range(1, 9)
+        }
+        assert len(serials) == 16
+
+    async def test_hpe_16_dimms_generated(self):
+        from harkeniq.mock.simulator import MockSimulator
+
+        hpe = MockSimulator(device="hpe-dl360-gen10", port=0, no_auth=True)
+        await hpe.start()
+        try:
+            coll = hpe._state["memory_collection"]
+            assert coll["Members@odata.count"] == 16
+
+            d = hpe._state["memory_dimm_proc2dimm5"]
+            assert d["Id"] == "proc2dimm5"
+            assert d["DeviceLocator"] == "PROC 2 DIMM 5"
+            assert d["MemoryLocation"]["Socket"] == 2
+            assert d["MemoryLocation"]["Slot"] == 5
+            assert "memory_metrics_proc2dimm5" in hpe._state
+        finally:
+            await hpe.stop()
+
+    async def test_generated_dimm_served_over_http(self, sim, ssl_ctx):
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            uri = f"{sim.url}/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.B8"
+            async with session.get(uri, ssl=ssl_ctx) as resp:
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["Id"] == "DIMM.Socket.B8"
+            async with session.get(f"{uri}/MemoryMetrics", ssl=ssl_ctx) as resp:
+                assert resp.status == 200

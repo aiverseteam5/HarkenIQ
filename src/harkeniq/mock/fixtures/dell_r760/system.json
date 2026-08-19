@@ -1,0 +1,35 @@
+{
+  "@odata.id": "/redfish/v1/Systems/System.Embedded.1",
+  "@odata.type": "#ComputerSystem.v1_16_0.ComputerSystem",
+  "Id": "System.Embedded.1",
+  "Name": "System",
+  "Model": "PowerEdge R760",
+  "Manufacturer": "Dell Inc.",
+  "SerialNumber": "DEMO002SN",
+  "SKU": "DEMO002",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "HealthRollup": "OK"
+  },
+  "MemorySummary": {
+    "TotalSystemMemoryGiB": 512,
+    "Status": {
+      "Health": "OK",
+      "HealthRollup": "OK"
+    }
+  },
+  "ProcessorSummary": {
+    "Count": 2,
+    "Model": "Intel Xeon Gold 6430",
+    "Status": {
+      "Health": "OK",
+      "HealthRollup": "OK"
+    }
+  },
+  "Oem": {
+    "Dell": {
+      "ServiceTag": "DEMO002"
+    }
+  }
+}

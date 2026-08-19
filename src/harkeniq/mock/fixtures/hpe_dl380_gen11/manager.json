@@ -1,0 +1,143 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Manager.Manager",
+  "@odata.etag": "W/\"22222222\"",
+  "@odata.id": "/redfish/v1/Managers/1",
+  "@odata.type": "#Manager.v1_5_1.Manager",
+  "Id": "1",
+  "Name": "Manager",
+  "ManagerType": "BMC",
+  "Model": "iLO 6",
+  "FirmwareVersion": "1.56",
+  "UUID": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK"
+  },
+  "DateTime": "2026-08-18T12:00:00Z",
+  "DateTimeLocalOffset": "+00:00",
+  "GraphicalConsole": {
+    "ServiceEnabled": true,
+    "MaxConcurrentSessions": 10,
+    "ConnectTypesSupported": [
+      "KVMIP"
+    ]
+  },
+  "SerialConsole": {
+    "ServiceEnabled": true,
+    "MaxConcurrentSessions": 13,
+    "ConnectTypesSupported": [
+      "SSH",
+      "IPMI",
+      "Oem"
+    ]
+  },
+  "CommandShell": {
+    "ServiceEnabled": true,
+    "MaxConcurrentSessions": 10,
+    "ConnectTypesSupported": [
+      "SSH",
+      "Oem"
+    ]
+  },
+  "EthernetInterfaces": {
+    "@odata.id": "/redfish/v1/Managers/1/EthernetInterfaces"
+  },
+  "NetworkProtocol": {
+    "@odata.id": "/redfish/v1/Managers/1/NetworkProtocol"
+  },
+  "VirtualMedia": {
+    "@odata.id": "/redfish/v1/Managers/1/VirtualMedia"
+  },
+  "LogServices": {
+    "@odata.id": "/redfish/v1/Managers/1/LogServices"
+  },
+  "Links": {
+    "ManagerForServers": [
+      {
+        "@odata.id": "/redfish/v1/Systems/1"
+      }
+    ],
+    "ManagerForChassis": [
+      {
+        "@odata.id": "/redfish/v1/Chassis/1"
+      }
+    ],
+    "ManagerInChassis": {
+      "@odata.id": "/redfish/v1/Chassis/1"
+    }
+  },
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLO.HpeiLO",
+      "@odata.type": "#HpeiLO.v2_8_0.HpeiLO",
+      "ClearRestAPIState": "None",
+      "ConfigurationSettings": "Current",
+      "FederationConfig": {
+        "IPv6MulticastScope": "Site",
+        "MulticastAnnouncementInterval": 600,
+        "MulticastDiscovery": "Enabled",
+        "MulticastTimeToLive": 5,
+        "iLOFederationManagement": "Enabled"
+      },
+      "Firmware": {
+        "Current": {
+          "Date": "Jun 15 2026",
+          "DebugBuild": false,
+          "MajorVersion": 1,
+          "MinorVersion": 56,
+          "VersionString": "iLO 6 v1.56"
+        }
+      },
+      "FrontPanelUSB": {
+        "State": "Ready"
+      },
+      "IdleConnectionTimeoutMinutes": 30,
+      "IntegratedRemoteConsole": {
+        "HotKeys": [],
+        "LockKey": "Windows",
+        "TrustedCertificateRequired": false
+      },
+      "License": {
+        "LicenseKey": "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
+        "LicenseString": "iLO Advanced",
+        "LicenseType": "iLO Advanced"
+      },
+      "RequiredLoginForiLORBSU": false,
+      "SerialCLISpeed": 9600,
+      "SerialCLIStatus": "EnabledAuthReq",
+      "VSPLogDownloadEnabled": false,
+      "Links": {
+        "ActiveHealthSystem": {
+          "@odata.id": "/redfish/v1/Managers/1/ActiveHealthSystem"
+        },
+        "BackupRestoreService": {
+          "@odata.id": "/redfish/v1/Managers/1/BackupRestoreService"
+        },
+        "DateTimeService": {
+          "@odata.id": "/redfish/v1/Managers/1/DateTime"
+        },
+        "FederationDispatch": {
+          "extref": "/dispatch"
+        },
+        "FederationGroups": {
+          "@odata.id": "/redfish/v1/Managers/1/FederationGroups"
+        },
+        "FederationPeers": {
+          "@odata.id": "/redfish/v1/Managers/1/FederationPeers"
+        },
+        "LicenseService": {
+          "@odata.id": "/redfish/v1/Managers/1/LicenseService"
+        },
+        "SecurityService": {
+          "@odata.id": "/redfish/v1/Managers/1/SecurityService"
+        },
+        "Thumbnail": {
+          "extref": "/images/thumbnail.bmp"
+        },
+        "VSPLogLocation": {
+          "extref": "/sol.log.gz"
+        }
+      }
+    }
+  }
+}

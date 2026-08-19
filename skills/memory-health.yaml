@@ -1,0 +1,41 @@
+name: memory-health
+version: 1
+target: memory
+description: Detect DIMM failures, ECC errors, and correctable error rate trending
+
+rules:
+  - condition: "health == 'Critical'"
+    verdict: CRITICAL
+    message: "DIMM {name} has failed (socket {socket}, channel {channel}, slot {slot})"
+
+  - condition: "alarm_ecc_uncorrectable == true"
+    verdict: CRITICAL
+    message: "DIMM {name} uncorrectable ECC error detected"
+    action:
+      type: COLLECT_DIAGNOSTICS
+      params:
+        reason: "Uncorrectable ECC on {name}"
+
+  - condition: "alarm_ecc_correctable == true"
+    verdict: WARNING
+    message: "DIMM {name} correctable ECC threshold exceeded (lifetime: {ecc_correctable_lifetime})"
+
+  - condition: "alarm_temperature == true"
+    verdict: WARNING
+    message: "DIMM {name} thermal alarm"
+
+  - condition: "health == 'Warning'"
+    verdict: WARNING
+    message: "DIMM {name} degraded"
+
+  - condition: "ecc_correctable_current > 10"
+    verdict: WARNING
+    message: "DIMM {name} has {ecc_correctable_current} correctable ECC errors since last clear"
+
+trending:
+  - field: ecc_correctable_lifetime
+    direction: rising
+    verdict: TRENDING
+    message: "DIMM {name} ECC errors rising at {rate}/hr"
+
+default_verdict: HEALTHY

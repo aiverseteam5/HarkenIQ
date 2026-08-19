@@ -193,9 +193,9 @@ def normalize_memory(
         socket=mem_loc.get("Socket"),
         channel=mem_loc.get("Channel"),
         slot=mem_loc.get("Slot"),
-        ecc_correctable_lifetime=lifetime.get("CorrectableECCErrorCount", 0),
-        ecc_uncorrectable_lifetime=lifetime.get("UncorrectableECCErrorCount", 0),
-        ecc_correctable_current=current_period.get("CorrectableECCErrorCount", 0),
+        ecc_correctable_lifetime=lifetime.get("CorrectableECCErrorCount"),
+        ecc_uncorrectable_lifetime=lifetime.get("UncorrectableECCErrorCount"),
+        ecc_correctable_current=current_period.get("CorrectableECCErrorCount"),
         alarm_ecc_correctable=alarm_trips.get("CorrectableECCError", False),
         alarm_ecc_uncorrectable=alarm_trips.get("UncorrectableECCError", False),
         alarm_temperature=alarm_trips.get("Temperature", False),
@@ -222,9 +222,17 @@ def normalize_psus(power_json: dict) -> tuple[list[NormalizedPSU], NormalizedPow
     psus = []
     for psu in supplies:
         hpe_oem = _get(psu, "Oem", "Hpe", default={})
+        # iLO names every PSU "HpeServerPowerSupply", which is not a unique
+        # sensor identity. Use canonical PS<n> derived from MemberId
+        # (Doc 11 §"Fault injection targets": "0" = PS1, "1" = PS2).
+        member_id = psu.get("MemberId", "")
+        try:
+            name = f"PS{int(member_id) + 1}"
+        except (TypeError, ValueError):
+            name = psu.get("Name", "")
         psus.append(NormalizedPSU(
-            name=psu.get("Name", ""),
-            member_id=psu.get("MemberId", ""),
+            name=name,
+            member_id=member_id,
             type=psu.get("PowerSupplyType", ""),
             capacity_watts=psu.get("PowerCapacityWatts"),
             output_watts=psu.get("LastPowerOutputWatts"),

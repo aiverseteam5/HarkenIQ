@@ -1,0 +1,88 @@
+{
+  "@odata.id": "/redfish/v1/Chassis/System.Embedded.1/Thermal",
+  "@odata.type": "#Thermal.v1_7_0.Thermal",
+  "Name": "Thermal",
+  "Fans": [
+    {
+      "MemberId": "0",
+      "Name": "System Board Fan1A",
+      "FanName": "System Board Fan1A",
+      "Reading": 9800,
+      "ReadingUnits": "RPM",
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "LowerThresholdCritical": 480,
+      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+    },
+    {
+      "MemberId": "1",
+      "Name": "System Board Fan1B",
+      "FanName": "System Board Fan1B",
+      "Reading": 10200,
+      "ReadingUnits": "RPM",
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "LowerThresholdCritical": 480,
+      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+    },
+    {
+      "MemberId": "2",
+      "Name": "System Board Fan2A",
+      "FanName": "System Board Fan2A",
+      "Reading": 9600,
+      "ReadingUnits": "RPM",
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "LowerThresholdCritical": 480,
+      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+    },
+    {
+      "MemberId": "3",
+      "Name": "System Board Fan2B",
+      "FanName": "System Board Fan2B",
+      "Reading": 10400,
+      "ReadingUnits": "RPM",
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "LowerThresholdCritical": 480,
+      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+    }
+  ],
+  "Temperatures": [
+    {
+      "MemberId": "0",
+      "Name": "System Board Inlet Temp",
+      "ReadingCelsius": 22,
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "UpperThresholdNonCritical": 42,
+      "UpperThresholdCritical": 47,
+      "LowerThresholdNonCritical": 3,
+      "LowerThresholdCritical": -7,
+      "PhysicalContext": "Intake"
+    },
+    {
+      "MemberId": "1",
+      "Name": "CPU1 Temp",
+      "ReadingCelsius": 54,
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "UpperThresholdNonCritical": 90,
+      "UpperThresholdCritical": 98,
+      "PhysicalContext": "CPU"
+    },
+    {
+      "MemberId": "2",
+      "Name": "System Board Exhaust Temp",
+      "ReadingCelsius": 38,
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "UpperThresholdNonCritical": 75,
+      "UpperThresholdCritical": 80,
+      "PhysicalContext": "Exhaust"
+    }
+  ],
+  "Redundancy": [
+    {
+      "MemberId": "0",
+      "Name": "SystemBoard Fan Redundancy",
+      "Mode": "N+1",
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "MinNumNeeded": 4,
+      "MaxNumSupported": 8
+    }
+  ]
+}

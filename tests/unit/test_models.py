@@ -309,7 +309,7 @@ class TestSkillDefinitions:
 
 class TestNormalizedModels:
     def test_device_identity(self):
-        di = DeviceIdentity(vendor="dell", model="PowerEdge R750", controller_type="iDRAC", controller_version="9")
+        di = DeviceIdentity(vendor="dell", model="PowerEdge R750", controller_type="iDRAC", controller_version=9)
         assert di.vendor == "dell"
 
     def test_normalized_fan_defaults(self):
@@ -326,7 +326,7 @@ class TestNormalizedModels:
     def test_normalized_memory_defaults(self):
         m = NormalizedMemory()
         assert m.alarm_ecc_correctable is False
-        assert m.ecc_correctable_lifetime == 0
+        assert m.ecc_correctable_lifetime is None
 
     def test_normalized_psu_defaults(self):
         p = NormalizedPSU()

@@ -52,22 +52,22 @@ class TestDetectController:
     async def test_idrac9(self):
         ct, cv = await detect_controller("dell", {"Model": "iDRAC9"})
         assert ct == "iDRAC"
-        assert cv == "9"
+        assert cv == 9
 
     async def test_idrac10(self):
         ct, cv = await detect_controller("dell", {"Model": "iDRAC10"})
         assert ct == "iDRAC"
-        assert cv == "10"
+        assert cv == 10
 
     async def test_ilo5(self):
         ct, cv = await detect_controller("hpe", {"Model": "iLO 5"})
         assert ct == "iLO"
-        assert cv == "5"
+        assert cv == 5
 
     async def test_ilo6(self):
         ct, cv = await detect_controller("hpe", {"Model": "iLO 6"})
         assert ct == "iLO"
-        assert cv == "6"
+        assert cv == 6
 
 
 class TestDetectIdentityDell:
@@ -76,7 +76,7 @@ class TestDetectIdentityDell:
         assert identity.vendor == "dell"
         assert identity.model == "PowerEdge R750"
         assert identity.controller_type == "iDRAC"
-        assert identity.controller_version == "9"
+        assert identity.controller_version == 9
         assert identity.service_tag == "DEMO001"
         assert identity.firmware_version == "7.00.00.00"
         assert identity.system_id == "System.Embedded.1"
@@ -106,7 +106,7 @@ class TestDetectIdentityHPE:
         assert identity.vendor == "hpe"
         assert "DL360" in identity.model or "ProLiant" in identity.model
         assert identity.controller_type == "iLO"
-        assert identity.controller_version == "5"
+        assert identity.controller_version == 5
         assert identity.system_id == "1"
         assert identity.chassis_id == "1"
         assert identity.manager_id == "1"
@@ -144,3 +144,34 @@ class TestRedfishPaths:
         assert paths.storage == "/redfish/v1/Systems/1/Storage"
         assert paths.memory == "/redfish/v1/Systems/1/Memory"
         assert paths.sel_entries == "/redfish/v1/Systems/1/LogServices/IML/Entries"
+
+    def test_hpe_ilo5_smartstorage_path(self):
+        from harkeniq.redfish.normalize import DeviceIdentity
+
+        identity = DeviceIdentity(
+            vendor="hpe", controller_type="iLO", controller_version=5,
+            system_id="1", chassis_id="1", manager_id="1",
+        )
+        paths = RedfishPaths.from_identity(identity)
+        assert paths.smartstorage == "/redfish/v1/Systems/1/SmartStorage/ArrayControllers"
+
+    def test_hpe_ilo6_no_smartstorage_path(self):
+        from harkeniq.redfish.normalize import DeviceIdentity
+
+        identity = DeviceIdentity(
+            vendor="hpe", controller_type="iLO", controller_version=6,
+            system_id="1", chassis_id="1", manager_id="1",
+        )
+        paths = RedfishPaths.from_identity(identity)
+        assert paths.smartstorage == ""
+
+    def test_dell_no_smartstorage_path(self):
+        from harkeniq.redfish.normalize import DeviceIdentity
+
+        identity = DeviceIdentity(
+            vendor="dell", controller_type="iDRAC", controller_version=9,
+            system_id="System.Embedded.1", chassis_id="System.Embedded.1",
+            manager_id="iDRAC.Embedded.1",
+        )
+        paths = RedfishPaths.from_identity(identity)
+        assert paths.smartstorage == ""

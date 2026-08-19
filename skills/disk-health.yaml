@@ -1,0 +1,57 @@
+name: disk-health
+version: 1
+target: disk
+description: Detect disk failures, SMART alerts, SSD wear, and predictive wear trends
+
+rules:
+  - condition: "health == 'Critical'"
+    verdict: CRITICAL
+    message: "Disk {name} (slot {slot}) has failed"
+    action:
+      type: IDENTIFY_LED
+      params:
+        target: "{name}"
+        reason: "Disk failure — identify for replacement"
+
+  - condition: "smart_alert == true"
+    verdict: WARNING
+    message: "Disk {name} (slot {slot}) SMART predictive failure alert"
+    action:
+      type: IDENTIFY_LED
+      params:
+        target: "{name}"
+        reason: "SMART predictive failure"
+
+  - condition: "life_left_pct <= 10 AND life_left_pct >= 0"
+    verdict: CRITICAL
+    message: "Disk {name} SSD life critically low: {life_left_pct}%"
+    action:
+      type: IDENTIFY_LED
+      params:
+        target: "{name}"
+        reason: "SSD life {life_left_pct}% — replacement urgent"
+
+  - condition: "life_left_pct <= 25 AND life_left_pct > 10"
+    verdict: WARNING
+    message: "Disk {name} SSD life low: {life_left_pct}%"
+
+  - condition: "raid_status == 'Degraded'"
+    verdict: WARNING
+    message: "Disk {name} RAID status degraded"
+
+  - condition: "raid_status == 'Rebuilding'"
+    verdict: WARNING
+    message: "Disk {name} RAID rebuilding"
+
+  - condition: "health == 'Warning'"
+    verdict: WARNING
+    message: "Disk {name} (slot {slot}) degraded"
+
+trending:
+  - field: life_left_pct
+    direction: declining
+    verdict: TRENDING
+    message: "Disk {name} SSD wear: {rate}%/month, replacement in {time_to_threshold}"
+    threshold_field: 0
+
+default_verdict: HEALTHY

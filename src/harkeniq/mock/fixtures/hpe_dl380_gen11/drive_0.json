@@ -1,0 +1,57 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Drive.Drive",
+  "@odata.etag": "W/\"77777777\"",
+  "@odata.id": "/redfish/v1/Systems/1/Storage/DE009000/Drives/0",
+  "@odata.type": "#Drive.v1_7_0.Drive",
+  "Id": "0",
+  "Name": "NVMe Drive 0",
+  "Description": "NVMe Solid State Drive",
+  "Model": "VO003840JWDAR",
+  "Revision": "HPD0",
+  "Manufacturer": "HPE",
+  "SerialNumber": "PHAB012300QD3P8EGN",
+  "MediaType": "SSD",
+  "Protocol": "NVMe",
+  "CapacityBytes": 3200000000000,
+  "BlockSizeBytes": 512,
+  "RotationSpeedRPM": null,
+  "NegotiatedSpeedGbs": 32,
+  "CapableSpeedGbs": 32,
+  "PredictedMediaLifeLeftPercent": 95,
+  "FailurePredicted": false,
+  "IndicatorLED": "Off",
+  "StatusIndicator": "OK",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "HealthRollup": "OK"
+  },
+  "PhysicalLocation": {
+    "PartLocation": {
+      "LocationOrdinalValue": 0,
+      "LocationType": "Bay",
+      "ServiceLabel": "Port=1I:Box=1:Bay=1"
+    }
+  },
+  "Links": {
+    "Chassis": {
+      "@odata.id": "/redfish/v1/Chassis/1"
+    },
+    "Volumes": []
+  },
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeServerNVMeDrive.HpeServerNVMeDrive",
+      "@odata.type": "#HpeServerNVMeDrive.v2_1_0.HpeServerNVMeDrive",
+      "CurrentTemperatureCelsius": 32,
+      "DriveStatus": {
+        "Health": "OK",
+        "State": "Enabled"
+      },
+      "NVMeId": "0",
+      "PowerOnHours": 8760,
+      "TransferSpeedGbs": 32,
+      "WearStatus": "OK"
+    }
+  }
+}

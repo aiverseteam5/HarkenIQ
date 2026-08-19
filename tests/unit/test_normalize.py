@@ -210,7 +210,10 @@ class TestDellMemoryNormalization:
 
     def test_memory_no_metrics(self):
         mem = normalize_memory(self.DIMM_DATA, None)
-        assert mem.ecc_correctable_lifetime == 0
+        # None (not 0) when MemoryMetrics is unavailable -- Doc 08 §3.5
+        assert mem.ecc_correctable_lifetime is None
+        assert mem.ecc_uncorrectable_lifetime is None
+        assert mem.ecc_correctable_current is None
         assert mem.alarm_ecc_correctable is False
 
     def test_memory_absent_slot(self):

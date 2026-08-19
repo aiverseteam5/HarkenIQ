@@ -1,0 +1,19 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Storage.Storage",
+  "@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Slot.1-1",
+  "@odata.type": "#Storage.v1_10_1.Storage",
+  "Id": "RAID.Slot.1-1",
+  "Name": "PERC H755 Front",
+  "Description": "Storage Controller",
+  "Status": {
+    "Health": "OK",
+    "HealthRollup": "OK",
+    "State": "Enabled"
+  },
+  "Drives@odata.count": 1,
+  "Drives": [
+    {
+      "@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Slot.1-1/Drives/Disk.Bay.0:Enclosure.Internal.0-1:RAID.Slot.1-1"
+    }
+  ]
+}

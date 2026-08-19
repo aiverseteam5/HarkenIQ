@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from harkeniq.errors import RedfishConnectionError
 from harkeniq.redfish.client import RedfishClient
@@ -58,6 +58,9 @@ class RedfishPaths:
             paths.sel_entries = f"/redfish/v1/Managers/{mid}/LogServices/Sel/Entries"
         elif identity.vendor == "hpe":
             paths.sel_entries = f"/redfish/v1/Systems/{sid}/LogServices/IML/Entries"
+            # iLO5 exposes drives via SmartStorage; does NOT exist on iLO6 (Doc 05 §3.5)
+            if identity.controller_version == 5:
+                paths.smartstorage = f"/redfish/v1/Systems/{sid}/SmartStorage/ArrayControllers"
 
         return paths
 
@@ -76,29 +79,32 @@ async def detect_vendor(service_root: dict[str, Any]) -> str:
     raise ValueError(f"Unsupported vendor. Oem keys: {list(oem.keys())}")
 
 
-async def detect_controller(vendor: str, manager_data: dict[str, Any]) -> tuple[str, str]:
+async def detect_controller(vendor: str, manager_data: dict[str, Any]) -> tuple[str, Optional[int]]:
     """Identify controller type and version from Manager response.
 
-    Returns (controller_type, controller_version) e.g. ("iDRAC", "9").
+    Returns (controller_type, controller_version) e.g. ("iDRAC", 9).
+    controller_version is None when it cannot be determined (Doc 08 §3.2: int).
     """
     model = manager_data.get("Model", "")
 
     if vendor == "dell":
         if "iDRAC10" in model:
-            return "iDRAC", "10"
+            return "iDRAC", 10
         if "iDRAC9" in model:
-            return "iDRAC", "9"
-        # Fallback: extract from model string
-        return "iDRAC", model.replace("iDRAC", "").strip() or "unknown"
+            return "iDRAC", 9
+        # Fallback: extract digits from model string
+        digits = "".join(c for c in model if c.isdigit())
+        return "iDRAC", int(digits) if digits else None
 
     if vendor == "hpe":
         if "iLO 6" in model:
-            return "iLO", "6"
+            return "iLO", 6
         if "iLO 5" in model:
-            return "iLO", "5"
-        return "iLO", model.replace("iLO ", "").strip() or "unknown"
+            return "iLO", 5
+        digits = "".join(c for c in model if c.isdigit())
+        return "iLO", int(digits) if digits else None
 
-    return "unknown", "unknown"
+    return "unknown", None
 
 
 async def detect_identity(client: RedfishClient) -> DeviceIdentity:

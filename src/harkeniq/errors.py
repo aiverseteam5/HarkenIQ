@@ -102,6 +102,14 @@ class CheckpointError(HarkenIQError):
     """Checkpoint persistence error."""
 
 
+class CheckpointWriteError(CheckpointError):
+    """Checkpoint database write/initialization failure (Doc 10 §2.14)."""
+
+
+class CheckpointReadError(CheckpointError):
+    """Checkpoint database read/corruption failure (Doc 10 §2.14)."""
+
+
 # -- Action --
 
 

@@ -1,0 +1,48 @@
+name: fan-health
+version: 1
+target: fan
+description: Detect fan failures, degradation, and predictive RPM decline
+
+rules:
+  - condition: "health == 'Critical' AND state == 'Enabled'"
+    verdict: CRITICAL
+    message: "Fan {name} has failed (health critical, still present)"
+    debounce:
+      count: 1
+      window: 1
+    action:
+      type: COLLECT_DIAGNOSTICS
+      params:
+        reason: "Fan failure detected on {name}"
+
+  - condition: "state == 'Absent'"
+    verdict: CRITICAL
+    message: "Fan {name} has been removed"
+    debounce:
+      count: 1
+      window: 1
+
+  - condition: "speed_rpm < threshold_low_critical AND speed_rpm > 0"
+    verdict: CRITICAL
+    message: "Fan {name} RPM {speed_rpm} below critical threshold {threshold_low_critical}"
+
+  - condition: "redundancy_health != 'OK'"
+    verdict: WARNING
+    message: "Fan redundancy degraded: {redundancy_health}"
+
+  - condition: "health == 'Warning'"
+    verdict: WARNING
+    message: "Fan {name} degraded"
+
+  - condition: "deviation < -2.0"
+    verdict: WARNING
+    message: "Fan {name} RPM {speed_rpm} is {deviation}σ below baseline mean {baseline_mean}"
+
+trending:
+  - field: speed_rpm
+    direction: declining
+    verdict: TRENDING
+    message: "Fan {name} declining at {rate} RPM/hr, projected to reach {threshold} in {time_to_threshold}"
+    threshold_field: threshold_low_critical
+
+default_verdict: HEALTHY

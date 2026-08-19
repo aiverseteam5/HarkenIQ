@@ -1,0 +1,37 @@
+name: psu-health
+version: 1
+target: psu
+description: Detect PSU failures, redundancy loss, and power anomalies
+
+rules:
+  - condition: "health == 'Critical'"
+    verdict: CRITICAL
+    message: "PSU {name} has failed"
+    action:
+      type: COLLECT_DIAGNOSTICS
+      params:
+        reason: "PSU failure on {name}"
+
+  - condition: "state == 'Absent'"
+    verdict: CRITICAL
+    message: "PSU {name} has been removed"
+
+  - condition: "redundancy_health != 'OK'"
+    verdict: WARNING
+    message: "PSU redundancy lost: {redundancy_health} (mode: {redundancy_mode})"
+
+  - condition: "health == 'Warning'"
+    verdict: WARNING
+    message: "PSU {name} degraded"
+
+  - condition: "input_voltage < 100 AND input_voltage > 0"
+    verdict: WARNING
+    message: "PSU {name} input voltage low: {input_voltage}V"
+
+trending:
+  - field: output_watts
+    direction: declining
+    verdict: TRENDING
+    message: "PSU {name} output declining at {rate}W/hr"
+
+default_verdict: HEALTHY

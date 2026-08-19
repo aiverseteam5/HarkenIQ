@@ -24,7 +24,7 @@ class DeviceIdentity:
     vendor: str = ""  # "dell" | "hpe"
     model: str = ""  # e.g. "PowerEdge R750"
     controller_type: str = ""  # "iDRAC" | "iLO"
-    controller_version: str = ""  # "9" | "10" | "5" | "6"
+    controller_version: Optional[int] = None  # 9 | 10 (Dell), 5 | 6 (HPE); None = undetected
     firmware_version: str = ""
     service_tag: str = ""
     system_id: str = ""  # Dell: "System.Embedded.1", HPE: "1"
@@ -83,9 +83,10 @@ class NormalizedMemory:
     socket: Optional[int] = None
     channel: Optional[int] = None
     slot: Optional[int] = None
-    ecc_correctable_lifetime: int = 0
-    ecc_uncorrectable_lifetime: int = 0
-    ecc_correctable_current: int = 0
+    # None = MemoryMetrics endpoint unavailable (Doc 08 §3.5); 0 = zero errors
+    ecc_correctable_lifetime: Optional[int] = None
+    ecc_uncorrectable_lifetime: Optional[int] = None
+    ecc_correctable_current: Optional[int] = None
     alarm_ecc_correctable: bool = False
     alarm_ecc_uncorrectable: bool = False
     alarm_temperature: bool = False

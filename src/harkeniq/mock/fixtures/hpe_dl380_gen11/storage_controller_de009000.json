@@ -1,0 +1,20 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Storage.Storage",
+  "@odata.etag": "W/\"88888888\"",
+  "@odata.id": "/redfish/v1/Systems/1/Storage/DE009000",
+  "@odata.type": "#Storage.v1_7_1.Storage",
+  "Id": "DE009000",
+  "Name": "Storage Controller",
+  "Description": "NVMe Storage Controller",
+  "Status": {
+    "Health": "OK",
+    "HealthRollup": "OK",
+    "State": "Enabled"
+  },
+  "Drives@odata.count": 1,
+  "Drives": [
+    {
+      "@odata.id": "/redfish/v1/Systems/1/Storage/DE009000/Drives/0"
+    }
+  ]
+}

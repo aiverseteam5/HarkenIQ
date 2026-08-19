@@ -1,0 +1,121 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#Power.Power",
+  "@odata.etag": "W/\"55555555\"",
+  "@odata.id": "/redfish/v1/Chassis/1/Power",
+  "@odata.type": "#Power.v1_3_0.Power",
+  "Id": "Power",
+  "Name": "PowerMetrics",
+  "PowerControl": [
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Power#PowerControl/0",
+      "MemberId": "0",
+      "PowerConsumedWatts": 186,
+      "PowerMetrics": {
+        "AverageConsumedWatts": 192,
+        "IntervalInMin": 20,
+        "MaxConsumedWatts": 245,
+        "MinConsumedWatts": 164
+      },
+      "PowerLimit": {
+        "LimitException": "LogEventOnly",
+        "LimitInWatts": null
+      },
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    }
+  ],
+  "PowerSupplies": [
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Power#PowerSupplies/0",
+      "MemberId": "0",
+      "Name": "HpeServerPowerSupply",
+      "PowerSupplyType": "AC",
+      "LineInputVoltage": 208,
+      "LineInputVoltageType": "ACHighLine",
+      "PowerCapacityWatts": 1400,
+      "LastPowerOutputWatts": 186,
+      "Model": "865438-B21",
+      "SparePartNumber": "866793-001",
+      "SerialNumber": "5WBXK0DLLM0D5Y",
+      "FirmwareVersion": "1.04",
+      "Manufacturer": "HPE",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeServerPowerSupply.HpeServerPowerSupply",
+          "@odata.type": "#HpeServerPowerSupply.v2_0_0.HpeServerPowerSupply",
+          "AveragePowerOutputWatts": 190,
+          "BayNumber": 1,
+          "HotPluggable": true,
+          "MaxPowerOutputWatts": 245,
+          "Mismatched": false,
+          "PowerSupplyStatus": {
+            "State": "Ok"
+          },
+          "iPDUCapable": false
+        }
+      }
+    },
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Power#PowerSupplies/1",
+      "MemberId": "1",
+      "Name": "HpeServerPowerSupply",
+      "PowerSupplyType": "AC",
+      "LineInputVoltage": 208,
+      "LineInputVoltageType": "ACHighLine",
+      "PowerCapacityWatts": 1400,
+      "LastPowerOutputWatts": 0,
+      "Model": "865438-B21",
+      "SparePartNumber": "866793-001",
+      "SerialNumber": "5WBXK0DLLM0D6Z",
+      "FirmwareVersion": "1.04",
+      "Manufacturer": "HPE",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeServerPowerSupply.HpeServerPowerSupply",
+          "@odata.type": "#HpeServerPowerSupply.v2_0_0.HpeServerPowerSupply",
+          "AveragePowerOutputWatts": 0,
+          "BayNumber": 2,
+          "HotPluggable": true,
+          "MaxPowerOutputWatts": 0,
+          "Mismatched": false,
+          "PowerSupplyStatus": {
+            "State": "Ok"
+          },
+          "iPDUCapable": false
+        }
+      }
+    }
+  ],
+  "Redundancy": [
+    {
+      "@odata.id": "/redfish/v1/Chassis/1/Power#Redundancy/0",
+      "MemberId": "0",
+      "Name": "PowerSupply Redundancy Group 1",
+      "Mode": "Failover",
+      "MaxNumSupported": 2,
+      "MinNumNeeded": 1,
+      "RedundancySet": [
+        {
+          "@odata.id": "/redfish/v1/Chassis/1/Power#PowerSupplies/0"
+        },
+        {
+          "@odata.id": "/redfish/v1/Chassis/1/Power#PowerSupplies/1"
+        }
+      ],
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    }
+  ]
+}

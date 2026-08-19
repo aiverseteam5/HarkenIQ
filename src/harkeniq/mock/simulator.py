@@ -127,7 +127,79 @@ class MockSimulator:
         for f in self._fixtures_path.glob("*.json"):
             with open(f) as fh:
                 self._state[f.stem] = json.load(fh)
+        self._generate_dimm_fixtures()
         logger.info("Loaded %d fixtures from %s", len(self._state), self._fixtures_path)
+
+    def _generate_dimm_fixtures(self):
+        """Expand the single DIMM template into all 16 DIMMs.
+
+        Doc 11 §5: "A single fixture template generates all 16 with
+        slot-specific IDs and serial numbers." Also rebuilds
+        memory_collection to list all 16 members.
+        """
+        vendor = self.profile["vendor"]
+        if vendor == "dell":
+            template_key = "memory_dimm_a1"
+            metrics_template_key = "memory_metrics_a1"
+            base_uri = "/redfish/v1/Systems/System.Embedded.1/Memory"
+            # (state_suffix, dimm_id, display_name, socket, slot, bank)
+            slots = [
+                (f"{b.lower()}{s}", f"DIMM.Socket.{b}{s}", f"DIMM {b}{s}", 1 if b == "A" else 2, s, b)
+                for b in ("A", "B") for s in range(1, 9)
+            ]
+        else:
+            template_key = "memory_dimm_proc1dimm1"
+            metrics_template_key = "memory_metrics_proc1dimm1"
+            base_uri = "/redfish/v1/Systems/1/Memory"
+            slots = [
+                (f"proc{p}dimm{d}", f"proc{p}dimm{d}", f"proc{p}dimm{d}", p, d, "")
+                for p in (1, 2) for d in range(1, 9)
+            ]
+
+        dimm_template = self._state.get(template_key)
+        metrics_template = self._state.get(metrics_template_key)
+        if dimm_template is None or metrics_template is None:
+            return
+
+        base_serial = dimm_template.get("SerialNumber", "00000000")
+        members = []
+        for idx, (suffix, dimm_id, name, socket, slot, bank) in enumerate(slots):
+            dimm_uri = f"{base_uri}/{dimm_id}"
+            members.append({"@odata.id": dimm_uri})
+
+            dimm_key = f"memory_dimm_{suffix}"
+            if dimm_key not in self._state:
+                dimm = copy.deepcopy(dimm_template)
+                dimm["@odata.id"] = dimm_uri
+                dimm["Id"] = dimm_id
+                dimm["Name"] = name
+                dimm["SerialNumber"] = f"{base_serial}{idx:02d}"
+                if "Description" in dimm:
+                    dimm["Description"] = f"DIMM {name}"
+                if "DeviceLocator" in dimm:
+                    dimm["DeviceLocator"] = f"PROC {socket} DIMM {slot}"
+                loc = dimm.get("MemoryLocation")
+                if isinstance(loc, dict):
+                    loc["Socket"] = socket
+                    loc["Slot"] = slot
+                if bank:
+                    dell_mem = dimm.get("Oem", {}).get("Dell", {}).get("DellMemory")
+                    if isinstance(dell_mem, dict):
+                        dell_mem["BankLabel"] = bank
+                self._state[dimm_key] = dimm
+
+            metrics_key = f"memory_metrics_{suffix}"
+            if metrics_key not in self._state:
+                metrics = copy.deepcopy(metrics_template)
+                metrics["@odata.id"] = f"{dimm_uri}/MemoryMetrics"
+                if "Name" in metrics:
+                    metrics["Name"] = f"Memory Metrics for {name}"
+                self._state[metrics_key] = metrics
+
+        collection = self._state.get("memory_collection", {})
+        collection["Members"] = members
+        collection["Members@odata.count"] = len(members)
+        self._state["memory_collection"] = collection
 
     # ------------------------------------------------------------------
     # Route registration
@@ -201,6 +273,7 @@ class MockSimulator:
         r.add_get("/redfish/v1/Chassis/1/Thermal", self._handle_fixture("thermal"))
         r.add_get("/redfish/v1/Chassis/1/Power", self._handle_fixture("power"))
         r.add_get("/redfish/v1/Systems/1/Storage", self._handle_fixture("storage_collection"))
+        r.add_get("/redfish/v1/Systems/1/Storage/DE009000", self._handle_fixture("storage_controller_de009000"))
         r.add_get("/redfish/v1/Systems/1/Memory", self._handle_fixture("memory_collection"))
         r.add_get("/redfish/v1/Systems/1/LogServices/IML/Entries", self._handle_fixture("iml_entries"))
 

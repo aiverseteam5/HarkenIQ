@@ -1,0 +1,17 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#MemoryCollection.MemoryCollection",
+  "@odata.etag": "W/\"88888888\"",
+  "@odata.id": "/redfish/v1/Systems/1/Memory",
+  "@odata.type": "#MemoryCollection.MemoryCollection",
+  "Name": "Memory",
+  "Description": "Memory DIMM Collection",
+  "Members@odata.count": 2,
+  "Members": [
+    {
+      "@odata.id": "/redfish/v1/Systems/1/Memory/proc1dimm1"
+    },
+    {
+      "@odata.id": "/redfish/v1/Systems/1/Memory/proc1dimm2"
+    }
+  ]
+}

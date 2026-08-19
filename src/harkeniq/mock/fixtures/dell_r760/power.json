@@ -1,0 +1,54 @@
+{
+  "@odata.id": "/redfish/v1/Chassis/System.Embedded.1/Power",
+  "@odata.type": "#Power.v1_6_0.Power",
+  "Name": "Power",
+  "PowerSupplies": [
+    {
+      "MemberId": "0",
+      "Name": "PS1 Status",
+      "PowerSupplyType": "AC",
+      "LineInputVoltage": 208,
+      "PowerCapacityWatts": 1400,
+      "LastPowerOutputWatts": 186,
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "Model": "PWR SPLY,1400W,RDNT,DELTA",
+      "SerialNumber": "CNLOD001",
+      "FirmwareVersion": "00.24.67"
+    },
+    {
+      "MemberId": "1",
+      "Name": "PS2 Status",
+      "PowerSupplyType": "AC",
+      "LineInputVoltage": 208,
+      "PowerCapacityWatts": 1400,
+      "LastPowerOutputWatts": 0,
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "Model": "PWR SPLY,1400W,RDNT,DELTA",
+      "SerialNumber": "CNLOD002",
+      "FirmwareVersion": "00.24.67"
+    }
+  ],
+  "PowerControl": [
+    {
+      "Name": "System Power Control",
+      "PowerConsumedWatts": 186,
+      "PowerCapacityWatts": 1568,
+      "PowerMetrics": {
+        "IntervalInMin": 1,
+        "MinConsumedWatts": 178,
+        "MaxConsumedWatts": 245,
+        "AverageConsumedWatts": 192
+      }
+    }
+  ],
+  "Redundancy": [
+    {
+      "MemberId": "0",
+      "Name": "PowerSupply Redundancy Group 1",
+      "Mode": "Failover",
+      "Status": {"State": "Enabled", "Health": "OK"},
+      "MinNumNeeded": 1,
+      "MaxNumSupported": 2
+    }
+  ]
+}

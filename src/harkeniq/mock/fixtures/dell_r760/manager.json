@@ -1,0 +1,17 @@
+{
+  "@odata.id": "/redfish/v1/Managers/iDRAC.Embedded.1",
+  "@odata.type": "#Manager.v1_14_0.Manager",
+  "Id": "iDRAC.Embedded.1",
+  "Name": "Manager",
+  "Model": "iDRAC10",
+  "FirmwareVersion": "1.10.25.00",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK"
+  },
+  "Oem": {
+    "Dell": {
+      "ServiceTag": "DEMO002"
+    }
+  }
+}

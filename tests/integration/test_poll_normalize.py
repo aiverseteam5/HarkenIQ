@@ -101,11 +101,11 @@ class TestDellDiskFault:
         })
 
         device = await poller.poll_sensors()
-        if device.disks:
-            disk = device.disks[0]
-            assert disk.health == "Warning"
-            assert disk.life_left_pct == 18
-            assert disk.smart_alert is True
+        assert device.disks, "expected drives from standard Storage path"
+        disk = device.disks[0]
+        assert disk.health == "Warning"
+        assert disk.life_left_pct == 18
+        assert disk.smart_alert is True
 
         await poller.client.close()
 
@@ -123,10 +123,10 @@ class TestDellMemoryFault:
         })
 
         device = await poller.poll_sensors()
-        if device.memory:
-            dimm = device.memory[0]
-            assert dimm.alarm_ecc_correctable is True
-            assert dimm.ecc_correctable_lifetime == 150
+        assert device.memory, "expected DIMMs from Memory collection"
+        dimm = device.memory[0]
+        assert dimm.alarm_ecc_correctable is True
+        assert dimm.ecc_correctable_lifetime == 150
 
         await poller.client.close()
 
@@ -226,9 +226,12 @@ class TestHPEDiskFault:
         })
 
         device = await poller.poll_sensors()
-        if device.disks:
-            disk = device.disks[0]
-            assert disk.health == "Warning"
+        assert device.disks, "expected drives from standard Storage path"
+        # Standard drives come first in the merged list (preferred over SmartStorage)
+        disk = device.disks[0]
+        assert disk.health == "Warning"
+        # SmartStorage drive (different serial) should also be present via merge
+        assert len(device.disks) == 2
 
         await poller.client.close()
 
@@ -245,9 +248,9 @@ class TestHPEMemoryFault:
         })
 
         device = await poller.poll_sensors()
-        if device.memory:
-            dimm = device.memory[0]
-            assert dimm.alarm_ecc_uncorrectable is True
+        assert device.memory, "expected DIMMs from Memory collection"
+        dimm = device.memory[0]
+        assert dimm.alarm_ecc_uncorrectable is True
 
         await poller.client.close()
 
@@ -306,4 +309,75 @@ class TestLogPolling:
         poller = await _make_poller(hpe_sim)
         entries = await poller.poll_logs()
         assert isinstance(entries, list)
+        await poller.client.close()
+
+
+# ===========================================================================
+# Dell R760 (iDRAC10) and HPE DL380 Gen11 (iLO 6) — Next-Gen Profiles
+# ===========================================================================
+
+
+@pytest.fixture
+async def r760_sim():
+    sim = MockSimulator(device="dell-r760", port=0, no_auth=True)
+    await sim.start()
+    yield sim
+    await sim.stop()
+
+
+@pytest.fixture
+async def gen11_sim():
+    sim = MockSimulator(device="hpe-dl380-gen11", port=0, no_auth=True)
+    await sim.start()
+    yield sim
+    await sim.stop()
+
+
+class TestDellR760:
+    async def test_identity_idrac10(self, r760_sim):
+        poller = await _make_poller(r760_sim)
+
+        identity = poller.identity
+        assert identity.vendor == "dell"
+        assert identity.model == "PowerEdge R760"
+        assert identity.controller_type == "iDRAC"
+        assert identity.controller_version == 10
+        assert identity.service_tag == "DEMO002"
+
+        await poller.client.close()
+
+    async def test_healthy_poll(self, r760_sim):
+        poller = await _make_poller(r760_sim)
+        device = await poller.poll_sensors()
+
+        assert device.health_rollup.overall == "OK"
+        assert device.disks, "expected drives from standard Storage path"
+        assert device.fans and device.psus and device.memory
+
+        await poller.client.close()
+
+
+class TestHPEDL380Gen11:
+    async def test_identity_ilo6(self, gen11_sim):
+        poller = await _make_poller(gen11_sim)
+
+        identity = poller.identity
+        assert identity.vendor == "hpe"
+        assert identity.model == "ProLiant DL380 Gen11"
+        assert identity.controller_type == "iLO"
+        assert identity.controller_version == 6
+
+        await poller.client.close()
+
+    async def test_no_smartstorage_on_ilo6(self, gen11_sim):
+        poller = await _make_poller(gen11_sim)
+
+        # iLO6 removed SmartStorage (Doc 05 §3.5) — path must be empty
+        assert poller.paths.smartstorage == ""
+
+        device = await poller.poll_sensors()
+        # Drives still come from the standard Storage path only
+        assert device.disks, "expected drives from standard Storage path"
+        assert len(device.disks) == 1
+
         await poller.client.close()

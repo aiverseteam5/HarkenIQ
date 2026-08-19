@@ -1,0 +1,81 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#ServiceRoot.ServiceRoot",
+  "@odata.etag": "W/\"11111111\"",
+  "@odata.id": "/redfish/v1/",
+  "@odata.type": "#ServiceRoot.v1_5_1.ServiceRoot",
+  "Id": "RootService",
+  "Name": "HPE RESTful Root Service",
+  "RedfishVersion": "1.6.0",
+  "UUID": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "Vendor": "HPE",
+  "Systems": {
+    "@odata.id": "/redfish/v1/Systems"
+  },
+  "Chassis": {
+    "@odata.id": "/redfish/v1/Chassis"
+  },
+  "Managers": {
+    "@odata.id": "/redfish/v1/Managers"
+  },
+  "SessionService": {
+    "@odata.id": "/redfish/v1/SessionService"
+  },
+  "AccountService": {
+    "@odata.id": "/redfish/v1/AccountService"
+  },
+  "EventService": {
+    "@odata.id": "/redfish/v1/EventService"
+  },
+  "UpdateService": {
+    "@odata.id": "/redfish/v1/UpdateService"
+  },
+  "Registries": {
+    "@odata.id": "/redfish/v1/Registries"
+  },
+  "JsonSchemas": {
+    "@odata.id": "/redfish/v1/JsonSchemas"
+  },
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOServiceExt.HpeiLOServiceExt",
+      "@odata.type": "#HpeiLOServiceExt.v2_3_0.HpeiLOServiceExt",
+      "Manager": [
+        {
+          "DefaultLanguage": "en",
+          "FQDN": "ilo-mxq123456.example.com",
+          "HostName": "ilo-mxq123456",
+          "ManagerFirmwareVersion": "2.78",
+          "ManagerFirmwareVersionPass": "0",
+          "ManagerType": "iLO 5"
+        }
+      ],
+      "Moniker": {
+        "ADVLIC": "iLO Advanced",
+        "BMC": "iLO",
+        "BSYS": "BladeSystem",
+        "CLASS": "Integrity",
+        "FEDGRP": "DEFAULT",
+        "IPROV": "Intelligent Provisioning",
+        "PRODABR": "iLO",
+        "PRODFAM": "Integrated Lights-Out",
+        "PRODGEN": "iLO 5",
+        "PRODNAM": "Integrated Lights-Out 5",
+        "PRODTAG": "HPE iLO 5",
+        "SVCTAG": "SvcTag",
+        "SVCTYPE": "SSO"
+      },
+      "Sessions": {
+        "CertCommonName": "ilo-mxq123456.example.com",
+        "CertificateLoginEnabled": false,
+        "SecurityMessage": "",
+        "SecurityOverride": false,
+        "ServerName": "DL360-Gen10"
+      },
+      "Links": {
+        "ResourceDirectory": {
+          "@odata.id": "/redfish/v1/ResourceDirectory"
+        }
+      }
+    }
+  }
+}

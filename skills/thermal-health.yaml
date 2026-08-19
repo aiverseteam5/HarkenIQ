@@ -1,0 +1,42 @@
+name: thermal-health
+version: 1
+target: thermal
+description: Detect thermal threshold violations, cooling failures, and temperature trends
+
+rules:
+  - condition: "reading_c >= threshold_critical AND threshold_critical > 0"
+    verdict: CRITICAL
+    message: "Sensor {name} at {reading_c}°C — above critical threshold {threshold_critical}°C"
+    action:
+      type: FAN_RESET
+      params:
+        reason: "Critical temperature on {name}: {reading_c}°C"
+
+  - condition: "health == 'Critical'"
+    verdict: CRITICAL
+    message: "Sensor {name} thermal critical"
+
+  - condition: "reading_c >= threshold_warning AND threshold_warning > 0"
+    verdict: WARNING
+    message: "Sensor {name} at {reading_c}°C — above warning threshold {threshold_warning}°C"
+
+  - condition: "reading_c <= threshold_cold_critical AND threshold_cold_critical != 0"
+    verdict: WARNING
+    message: "Sensor {name} at {reading_c}°C — below cold critical {threshold_cold_critical}°C (cooling failure?)"
+
+  - condition: "health == 'Warning'"
+    verdict: WARNING
+    message: "Sensor {name} thermal warning"
+
+  - condition: "deviation > 3.0"
+    verdict: WARNING
+    message: "Sensor {name} at {reading_c}°C — {deviation}σ above baseline mean {baseline_mean}°C"
+
+trending:
+  - field: reading_c
+    direction: rising
+    verdict: TRENDING
+    message: "Sensor {name} rising at {rate}°C/hr, projected to reach {threshold}°C in {time_to_threshold}"
+    threshold_field: threshold_critical
+
+default_verdict: HEALTHY

@@ -1,0 +1,17 @@
+{
+  "@odata.id": "/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1/MemoryMetrics",
+  "Id": "MemoryMetrics",
+  "Name": "Memory Metrics for DIMM A1",
+  "HealthData": {
+    "AlarmTrips": {
+      "AddressParityError": false,
+      "CorrectableECCError": false,
+      "SpareBlock": false,
+      "Temperature": false,
+      "UncorrectableECCError": false
+    },
+    "DataLossDetected": false
+  },
+  "CurrentPeriod": {"CorrectableECCErrorCount": 0, "UncorrectableECCErrorCount": 0},
+  "LifeTime": {"CorrectableECCErrorCount": 0, "UncorrectableECCErrorCount": 0}
+}
