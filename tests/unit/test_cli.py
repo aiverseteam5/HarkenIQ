@@ -127,3 +127,124 @@ class TestSkillsList:
             main, ["skills", "list", "--dir", str(tmp_path / "nope")]
         )
         assert result.exit_code != 0
+
+
+class TestBmcTest:
+    """R2a: `harken bmc test` — reachability/auth/vendor/latency (D10 codes)."""
+
+    async def _run_cli(self, *args: str) -> tuple[int, str]:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "harkeniq", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        return proc.returncode, out.decode()
+
+    async def test_success(self):
+        sim = MockSimulator(device="dell-r750", port=0)
+        await sim.start()
+        try:
+            code, out = await self._run_cli(
+                "bmc", "test", "--bmc-ip", sim.url,
+                "--username", "admin", "--password", "password",
+            )
+        finally:
+            await sim.stop()
+
+        assert code == 0, out
+        assert "Reachability:   OK" in out
+        assert "Authentication: OK" in out
+        assert "Dell" in out
+        assert "PowerEdge R750" in out
+        assert "Latency:" in out
+
+    async def test_network_failure_exit_3(self):
+        code, out = await self._run_cli(
+            "bmc", "test", "--bmc-ip", "https://127.0.0.1:1",
+            "--username", "admin", "--password", "password",
+        )
+        assert code == 3, out
+        assert "Reachability: FAILED" in out
+
+    async def test_auth_failure_exit_4(self):
+        sim = MockSimulator(device="dell-r750", port=0)
+        await sim.start()
+        try:
+            code, out = await self._run_cli(
+                "bmc", "test", "--bmc-ip", sim.url,
+                "--username", "admin", "--password", "wrong",
+            )
+        finally:
+            await sim.stop()
+
+        assert code == 4, out
+        assert "Reachability: OK" in out
+        assert "Authentication: FAILED" in out
+
+
+class TestPeersList:
+    """R2a: `harken peers list` — config peers merged with checkpoint state."""
+
+    def _config(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "peers:\n"
+            "  - host: 10.0.0.11\n"
+            "  - host: 10.0.0.12\n"
+            "    port: 5250\n"
+            "heartbeat:\n"
+            "  secret: s3cret\n"
+        )
+        return str(path)
+
+    def test_config_only(self, tmp_path):
+        result = CliRunner().invoke(
+            main, ["peers", "list", "--config", self._config(tmp_path)]
+        )
+        assert result.exit_code == 0, result.output
+        assert "10.0.0.11" in result.output
+        assert "10.0.0.12" in result.output
+        assert "5250" in result.output
+        assert "UNKNOWN" in result.output
+
+    def test_no_peers(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("agent:\n  name: lonely\n")
+        result = CliRunner().invoke(main, ["peers", "list", "--config", str(path)])
+        assert result.exit_code == 0
+        assert "No peers configured" in result.output
+
+    def test_merged_with_checkpoint(self, tmp_path):
+        from harkeniq.models import Peer, PeerStatus
+        from harkeniq.state.checkpoint import CheckpointManager
+
+        cp_path = str(tmp_path / "cp.db")
+
+        async def _seed():
+            cp = CheckpointManager(cp_path)
+            try:
+                await cp.save_checkpoint(
+                    {}, {}, [],
+                    [Peer(peer_id="rack-1-srv-2", host="10.0.0.11", port=5150,
+                          last_heartbeat="2026-08-19T10:00:00Z",
+                          status=PeerStatus.ALIVE)],
+                    {}, {},
+                )
+            finally:
+                await cp.close()
+
+        asyncio.run(_seed())
+
+        result = CliRunner().invoke(
+            main,
+            ["peers", "list", "--config", self._config(tmp_path),
+             "--checkpoint", cp_path],
+        )
+        assert result.exit_code == 0, result.output
+        assert "rack-1-srv-2" in result.output
+        assert "ALIVE" in result.output
+        assert "2026-08-19T10:00:00Z" in result.output
+        # Config-only peer still listed as UNKNOWN.
+        assert "10.0.0.12" in result.output
+        assert "UNKNOWN" in result.output

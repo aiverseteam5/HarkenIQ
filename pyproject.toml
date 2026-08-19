@@ -23,6 +23,8 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
+    "httpx>=0.27",
+    "aiosqlite>=0.20",
 ]
 
 [project.scripts]
@@ -35,9 +37,12 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "postgres: requires a real TimescaleDB/Postgres (set HARKEN_TEST_PG_DSN)",
+]
 
 [tool.coverage.run]
-source = ["harkeniq"]
+source = ["harkeniq", "harkeniq_sm"]
 
 [tool.coverage.report]
 show_missing = true

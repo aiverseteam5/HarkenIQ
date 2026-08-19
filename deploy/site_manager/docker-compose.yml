@@ -1,0 +1,43 @@
+# HarkenIQ Site Manager stack (A1.4): TimescaleDB + one SM process.
+#
+#   scripts/gen_dev_certs.sh deploy/site_manager/certs   # once
+#   HARKEN_SM_SITE_TOKEN=change-me docker compose up --build
+#
+# HTTP/UI on :8080, gRPC (TLS + bearer token) on :50051.
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: harkeniq
+      POSTGRES_PASSWORD: harkeniq
+      POSTGRES_DB: harkeniq_sm
+    volumes:
+      - sm-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harkeniq -d harkeniq_sm"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  site-manager:
+    build:
+      context: ../..
+      dockerfile: deploy/site_manager/Dockerfile
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      HARKEN_SM_SITE_NAME: ${HARKEN_SM_SITE_NAME:-site-1}
+      HARKEN_SM_DSN: postgresql+asyncpg://harkeniq:harkeniq@timescaledb:5432/harkeniq_sm
+      HARKEN_SM_SITE_TOKEN: ${HARKEN_SM_SITE_TOKEN:?set HARKEN_SM_SITE_TOKEN}
+      HARKEN_SM_TLS_CERT: /certs/server.crt
+      HARKEN_SM_TLS_KEY: /certs/server.key
+    volumes:
+      - ./certs:/certs:ro
+    ports:
+      - "8080:8080"    # HTTP API + dashboard
+      - "50051:50051"  # gRPC (TLS)
+
+volumes:
+  sm-pgdata:

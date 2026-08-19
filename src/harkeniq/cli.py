@@ -276,10 +276,57 @@ def detect(bmc_ip, port, username, password, verify_ssl):
 
 
 @bmc.command()
-@click.option("--bmc-ip", default=None, help="BMC IP address")
-def test(bmc_ip):
-    """Test BMC connectivity and authentication."""
-    click.echo("BMC test not yet implemented.")
+@click.option("--bmc-ip", default=None, help="BMC IP address or URL (auto-detect if omitted)")
+@click.option("--port", default=443, type=int, help="BMC HTTPS port")
+@click.option("--username", "-u", envvar="HARKEN_BMC_USERNAME", default="admin", show_default=True, help="BMC username [env: HARKEN_BMC_USERNAME]")
+@click.option("--password", "-p", envvar="HARKEN_BMC_PASSWORD", required=True, help="BMC password [env: HARKEN_BMC_PASSWORD]")
+@click.option("--verify-ssl", is_flag=True, default=False, help="Verify BMC TLS certificate")
+@click.pass_context
+def test(ctx, bmc_ip, port, username, password, verify_ssl):
+    """Test BMC connectivity and authentication.
+
+    Exit codes (D10): 0 = OK, 3 = network failure, 4 = auth failure.
+    """
+    import asyncio
+    import time
+
+    from harkeniq.errors import RedfishAuthError, RedfishError
+
+    async def _run():
+        from harkeniq.redfish.client import RedfishClient
+        from harkeniq.redfish.discovery import auto_detect_bmc, detect_identity
+
+        host = bmc_ip
+        bmc_port = port
+        if host is None:
+            click.echo("No --bmc-ip given, probing known BMC addresses...")
+            host, bmc_port = await auto_detect_bmc(verify_ssl=verify_ssl)
+
+        client = RedfishClient(host=host, port=bmc_port, verify_ssl=verify_ssl)
+        started = time.monotonic()
+        try:
+            await client.connect(username, password)
+            latency_ms = (time.monotonic() - started) * 1000
+            identity = await detect_identity(client)
+        finally:
+            await client.close()
+        return host, bmc_port, latency_ms, identity
+
+    try:
+        host, bmc_port, latency_ms, identity = asyncio.run(_run())
+    except RedfishAuthError as e:
+        click.echo(f"Reachability: OK\nAuthentication: FAILED ({e})", err=True)
+        ctx.exit(4)
+    except RedfishError as e:
+        click.echo(f"Reachability: FAILED ({e})", err=True)
+        ctx.exit(3)
+
+    vendor_display = {"dell": "Dell", "hpe": "HPE"}.get(identity.vendor, identity.vendor)
+    click.echo(f"Reachability:   OK ({host}:{bmc_port})")
+    click.echo(f"Authentication: OK ({username})")
+    click.echo(f"Vendor:         {vendor_display}")
+    click.echo(f"Model:          {identity.model}")
+    click.echo(f"Latency:        {latency_ms:.0f} ms")
 
 
 @main.group()
@@ -465,9 +512,57 @@ def peers():
 
 
 @peers.command(name="list")
-def peers_list():
-    """Show configured peers and their liveness."""
-    click.echo("Peers list not yet implemented.")
+@click.option("--config", "config_path", default=None, help="Config file path")
+@click.option("--checkpoint", "checkpoint_path", default=None, help="Checkpoint DB path")
+def peers_list(config_path, checkpoint_path):
+    """Show configured peers and their liveness.
+
+    Merges the static peer list from the config with the last-known peer
+    state from the checkpoint database (when given).
+    """
+    from harkeniq.config import load_config
+    from harkeniq.errors import ConfigError
+
+    try:
+        effective = load_config(config_path)
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+
+    hb_port = (effective.get("heartbeat") or {}).get("port", 5150)
+    rows = {}  # host -> row dict
+    for entry in effective.get("peers") or []:
+        host = entry.get("host", "")
+        rows[host] = {
+            "peer_id": "-",
+            "host": host,
+            "port": entry.get("port", hb_port),
+            "status": "UNKNOWN",
+            "last_heartbeat": "-",
+        }
+
+    if checkpoint_path:
+        async def _load(cp):
+            return (await cp.load_checkpoint())["peers"]
+
+        for peer in _run_on_checkpoint(checkpoint_path, _load):
+            row = rows.setdefault(peer.host, {"host": peer.host})
+            row["peer_id"] = peer.peer_id or "-"
+            row["port"] = peer.port
+            row["status"] = peer.status.value
+            row["last_heartbeat"] = peer.last_heartbeat or "-"
+
+    if not rows:
+        click.echo("No peers configured.")
+        return
+
+    click.echo(f"{'PEER ID':<24} {'HOST':<20} {'PORT':<6} {'STATUS':<14} LAST HEARTBEAT")
+    for host in sorted(rows):
+        row = rows[host]
+        click.echo(
+            f"{row.get('peer_id', '-'):<24} {row['host']:<20} "
+            f"{row.get('port', hb_port):<6} {row.get('status', 'UNKNOWN'):<14} "
+            f"{row.get('last_heartbeat', '-')}"
+        )
 
 
 @main.group()

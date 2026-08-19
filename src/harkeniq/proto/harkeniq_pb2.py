@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0eharkeniq.proto\x12\x0bharkeniq.v1\"\x88\x01\n\rVerdictReport\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x11\n\tsensor_id\x18\x02 \x01(\t\x12\x12\n\nskill_name\x18\x03 \x01(\t\x12\x0f\n\x07verdict\x18\x04 \x01(\t\x12\x15\n\revidence_json\x18\x05 \x01(\t\x12\x16\n\x0etimestamp_unix\x18\x06 \x01(\x03\"\x1e\n\nVerdictAck\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"\xdb\x01\n\x0e\x41gentHeartbeat\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x12\n\nagent_name\x18\x02 \x01(\t\x12\r\n\x05state\x18\x03 \x01(\t\x12\x46\n\x0ehealth_summary\x18\x04 \x03(\x0b\x32..harkeniq.v1.AgentHeartbeat.HealthSummaryEntry\x12\x16\n\x0etimestamp_unix\x18\x05 \x01(\x03\x1a\x34\n\x12HealthSummaryEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\" \n\x0cHeartbeatAck\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x32\x99\x01\n\x0c\x41gentService\x12\x44\n\rReportVerdict\x12\x1a.harkeniq.v1.VerdictReport\x1a\x17.harkeniq.v1.VerdictAck\x12\x43\n\tHeartbeat\x12\x1b.harkeniq.v1.AgentHeartbeat\x1a\x19.harkeniq.v1.HeartbeatAckb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0eharkeniq.proto\x12\x0bharkeniq.v1\"\x88\x01\n\rVerdictReport\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x11\n\tsensor_id\x18\x02 \x01(\t\x12\x12\n\nskill_name\x18\x03 \x01(\t\x12\x0f\n\x07verdict\x18\x04 \x01(\t\x12\x15\n\revidence_json\x18\x05 \x01(\t\x12\x16\n\x0etimestamp_unix\x18\x06 \x01(\x03\"\x1e\n\nVerdictAck\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"\xd0\x02\n\x0e\x41gentHeartbeat\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x12\n\nagent_name\x18\x02 \x01(\t\x12\r\n\x05state\x18\x03 \x01(\t\x12\x46\n\x0ehealth_summary\x18\x04 \x03(\x0b\x32..harkeniq.v1.AgentHeartbeat.HealthSummaryEntry\x12\x16\n\x0etimestamp_unix\x18\x05 \x01(\x03\x12@\n\x0bpeer_status\x18\x06 \x03(\x0b\x32+.harkeniq.v1.AgentHeartbeat.PeerStatusEntry\x1a\x34\n\x12HealthSummaryEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x1a\x31\n\x0fPeerStatusEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\" \n\x0cHeartbeatAck\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"\x97\x01\n\x11\x41gentRegistration\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x12\n\nagent_name\x18\x02 \x01(\t\x12\x0e\n\x06vendor\x18\x03 \x01(\t\x12\r\n\x05model\x18\x04 \x01(\t\x12\x13\n\x0bservice_tag\x18\x05 \x01(\t\x12\x19\n\x11\x62mc_location_json\x18\x06 \x01(\t\x12\r\n\x05peers\x18\x07 \x03(\t\"6\n\x0fRegistrationAck\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x11\n\tsite_name\x18\x02 \x01(\t\"\xd2\x01\n\x0c\x41\x63tionReport\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x11\n\taction_id\x18\x02 \x01(\t\x12\x0c\n\x04type\x18\x03 \x01(\t\x12\x11\n\tsensor_id\x18\x04 \x01(\t\x12\x12\n\nskill_name\x18\x05 \x01(\t\x12\x18\n\x10verdict_severity\x18\x06 \x01(\t\x12\x13\n\x0bparams_json\x18\x07 \x01(\t\x12\x0e\n\x06status\x18\x08 \x01(\t\x12\x13\n\x0bproposed_at\x18\t \x01(\t\x12\x14\n\x0coutcome_json\x18\n \x01(\t\"\x1d\n\tActionAck\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\" \n\x0c\x44\x65\x63isionPoll\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\"b\n\x0e\x41\x63tionDecision\x12\x11\n\taction_id\x18\x01 \x01(\t\x12\x10\n\x08\x64\x65\x63ision\x18\x02 \x01(\t\x12\x12\n\ndecided_by\x18\x03 \x01(\t\x12\x17\n\x0f\x64\x65\x63ided_at_unix\x18\x04 \x01(\x03\">\n\x0c\x44\x65\x63isionList\x12.\n\tdecisions\x18\x01 \x03(\x0b\x32\x1b.harkeniq.v1.ActionDecision2\xf8\x02\n\x0c\x41gentService\x12\x44\n\rReportVerdict\x12\x1a.harkeniq.v1.VerdictReport\x1a\x17.harkeniq.v1.VerdictAck\x12\x43\n\tHeartbeat\x12\x1b.harkeniq.v1.AgentHeartbeat\x1a\x19.harkeniq.v1.HeartbeatAck\x12M\n\rRegisterAgent\x12\x1e.harkeniq.v1.AgentRegistration\x1a\x1c.harkeniq.v1.RegistrationAck\x12\x41\n\x0cReportAction\x12\x19.harkeniq.v1.ActionReport\x1a\x16.harkeniq.v1.ActionAck\x12K\n\x13PollActionDecisions\x12\x19.harkeniq.v1.DecisionPoll\x1a\x19.harkeniq.v1.DecisionListb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,16 +33,34 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_AGENTHEARTBEAT_HEALTHSUMMARYENTRY']._loaded_options = None
   _globals['_AGENTHEARTBEAT_HEALTHSUMMARYENTRY']._serialized_options = b'8\001'
+  _globals['_AGENTHEARTBEAT_PEERSTATUSENTRY']._loaded_options = None
+  _globals['_AGENTHEARTBEAT_PEERSTATUSENTRY']._serialized_options = b'8\001'
   _globals['_VERDICTREPORT']._serialized_start=32
   _globals['_VERDICTREPORT']._serialized_end=168
   _globals['_VERDICTACK']._serialized_start=170
   _globals['_VERDICTACK']._serialized_end=200
   _globals['_AGENTHEARTBEAT']._serialized_start=203
-  _globals['_AGENTHEARTBEAT']._serialized_end=422
-  _globals['_AGENTHEARTBEAT_HEALTHSUMMARYENTRY']._serialized_start=370
-  _globals['_AGENTHEARTBEAT_HEALTHSUMMARYENTRY']._serialized_end=422
-  _globals['_HEARTBEATACK']._serialized_start=424
-  _globals['_HEARTBEATACK']._serialized_end=456
-  _globals['_AGENTSERVICE']._serialized_start=459
-  _globals['_AGENTSERVICE']._serialized_end=612
+  _globals['_AGENTHEARTBEAT']._serialized_end=539
+  _globals['_AGENTHEARTBEAT_HEALTHSUMMARYENTRY']._serialized_start=436
+  _globals['_AGENTHEARTBEAT_HEALTHSUMMARYENTRY']._serialized_end=488
+  _globals['_AGENTHEARTBEAT_PEERSTATUSENTRY']._serialized_start=490
+  _globals['_AGENTHEARTBEAT_PEERSTATUSENTRY']._serialized_end=539
+  _globals['_HEARTBEATACK']._serialized_start=541
+  _globals['_HEARTBEATACK']._serialized_end=573
+  _globals['_AGENTREGISTRATION']._serialized_start=576
+  _globals['_AGENTREGISTRATION']._serialized_end=727
+  _globals['_REGISTRATIONACK']._serialized_start=729
+  _globals['_REGISTRATIONACK']._serialized_end=783
+  _globals['_ACTIONREPORT']._serialized_start=786
+  _globals['_ACTIONREPORT']._serialized_end=996
+  _globals['_ACTIONACK']._serialized_start=998
+  _globals['_ACTIONACK']._serialized_end=1027
+  _globals['_DECISIONPOLL']._serialized_start=1029
+  _globals['_DECISIONPOLL']._serialized_end=1061
+  _globals['_ACTIONDECISION']._serialized_start=1063
+  _globals['_ACTIONDECISION']._serialized_end=1161
+  _globals['_DECISIONLIST']._serialized_start=1163
+  _globals['_DECISIONLIST']._serialized_end=1225
+  _globals['_AGENTSERVICE']._serialized_start=1228
+  _globals['_AGENTSERVICE']._serialized_end=1604
 # @@protoc_insertion_point(module_scope)

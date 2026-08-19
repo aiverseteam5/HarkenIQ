@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import signal
 import time
@@ -23,6 +24,7 @@ from harkeniq.heartbeat.protocol import build_packet, parse_packet
 from harkeniq.heartbeat.tracker import PeerTracker
 from harkeniq.models import (
     Action,
+    ActionStatus,
     AgentState,
     HeartbeatPacket,
     Verdict,
@@ -116,6 +118,7 @@ class Agent:
         self._hb_seq = 0
         self._poll_failures = 0
         self._reported_severity: dict[str, VerdictSeverity] = {}
+        self._reported_action_status: dict[str, str] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -140,6 +143,23 @@ class Agent:
         self.executor = ActionExecutor(
             self.client, self.identity.vendor, self.config, checkpoint=None
         )
+
+        # Best-effort Site Manager registration (R2a) — never fatal:
+        # standalone Observe mode has no Site Manager at all.
+        if self.reporter.enabled:
+            peers = [
+                f"{p.get('host', '')}:{p.get('port', 5150)}"
+                for p in (self.config.get("peers") or [])
+                if isinstance(p, dict) and p.get("host")
+            ]
+            registered = await self.reporter.register_agent(
+                vendor=self.identity.vendor,
+                model=self.identity.model,
+                service_tag=self.identity.service_tag,
+                peers=peers,
+            )
+            if not registered:
+                logger.warning("Site Manager registration failed; continuing standalone")
 
         # Restore checkpoint (baselines, peers, actions survive restarts)
         trending = TrendingEngine(self.config)
@@ -332,16 +352,31 @@ class Agent:
     # -- Site Manager report loop (Doc 06 §10) -------------------------------
 
     async def _report_loop(self) -> None:
-        interval = (self.config.get("site_manager") or {}).get(
-            "heartbeat_interval", DEFAULT_REPORT_INTERVAL
-        )
+        sm = self.config.get("site_manager") or {}
+        interval = sm.get("heartbeat_interval", DEFAULT_REPORT_INTERVAL)
+        poll_interval = sm.get("action_poll_interval", 5)
         while not self._shutdown.is_set():
             await self.reporter.send_heartbeat(
-                self.state_machine.current_state.value, self.health_summary()
+                self.state_machine.current_state.value,
+                self.health_summary(),
+                self._peer_status(),
             )
             await self._report_changed_verdicts()
-            if await self._pause(interval):
+            await self._sync_actions()
+            # Approvals must land "in seconds": poll fast while any action
+            # is awaiting a decision or awaiting execution.
+            pause = poll_interval if self._actions_in_flight() else interval
+            if await self._pause(pause):
                 break
+
+    def _peer_status(self) -> dict[str, str]:
+        """Peer liveness map for SM heartbeats (network-vs-device quorum)."""
+        if self.tracker is None:
+            return {}
+        return {
+            (p.peer_id or f"{p.host}:{p.port}"): p.status.value
+            for p in self.tracker.get_peers()
+        }
 
     async def _report_changed_verdicts(self) -> None:
         for verdict in self._last_verdicts:
@@ -349,6 +384,60 @@ class Agent:
                 continue
             if await self.reporter.report_verdict(verdict):
                 self._reported_severity[verdict.sensor_id] = verdict.severity
+
+    def _actions_in_flight(self) -> bool:
+        return any(
+            a.status in (ActionStatus.PENDING, ActionStatus.APPROVED)
+            for a in self.action_queue.all()
+        )
+
+    async def _sync_actions(self) -> None:
+        """Action lifecycle sync with the Site Manager (R-S6, D16).
+
+        Reports status changes (deduplicated), then applies brokered
+        decisions. First decider wins: if a CLI approval/denial already
+        landed in the checkpoint, the SM decision is skipped and the SM
+        learns the final status on the next report.
+        """
+        for action in self.action_queue.all():
+            status = action.status.value
+            if self._reported_action_status.get(action.id) == status:
+                continue
+            if await self.reporter.report_action(action):
+                self._reported_action_status[action.id] = status
+
+        decisions = await self.reporter.poll_decisions()
+        if not decisions:
+            return
+        # Pick up any out-of-band CLI decisions before applying ours.
+        if self.checkpoint:
+            self.action_queue.restore(await self.checkpoint.load_actions())
+        applied = False
+        for decision in decisions:
+            action = self.action_queue.get(decision.action_id)
+            if action is None or action.status != ActionStatus.PENDING:
+                continue  # CLI raced first; next report shows the final status
+            if decision.decision == "approved":
+                self.action_queue.approve(decision.action_id)
+            else:
+                self.action_queue.deny(decision.action_id)
+            applied = True
+            logger.info(
+                "Site Manager decision applied: %s %s by %s",
+                decision.action_id, decision.decision, decision.decided_by,
+            )
+            if self.checkpoint:
+                await self.checkpoint.save_audit_entry(
+                    action=action.type.value,
+                    target=action.params.get("target", "") or action.sensor_id,
+                    outcome=decision.decision,
+                    authorization=f"sm:{decision.decided_by}",
+                    evidence_json=json.dumps(
+                        {"action_id": action.id, "sensor_id": action.sensor_id}
+                    ),
+                )
+        if applied and self.checkpoint:
+            await self.checkpoint.save_actions(self.action_queue.all())
 
     # -- main cycle ----------------------------------------------------------
 

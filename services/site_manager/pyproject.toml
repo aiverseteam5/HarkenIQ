@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harkeniq-site-manager"
+version = "0.1.0"
+description = "HarkenIQ Site Manager: per-site correlation, consolidation, brokering (L2)"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+dependencies = [
+    "harkeniq",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "pyyaml>=6.0",
+    "grpcio>=1.60",
+]
+
+[project.scripts]
+harken-sm = "harkeniq_sm.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

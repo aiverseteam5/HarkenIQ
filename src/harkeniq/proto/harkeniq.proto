@@ -1,5 +1,7 @@
 // HarkenIQ agent <-> Site Manager protocol (Doc 06 §10.2).
-// R1 minimal proto; full definitions deferred to pre-R2.
+// R1 minimal proto; R2a additions (spec 00 §7): registration, action
+// reporting and decision polling. All RPCs are unary, agent-initiated —
+// the Site Manager never dials nodes.
 syntax = "proto3";
 
 package harkeniq.v1;
@@ -7,6 +9,9 @@ package harkeniq.v1;
 service AgentService {
   rpc ReportVerdict(VerdictReport) returns (VerdictAck);
   rpc Heartbeat(AgentHeartbeat) returns (HeartbeatAck);
+  rpc RegisterAgent(AgentRegistration) returns (RegistrationAck);
+  rpc ReportAction(ActionReport) returns (ActionAck);
+  rpc PollActionDecisions(DecisionPoll) returns (DecisionList);
 }
 
 message VerdictReport {
@@ -28,8 +33,56 @@ message AgentHeartbeat {
   string state = 3;            // OBSERVING, EVALUATING, etc.
   map<string, string> health_summary = 4;
   int64 timestamp_unix = 5;
+  map<string, string> peer_status = 6;  // peer_id -> ALIVE|UNRESPONSIVE|UNKNOWN
 }
 
 message HeartbeatAck {
   bool accepted = 1;
+}
+
+message AgentRegistration {
+  string agent_id = 1;
+  string agent_name = 2;
+  string vendor = 3;
+  string model = 4;
+  string service_tag = 5;
+  string bmc_location_json = 6;   // BMC-reported location fields, may be empty
+  repeated string peers = 7;      // configured peer adjacency, "host:port"
+}
+
+message RegistrationAck {
+  bool accepted = 1;
+  string site_name = 2;
+}
+
+message ActionReport {
+  string agent_id = 1;
+  string action_id = 2;
+  string type = 3;                // IDENTIFY_LED, COLLECT_DIAGNOSTICS, ...
+  string sensor_id = 4;
+  string skill_name = 5;
+  string verdict_severity = 6;
+  string params_json = 7;
+  string status = 8;              // PENDING, APPROVED, DENIED, COMPLETED, FAILED
+  string proposed_at = 9;         // ISO-8601 UTC
+  string outcome_json = 10;       // empty until terminal
+}
+
+message ActionAck {
+  bool accepted = 1;
+}
+
+message DecisionPoll {
+  string agent_id = 1;
+}
+
+message ActionDecision {
+  string action_id = 1;
+  string decision = 2;            // approved | denied
+  string decided_by = 3;
+  int64 decided_at_unix = 4;
+}
+
+message DecisionList {
+  repeated ActionDecision decisions = 1;
 }

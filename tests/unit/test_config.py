@@ -150,6 +150,30 @@ class TestValidation:
         config["actions"]["allow_list"] = ["IDENTIFY_LED", "POWER_CYCLE"]
         assert any("POWER_CYCLE" in e for e in errors_of(config))
 
+    def test_site_manager_requires_token_and_ca_with_tls(self):
+        config = self.make_valid()
+        config["site_manager"]["host"] = "10.0.0.9"
+        errors = errors_of(config)
+        assert any("site_manager.token" in e for e in errors)
+        assert any("site_manager.tls_ca" in e for e in errors)
+        config["site_manager"]["token"] = "site-secret"
+        config["site_manager"]["tls_ca"] = "/etc/harkeniq/ca.pem"
+        assert errors_of(config) == []
+
+    def test_site_manager_tls_off_allows_bare(self):
+        config = self.make_valid()
+        config["site_manager"]["host"] = "10.0.0.9"
+        config["site_manager"]["tls"] = False
+        assert errors_of(config) == []
+
+    def test_site_manager_intervals_positive(self):
+        config = self.make_valid()
+        config["site_manager"]["heartbeat_interval"] = 0
+        config["site_manager"]["action_poll_interval"] = -1
+        errors = errors_of(config)
+        assert any("site_manager.heartbeat_interval" in e for e in errors)
+        assert any("site_manager.action_poll_interval" in e for e in errors)
+
 
 def errors_of(config):
     return validate_config(config)
@@ -160,9 +184,11 @@ class TestRender:
         config = load_config(env={})
         config["bmc"]["password"] = "hunter2"
         config["heartbeat"]["secret"] = "sitekey"
+        config["site_manager"]["token"] = "sm-token-xyz"
         out = render_config(config)
         assert "hunter2" not in out
         assert "sitekey" not in out
+        assert "sm-token-xyz" not in out
         assert "********" in out
 
     def test_no_redact(self):

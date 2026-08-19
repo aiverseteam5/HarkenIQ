@@ -44,6 +44,21 @@ class AgentServiceStub:
                 request_serializer=harkeniq__pb2.AgentHeartbeat.SerializeToString,
                 response_deserializer=harkeniq__pb2.HeartbeatAck.FromString,
                 _registered_method=True)
+        self.RegisterAgent = channel.unary_unary(
+                '/harkeniq.v1.AgentService/RegisterAgent',
+                request_serializer=harkeniq__pb2.AgentRegistration.SerializeToString,
+                response_deserializer=harkeniq__pb2.RegistrationAck.FromString,
+                _registered_method=True)
+        self.ReportAction = channel.unary_unary(
+                '/harkeniq.v1.AgentService/ReportAction',
+                request_serializer=harkeniq__pb2.ActionReport.SerializeToString,
+                response_deserializer=harkeniq__pb2.ActionAck.FromString,
+                _registered_method=True)
+        self.PollActionDecisions = channel.unary_unary(
+                '/harkeniq.v1.AgentService/PollActionDecisions',
+                request_serializer=harkeniq__pb2.DecisionPoll.SerializeToString,
+                response_deserializer=harkeniq__pb2.DecisionList.FromString,
+                _registered_method=True)
 
 
 class AgentServiceServicer:
@@ -61,6 +76,24 @@ class AgentServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RegisterAgent(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportAction(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PollActionDecisions(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -73,6 +106,21 @@ def add_AgentServiceServicer_to_server(servicer, server):
                     servicer.Heartbeat,
                     request_deserializer=harkeniq__pb2.AgentHeartbeat.FromString,
                     response_serializer=harkeniq__pb2.HeartbeatAck.SerializeToString,
+            ),
+            'RegisterAgent': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterAgent,
+                    request_deserializer=harkeniq__pb2.AgentRegistration.FromString,
+                    response_serializer=harkeniq__pb2.RegistrationAck.SerializeToString,
+            ),
+            'ReportAction': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportAction,
+                    request_deserializer=harkeniq__pb2.ActionReport.FromString,
+                    response_serializer=harkeniq__pb2.ActionAck.SerializeToString,
+            ),
+            'PollActionDecisions': grpc.unary_unary_rpc_method_handler(
+                    servicer.PollActionDecisions,
+                    request_deserializer=harkeniq__pb2.DecisionPoll.FromString,
+                    response_serializer=harkeniq__pb2.DecisionList.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -129,6 +177,87 @@ class AgentService:
             '/harkeniq.v1.AgentService/Heartbeat',
             harkeniq__pb2.AgentHeartbeat.SerializeToString,
             harkeniq__pb2.HeartbeatAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterAgent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.AgentService/RegisterAgent',
+            harkeniq__pb2.AgentRegistration.SerializeToString,
+            harkeniq__pb2.RegistrationAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportAction(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.AgentService/ReportAction',
+            harkeniq__pb2.ActionReport.SerializeToString,
+            harkeniq__pb2.ActionAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PollActionDecisions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.AgentService/PollActionDecisions',
+            harkeniq__pb2.DecisionPoll.SerializeToString,
+            harkeniq__pb2.DecisionList.FromString,
             options,
             channel_credentials,
             insecure,

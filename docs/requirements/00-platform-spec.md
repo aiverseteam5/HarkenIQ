@@ -307,7 +307,7 @@ here) no later than the start of their owning slice.
 
 | ID | Question | Source | Owning slice |
 |---|---|---|---|
-| OQ-1 | CMDB/topology import for the site model — design partner's source of truth? | doc 04 §6 Q4 | R2a |
+| OQ-1 | CMDB/topology import for the site model — design partner's source of truth? | doc 04 §6 Q4 | R2a — **answered, A1.1** |
 | OQ-2 | Workload scope: containers / VMs / bare metal for OS-level signals? | doc 04 §6 Q6 | R3 |
 | OQ-3 | Hardware-action approval workflow: native only, or ServiceNow/Jira/ticketing integration? | doc 04 §6 Q7 | R2b (native) / R3 (integrations) |
 | OQ-4 | Dual-tier fault injection on real hardware without outage (mesh success criterion 1) | TODOS M1 | R3 |
@@ -315,12 +315,12 @@ here) no later than the start of their owning slice.
 | OQ-6 | Authorization lease duration vs partition detection time | TODOS M3 | R3 |
 | OQ-7 | Baseline confidence refusal threshold (propose-vs-act cutoff) | TODOS M4 | R3 |
 | OQ-8 | Node identity, key issuance, rotation, revocation (signed claims/actions) | TODOS M5 | R2b (PKI/license groundwork) → R3 (signing) |
-| OQ-9 | Peer-set assignment where topology discovery is absent | TODOS M6 | R2a (site model assigns adjacency) |
+| OQ-9 | Peer-set assignment where topology discovery is absent | TODOS M6 | R2a — **answered, A1.1** |
 | OQ-10 | Node resource ceilings, enforced + observable | TODOS M7 | R3 |
 | OQ-11 | Correlated-conclusion suppression (shared upstream cause) | TODOS M8 | R2a (parent incidents) / R3 (action suppression) |
 | OQ-12 | Coverage-map presentation: silent device = unobserved, not healthy | TODOS M9 | R2a |
 | OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3 (decide at slice start) |
-| OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R2a (broker) / R3 (rotation) |
+| OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3 — **rescheduled, A1.3** |
 | OQ-15 | Application-layer symptom source for cross-layer correlation (Prometheus scrape? logs?) | Platform-Design | R3 |
 | OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R2a poll-path (R-S1) minimal / R4 broad |
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
@@ -331,4 +331,24 @@ here) no later than the start of their owning slice.
 
 ## §9 Amendments
 
-*(none yet — append dated entries here; each states what changed, why, and who decided)*
+### A1 — 2026-08-19 — R2a pre-slice decisions (decided: Vinod)
+
+1. **OQ-1 + OQ-9 answered — site model strategy:** Site Manager auto-discovers all that
+   is discoverable (devices via Redfish, BMC location fields, peer adjacency from
+   heartbeat mesh) and pre-fills the site model; correlation-based inference proposes
+   candidate power/cooling groupings over time as *suggestions*. Operator confirms/edits
+   fault domains (dashboard or YAML). Confirmed domains drive correlation at full
+   confidence; inferred-but-unconfirmed domains may produce parent incidents only when
+   clearly labeled as inferred, at reduced confidence. Rationale: PDU/cooling mapping is
+   physically unreadable from server APIs; pure inference has a cold-start problem.
+2. **Agent↔SM authentication:** R2a ships gRPC over TLS with a per-site bearer token
+   (later derived from the license key). mTLS with per-agent certificates lands in R2b
+   together with the OQ-8 PKI/license work. Closes the doc 10 insecure-channel gap
+   (R-X14) in two deliberate steps.
+3. **OQ-14 answered (scheduling):** agents keep encrypted local BMC credentials through
+   R2a/R2b — and permanently as a supported mode, since standalone Observe has no Site
+   Manager. SM credential brokering (JIT fetch, R-X12) + rotation (doc 03) move to R3.
+4. **Deployment shape:** every new service ships Docker Compose (service + PostgreSQL/
+   TimescaleDB; Keycloak joins in R2b). Helm deferred until a Kubernetes customer exists.
+5. Development readiness confirmed 2026-08-19; R2a may begin. No further scope questions
+   are open for R2a.

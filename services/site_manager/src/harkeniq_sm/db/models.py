@@ -1,0 +1,209 @@
+"""Site Manager persistence models (SQLAlchemy 2.0, async).
+
+JSON columns use JSONB on PostgreSQL and plain JSON elsewhere so the
+same models run on TimescaleDB/Postgres (production) and aiosqlite
+(unit tests). ``verdict_reports`` and ``heartbeats`` become Timescale
+hypertables when the extension is present (see migrations).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+JSONVariant = JSON().with_variant(JSONB(), "postgresql")
+
+
+def new_id() -> str:
+    return uuid.uuid4().hex
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Site(Base):
+    __tablename__ = "sites"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Rack(Base):
+    __tablename__ = "racks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    row_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (UniqueConstraint("site_id", "name"),)
+
+
+class Device(Base):
+    __tablename__ = "devices"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"))
+    agent_id: Mapped[str] = mapped_column(String(255), unique=True)
+    agent_name: Mapped[str] = mapped_column(String(255), default="")
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(255), default="")
+    service_tag: Mapped[str] = mapped_column(String(255), default="")
+    bmc_location: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    rack_id: Mapped[str | None] = mapped_column(ForeignKey("racks.id"), nullable=True)
+    rack_suggestion: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    peers: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FaultDomain(Base):
+    __tablename__ = "fault_domains"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(16))  # power | cooling | network
+    status: Mapped[str] = mapped_column(String(16), default="inferred")  # inferred | confirmed
+    confidence: Mapped[float] = mapped_column(Float, default=0.6)
+    source: Mapped[str] = mapped_column(String(32), default="inference")
+    # inference | operator | yaml_import
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    confirmed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("site_id", "name"),)
+
+
+class DomainMembership(Base):
+    __tablename__ = "domain_memberships"
+
+    domain_id: Mapped[str] = mapped_column(ForeignKey("fault_domains.id"), primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), primary_key=True)
+    added_by: Mapped[str] = mapped_column(String(255), default="")
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class VerdictReportRow(Base):
+    __tablename__ = "verdict_reports"
+
+    # Hypertable-compatible: composite PK includes the time column.
+    time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    sensor_id: Mapped[str] = mapped_column(String(255))
+    skill_name: Mapped[str] = mapped_column(String(255))
+    severity: Mapped[str] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text, default="")
+    evidence: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+
+    __table_args__ = (Index("ix_verdicts_device_time", "device_id", "time"),)
+
+
+class HeartbeatRow(Base):
+    __tablename__ = "heartbeats"
+
+    time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    state: Mapped[str] = mapped_column(String(32))
+    health_summary: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    peer_status: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+
+
+class AgentStatus(Base):
+    __tablename__ = "agent_status"
+
+    device_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_state: Mapped[str] = mapped_column(String(32), default="")
+    last_health: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    last_peer_status: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+
+
+class DeviceSubsystemState(Base):
+    __tablename__ = "device_subsystem_state"
+
+    device_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subsystem: Mapped[str] = mapped_column(String(32), primary_key=True)
+    severity: Mapped[str] = mapped_column(String(16))
+    onset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"))
+    kind: Mapped[str] = mapped_column(String(32))
+    # device | shared_power | rack_thermal | batch_component | network_ambiguity
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open | resolved
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("incidents.id"), nullable=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    domain_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    subsystem: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    inferred: Mapped[bool] = mapped_column(Boolean, default=False)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    correlation_meta: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_incidents_status_kind", "status", "kind"),)
+
+
+class ActionRow(Base):
+    __tablename__ = "actions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"))
+    agent_action_id: Mapped[str] = mapped_column(String(255))
+    type: Mapped[str] = mapped_column(String(64))
+    sensor_id: Mapped[str] = mapped_column(String(255), default="")
+    skill_name: Mapped[str] = mapped_column(String(255), default="")
+    verdict_severity: Mapped[str] = mapped_column(String(16), default="")
+    params: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    # pending | approved | denied | delivered | completed | failed | superseded
+    proposed_at: Mapped[str] = mapped_column(String(64), default="")
+    decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    outcome: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("device_id", "agent_action_id"),)
+
+
+class AuditLogRow(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    actor: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(64))
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)

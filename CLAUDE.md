@@ -36,7 +36,8 @@ Correlation boundary: single-device fault → node; multi-device comparison → 
 |---|---|
 | 2026-08-19 | **R1 Diagnostic Foundation shipped** — commits `16cfca8` (Phase 2) + `5128fbd` (Phase 3) on origin/main; 498 tests; Dell/HPE Redfish, skills, baselines/trending, state machine, checkpoint, peer heartbeat/witness, action queue + CLI approval, TUI, gRPC reporter stub, `harken demo` |
 | 2026-08-19 | Master spec `00-platform-spec.md` + this constitution adopted |
-| next | **R2a — Site Manager** (spec §7), then R2b Central Command + Console v1 |
+| 2026-08-19 | **R2a Site Manager shipped** — `harkeniq_sm` service (gRPC ingest TLS+token, TimescaleDB-ready schema, site model + domain inference, correlation engine with 4 rules, incident consolidation, approval brokering, FastAPI + React dashboard v1, Docker Compose); agent: registration/action-sync/decision-poll RPCs, secure channel; CLI `peers list` + `bmc test`; frozen exit gate green; 631 tests, 87% coverage |
+| next | **R2b — Central Command + Console v1** |
 
 ## Locked engineering decisions
 

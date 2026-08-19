@@ -49,6 +49,11 @@ DEFAULTS: dict[str, Any] = {
     "site_manager": {
         "host": "",
         "port": 50051,
+        "heartbeat_interval": 60,
+        "token": "",
+        "tls": True,
+        "tls_ca": "",
+        "action_poll_interval": 5,
     },
     "skills": {
         "directory": "/etc/harkeniq/skills",
@@ -200,8 +205,21 @@ def validate_config(config: Mapping) -> list[str]:
         ("heartbeat", "timeout_multiplier"),
         ("checkpoint", "interval"),
         ("site_manager", "port"),
+        ("site_manager", "heartbeat_interval"),
+        ("site_manager", "action_poll_interval"),
     ):
         _require_positive(section, key)
+
+    sm = config.get("site_manager", {})
+    if sm.get("host"):
+        if sm.get("tls", True):
+            if not sm.get("token"):
+                errors.append("site_manager.token is required when site_manager.host is set")
+            if not sm.get("tls_ca"):
+                errors.append(
+                    "site_manager.tls_ca is required when site_manager.host is set "
+                    "and site_manager.tls is true"
+                )
 
     for section, key in (("bmc", "port"), ("heartbeat", "port"), ("site_manager", "port")):
         value = config.get(section, {}).get(key)
@@ -250,7 +268,11 @@ def render_config(config: Mapping, redact: bool = True) -> str:
     """Serialize the effective config as YAML, redacting secrets by default."""
     data = copy.deepcopy(dict(config))
     if redact:
-        for section, key in (("bmc", "password"), ("heartbeat", "secret")):
+        for section, key in (
+            ("bmc", "password"),
+            ("heartbeat", "secret"),
+            ("site_manager", "token"),
+        ):
             if data.get(section, {}).get(key):
                 data[section][key] = "********"
     return yaml.safe_dump(data, default_flow_style=None, sort_keys=False)
