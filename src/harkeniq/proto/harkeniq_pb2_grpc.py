@@ -267,3 +267,262 @@ class AgentService:
             timeout,
             metadata,
             _registered_method=True)
+
+
+class SiteManagerServiceStub:
+    """---------------------------------------------------------------------------
+    SiteManagerService: Central Command → Site Manager
+    CC dials SM to register, poll fleet, route approvals, and collect usage.
+    ---------------------------------------------------------------------------
+
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.RegisterSite = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/RegisterSite',
+                request_serializer=harkeniq__pb2.SiteRegistration.SerializeToString,
+                response_deserializer=harkeniq__pb2.SiteRegistrationAck.FromString,
+                _registered_method=True)
+        self.GetFleetSnapshot = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/GetFleetSnapshot',
+                request_serializer=harkeniq__pb2.FleetSnapshotRequest.SerializeToString,
+                response_deserializer=harkeniq__pb2.FleetSnapshot.FromString,
+                _registered_method=True)
+        self.RouteApproval = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/RouteApproval',
+                request_serializer=harkeniq__pb2.ApprovalRouteRequest.SerializeToString,
+                response_deserializer=harkeniq__pb2.ApprovalRouteAck.FromString,
+                _registered_method=True)
+        self.GetUsageSnapshot = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/GetUsageSnapshot',
+                request_serializer=harkeniq__pb2.UsageSnapshotRequest.SerializeToString,
+                response_deserializer=harkeniq__pb2.UsageSnapshot.FromString,
+                _registered_method=True)
+        self.PushPolicy = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/PushPolicy',
+                request_serializer=harkeniq__pb2.PolicyUpdate.SerializeToString,
+                response_deserializer=harkeniq__pb2.PolicyAck.FromString,
+                _registered_method=True)
+
+
+class SiteManagerServiceServicer:
+    """---------------------------------------------------------------------------
+    SiteManagerService: Central Command → Site Manager
+    CC dials SM to register, poll fleet, route approvals, and collect usage.
+    ---------------------------------------------------------------------------
+
+    """
+
+    def RegisterSite(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetFleetSnapshot(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RouteApproval(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetUsageSnapshot(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PushPolicy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_SiteManagerServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'RegisterSite': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterSite,
+                    request_deserializer=harkeniq__pb2.SiteRegistration.FromString,
+                    response_serializer=harkeniq__pb2.SiteRegistrationAck.SerializeToString,
+            ),
+            'GetFleetSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetFleetSnapshot,
+                    request_deserializer=harkeniq__pb2.FleetSnapshotRequest.FromString,
+                    response_serializer=harkeniq__pb2.FleetSnapshot.SerializeToString,
+            ),
+            'RouteApproval': grpc.unary_unary_rpc_method_handler(
+                    servicer.RouteApproval,
+                    request_deserializer=harkeniq__pb2.ApprovalRouteRequest.FromString,
+                    response_serializer=harkeniq__pb2.ApprovalRouteAck.SerializeToString,
+            ),
+            'GetUsageSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetUsageSnapshot,
+                    request_deserializer=harkeniq__pb2.UsageSnapshotRequest.FromString,
+                    response_serializer=harkeniq__pb2.UsageSnapshot.SerializeToString,
+            ),
+            'PushPolicy': grpc.unary_unary_rpc_method_handler(
+                    servicer.PushPolicy,
+                    request_deserializer=harkeniq__pb2.PolicyUpdate.FromString,
+                    response_serializer=harkeniq__pb2.PolicyAck.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'harkeniq.v1.SiteManagerService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('harkeniq.v1.SiteManagerService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class SiteManagerService:
+    """---------------------------------------------------------------------------
+    SiteManagerService: Central Command → Site Manager
+    CC dials SM to register, poll fleet, route approvals, and collect usage.
+    ---------------------------------------------------------------------------
+
+    """
+
+    @staticmethod
+    def RegisterSite(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/RegisterSite',
+            harkeniq__pb2.SiteRegistration.SerializeToString,
+            harkeniq__pb2.SiteRegistrationAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetFleetSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/GetFleetSnapshot',
+            harkeniq__pb2.FleetSnapshotRequest.SerializeToString,
+            harkeniq__pb2.FleetSnapshot.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RouteApproval(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/RouteApproval',
+            harkeniq__pb2.ApprovalRouteRequest.SerializeToString,
+            harkeniq__pb2.ApprovalRouteAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetUsageSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/GetUsageSnapshot',
+            harkeniq__pb2.UsageSnapshotRequest.SerializeToString,
+            harkeniq__pb2.UsageSnapshot.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PushPolicy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/PushPolicy',
+            harkeniq__pb2.PolicyUpdate.SerializeToString,
+            harkeniq__pb2.PolicyAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

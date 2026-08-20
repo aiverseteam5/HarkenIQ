@@ -1,7 +1,8 @@
-// HarkenIQ agent <-> Site Manager protocol (Doc 06 §10.2).
-// R1 minimal proto; R2a additions (spec 00 §7): registration, action
-// reporting and decision polling. All RPCs are unary, agent-initiated —
-// the Site Manager never dials nodes.
+// HarkenIQ inter-service protocol (Doc 06 §10.2, spec 00 §7).
+//
+// AgentService: agent → Site Manager (agent-initiated, SM never dials nodes).
+// SiteManagerService: Central Command → Site Manager (CC dials SM to poll
+//   fleet state, route approvals, and collect usage snapshots).
 syntax = "proto3";
 
 package harkeniq.v1;
@@ -85,4 +86,113 @@ message ActionDecision {
 
 message DecisionList {
   repeated ActionDecision decisions = 1;
+}
+
+// ---------------------------------------------------------------------------
+// SiteManagerService: Central Command → Site Manager
+// CC dials SM to register, poll fleet, route approvals, and collect usage.
+// ---------------------------------------------------------------------------
+
+service SiteManagerService {
+  rpc RegisterSite(SiteRegistration) returns (SiteRegistrationAck);
+  rpc GetFleetSnapshot(FleetSnapshotRequest) returns (FleetSnapshot);
+  rpc RouteApproval(ApprovalRouteRequest) returns (ApprovalRouteAck);
+  rpc GetUsageSnapshot(UsageSnapshotRequest) returns (UsageSnapshot);
+  rpc PushPolicy(PolicyUpdate) returns (PolicyAck);
+}
+
+message SiteRegistration {
+  string tenant_id = 1;
+  string site_id = 2;
+  string site_name = 3;
+  string cc_endpoint = 4;
+  string license_key_fingerprint = 5;
+}
+
+message SiteRegistrationAck {
+  bool accepted = 1;
+  string site_token = 2;
+  string reason = 3;
+}
+
+message FleetSnapshotRequest {
+  string tenant_id = 1;
+  string site_id = 2;
+}
+
+message FleetDevice {
+  string agent_id = 1;
+  string agent_name = 2;
+  string vendor = 3;
+  string model = 4;
+  string observation = 5;       // unobserved, observed, diagnosed
+  string health = 6;            // ok, warning, critical, unknown
+  string subsystems_json = 7;   // per-subsystem severity map
+  int64 last_seen_unix = 8;
+}
+
+message FleetIncident {
+  string incident_id = 1;
+  string kind = 2;
+  string status = 3;
+  string title = 4;
+  string device_agent_id = 5;
+  string subsystem = 6;
+  int64 opened_at_unix = 7;
+}
+
+message FleetAction {
+  string action_id = 1;
+  string type = 2;
+  string device_agent_id = 3;
+  string severity = 4;
+  string skill_name = 5;
+  string status = 6;
+  int64 proposed_at_unix = 7;
+}
+
+message FleetSnapshot {
+  repeated FleetDevice devices = 1;
+  repeated FleetIncident incidents = 2;
+  repeated FleetAction pending_actions = 3;
+  int64 snapshot_at_unix = 4;
+}
+
+message ApprovalRouteRequest {
+  string action_id = 1;
+  string decision = 2;           // approved | denied
+  string decided_by = 3;
+  string tenant_id = 4;
+}
+
+message ApprovalRouteAck {
+  bool accepted = 1;
+  bool delivered = 2;
+  string reason = 3;
+}
+
+message UsageSnapshotRequest {
+  string tenant_id = 1;
+  string site_id = 2;
+  string date = 3;               // YYYY-MM-DD
+}
+
+message UsageSnapshot {
+  string tenant_id = 1;
+  string site_id = 2;
+  string date = 3;
+  int32 node_count = 4;
+  map<string, int32> agent_versions = 5;  // version -> count
+}
+
+message PolicyUpdate {
+  string tenant_id = 1;
+  string site_id = 2;
+  string approval_policies_json = 3;
+  string autonomy_budgets_json = 4;
+}
+
+message PolicyAck {
+  bool accepted = 1;
+  string reason = 2;
 }

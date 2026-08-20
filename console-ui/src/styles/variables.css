@@ -1,0 +1,46 @@
+:root {
+  --sidebar-width: 240px;
+  --sidebar-bg: #1c2330;
+  --sidebar-text: #a8b1c1;
+  --sidebar-active: #fff;
+  --sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.04);
+
+  --bg-primary: #f5f6f8;
+  --bg-card: #fff;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+
+  --border-color: #d8dce3;
+  --border-light: #ebeef2;
+
+  --text-primary: #1c2330;
+  --text-secondary: #6a7488;
+  --text-muted: #9aa2b1;
+
+  --status-ok: #2e7d32;
+  --status-ok-bg: #e8f5e9;
+  --status-warning: #ef6c00;
+  --status-warning-bg: #fff3e0;
+  --status-critical: #b3261e;
+  --status-critical-bg: #fdecea;
+  --status-info: #1565c0;
+  --status-info-bg: #e3f2fd;
+  --status-neutral: #6a7488;
+  --status-neutral-bg: #f0f1f4;
+
+  --accent: #632ca6;
+  --accent-hover: #7b3fc7;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.12);
+
+  --transition: 150ms ease;
+}

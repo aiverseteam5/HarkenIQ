@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: harkeniq
+      POSTGRES_PASSWORD: harkeniq
+      POSTGRES_DB: harkeniq_console
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harkeniq"]
+      interval: 5s
+      retries: 12
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: start-dev --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: harkeniq
+      KC_DB_PASSWORD: harkeniq
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak-realm-platform.json:/opt/keycloak/data/import/platform-realm.json
+    ports:
+      - "8180:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  console:
+    build:
+      context: ../..
+      dockerfile: deploy/r2b/Dockerfile.console
+    depends_on:
+      postgres: { condition: service_healthy }
+      keycloak: { condition: service_started }
+    environment:
+      HARKEN_CONSOLE_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_console
+      HARKEN_CONSOLE_HTTP_PORT: "8100"
+      HARKEN_CONSOLE_KEYCLOAK_URL: http://keycloak:8080
+      HARKEN_CONSOLE_KEYCLOAK_ADMIN_USER: admin
+      HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD: admin
+      HARKEN_CONSOLE_PLATFORM_REALM: harkeniq-platform
+      HARKEN_CONSOLE_INSECURE: "true"
+    ports:
+      - "8100:8100"
+
+  central-command:
+    build:
+      context: ../..
+      dockerfile: deploy/r2b/Dockerfile.cc
+    depends_on:
+      postgres: { condition: service_healthy }
+      keycloak: { condition: service_started }
+    environment:
+      HARKEN_CC_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_cc
+      HARKEN_CC_HTTP_PORT: "8090"
+      HARKEN_CC_KEYCLOAK_URL: http://keycloak:8080
+      HARKEN_CC_CONSOLE_URL: http://console:8100
+      HARKEN_CC_INSECURE: "true"
+    ports:
+      - "8090:8090"
+
+volumes:
+  pgdata:
