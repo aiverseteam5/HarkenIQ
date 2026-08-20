@@ -19,6 +19,8 @@ import InvoiceDetail from "./pages/InvoiceDetail";
 import AdminBillingStats from "./pages/AdminBillingStats";
 import SupportTicketing from "./pages/SupportTicketing";
 import AuditLogs from "./pages/AuditLogs";
+import AgentManagement from "./pages/AgentManagement";
+import ApprovalPolicies from "./pages/ApprovalPolicies";
 import AdminDashboard from "./pages/AdminDashboard";
 import FeatureToggles from "./pages/FeatureToggles";
 import ReleaseManagement from "./pages/ReleaseManagement";
@@ -99,6 +101,8 @@ function AppRoutes() {
         <Route path="/licenses" element={<LicenseManagement />} />
         <Route path="/fleet" element={<FleetOverview />} />
         <Route path="/approvals" element={<ApprovalQueue />} />
+        <Route path="/agents" element={<AgentManagement />} />
+        <Route path="/policies" element={<ApprovalPolicies />} />
         <Route path="/billing" element={<BillingDashboard />} />
         <Route path="/invoices/:id" element={<InvoiceDetail />} />
         <Route path="/admin/billing" element={<AdminBillingStats />} />

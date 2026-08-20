@@ -22,7 +22,11 @@ from harkeniq_sm.approvals import ApprovalService
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.correlation.engine import CorrelationEngine
 from harkeniq_sm.db.base import create_all, make_engine, make_sessionmaker
-from harkeniq_sm.grpc_server import AgentServiceServicer, build_server
+from harkeniq_sm.grpc_server import (
+    AgentServiceServicer,
+    SiteManagerServiceServicer,
+    build_server,
+)
 from harkeniq_sm.ingest import IngestService
 from harkeniq_sm.sitemodel.inference import InferenceJob
 
@@ -84,7 +88,10 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
         state = await make_state(config)
 
     servicer = AgentServiceServicer(state.ingest, approvals=state.approvals)
-    grpc_server, grpc_port = build_server(config, servicer)
+    sm_servicer = SiteManagerServiceServicer(
+        state.sessionmaker, state.approvals, config,
+    )
+    grpc_server, grpc_port = build_server(config, servicer, sm_servicer=sm_servicer)
     state.grpc_port = grpc_port
 
     uv_config = uvicorn.Config(

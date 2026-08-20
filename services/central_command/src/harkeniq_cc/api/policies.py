@@ -1,0 +1,416 @@
+"""Policies API: approval policies, approval groups, and autonomy budgets."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.auth import UserContext
+from harkeniq_cc.db.repos import (
+    ApprovalGroupRepo,
+    ApprovalPolicyRepo,
+    AuditRepo,
+    AutonomyBudgetRepo,
+)
+
+router = APIRouter(prefix="/api/policies", tags=["policies"])
+
+
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+
+class PolicyCreateRequest(BaseModel):
+    name: str
+    device_type: str = "*"
+    action_type: str = "*"
+    risk_level: str = "medium"
+    time_window_json: Optional[dict] = None
+    approval_mode: str = "require_approval"
+    required_approvers: int = 1
+    group_id: Optional[str] = None
+
+
+class PolicyUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    device_type: Optional[str] = None
+    action_type: Optional[str] = None
+    risk_level: Optional[str] = None
+    time_window_json: Optional[dict] = None
+    approval_mode: Optional[str] = None
+    required_approvers: Optional[int] = None
+    group_id: Optional[str] = None
+    status: Optional[str] = None
+
+
+class GroupCreateRequest(BaseModel):
+    name: str
+    slack_channel: str = ""
+    github_team: str = ""
+    required_count: int = 1
+    escalation_chain: Optional[dict] = None
+
+
+class GroupUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    slack_channel: Optional[str] = None
+    github_team: Optional[str] = None
+    required_count: Optional[int] = None
+    escalation_chain: Optional[dict] = None
+
+
+class BudgetCreateRequest(BaseModel):
+    device_type: str = "*"
+    level: int = 0
+    budget_limit: int = 0
+    budget_period: str = "monthly"
+    learning_ramp_config: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Serializers
+# ---------------------------------------------------------------------------
+
+
+def _policy_dict(p) -> dict:
+    return {
+        "id": p.id,
+        "tenant_id": p.tenant_id,
+        "name": p.name,
+        "device_type": p.device_type,
+        "action_type": p.action_type,
+        "risk_level": p.risk_level,
+        "time_window_json": p.time_window_json,
+        "approval_mode": p.approval_mode,
+        "required_approvers": p.required_approvers,
+        "group_id": p.group_id,
+        "status": p.status,
+        "created_by": p.created_by,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+def _group_dict(g) -> dict:
+    return {
+        "id": g.id,
+        "tenant_id": g.tenant_id,
+        "name": g.name,
+        "slack_channel": g.slack_channel,
+        "github_team": g.github_team,
+        "required_count": g.required_count,
+        "escalation_chain": g.escalation_chain,
+        "created_by": g.created_by,
+        "created_at": g.created_at.isoformat() if g.created_at else None,
+    }
+
+
+def _budget_dict(b) -> dict:
+    return {
+        "id": b.id,
+        "tenant_id": b.tenant_id,
+        "device_type": b.device_type,
+        "level": b.level,
+        "budget_limit": b.budget_limit,
+        "budget_period": b.budget_period,
+        "actions_used": b.actions_used,
+        "learning_ramp_config": b.learning_ramp_config,
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Approval Policies
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def list_policies(
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List approval policies for the tenant."""
+    policies = await ApprovalPolicyRepo(session).list_all(user.tenant_id)
+    return {
+        "policies": [_policy_dict(p) for p in policies],
+        "total": len(policies),
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.post(
+    "/",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def create_policy(
+    body: PolicyCreateRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create an approval policy."""
+    policy = await ApprovalPolicyRepo(session).create(
+        tenant_id=user.tenant_id,
+        name=body.name,
+        created_by=user.user_id,
+        device_type=body.device_type,
+        action_type=body.action_type,
+        risk_level=body.risk_level,
+        time_window_json=body.time_window_json,
+        approval_mode=body.approval_mode,
+        required_approvers=body.required_approvers,
+        group_id=body.group_id,
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="policy.create",
+        subject=policy.id,
+        tenant_id=user.tenant_id,
+        detail={"name": body.name},
+    )
+    await session.commit()
+    return {"policy": _policy_dict(policy)}
+
+
+@router.patch(
+    "/{policy_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def update_policy(
+    policy_id: str,
+    body: PolicyUpdateRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Update an approval policy."""
+    repo = ApprovalPolicyRepo(session)
+    policy = await repo.get_by_id(policy_id)
+    if policy is None or policy.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="policy not found")
+
+    updates = body.model_dump(exclude_none=True)
+    await repo.update(policy, **updates)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="policy.update",
+        subject=policy_id,
+        tenant_id=user.tenant_id,
+        detail=updates,
+    )
+    await session.commit()
+    return {"policy": _policy_dict(policy)}
+
+
+@router.delete(
+    "/{policy_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def delete_policy(
+    policy_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete an approval policy."""
+    repo = ApprovalPolicyRepo(session)
+    policy = await repo.get_by_id(policy_id)
+    if policy is None or policy.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="policy not found")
+    await repo.delete(policy)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="policy.delete",
+        subject=policy_id,
+        tenant_id=user.tenant_id,
+    )
+    await session.commit()
+    return {"deleted": True, "policy_id": policy_id}
+
+
+# ---------------------------------------------------------------------------
+# Approval Groups
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/groups",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def list_groups(
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List approval groups for the tenant."""
+    groups = await ApprovalGroupRepo(session).list_all(user.tenant_id)
+    return {
+        "groups": [_group_dict(g) for g in groups],
+        "total": len(groups),
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.post(
+    "/groups",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def create_group(
+    body: GroupCreateRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create an approval group."""
+    group = await ApprovalGroupRepo(session).create(
+        tenant_id=user.tenant_id,
+        name=body.name,
+        created_by=user.user_id,
+        slack_channel=body.slack_channel,
+        github_team=body.github_team,
+        required_count=body.required_count,
+        escalation_chain=body.escalation_chain,
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.create",
+        subject=group.id,
+        tenant_id=user.tenant_id,
+        detail={"name": body.name},
+    )
+    await session.commit()
+    return {"group": _group_dict(group)}
+
+
+@router.patch(
+    "/groups/{group_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def update_group(
+    group_id: str,
+    body: GroupUpdateRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Update an approval group."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+
+    updates = body.model_dump(exclude_none=True)
+    await repo.update(group, **updates)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.update",
+        subject=group_id,
+        tenant_id=user.tenant_id,
+        detail=updates,
+    )
+    await session.commit()
+    return {"group": _group_dict(group)}
+
+
+@router.delete(
+    "/groups/{group_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def delete_group(
+    group_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete an approval group (and its members)."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    await repo.delete(group)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.delete",
+        subject=group_id,
+        tenant_id=user.tenant_id,
+    )
+    await session.commit()
+    return {"deleted": True, "group_id": group_id}
+
+
+# ---------------------------------------------------------------------------
+# Autonomy Budgets
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/autonomy",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def list_autonomy_budgets(
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List autonomy budgets for the tenant."""
+    budgets = await AutonomyBudgetRepo(session).list_all(user.tenant_id)
+    return {
+        "budgets": [_budget_dict(b) for b in budgets],
+        "total": len(budgets),
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.post(
+    "/autonomy",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def create_autonomy_budget(
+    body: BudgetCreateRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create or update an autonomy budget (upserts on tenant_id + device_type)."""
+    budget = await AutonomyBudgetRepo(session).upsert(
+        tenant_id=user.tenant_id,
+        device_type=body.device_type,
+        level=body.level,
+        budget_limit=body.budget_limit,
+        budget_period=body.budget_period,
+        learning_ramp_config=body.learning_ramp_config,
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="autonomy.upsert",
+        subject=budget.id,
+        tenant_id=user.tenant_id,
+        detail={"device_type": body.device_type, "level": body.level},
+    )
+    await session.commit()
+    return {"budget": _budget_dict(budget)}
+
+
+@router.delete(
+    "/autonomy/{budget_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def delete_autonomy_budget(
+    budget_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete an autonomy budget."""
+    repo = AutonomyBudgetRepo(session)
+    budget = await repo.get_by_id(budget_id)
+    if budget is None or budget.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="budget not found")
+    await repo.delete(budget)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="autonomy.delete",
+        subject=budget_id,
+        tenant_id=user.tenant_id,
+    )
+    await session.commit()
+    return {"deleted": True, "budget_id": budget_id}

@@ -111,3 +111,83 @@ class CCAuditLog(Base):
         Index("ix_cc_audit_log_ts", "ts"),
         Index("ix_cc_audit_log_tenant_id", "tenant_id"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 tables: approval policies, groups, autonomy budgets
+# ---------------------------------------------------------------------------
+
+
+class CCApprovalGroup(Base):
+    """Named group of approvers, optionally linked to Slack/GitHub."""
+
+    __tablename__ = "cc_approval_groups"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255))
+    slack_channel: Mapped[str] = mapped_column(String(255), default="")
+    github_team: Mapped[str] = mapped_column(String(255), default="")
+    required_count: Mapped[int] = mapped_column(Integer, default=1)
+    escalation_chain: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+
+
+class CCApprovalGroupMember(Base):
+    """Membership entry linking a user to an approval group."""
+
+    __tablename__ = "cc_approval_group_members"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    group_id: Mapped[str] = mapped_column(String(32), ForeignKey("cc_approval_groups.id"))
+    user_email: Mapped[str] = mapped_column(String(320))
+    role: Mapped[str] = mapped_column(String(32), default="approver")
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCApprovalPolicy(Base):
+    """Configurable approval routing rules per tenant."""
+
+    __tablename__ = "cc_approval_policies"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255))
+    device_type: Mapped[str] = mapped_column(String(64), default="*")
+    action_type: Mapped[str] = mapped_column(String(64), default="*")
+    risk_level: Mapped[str] = mapped_column(String(32), default="medium")
+    time_window_json: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    approval_mode: Mapped[str] = mapped_column(String(32), default="require_approval")
+    required_approvers: Mapped[int] = mapped_column(Integer, default=1)
+    group_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("cc_approval_groups.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_by: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCAutonomyBudget(Base):
+    """Per-tenant, per-device-type autonomy tier and action budget.
+
+    Levels: 0=observe, 1=suggest, 2=batch, 3=autonomous.
+    """
+
+    __tablename__ = "cc_autonomy_budgets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    device_type: Mapped[str] = mapped_column(String(64), default="*")
+    level: Mapped[int] = mapped_column(Integer, default=0)
+    budget_limit: Mapped[int] = mapped_column(Integer, default=0)
+    budget_period: Mapped[str] = mapped_column(String(32), default="monthly")
+    actions_used: Mapped[int] = mapped_column(Integer, default=0)
+    learning_ramp_config: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "device_type"),)
