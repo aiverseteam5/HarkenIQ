@@ -9,7 +9,10 @@ head`` first); sqlite DSNs get ``create_all`` for lab use.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -38,12 +41,31 @@ class AppState:
     grpc_port: int = 0
     http_port: int = 0
     started: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set when an in-memory sqlite DSN was remapped to a temp file;
+    # removed on shutdown.
+    tmp_db_path: Optional[str] = None
 
 
 async def make_state(config: SMConfig) -> AppState:
     state = AppState(config=config)
-    state.engine = make_engine(config.dsn)
-    if config.dsn.startswith("sqlite"):
+    dsn = config.dsn
+    if dsn.startswith("sqlite") and ":memory:" in dsn:
+        # In-memory sqlite rides ONE shared aiosqlite connection
+        # (StaticPool), so the runtime's concurrent ingest/sweeper/API
+        # sessions interleave transactions — a session-teardown ROLLBACK
+        # can erase another session's in-flight writes. Remap to a
+        # per-process temp file for real per-connection isolation.
+        fd, state.tmp_db_path = tempfile.mkstemp(
+            prefix="harkeniq-sm-", suffix=".db"
+        )
+        os.close(fd)
+        dsn = f"sqlite+aiosqlite:///{state.tmp_db_path}"
+        logger.warning(
+            "In-memory sqlite DSN is unsafe under concurrency; "
+            "using temp file %s instead", state.tmp_db_path,
+        )
+    state.engine = make_engine(dsn)
+    if dsn.startswith("sqlite"):
         await create_all(state.engine)
     state.sessionmaker = make_sessionmaker(state.engine)
     state.ingest = IngestService(state.sessionmaker, config)
@@ -107,6 +129,15 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
     finally:
         state.started.clear()
         http_server.should_exit = True
-        await grpc_server.stop(grace=1.0)
+        try:
+            await grpc_server.stop(grace=1.0)
+        except asyncio.CancelledError:
+            pass
         if state.engine is not None:
-            await state.engine.dispose()
+            try:
+                await state.engine.dispose()
+            except asyncio.CancelledError:
+                pass
+        if state.tmp_db_path:
+            with contextlib.suppress(OSError):
+                os.unlink(state.tmp_db_path)
