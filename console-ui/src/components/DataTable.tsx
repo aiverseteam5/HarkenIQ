@@ -85,7 +85,7 @@ const paginationStyle: CSSProperties = {
 
 /* ── Component ────────────────────────────────────── */
 
-export default function DataTable<T extends Record<string, unknown>>({
+export default function DataTable<T extends object>({
   columns,
   data,
   loading,
@@ -193,7 +193,7 @@ export default function DataTable<T extends Record<string, unknown>>({
                   <td key={col.key} style={{ ...tdStyle, textAlign: col.align ?? "left" }}>
                     {col.render
                       ? col.render(row)
-                      : String(row[col.key] ?? "")}
+                      : String((row as Record<string, unknown>)[col.key] ?? "")}
                   </td>
                 ))}
                 {rowActions && rowActions.length > 0 && (

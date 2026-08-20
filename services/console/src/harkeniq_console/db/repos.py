@@ -15,8 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_console.db.models import (
     ConsoleAuditLog,
     CustomRole,
+    FeatureFlag,
+    License,
     PlatformSetting,
+    Subscription,
     Tenant,
+    TenantSite,
     User,
     UserCustomRole,
     utcnow,
@@ -271,3 +275,164 @@ class SettingsRepo:
             setting.updated_at = utcnow()
         await self.session.flush()
         return setting
+
+
+class LicenseRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, license_id: str) -> Optional[License]:
+        return await self.session.get(License, license_id)
+
+    async def get_by_fingerprint(self, fingerprint: str) -> Optional[License]:
+        return (
+            await self.session.execute(
+                select(License).where(License.fingerprint == fingerprint)
+            )
+        ).scalar_one_or_none()
+
+    async def list_by_tenant(
+        self,
+        tenant_id: str,
+        status: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[License], int]:
+        stmt = select(License).where(License.tenant_id == tenant_id)
+        count_stmt = select(func.count()).select_from(License).where(License.tenant_id == tenant_id)
+        if status:
+            stmt = stmt.where(License.status == status)
+            count_stmt = count_stmt.where(License.status == status)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = stmt.order_by(License.issued_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def create(self, **kwargs) -> License:
+        lic = License(**kwargs)
+        self.session.add(lic)
+        await self.session.flush()
+        return lic
+
+    async def update(self, license: License, **kwargs) -> License:
+        for key, value in kwargs.items():
+            if hasattr(license, key):
+                setattr(license, key, value)
+        await self.session.flush()
+        return license
+
+    async def revoke(self, license: License, revoked_by: str, reason: str) -> License:
+        license.status = "revoked"
+        license.revoked_by = revoked_by
+        license.revoked_at = utcnow()
+        license.revoke_reason = reason
+        await self.session.flush()
+        return license
+
+
+class SubscriptionRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_tenant(self, tenant_id: str) -> Optional[Subscription]:
+        return (
+            await self.session.execute(
+                select(Subscription).where(Subscription.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+
+    async def create(self, **kwargs) -> Subscription:
+        sub = Subscription(**kwargs)
+        self.session.add(sub)
+        await self.session.flush()
+        return sub
+
+    async def update(self, subscription: Subscription, **kwargs) -> Subscription:
+        for key, value in kwargs.items():
+            if hasattr(subscription, key):
+                setattr(subscription, key, value)
+        subscription.updated_at = utcnow()
+        await self.session.flush()
+        return subscription
+
+
+class TenantSiteRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, site_id: str) -> Optional[TenantSite]:
+        return await self.session.get(TenantSite, site_id)
+
+    async def list_by_tenant(self, tenant_id: str) -> Sequence[TenantSite]:
+        return (
+            await self.session.execute(
+                select(TenantSite).where(TenantSite.tenant_id == tenant_id)
+            )
+        ).scalars().all()
+
+    async def create(self, **kwargs) -> TenantSite:
+        site = TenantSite(**kwargs)
+        self.session.add(site)
+        await self.session.flush()
+        return site
+
+    async def update(self, site: TenantSite, **kwargs) -> TenantSite:
+        for key, value in kwargs.items():
+            if hasattr(site, key):
+                setattr(site, key, value)
+        await self.session.flush()
+        return site
+
+
+class FeatureFlagRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_by_tenant(self, tenant_id: str) -> Sequence[FeatureFlag]:
+        return (
+            await self.session.execute(
+                select(FeatureFlag).where(
+                    or_(FeatureFlag.tenant_id == tenant_id, FeatureFlag.tenant_id.is_(None))
+                )
+            )
+        ).scalars().all()
+
+    async def get(self, tenant_id: str, feature_name: str) -> Optional[FeatureFlag]:
+        return (
+            await self.session.execute(
+                select(FeatureFlag).where(
+                    FeatureFlag.tenant_id == tenant_id,
+                    FeatureFlag.feature_name == feature_name,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def set_flag(
+        self,
+        tenant_id: str,
+        feature_name: str,
+        enabled: bool,
+        updated_by: Optional[str] = None,
+    ) -> FeatureFlag:
+        flag = await self.get(tenant_id, feature_name)
+        if flag is None:
+            flag = FeatureFlag(
+                tenant_id=tenant_id,
+                feature_name=feature_name,
+                enabled=enabled,
+                updated_by=updated_by,
+            )
+            self.session.add(flag)
+        else:
+            flag.enabled = enabled
+            flag.updated_by = updated_by
+            flag.updated_at = utcnow()
+        await self.session.flush()
+        return flag
+
+    async def list_globals(self) -> Sequence[FeatureFlag]:
+        return (
+            await self.session.execute(
+                select(FeatureFlag).where(FeatureFlag.tenant_id.is_(None))
+            )
+        ).scalars().all()

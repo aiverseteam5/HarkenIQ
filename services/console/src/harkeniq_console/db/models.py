@@ -12,9 +12,11 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -120,3 +122,77 @@ class PlatformSetting(Base):
     value: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class License(Base):
+    __tablename__ = "licenses"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    license_key: Mapped[str] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    plan: Mapped[str] = mapped_column(String(32))
+    node_commit: Mapped[int] = mapped_column(Integer)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    issued_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_licenses_tenant_id", "tenant_id"),)
+
+
+class LicenseKeypair(Base):
+    __tablename__ = "license_keypairs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    public_key_pem: Mapped[str] = mapped_column(Text)
+    private_key_pem_encrypted: Mapped[str] = mapped_column(Text)
+    purpose: Mapped[str] = mapped_column(String(32), default="signing")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), unique=True)
+    plan: Mapped[str] = mapped_column(String(32))
+    node_commit: Mapped[int] = mapped_column(Integer)
+    license_id: Mapped[str | None] = mapped_column(ForeignKey("licenses.id"), nullable=True)
+    billing_cycle_start: Mapped[datetime] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    price_book_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TenantSite(Base):
+    __tablename__ = "tenant_sites"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    site_name: Mapped[str] = mapped_column(String(255))
+    cc_endpoint: Mapped[str] = mapped_column(String(512), default="")
+    sm_endpoint: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "site_name"),)
+
+
+class FeatureFlag(Base):
+    __tablename__ = "feature_flags"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    feature_name: Mapped[str] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "feature_name"),)
