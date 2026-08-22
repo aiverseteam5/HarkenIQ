@@ -19,6 +19,7 @@ from harkeniq_console.api import licenses as licenses_api
 from harkeniq_console.api import support as support_api
 from harkeniq_console.api import tenants as tenants_api
 from harkeniq_console.api import users as users_api
+from harkeniq_console.api import webhooks as webhooks_api
 
 
 def create_app(state) -> FastAPI:
@@ -38,6 +39,8 @@ def create_app(state) -> FastAPI:
     app.include_router(audit_api.admin_router)
     app.include_router(admin_api.router)
     app.include_router(internal_api.router)
+    app.include_router(webhooks_api.router)
+    app.include_router(invoices_api.payments_router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

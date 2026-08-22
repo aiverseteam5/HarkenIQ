@@ -52,13 +52,11 @@ export interface Subscription {
   id: string;
   tenant_id: string;
   plan: string;
-  status: "active" | "past_due" | "cancelled" | "trialing";
-  billing_cycle: "monthly" | "annual";
-  current_period_start: string;
-  current_period_end: string;
+  status: "active" | "past_due" | "cancelled";
+  billing_frequency: "annual" | "quarterly";
+  billing_cycle_start: string;
   node_commit: number;
-  node_high_water: number;
-  amount_cents: number;
+  price_book_version: number;
   currency: string;
 }
 
@@ -66,23 +64,97 @@ export interface Subscription {
 export interface Invoice {
   id: string;
   tenant_id: string;
-  number: string;
-  status: "draft" | "open" | "paid" | "void" | "uncollectible";
-  issued_at: string;
-  due_at: string;
-  paid_at: string | null;
-  total_cents: number;
+  invoice_number: string;
+  type: "commit" | "overage";
+  status: "draft" | "issued" | "paid" | "void";
   currency: string;
-  lines: InvoiceLine[];
-  pdf_url: string | null;
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  issued_at: string | null;
+  due_at: string | null;
+  paid_at: string | null;
+  period_start: string;
+  period_end: string;
+  payment_provider: string | null;
+  provider_payment_id: string | null;
+  created_at: string;
 }
 
 /** Invoice line item. */
 export interface InvoiceLine {
+  id: string;
+  invoice_id: string;
   description: string;
   quantity: number;
   unit_price_cents: number;
   amount_cents: number;
+  line_type: "commit" | "overage" | "credit" | "site_fee";
+}
+
+/** Credit note. */
+export interface CreditNote {
+  id: string;
+  invoice_id: string;
+  tenant_id: string;
+  amount_cents: number;
+  currency: string;
+  reason: string;
+  issued_by: string | null;
+  issued_at: string;
+}
+
+/** Payment record. */
+export interface PaymentRecord {
+  id: string;
+  tenant_id: string;
+  invoice_id: string | null;
+  provider: "stripe" | "razorpay" | "manual";
+  amount_cents: number;
+  currency: string;
+  status: "pending" | "completed" | "failed" | "refunded";
+  created_at: string;
+  completed_at: string | null;
+}
+
+/** Usage summary for a billing period. */
+export interface UsagePeriodSummary {
+  high_water: number;
+  daily_counts: { date: string; node_count: number }[];
+  per_site: { site_name: string; avg_nodes: number; peak_nodes: number; days: number }[];
+}
+
+/** True-up estimate. */
+export interface TrueUpEstimate {
+  high_water_so_far: number;
+  committed: number;
+  estimated_overage: number;
+  estimated_amount_cents: number;
+  currency: string;
+}
+
+/** Delinquency state. */
+export interface DelinquencyState {
+  status: "current" | "overdue" | "restricted" | "suspended";
+  days_overdue: number;
+  overdue_amount_cents: number;
+}
+
+/** Admin billing stats. */
+export interface AdminBillingOverview {
+  mrr_cents: number;
+  arr_cents: number;
+  active_tenants: number;
+  total_nodes: number;
+  currency: string;
+  revenue_by_plan: { type: string; currency: string; total_cents: number; count: number }[];
+  delinquent_tenants: {
+    tenant_id: string;
+    tenant_name: string;
+    status: string;
+    amount_owed_cents: number;
+    days_overdue: number;
+  }[];
 }
 
 /** Support ticket. */
@@ -160,18 +232,16 @@ export interface ApprovalAction {
   decided_at: string | null;
 }
 
-/** Usage/billing summary for a tenant. */
-export interface UsageSummary {
+/** Chargeback usage summary for a tenant. */
+export interface ChargebackSummary {
   tenant_id: string;
   period_start: string;
   period_end: string;
   node_commit: number;
   node_high_water: number;
-  active_nodes: number;
-  total_events: number;
-  total_actions: number;
-  total_approvals: number;
-  estimated_bill_cents: number;
+  per_site: { site_name: string; avg_nodes: number; peak_nodes: number; days: number }[];
+  base_amount_cents: number;
+  overage_amount_cents: number;
   currency: string;
 }
 

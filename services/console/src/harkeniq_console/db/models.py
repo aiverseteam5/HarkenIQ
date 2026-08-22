@@ -53,6 +53,7 @@ class Tenant(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delinquency_status: Mapped[str] = mapped_column(String(32), default="current")
 
 
 class User(Base):
@@ -165,6 +166,7 @@ class Subscription(Base):
     node_commit: Mapped[int] = mapped_column(Integer)
     license_id: Mapped[str | None] = mapped_column(ForeignKey("licenses.id"), nullable=True)
     billing_cycle_start: Mapped[datetime] = mapped_column(Date)
+    billing_frequency: Mapped[str] = mapped_column(String(16), default="annual")
     status: Mapped[str] = mapped_column(String(32), default="active")
     price_book_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -196,3 +198,144 @@ class FeatureFlag(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("tenant_id", "feature_name"),)
+
+
+# ── Phase 4: billing tables ──────────────────────────────────────────
+
+
+class PriceBook(Base):
+    __tablename__ = "price_book"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    plan: Mapped[str] = mapped_column(String(32))
+    currency: Mapped[str] = mapped_column(String(3))
+    billing_interval: Mapped[str] = mapped_column(String(16))
+    node_price_cents: Mapped[int] = mapped_column(Integer)
+    site_base_fee_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("plan", "currency", "billing_interval", "version"),
+    )
+
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    site_name: Mapped[str] = mapped_column(String(255))
+    date: Mapped[datetime] = mapped_column(Date)
+    node_count: Mapped[int] = mapped_column(Integer)
+    agent_versions: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="cc_report")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_usage_events_tenant_date", "tenant_id", "date"),)
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    invoice_number: Mapped[str] = mapped_column(String(64), unique=True)
+    type: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="draft")
+    currency: Mapped[str] = mapped_column(String(3))
+    subtotal_cents: Mapped[int] = mapped_column(Integer, default=0)
+    tax_cents: Mapped[int] = mapped_column(Integer, default=0)
+    total_cents: Mapped[int] = mapped_column(Integer, default=0)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_start: Mapped[datetime] = mapped_column(Date)
+    period_end: Mapped[datetime] = mapped_column(Date)
+    payment_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_payment_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_invoices_tenant_id", "tenant_id"),
+        Index("ix_invoices_status", "status"),
+    )
+
+
+class InvoiceLine(Base):
+    __tablename__ = "invoice_lines"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    invoice_id: Mapped[str] = mapped_column(ForeignKey("invoices.id"))
+    description: Mapped[str] = mapped_column(Text)
+    quantity: Mapped[int] = mapped_column(Integer)
+    unit_price_cents: Mapped[int] = mapped_column(Integer)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    line_type: Mapped[str] = mapped_column(String(32))
+
+    __table_args__ = (Index("ix_invoice_lines_invoice_id", "invoice_id"),)
+
+
+class CreditNote(Base):
+    __tablename__ = "credit_notes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    invoice_id: Mapped[str] = mapped_column(ForeignKey("invoices.id"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3))
+    reason: Mapped[str] = mapped_column(Text)
+    issued_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_credit_notes_invoice_id", "invoice_id"),)
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_payment_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    provider_customer_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    refund_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    provider_event_id: Mapped[str | None] = mapped_column(String(256), nullable=True, unique=True)
+
+    __table_args__ = (
+        Index("ix_payments_tenant_id", "tenant_id"),
+        Index("ix_payments_invoice_id", "invoice_id"),
+    )
+
+
+class PaymentProviderCustomer(Base):
+    __tablename__ = "payment_provider_customers"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_customer_id: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "provider"),)
+
+
+class DelinquencyLog(Base):
+    __tablename__ = "delinquency_log"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    from_state: Mapped[str] = mapped_column(String(32))
+    to_state: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_delinquency_log_tenant_id", "tenant_id"),)

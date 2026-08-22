@@ -28,6 +28,7 @@ import PlatformHealth from "./pages/PlatformHealth";
 import TenantSettings from "./pages/TenantSettings";
 import Downloads from "./pages/Downloads";
 import ApiKeys from "./pages/ApiKeys";
+import UsageChargeback from "./pages/UsageChargeback";
 
 /* ── Route guards ─────────────────────────────────── */
 
@@ -105,6 +106,7 @@ function AppRoutes() {
         <Route path="/policies" element={<ApprovalPolicies />} />
         <Route path="/billing" element={<BillingDashboard />} />
         <Route path="/invoices/:id" element={<InvoiceDetail />} />
+        <Route path="/usage" element={<UsageChargeback />} />
         <Route path="/admin/billing" element={<AdminBillingStats />} />
         <Route path="/support" element={<SupportTicketing />} />
         <Route path="/audit" element={<AuditLogs />} />

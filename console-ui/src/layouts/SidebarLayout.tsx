@@ -32,6 +32,7 @@ const NAV_SECTIONS: SidebarSection[] = [
     label: "Billing",
     items: [
       { key: "/billing", label: "Billing", icon: "\u2B22" },
+      { key: "/usage", label: "Usage & Chargeback", icon: "\u2261" },
       { key: "/admin/billing", label: "Billing Admin", icon: "\u2211" },
     ],
   },

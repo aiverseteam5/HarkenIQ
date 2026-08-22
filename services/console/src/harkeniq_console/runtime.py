@@ -81,10 +81,15 @@ async def run(config: ConsoleConfig, state: Optional[AppState] = None) -> None:
                 state.http_port = sock.getsockname()[1]
         state.started.set()
 
+    from harkeniq_console.billing.reconciler import run_reconciler
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(serve_http(), name="http")
             tg.create_task(announce_started(), name="announce")
+            tg.create_task(
+                run_reconciler(state.sessionmaker), name="billing-reconciler",
+            )
     finally:
         state.started.clear()
         http_server.should_exit = True

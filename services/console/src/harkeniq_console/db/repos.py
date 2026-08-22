@@ -14,13 +14,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_console.db.models import (
     ConsoleAuditLog,
+    CreditNote,
     CustomRole,
+    DelinquencyLog,
     FeatureFlag,
+    Invoice,
+    InvoiceLine,
     License,
+    Payment,
+    PaymentProviderCustomer,
     PlatformSetting,
+    PriceBook,
     Subscription,
     Tenant,
     TenantSite,
+    UsageEvent,
     User,
     UserCustomRole,
     utcnow,
@@ -434,5 +442,350 @@ class FeatureFlagRepo:
         return (
             await self.session.execute(
                 select(FeatureFlag).where(FeatureFlag.tenant_id.is_(None))
+            )
+        ).scalars().all()
+
+
+# ── Phase 4: billing repos ───────────────────────────────────────────
+
+
+class PriceBookRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_price(
+        self,
+        plan: str,
+        currency: str,
+        billing_interval: str,
+        version: int = 1,
+    ) -> Optional[PriceBook]:
+        return (
+            await self.session.execute(
+                select(PriceBook).where(
+                    PriceBook.plan == plan,
+                    PriceBook.currency == currency,
+                    PriceBook.billing_interval == billing_interval,
+                    PriceBook.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_all(self, version: Optional[int] = None) -> Sequence[PriceBook]:
+        stmt = select(PriceBook)
+        if version is not None:
+            stmt = stmt.where(PriceBook.version == version)
+        return (await self.session.execute(stmt.order_by(PriceBook.plan))).scalars().all()
+
+    async def create(self, **kwargs) -> PriceBook:
+        row = PriceBook(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+
+class UsageEventRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(self, **kwargs) -> UsageEvent:
+        row = UsageEvent(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def record_batch(self, events: list[dict]) -> int:
+        rows = [UsageEvent(**e) for e in events]
+        self.session.add_all(rows)
+        await self.session.flush()
+        return len(rows)
+
+    async def get_high_water(
+        self,
+        tenant_id: str,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> int:
+        result = await self.session.execute(
+            select(func.max(UsageEvent.node_count)).where(
+                UsageEvent.tenant_id == tenant_id,
+                UsageEvent.date >= period_start,
+                UsageEvent.date <= period_end,
+            )
+        )
+        return result.scalar_one() or 0
+
+    async def get_daily_counts(
+        self,
+        tenant_id: str,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> Sequence[UsageEvent]:
+        return (
+            await self.session.execute(
+                select(UsageEvent)
+                .where(
+                    UsageEvent.tenant_id == tenant_id,
+                    UsageEvent.date >= period_start,
+                    UsageEvent.date <= period_end,
+                )
+                .order_by(UsageEvent.date)
+            )
+        ).scalars().all()
+
+    async def get_per_site_summary(
+        self,
+        tenant_id: str,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> list[dict]:
+        result = await self.session.execute(
+            select(
+                UsageEvent.site_name,
+                func.avg(UsageEvent.node_count).label("avg_nodes"),
+                func.max(UsageEvent.node_count).label("peak_nodes"),
+                func.count().label("days"),
+            )
+            .where(
+                UsageEvent.tenant_id == tenant_id,
+                UsageEvent.date >= period_start,
+                UsageEvent.date <= period_end,
+            )
+            .group_by(UsageEvent.site_name)
+        )
+        return [
+            {
+                "site_name": r.site_name,
+                "avg_nodes": float(r.avg_nodes or 0),
+                "peak_nodes": r.peak_nodes or 0,
+                "days": r.days,
+            }
+            for r in result.all()
+        ]
+
+
+class InvoiceRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, invoice_id: str) -> Optional[Invoice]:
+        return await self.session.get(Invoice, invoice_id)
+
+    async def get_by_number(self, invoice_number: str) -> Optional[Invoice]:
+        return (
+            await self.session.execute(
+                select(Invoice).where(Invoice.invoice_number == invoice_number)
+            )
+        ).scalar_one_or_none()
+
+    async def list_by_tenant(
+        self,
+        tenant_id: str,
+        status: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[Invoice], int]:
+        stmt = select(Invoice).where(Invoice.tenant_id == tenant_id)
+        count_stmt = select(func.count()).select_from(Invoice).where(
+            Invoice.tenant_id == tenant_id
+        )
+        if status:
+            stmt = stmt.where(Invoice.status == status)
+            count_stmt = count_stmt.where(Invoice.status == status)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(Invoice.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def list_overdue(self) -> Sequence[Invoice]:
+        return (
+            await self.session.execute(
+                select(Invoice).where(
+                    Invoice.status == "issued",
+                    Invoice.due_at < utcnow(),
+                )
+            )
+        ).scalars().all()
+
+    async def create(self, **kwargs) -> Invoice:
+        inv = Invoice(**kwargs)
+        self.session.add(inv)
+        await self.session.flush()
+        return inv
+
+    async def update(self, invoice: Invoice, **kwargs) -> Invoice:
+        for key, value in kwargs.items():
+            if hasattr(invoice, key):
+                setattr(invoice, key, value)
+        await self.session.flush()
+        return invoice
+
+    async def count_by_tenant(self, tenant_id: str) -> int:
+        return (
+            await self.session.execute(
+                select(func.count())
+                .select_from(Invoice)
+                .where(Invoice.tenant_id == tenant_id)
+            )
+        ).scalar_one()
+
+    async def get_revenue_by_plan(self) -> list[dict]:
+        """Aggregate paid revenue grouped by invoice type."""
+        result = await self.session.execute(
+            select(
+                Invoice.type,
+                Invoice.currency,
+                func.sum(Invoice.total_cents).label("total"),
+                func.count().label("count"),
+            )
+            .where(Invoice.status == "paid")
+            .group_by(Invoice.type, Invoice.currency)
+        )
+        return [
+            {"type": r.type, "currency": r.currency, "total_cents": r.total or 0, "count": r.count}
+            for r in result.all()
+        ]
+
+
+class InvoiceLineRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> InvoiceLine:
+        line = InvoiceLine(**kwargs)
+        self.session.add(line)
+        await self.session.flush()
+        return line
+
+    async def list_by_invoice(self, invoice_id: str) -> Sequence[InvoiceLine]:
+        return (
+            await self.session.execute(
+                select(InvoiceLine).where(InvoiceLine.invoice_id == invoice_id)
+            )
+        ).scalars().all()
+
+
+class CreditNoteRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> CreditNote:
+        cn = CreditNote(**kwargs)
+        self.session.add(cn)
+        await self.session.flush()
+        return cn
+
+    async def list_by_invoice(self, invoice_id: str) -> Sequence[CreditNote]:
+        return (
+            await self.session.execute(
+                select(CreditNote).where(CreditNote.invoice_id == invoice_id)
+            )
+        ).scalars().all()
+
+    async def list_by_tenant(self, tenant_id: str) -> Sequence[CreditNote]:
+        return (
+            await self.session.execute(
+                select(CreditNote)
+                .where(CreditNote.tenant_id == tenant_id)
+                .order_by(CreditNote.issued_at.desc())
+            )
+        ).scalars().all()
+
+
+class PaymentRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, payment_id: str) -> Optional[Payment]:
+        return await self.session.get(Payment, payment_id)
+
+    async def get_by_provider_event_id(self, provider_event_id: str) -> Optional[Payment]:
+        return (
+            await self.session.execute(
+                select(Payment).where(Payment.provider_event_id == provider_event_id)
+            )
+        ).scalar_one_or_none()
+
+    async def list_by_tenant(
+        self,
+        tenant_id: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[Payment], int]:
+        stmt = select(Payment).where(Payment.tenant_id == tenant_id)
+        count_stmt = select(func.count()).select_from(Payment).where(
+            Payment.tenant_id == tenant_id
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(Payment.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def list_by_invoice(self, invoice_id: str) -> Sequence[Payment]:
+        return (
+            await self.session.execute(
+                select(Payment).where(Payment.invoice_id == invoice_id)
+            )
+        ).scalars().all()
+
+    async def create(self, **kwargs) -> Payment:
+        pay = Payment(**kwargs)
+        self.session.add(pay)
+        await self.session.flush()
+        return pay
+
+    async def update(self, payment: Payment, **kwargs) -> Payment:
+        for key, value in kwargs.items():
+            if hasattr(payment, key):
+                setattr(payment, key, value)
+        await self.session.flush()
+        return payment
+
+
+class PaymentProviderCustomerRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, tenant_id: str, provider: str) -> Optional[PaymentProviderCustomer]:
+        return (
+            await self.session.execute(
+                select(PaymentProviderCustomer).where(
+                    PaymentProviderCustomer.tenant_id == tenant_id,
+                    PaymentProviderCustomer.provider == provider,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def create(self, **kwargs) -> PaymentProviderCustomer:
+        row = PaymentProviderCustomer(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+
+class DelinquencyLogRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def append(self, **kwargs) -> DelinquencyLog:
+        row = DelinquencyLog(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def list_by_tenant(self, tenant_id: str) -> Sequence[DelinquencyLog]:
+        return (
+            await self.session.execute(
+                select(DelinquencyLog)
+                .where(DelinquencyLog.tenant_id == tenant_id)
+                .order_by(DelinquencyLog.created_at.desc())
             )
         ).scalars().all()
