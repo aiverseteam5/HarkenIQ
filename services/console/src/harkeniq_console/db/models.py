@@ -409,3 +409,45 @@ class SupportAccessLog(Base):
     revoked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (Index("ix_support_access_log_tenant_id", "tenant_id"),)
+
+
+# ── Phase 7: settings + API keys + impersonation ─────────────────────
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    key_hash: Mapped[str] = mapped_column(String(128))
+    key_prefix: Mapped[str] = mapped_column(String(12))
+    scope: Mapped[str] = mapped_column(String(32), default="read")
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_by: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_api_keys_tenant_id", "tenant_id"),
+        Index("ix_api_keys_key_hash", "key_hash"),
+    )
+
+
+class ImpersonationLog(Base):
+    __tablename__ = "impersonation_log"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    admin_user_id: Mapped[str] = mapped_column(String(32))
+    admin_email: Mapped[str] = mapped_column(String(320))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actions_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_impersonation_log_tenant_id", "tenant_id"),
+        Index("ix_impersonation_log_admin", "admin_user_id"),
+    )

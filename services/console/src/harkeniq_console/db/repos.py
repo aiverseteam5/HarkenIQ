@@ -13,11 +13,13 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_console.db.models import (
+    ApiKey,
     ConsoleAuditLog,
     CreditNote,
     CustomRole,
     DelinquencyLog,
     FeatureFlag,
+    ImpersonationLog,
     Invoice,
     InvoiceLine,
     License,
@@ -983,3 +985,114 @@ class SupportAccessLogRepo:
                 .order_by(SupportAccessLog.enabled_at.desc())
             )
         ).scalars().all()
+
+
+# ── Phase 7: API keys + impersonation repos ──────────────────────────
+
+
+class ApiKeyRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, key_id: str) -> Optional[ApiKey]:
+        return await self.session.get(ApiKey, key_id)
+
+    async def get_by_hash(self, key_hash: str) -> Optional[ApiKey]:
+        return (
+            await self.session.execute(
+                select(ApiKey).where(ApiKey.key_hash == key_hash)
+            )
+        ).scalar_one_or_none()
+
+    async def list_by_tenant(
+        self,
+        tenant_id: str,
+        status: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[ApiKey], int]:
+        stmt = select(ApiKey).where(ApiKey.tenant_id == tenant_id)
+        count_stmt = select(func.count()).select_from(ApiKey).where(
+            ApiKey.tenant_id == tenant_id,
+        )
+        if status:
+            stmt = stmt.where(ApiKey.status == status)
+            count_stmt = count_stmt.where(ApiKey.status == status)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(ApiKey.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def create(self, **kwargs) -> ApiKey:
+        key = ApiKey(**kwargs)
+        self.session.add(key)
+        await self.session.flush()
+        return key
+
+    async def update(self, key: ApiKey, **kwargs) -> ApiKey:
+        for k, v in kwargs.items():
+            if hasattr(key, k):
+                setattr(key, k, v)
+        await self.session.flush()
+        return key
+
+    async def revoke(self, key: ApiKey) -> ApiKey:
+        key.status = "revoked"
+        key.revoked_at = utcnow()
+        await self.session.flush()
+        return key
+
+
+class ImpersonationLogRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> ImpersonationLog:
+        row = ImpersonationLog(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get_by_id(self, log_id: str) -> Optional[ImpersonationLog]:
+        return await self.session.get(ImpersonationLog, log_id)
+
+    async def end_session(self, entry: ImpersonationLog) -> ImpersonationLog:
+        entry.ended_at = utcnow()
+        await self.session.flush()
+        return entry
+
+    async def list_filtered(
+        self,
+        admin_user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[ImpersonationLog], int]:
+        stmt = select(ImpersonationLog)
+        count_stmt = select(func.count()).select_from(ImpersonationLog)
+        if admin_user_id:
+            stmt = stmt.where(ImpersonationLog.admin_user_id == admin_user_id)
+            count_stmt = count_stmt.where(ImpersonationLog.admin_user_id == admin_user_id)
+        if tenant_id:
+            stmt = stmt.where(ImpersonationLog.tenant_id == tenant_id)
+            count_stmt = count_stmt.where(ImpersonationLog.tenant_id == tenant_id)
+        if date_from:
+            stmt = stmt.where(ImpersonationLog.started_at >= date_from)
+            count_stmt = count_stmt.where(ImpersonationLog.started_at >= date_from)
+        if date_to:
+            stmt = stmt.where(ImpersonationLog.started_at <= date_to)
+            count_stmt = count_stmt.where(ImpersonationLog.started_at <= date_to)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(ImpersonationLog.started_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total

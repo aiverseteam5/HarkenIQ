@@ -29,6 +29,7 @@ import TenantSettings from "./pages/TenantSettings";
 import Downloads from "./pages/Downloads";
 import ApiKeys from "./pages/ApiKeys";
 import ReportingAnalytics from "./pages/ReportingAnalytics";
+import ImpersonationLog from "./pages/ImpersonationLog";
 import UsageChargeback from "./pages/UsageChargeback";
 
 /* ── Route guards ─────────────────────────────────── */
@@ -119,6 +120,7 @@ function AppRoutes() {
         <Route path="/settings" element={<TenantSettings />} />
         <Route path="/downloads" element={<Downloads />} />
         <Route path="/api-keys" element={<ApiKeys />} />
+        <Route path="/admin/impersonation" element={<ImpersonationLog />} />
       </Route>
 
       {/* 404 fallback */}

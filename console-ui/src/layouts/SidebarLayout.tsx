@@ -47,6 +47,7 @@ const NAV_SECTIONS: SidebarSection[] = [
       { key: "/settings", label: "Settings", icon: "\u2338" },
       { key: "/downloads", label: "Downloads", icon: "\u2913" },
       { key: "/api-keys", label: "API Keys", icon: "\u26BF" },
+      { key: "/admin/impersonation", label: "Impersonation Log", icon: "\u263A" },
     ],
   },
 ];
