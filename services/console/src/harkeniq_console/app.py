@@ -35,6 +35,7 @@ def create_app(state) -> FastAPI:
     app.include_router(invoices_api.admin_router)
     app.include_router(support_api.router)
     app.include_router(support_api.admin_router)
+    app.include_router(support_api.support_mode_router)
     app.include_router(audit_api.router)
     app.include_router(audit_api.admin_router)
     app.include_router(admin_api.router)

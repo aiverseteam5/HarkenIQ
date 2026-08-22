@@ -26,6 +26,7 @@ const NAV_SECTIONS: SidebarSection[] = [
       { key: "/licenses", label: "Licenses", icon: "\u26BF" },
       { key: "/support", label: "Support", icon: "\u2709" },
       { key: "/audit", label: "Audit Logs", icon: "\u2630" },
+      { key: "/reports", label: "Reports", icon: "\u2261" },
     ],
   },
   {

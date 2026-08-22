@@ -339,3 +339,73 @@ class DelinquencyLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_delinquency_log_tenant_id", "tenant_id"),)
+
+
+# ── Phase 5: support + audit tables ──────────────────────────────────
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    ticket_number: Mapped[int] = mapped_column(Integer)
+    subject: Mapped[str] = mapped_column(String(512))
+    body: Mapped[str] = mapped_column(Text, default="")
+    severity: Mapped[str] = mapped_column(String(8))  # S1 S2 S3 S4
+    component: Mapped[str] = mapped_column(String(64), default="other")
+    site_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    assigned_to: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_support_tickets_tenant_id", "tenant_id"),
+        Index("ix_support_tickets_status", "status"),
+        UniqueConstraint("tenant_id", "ticket_number"),
+    )
+
+
+class TicketMessage(Base):
+    __tablename__ = "ticket_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("support_tickets.id"))
+    author_id: Mapped[str] = mapped_column(String(32))
+    author_email: Mapped[str] = mapped_column(String(320), default="")
+    body: Mapped[str] = mapped_column(Text)
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_ticket_messages_ticket_id", "ticket_id"),)
+
+
+class TicketStateChange(Base):
+    __tablename__ = "ticket_state_changes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("support_tickets.id"))
+    from_status: Mapped[str] = mapped_column(String(32))
+    to_status: Mapped[str] = mapped_column(String(32))
+    changed_by: Mapped[str] = mapped_column(String(32))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_ticket_state_changes_ticket_id", "ticket_id"),)
+
+
+class SupportAccessLog(Base):
+    __tablename__ = "support_access_log"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    enabled_by: Mapped[str] = mapped_column(String(32))
+    enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (Index("ix_support_access_log_tenant_id", "tenant_id"),)

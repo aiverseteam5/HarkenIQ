@@ -26,8 +26,12 @@ from harkeniq_console.db.models import (
     PlatformSetting,
     PriceBook,
     Subscription,
+    SupportAccessLog,
+    SupportTicket,
     Tenant,
     TenantSite,
+    TicketMessage,
+    TicketStateChange,
     UsageEvent,
     User,
     UserCustomRole,
@@ -787,5 +791,195 @@ class DelinquencyLogRepo:
                 select(DelinquencyLog)
                 .where(DelinquencyLog.tenant_id == tenant_id)
                 .order_by(DelinquencyLog.created_at.desc())
+            )
+        ).scalars().all()
+
+
+# ── Phase 5: support repos ───────────────────────────────────────────
+
+
+class SupportTicketRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, ticket_id: str) -> Optional[SupportTicket]:
+        return await self.session.get(SupportTicket, ticket_id)
+
+    async def next_ticket_number(self, tenant_id: str) -> int:
+        result = await self.session.execute(
+            select(func.max(SupportTicket.ticket_number)).where(
+                SupportTicket.tenant_id == tenant_id,
+            )
+        )
+        current = result.scalar_one() or 0
+        return current + 1
+
+    async def list_by_tenant(
+        self,
+        tenant_id: str,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        search: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[SupportTicket], int]:
+        stmt = select(SupportTicket).where(SupportTicket.tenant_id == tenant_id)
+        count_stmt = select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.tenant_id == tenant_id,
+        )
+        if status:
+            stmt = stmt.where(SupportTicket.status == status)
+            count_stmt = count_stmt.where(SupportTicket.status == status)
+        if severity:
+            stmt = stmt.where(SupportTicket.severity == severity)
+            count_stmt = count_stmt.where(SupportTicket.severity == severity)
+        if search:
+            pattern = f"%{search}%"
+            flt = SupportTicket.subject.ilike(pattern)
+            stmt = stmt.where(flt)
+            count_stmt = count_stmt.where(flt)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(SupportTicket.updated_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def list_all(
+        self,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        assigned_to: Optional[str] = None,
+        search: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[SupportTicket], int]:
+        stmt = select(SupportTicket)
+        count_stmt = select(func.count()).select_from(SupportTicket)
+        if status:
+            stmt = stmt.where(SupportTicket.status == status)
+            count_stmt = count_stmt.where(SupportTicket.status == status)
+        if severity:
+            stmt = stmt.where(SupportTicket.severity == severity)
+            count_stmt = count_stmt.where(SupportTicket.severity == severity)
+        if assigned_to:
+            stmt = stmt.where(SupportTicket.assigned_to == assigned_to)
+            count_stmt = count_stmt.where(SupportTicket.assigned_to == assigned_to)
+        if search:
+            pattern = f"%{search}%"
+            flt = SupportTicket.subject.ilike(pattern)
+            stmt = stmt.where(flt)
+            count_stmt = count_stmt.where(flt)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(SupportTicket.updated_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def create(self, **kwargs) -> SupportTicket:
+        ticket = SupportTicket(**kwargs)
+        self.session.add(ticket)
+        await self.session.flush()
+        return ticket
+
+    async def update(self, ticket: SupportTicket, **kwargs) -> SupportTicket:
+        for key, value in kwargs.items():
+            if hasattr(ticket, key):
+                setattr(ticket, key, value)
+        ticket.updated_at = utcnow()
+        await self.session.flush()
+        return ticket
+
+    async def count_open(self, tenant_id: Optional[str] = None) -> int:
+        stmt = select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(["open", "acknowledged", "in_progress"]),
+        )
+        if tenant_id:
+            stmt = stmt.where(SupportTicket.tenant_id == tenant_id)
+        return (await self.session.execute(stmt)).scalar_one()
+
+
+class TicketMessageRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> TicketMessage:
+        msg = TicketMessage(**kwargs)
+        self.session.add(msg)
+        await self.session.flush()
+        return msg
+
+    async def list_by_ticket(
+        self,
+        ticket_id: str,
+        include_internal: bool = False,
+    ) -> Sequence[TicketMessage]:
+        stmt = select(TicketMessage).where(TicketMessage.ticket_id == ticket_id)
+        if not include_internal:
+            stmt = stmt.where(TicketMessage.is_internal == False)  # noqa: E712
+        return (
+            await self.session.execute(stmt.order_by(TicketMessage.created_at))
+        ).scalars().all()
+
+
+class TicketStateChangeRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def append(self, **kwargs) -> TicketStateChange:
+        row = TicketStateChange(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def list_by_ticket(self, ticket_id: str) -> Sequence[TicketStateChange]:
+        return (
+            await self.session.execute(
+                select(TicketStateChange)
+                .where(TicketStateChange.ticket_id == ticket_id)
+                .order_by(TicketStateChange.changed_at)
+            )
+        ).scalars().all()
+
+
+class SupportAccessLogRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> SupportAccessLog:
+        row = SupportAccessLog(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get_active(self, tenant_id: str) -> Optional[SupportAccessLog]:
+        now = utcnow()
+        return (
+            await self.session.execute(
+                select(SupportAccessLog).where(
+                    SupportAccessLog.tenant_id == tenant_id,
+                    SupportAccessLog.expires_at > now,
+                    SupportAccessLog.revoked_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def revoke(self, entry: SupportAccessLog, revoked_by: str) -> SupportAccessLog:
+        entry.revoked_at = utcnow()
+        entry.revoked_by = revoked_by
+        await self.session.flush()
+        return entry
+
+    async def list_by_tenant(self, tenant_id: str) -> Sequence[SupportAccessLog]:
+        return (
+            await self.session.execute(
+                select(SupportAccessLog)
+                .where(SupportAccessLog.tenant_id == tenant_id)
+                .order_by(SupportAccessLog.enabled_at.desc())
             )
         ).scalars().all()
