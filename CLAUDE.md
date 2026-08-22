@@ -37,7 +37,8 @@ Correlation boundary: single-device fault → node; multi-device comparison → 
 | 2026-08-19 | **R1 Diagnostic Foundation shipped** — commits `16cfca8` (Phase 2) + `5128fbd` (Phase 3) on origin/main; 498 tests; Dell/HPE Redfish, skills, baselines/trending, state machine, checkpoint, peer heartbeat/witness, action queue + CLI approval, TUI, gRPC reporter stub, `harken demo` |
 | 2026-08-19 | Master spec `00-platform-spec.md` + this constitution adopted |
 | 2026-08-19 | **R2a Site Manager shipped** — `harkeniq_sm` service (gRPC ingest TLS+token, TimescaleDB-ready schema, site model + domain inference, correlation engine with 4 rules, incident consolidation, approval brokering, FastAPI + React dashboard v1, Docker Compose); agent: registration/action-sync/decision-poll RPCs, secure channel; CLI `peers list` + `bmc test`; frozen exit gate green; 631 tests, 87% coverage |
-| next | **R2b — Central Command + Console v1** |
+| 2026-08-22 | **R2b Central Command + Console v1 shipped** — 7 phases (`1e4b097`..`82ea9f9`); CC service (fleet poller, usage reporter, approval routing, autonomy budgets); Console service (Keycloak OIDC, tenant/user/RBAC, Ed25519 licensing, billing engine with commit+overage invoicing, Razorpay+Stripe adapters, delinquency state machine, metering+air-gapped upload, support ticketing+24h mode, audit logs+export, feature toggles, release mgmt, API keys, impersonation log); 22 production React screens; 25 Console DB tables; 1188 tests, exit gate green |
+| next | **R3 — Autonomy enforcement, advanced correlation, ML pipeline** |
 
 ## Locked engineering decisions
 
