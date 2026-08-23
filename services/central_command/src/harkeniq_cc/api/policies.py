@@ -414,3 +414,72 @@ async def delete_autonomy_budget(
     )
     await session.commit()
     return {"deleted": True, "budget_id": budget_id}
+
+
+# ---------------------------------------------------------------------------
+# R3a: Stop Switch (A2.2)
+# ---------------------------------------------------------------------------
+
+# In-memory stop switch state (persisted via audit log for recovery).
+# In production this would be in the database; for R3a this is sufficient.
+_stop_switch_state: dict[str, bool] = {}  # tenant_id -> active
+
+
+@router.post(
+    "/stop-switch",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def activate_stop_switch(
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Activate the fleet-wide stop switch: deny all autonomous actions.
+
+    This is an emergency mechanism (spec A2.2).  All agents will drop to
+    observe-only once their current lease expires.  SM propagates the
+    stop switch state via the next lease renewal.
+    """
+    _stop_switch_state[user.tenant_id] = True
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="stop_switch.activate",
+        subject=user.tenant_id,
+        tenant_id=user.tenant_id,
+        detail={"activated_by": user.user_id},
+    )
+    await session.commit()
+    return {"stop_switch": True, "tenant_id": user.tenant_id}
+
+
+@router.post(
+    "/stop-switch/deactivate",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def deactivate_stop_switch(
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Deactivate the stop switch: resume normal autonomous operation."""
+    _stop_switch_state[user.tenant_id] = False
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="stop_switch.deactivate",
+        subject=user.tenant_id,
+        tenant_id=user.tenant_id,
+        detail={"deactivated_by": user.user_id},
+    )
+    await session.commit()
+    return {"stop_switch": False, "tenant_id": user.tenant_id}
+
+
+@router.get("/stop-switch")
+async def get_stop_switch_state(
+    user: UserContext = Depends(require_permission("fleet.view")),
+) -> dict:
+    """Get current stop switch state for this tenant."""
+    return {"stop_switch": _stop_switch_state.get(user.tenant_id, False)}
+
+
+def is_stop_switch_active(tenant_id: str) -> bool:
+    """Check stop switch state (used by lease issuance)."""
+    return _stop_switch_state.get(tenant_id, False)
