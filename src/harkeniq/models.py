@@ -76,11 +76,17 @@ class PeerStatus(Enum):
 
 
 class ActionType(Enum):
-    """R1 action allow-list (Doc 06 §11A.1)."""
+    """Action allow-list (Doc 06 §11A.1, spec A2.1)."""
 
+    # R1 actions (locally authorized)
     IDENTIFY_LED = "IDENTIFY_LED"
     COLLECT_DIAGNOSTICS = "COLLECT_DIAGNOSTICS"
     FAN_RESET = "FAN_RESET"
+    # R3a actions (SM-authorized, budget-gated)
+    SEL_CLEAR = "SEL_CLEAR"
+    BMC_RESET = "BMC_RESET"
+    POWER_CYCLE = "POWER_CYCLE"
+    POWER_CAP_ADJUST = "POWER_CAP_ADJUST"
 
 
 class ActionStatus(Enum):

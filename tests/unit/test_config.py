@@ -147,8 +147,8 @@ class TestValidation:
 
     def test_unknown_action_in_allow_list(self):
         config = self.make_valid()
-        config["actions"]["allow_list"] = ["IDENTIFY_LED", "POWER_CYCLE"]
-        assert any("POWER_CYCLE" in e for e in errors_of(config))
+        config["actions"]["allow_list"] = ["IDENTIFY_LED", "REBOOT_UNIVERSE"]
+        assert any("REBOOT_UNIVERSE" in e for e in errors_of(config))
 
     def test_site_manager_requires_token_and_ca_with_tls(self):
         config = self.make_valid()

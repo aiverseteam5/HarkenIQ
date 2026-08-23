@@ -245,7 +245,10 @@ def validate_config(config: Mapping) -> list[str]:
     if mode != "queue":
         errors.append(f"actions.approval_mode must be 'queue' (R1), got {mode!r}")
 
-    allowed = {"IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET"}
+    allowed = {
+        "IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET",
+        "SEL_CLEAR", "BMC_RESET", "POWER_CYCLE", "POWER_CAP_ADJUST",
+    }
     for entry in config.get("actions", {}).get("allow_list", []):
         if entry not in allowed:
             errors.append(f"actions.allow_list contains unknown action {entry!r}")

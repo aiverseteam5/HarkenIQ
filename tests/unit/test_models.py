@@ -87,7 +87,7 @@ class TestEnums:
 
     def test_action_type(self):
         assert ActionType.IDENTIFY_LED.value == "IDENTIFY_LED"
-        assert len(ActionType) == 3
+        assert len(ActionType) == 7  # R1: 3 + R3a: 4
 
     def test_action_status(self):
         assert ActionStatus.PENDING.value == "PENDING"

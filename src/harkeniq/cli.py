@@ -191,9 +191,112 @@ def agent_checkpoint(checkpoint_path):
 
 
 @main.command()
-def diagnose():
-    """One-shot diagnosis: poll BMC, evaluate skills, print results."""
-    click.echo("Diagnose not yet implemented.")
+@click.option("--config", "config_path", default=None, help="Config file path")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def diagnose(config_path, json_output):
+    """One-shot diagnosis: poll BMC, evaluate skills, print structured results (R3a)."""
+    import asyncio
+    import json
+    import logging
+
+    from harkeniq.config import load_config, validate_config
+    from harkeniq.errors import ConfigError, HarkenIQError
+
+    logging.basicConfig(level=logging.WARNING)
+
+    try:
+        config = load_config(config_path)
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+    errors = validate_config(config)
+    if errors:
+        raise click.ClickException("; ".join(errors))
+
+    async def _run():
+        from harkeniq.autonomy.diagnosis import ConfidenceDimension, Diagnosis
+        from harkeniq.autonomy.tier import TierLevel
+        from harkeniq.poller import Poller
+        from harkeniq.redfish.client import RedfishClient
+        from harkeniq.skills.engine import _TARGET_COLLECTIONS, SkillEngine
+        from harkeniq.skills.loader import load_skills
+        from harkeniq.skills.trending import TrendingEngine
+
+        bmc = config["bmc"]
+        client = RedfishClient(host=bmc["host"], verify_ssl=bmc.get("verify_ssl", False))
+        try:
+            await client.connect(bmc.get("username", ""), bmc.get("password", ""))
+            poller = Poller(client)
+            identity = await poller.detect()
+            device = await poller.poll_all()
+
+            skills = load_skills(
+                (config.get("skills") or {}).get("directory", "skills")
+            )
+            trending = TrendingEngine(config)
+            engine = SkillEngine(list(skills.values()), config.get("debounce"), trending)
+
+            # Evaluate all skills against current device state
+            verdicts = []
+            for target, collection in _TARGET_COLLECTIONS.items():
+                items = collection(device)
+                for item in items:
+                    result = engine.evaluate(target, item)
+                    verdicts.extend(result)
+
+            # Build Diagnosis objects from verdicts
+            diagnoses = []
+            for v in verdicts:
+                d = Diagnosis(
+                    device_id=identity.service_tag or identity.system_id or "unknown",
+                    component=v.sensor_id,
+                    summary=v.message,
+                    tier=TierLevel.T2,  # standalone = no peers = T2
+                )
+                d.add_evidence("redfish", v.sensor_id, v.severity.value)
+                d.confidence = [
+                    ConfidenceDimension(
+                        name="skill_match",
+                        value=1.0,  # all conditions matched
+                        detail=f"Skill: {v.skill_name}",
+                    ),
+                ]
+                d.recommended_action = v.recommended_action if hasattr(v, "recommended_action") else ""
+                d.add_reasoning_step(f"Skill '{v.skill_name}' matched")
+                diagnoses.append(d)
+        finally:
+            await client.close()
+
+        return identity, diagnoses
+
+    try:
+        identity, diagnoses = asyncio.run(_run())
+    except HarkenIQError as e:
+        raise click.ClickException(str(e))
+
+    vendor = {"dell": "Dell", "hpe": "HPE"}.get(identity.vendor, identity.vendor)
+
+    if json_output:
+        import json as json_mod
+        click.echo(json_mod.dumps({
+            "device": {"vendor": vendor, "model": identity.model,
+                       "service_tag": identity.service_tag},
+            "diagnoses": [d.to_dict() for d in diagnoses],
+        }, indent=2))
+        return
+
+    click.echo(f"Device: {vendor} {identity.model} ({identity.service_tag})")
+    click.echo(f"Diagnoses: {len(diagnoses)}")
+    click.echo()
+    if not diagnoses:
+        click.echo("  No issues found. All subsystems healthy.")
+    for d in diagnoses:
+        conf = f"{d.overall_confidence:.0%}" if d.confidence else "?"
+        click.echo(f"  [{d.tier.value.upper()}] {d.component}")
+        click.echo(f"    {d.summary}")
+        click.echo(f"    Confidence: {conf} | Evidence: {len(d.evidence)} | Tier: {d.tier.value}")
+        if d.recommended_action:
+            click.echo(f"    Action: {d.recommended_action}")
+        click.echo()
 
 
 @main.command()
