@@ -18,6 +18,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -209,6 +210,42 @@ class AgentIdentityRow(Base):
     certificate: Mapped[bytes | None] = mapped_column(Text, nullable=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ActionOutcomeRow(Base):
+    """R3b-1 C8: persisted action outcomes for knowledge base."""
+
+    __tablename__ = "sm_action_outcomes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    action_id: Mapped[str] = mapped_column(String(255))
+    action_type: Mapped[str] = mapped_column(String(64))
+    device_id: Mapped[str] = mapped_column(String(64), index=True)
+    outcome: Mapped[str] = mapped_column(String(32))  # SUCCESS/PARTIAL/FAILURE/UNKNOWN/ROLLBACK
+    fault_resolved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    pre_state: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    post_state: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    side_effects: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    operator_override: Mapped[bool] = mapped_column(Boolean, default=False)
+    override_reason: Mapped[str] = mapped_column(String(512), default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_outcomes_device_type", "device_id", "action_type"),)
+
+
+class ErrorBudgetRow(Base):
+    """R3b-1 C8: persisted error budget state."""
+
+    __tablename__ = "sm_error_budgets"
+
+    action_type: Mapped[str] = mapped_column(String(64), primary_key=True)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    min_success_rate: Mapped[float] = mapped_column(Float, default=0.95)
+    dropped_back: Mapped[bool] = mapped_column(Boolean, default=False)
+    dropped_back_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuditLogRow(Base):

@@ -289,3 +289,28 @@ def load_skills(directory: str | Path) -> dict[str, SkillDefinition]:
         logger.info("Loaded skill %s (target=%s, %d rules)", skill.name, skill.target, len(skill.rules))
 
     return skills
+
+
+def load_skills_with_packages(
+    directory: str | Path,
+) -> dict[str, tuple["SkillDefinition", "SkillPackage"]]:
+    """Load skills and wrap each with lifecycle metadata (R3b-1 C5).
+
+    Returns {name: (SkillDefinition, SkillPackage)}.  File-loaded skills
+    are treated as PROMOTED (they come from the operator's skills dir).
+    """
+    from harkeniq.autonomy.skill_lifecycle import SkillPackage, SkillTier, ValidationState
+
+    skills = load_skills(directory)
+    result = {}
+    for name, skill_def in skills.items():
+        pkg = SkillPackage(
+            skill_id=name,
+            version=str(skill_def.version),
+            vendor="",  # not in current YAML format
+            device_types=[],
+            tier=SkillTier.CORE,
+            validation_state=ValidationState.PROMOTED,
+        )
+        result[name] = (skill_def, pkg)
+    return result
