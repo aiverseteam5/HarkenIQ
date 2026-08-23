@@ -48,6 +48,13 @@ class SMConfig:
     unobserved_after_s: float = 600.0
     inference_interval_s: float = 300.0
     ui_dist: str = ""                   # path to built dashboard, optional
+    # R3b-1 C1: LLM Explain
+    llm_enabled: bool = False
+    llm_api_url: str = ""              # e.g. "https://api.anthropic.com"
+    llm_api_key: str = ""              # env: HARKEN_SM_LLM_API_KEY
+    llm_model: str = ""                # e.g. "claude-sonnet-4-20250514"
+    llm_timeout_s: float = 30.0
+    llm_max_tokens: int = 1024
     correlation: CorrelationThresholds = field(default_factory=CorrelationThresholds)
 
     def validate(self) -> list[str]:
@@ -77,6 +84,10 @@ _ENV_MAP = {
     "HARKEN_SM_TLS_KEY": "tls_key",
     "HARKEN_SM_INSECURE": "insecure",
     "HARKEN_SM_UI_DIST": "ui_dist",
+    "HARKEN_SM_LLM_ENABLED": "llm_enabled",
+    "HARKEN_SM_LLM_API_URL": "llm_api_url",
+    "HARKEN_SM_LLM_API_KEY": "llm_api_key",
+    "HARKEN_SM_LLM_MODEL": "llm_model",
 }
 
 

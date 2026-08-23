@@ -29,6 +29,7 @@ async def _incident_dict(incident, device_repo) -> dict:
         "inferred": incident.inferred,
         "title": incident.title,
         "correlation_meta": incident.correlation_meta,
+        "explanation": incident.explanation,
         "opened_at": incident.opened_at.isoformat(),
         "resolved_at": (
             incident.resolved_at.isoformat() if incident.resolved_at else None

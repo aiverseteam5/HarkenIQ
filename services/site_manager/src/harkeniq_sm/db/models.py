@@ -167,6 +167,7 @@ class Incident(Base):
     inferred: Mapped[bool] = mapped_column(Boolean, default=False)
     title: Mapped[str] = mapped_column(String(512), default="")
     correlation_meta: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    explanation: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)  # R3b-1 C1: LLM enrichment
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

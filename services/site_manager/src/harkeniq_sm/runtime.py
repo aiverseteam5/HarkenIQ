@@ -75,6 +75,26 @@ async def make_state(config: SMConfig) -> AppState:
     state.ingest = IngestService(state.sessionmaker, config)
     state.correlation = CorrelationEngine(state.sessionmaker, config)
     state.ingest.on_onset = state.correlation.on_onset
+
+    # R3b-1 C1: reasoning pipeline with optional LLM enrichment
+    from harkeniq_sm.reasoning import (
+        DeterministicReasoner, KnowledgeBaseReasoner, LLMReasoner, ReasoningPipeline,
+    )
+    pipeline = ReasoningPipeline()
+    pipeline.add_provider(DeterministicReasoner())
+    pipeline.add_provider(KnowledgeBaseReasoner())
+    if config.llm_enabled and config.llm_api_url and config.llm_api_key:
+        from harkeniq_sm.llm_provider import LLMProvider
+        llm = LLMProvider(
+            api_url=config.llm_api_url,
+            api_key=config.llm_api_key,
+            model=config.llm_model,
+            timeout=config.llm_timeout_s,
+            max_tokens=config.llm_max_tokens,
+        )
+        pipeline.add_provider(LLMReasoner(llm))
+        logger.info("LLM reasoning enabled (model=%s)", config.llm_model)
+    state.ingest.reasoning_pipeline = pipeline
     state.inference = InferenceJob(state.sessionmaker, config)
     state.approvals = ApprovalService(state.sessionmaker, config)
     return state

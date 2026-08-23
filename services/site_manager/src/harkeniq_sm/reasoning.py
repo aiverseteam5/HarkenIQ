@@ -136,6 +136,114 @@ class KnowledgeBaseReasoner:
         )
 
 
+class LLMReasoner:
+    """LLM-assisted reasoning: explains and enriches deterministic diagnoses.
+
+    R3b-1 C1: the LLM explains what HarkenIQ's deterministic reasoning
+    already found.  It does not independently decide or execute actions.
+    If the LLM is unavailable, the pipeline falls back to deterministic
+    + knowledge-base results.
+
+    The prompt includes: device state, evidence, severity, and past
+    incidents (from KnowledgeBase, labeled as historical context).
+    """
+
+    name = "llm"
+
+    def __init__(self, llm_provider, knowledge_base=None) -> None:
+        self._provider = llm_provider
+        self._kb = knowledge_base
+
+    def analyze(self, context: ReasoningContext) -> Optional[ReasoningResult]:
+        """Synchronous wrapper — the pipeline calls this, but LLM is async.
+
+        For the SM's asyncio runtime, use analyze_async() directly.
+        This exists to satisfy the ReasoningProvider protocol.
+        """
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            # We're already in an async context; schedule and return None
+            # (the ingest service calls analyze_async directly)
+            return None
+        except RuntimeError:
+            return asyncio.run(self.analyze_async(context))
+
+    async def analyze_async(self, context: ReasoningContext) -> Optional[ReasoningResult]:
+        """Async LLM reasoning call."""
+        messages = self._build_messages(context)
+        completion = await self._provider.complete(messages)
+        if completion is None:
+            return None
+
+        return self._parse_response(completion, context)
+
+    def _build_messages(self, context: ReasoningContext) -> list[dict[str, str]]:
+        """Build the LLM prompt from reasoning context + KB history."""
+        system = (
+            "You are an expert hardware diagnostics assistant for HarkenIQ, "
+            "an autonomous data center operations platform. You explain "
+            "hardware faults clearly and concisely for infrastructure operators. "
+            "Base your analysis only on the evidence provided. "
+            "Do not speculate beyond the evidence."
+        )
+
+        # Current evidence
+        evidence_lines = []
+        for e in context.evidence:
+            evidence_lines.append(f"  - {e}")
+        evidence_text = "\n".join(evidence_lines) if evidence_lines else "  (no structured evidence)"
+
+        # Historical context from knowledge base
+        history_text = ""
+        if self._kb:
+            past = self._kb.get_device_history(context.device_id, limit=5)
+            if past:
+                history_lines = [
+                    f"  - {h.action_type}: {h.outcome} (at {h.recorded_at:.0f})"
+                    for h in past[-3:]
+                ]
+                history_text = (
+                    "\n\nHistorical context (past incidents on this device, "
+                    "for reference only — not current evidence):\n"
+                    + "\n".join(history_lines)
+                )
+
+        user = (
+            f"Device: {context.device_id}\n"
+            f"Component: {context.component}\n"
+            f"Severity: {context.severity}\n"
+            f"Current evidence:\n{evidence_text}"
+            f"{history_text}\n\n"
+            "Provide:\n"
+            "1. A one-paragraph summary of what is happening\n"
+            "2. The most likely root cause\n"
+            "3. What evidence supports this conclusion\n"
+            "4. Recommended next steps for the operator"
+        )
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    def _parse_response(
+        self, completion: str, context: ReasoningContext
+    ) -> ReasoningResult:
+        """Parse LLM completion into a ReasoningResult."""
+        return ReasoningResult(
+            provider=self.name,
+            diagnosis=completion[:500],  # cap for storage
+            confidence=0.5,  # LLM explanations start at moderate confidence
+            suggested_action="",
+            evidence_cited=[str(e) for e in context.evidence[:5]],
+            reasoning_steps=[
+                f"LLM analyzed {len(context.evidence)} evidence items for {context.component}",
+                f"Device history: {len(self._kb.get_device_history(context.device_id)) if self._kb else 0} past outcomes",
+            ],
+        )
+
+
 class ReasoningPipeline:
     """Chains multiple reasoning providers (A2.7 contract 6).
 

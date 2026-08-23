@@ -46,6 +46,8 @@ class IngestService:
         # commit for every onset transition (device_id, subsystem,
         # severity, onset_at).
         self.on_onset: Optional[OnsetHook] = None
+        # R3b-1 C1: reasoning pipeline for LLM enrichment (set by runtime)
+        self.reasoning_pipeline = None
 
     async def _site(self, session) -> str:
         if self._site_id is None:
@@ -150,7 +152,63 @@ class IngestService:
                 onsets.append(onset)
             await session.commit()
         await self._fire(onsets)
+        # R3b-1 C1: enrich WARNING/CRITICAL verdicts with LLM explanation
+        if severity not in _OK_VALUES and self.reasoning_pipeline:
+            import asyncio
+            asyncio.create_task(
+                self._enrich_verdict(agent_id, sensor_id, skill_name, severity, evidence)
+            )
         return True
+
+    async def _enrich_verdict(
+        self, agent_id: str, sensor_id: str, skill_name: str,
+        severity: str, evidence: Any,
+    ) -> None:
+        """Run the reasoning pipeline to produce an LLM explanation.
+
+        Best-effort: failures are logged, never block verdict ingestion.
+        """
+        try:
+            from harkeniq_sm.reasoning import LLMReasoner, ReasoningContext
+            context = ReasoningContext(
+                device_id=agent_id,
+                component=sensor_id,
+                severity=severity,
+                evidence=[{"skill": skill_name, "data": evidence}] if evidence else [],
+            )
+            # Check for LLMReasoner in the pipeline and call async directly
+            for provider in self.reasoning_pipeline._providers:
+                if isinstance(provider, LLMReasoner):
+                    result = await provider.analyze_async(context)
+                    if result and result.provider == "llm":
+                        await self._store_explanation(agent_id, sensor_id, result)
+                    break
+        except Exception as e:
+            logger.warning("LLM enrichment failed for %s/%s: %s", agent_id, sensor_id, e)
+
+    async def _store_explanation(self, agent_id: str, sensor_id: str, result) -> None:
+        """Store the LLM explanation on the open incident for this device+subsystem."""
+        from harkeniq_sm.db.repos import DeviceRepo, IncidentRepo
+        subsystem = sensor_id.split(":", 1)[0]
+        async with self.sessionmaker() as session:
+            device = await DeviceRepo(session).get_by_agent_id(agent_id)
+            if device is None:
+                return
+            repo = IncidentRepo(session)
+            incident = await repo.open_device_incident(device.id, subsystem)
+            if incident is None:
+                return
+            incident.explanation = {
+                "provider": result.provider,
+                "summary": result.diagnosis,
+                "confidence": result.confidence,
+                "evidence_cited": result.evidence_cited,
+                "reasoning_steps": result.reasoning_steps,
+                "suggested_action": result.suggested_action,
+                "similar_past_incidents": result.similar_past_incidents,
+            }
+            await session.commit()
+            logger.info("LLM explanation stored for incident %s", incident.id)
 
     async def _apply_subsystem(
         self, session, device_id: str, subsystem: str, severity: str, now: datetime
