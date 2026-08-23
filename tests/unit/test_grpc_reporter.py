@@ -85,7 +85,7 @@ class TestDelivery:
     async def test_heartbeat_delivered(self, sm_server):
         service, port = sm_server
         reporter = make_reporter(port)
-        assert await reporter.send_heartbeat("OBSERVING", {"fan": "OK", "disk": "WARNING"}) is True
+        assert await reporter.send_heartbeat("OBSERVING", {"fan": "OK", "disk": "WARNING"}) is not None
         await reporter.close()
 
         assert len(service.heartbeats) == 1
@@ -117,7 +117,7 @@ class TestStandalone:
         reporter = SiteManagerReporter({"site_manager": {"host": "", "port": 50051}})
         assert reporter.enabled is False
         assert await reporter.report_verdict(make_verdict()) is False
-        assert await reporter.send_heartbeat("OBSERVING", {}) is False
+        assert await reporter.send_heartbeat("OBSERVING", {}) is None
         assert reporter._channel is None  # never connected
         await reporter.close()
 
@@ -150,7 +150,7 @@ class TestBackoff:
         dropped = reporter.dropped
         # still inside the backoff window: dropped immediately, no RPC attempt
         fake_now[0] += 1.0
-        assert await reporter.send_heartbeat("OBSERVING", {}) is False
+        assert await reporter.send_heartbeat("OBSERVING", {}) is None
         assert reporter.dropped == dropped + 1
         assert reporter._backoff_index == 1  # unchanged, no new failure recorded
         await reporter.close()
@@ -160,7 +160,7 @@ class TestBackoff:
         reporter = make_reporter(port)
         reporter._backoff_index = 3
         reporter._next_attempt = 0.0
-        assert await reporter.send_heartbeat("OBSERVING", {}) is True
+        assert await reporter.send_heartbeat("OBSERVING", {}) is not None
         assert reporter._backoff_index == 0
         assert reporter._next_attempt == 0.0
         await reporter.close()

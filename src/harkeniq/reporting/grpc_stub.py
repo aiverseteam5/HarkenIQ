@@ -88,10 +88,14 @@ class SiteManagerReporter:
         state: str,
         health_summary: dict[str, str],
         peer_status: Optional[dict[str, str]] = None,
-    ) -> bool:
-        """Send an agent heartbeat. Returns True when acked; False when dropped."""
+    ) -> Optional["harkeniq_pb2.HeartbeatAck"]:
+        """Send an agent heartbeat.
+
+        Returns the HeartbeatAck if successful (contains R3a lease),
+        or None when dropped.
+        """
         if not self.enabled:
-            return False
+            return None
         request = harkeniq_pb2.AgentHeartbeat(
             agent_id=self.agent_id,
             agent_name=self.agent_name,
@@ -100,7 +104,7 @@ class SiteManagerReporter:
             timestamp_unix=int(time.time()),
             peer_status=dict(peer_status or {}),
         )
-        return await self._call("Heartbeat", request)
+        return await self._call("Heartbeat", request, want_response=True)
 
     async def register_agent(
         self,
@@ -109,10 +113,15 @@ class SiteManagerReporter:
         service_tag: str = "",
         bmc_location: Optional[dict] = None,
         peers: Optional[list[str]] = None,
-    ) -> bool:
-        """Register this agent with the Site Manager (best-effort)."""
+        public_key_pem: Optional[bytes] = None,
+    ) -> Optional["harkeniq_pb2.RegistrationAck"]:
+        """Register this agent with the Site Manager (best-effort).
+
+        Returns the RegistrationAck if successful (needed for R3a identity
+        bootstrapping), or None on failure.
+        """
         if not self.enabled:
-            return False
+            return None
         request = harkeniq_pb2.AgentRegistration(
             agent_id=self.agent_id,
             agent_name=self.agent_name,
@@ -121,8 +130,9 @@ class SiteManagerReporter:
             service_tag=service_tag,
             bmc_location_json=json.dumps(bmc_location) if bmc_location else "",
             peers=list(peers or []),
+            public_key_pem=public_key_pem or b"",
         )
-        return await self._call("RegisterAgent", request)
+        return await self._call("RegisterAgent", request, want_response=True)
 
     async def report_action(self, action: Action) -> bool:
         """Report an action's current state to the Site Manager."""

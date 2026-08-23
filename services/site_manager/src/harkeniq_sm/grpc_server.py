@@ -35,9 +35,10 @@ logger = logging.getLogger("harkeniq.sm.grpc")
 
 
 class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
-    def __init__(self, ingest: IngestService, approvals=None) -> None:
+    def __init__(self, ingest: IngestService, approvals=None, identity_service=None) -> None:
         self.ingest = ingest
         self.approvals = approvals  # attached by the approvals phase
+        self.identity_service = identity_service  # R3a: AgentIdentityService
 
     async def RegisterAgent(self, request, context):
         site_name = await self.ingest.register(
@@ -49,7 +50,28 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
             bmc_location_json=request.bmc_location_json,
             peers=list(request.peers),
         )
-        return harkeniq_pb2.RegistrationAck(accepted=True, site_name=site_name)
+
+        # R3a: if agent sent a public key, register identity and issue cert
+        sm_public_key_pem = b""
+        agent_certificate = b""
+        if self.identity_service and request.public_key_pem:
+            try:
+                sm_public_key_pem, agent_certificate = (
+                    await self.identity_service.register_agent(
+                        agent_id=request.agent_id,
+                        public_key_pem=bytes(request.public_key_pem),
+                        site_name=site_name,
+                    )
+                )
+            except ValueError as e:
+                logger.warning("Agent identity registration failed: %s", e)
+
+        return harkeniq_pb2.RegistrationAck(
+            accepted=True,
+            site_name=site_name,
+            sm_public_key_pem=sm_public_key_pem,
+            agent_certificate=agent_certificate,
+        )
 
     async def Heartbeat(self, request, context):
         accepted = await self.ingest.heartbeat(
@@ -59,7 +81,25 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
             health_summary=dict(request.health_summary),
             peer_status=dict(request.peer_status),
         )
-        return harkeniq_pb2.HeartbeatAck(accepted=accepted)
+
+        # R3a: issue signed authorization lease if identity service is active
+        lease_bytes = b""
+        lease_expiry_unix = 0
+        if self.identity_service and accepted:
+            try:
+                lease_bytes, lease_expiry_unix = (
+                    await self.identity_service.issue_lease(
+                        agent_id=request.agent_id,
+                    )
+                )
+            except Exception as e:
+                logger.warning("Lease issuance failed for %s: %s", request.agent_id, e)
+
+        return harkeniq_pb2.HeartbeatAck(
+            accepted=accepted,
+            authorization_lease=lease_bytes,
+            lease_expiry_unix=lease_expiry_unix,
+        )
 
     async def ReportVerdict(self, request, context):
         accepted = await self.ingest.verdict(

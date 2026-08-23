@@ -39,6 +39,8 @@ message AgentHeartbeat {
 
 message HeartbeatAck {
   bool accepted = 1;
+  bytes authorization_lease = 2;  // R3a: signed lease blob (JSON + signature)
+  int64 lease_expiry_unix = 3;    // R3a: convenience: lease expiry timestamp
 }
 
 message AgentRegistration {
@@ -49,11 +51,15 @@ message AgentRegistration {
   string service_tag = 5;
   string bmc_location_json = 6;   // BMC-reported location fields, may be empty
   repeated string peers = 7;      // configured peer adjacency, "host:port"
+  bytes public_key_pem = 8;       // R3a: agent's Ed25519 public key
+  string resource_profile = 9;    // R3a: "constrained" | "standard" | "performance"
 }
 
 message RegistrationAck {
   bool accepted = 1;
   string site_name = 2;
+  bytes sm_public_key_pem = 3;    // R3a: SM's Ed25519 public key (agent pins this)
+  bytes agent_certificate = 4;    // R3a: SM's signature over agent identity
 }
 
 message ActionReport {

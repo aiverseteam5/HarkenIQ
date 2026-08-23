@@ -163,7 +163,7 @@ def _subsystem_detail(target: str, sensors: list[Any]) -> str:
 def build_snapshot(agent: Any, started_at: float, events: list[Event]) -> ConsoleSnapshot:
     """Assemble a ConsoleSnapshot from a live Agent."""
     now = time.time()
-    identity = agent.identity
+    identity = getattr(agent, "device_identity", None) or getattr(agent, "identity", None)
     device_label = ""
     if identity is not None:
         vendor = {"dell": "Dell", "hpe": "HPE"}.get(identity.vendor, identity.vendor)

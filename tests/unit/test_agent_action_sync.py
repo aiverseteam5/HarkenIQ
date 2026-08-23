@@ -98,7 +98,7 @@ class TestReporting:
         report = reports[0]
         assert report.status == "PENDING"
         assert report.type == "FAN_RESET"
-        assert report.agent_id == "agent-sync-test"
+        assert report.agent_id == agent.agent_id
 
     async def test_status_change_reported(self, agent, sm):
         service, _ = sm

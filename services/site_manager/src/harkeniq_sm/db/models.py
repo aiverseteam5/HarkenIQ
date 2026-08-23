@@ -198,6 +198,18 @@ class ActionRow(Base):
     __table_args__ = (UniqueConstraint("device_id", "agent_action_id"),)
 
 
+class AgentIdentityRow(Base):
+    """R3a: per-agent Ed25519 public key + SM-issued certificate (A2.4)."""
+
+    __tablename__ = "agent_identities"
+
+    agent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    public_key_pem: Mapped[bytes] = mapped_column(Text)
+    certificate: Mapped[bytes | None] = mapped_column(Text, nullable=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AuditLogRow(Base):
     __tablename__ = "audit_log"
 

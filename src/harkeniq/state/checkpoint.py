@@ -121,6 +121,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
     evidence_json TEXT,
     logged_at TEXT NOT NULL
 );
+
+-- R3a: per-agent Ed25519 identity (spec A2.4)
+CREATE TABLE IF NOT EXISTS agent_identity (
+    agent_id TEXT PRIMARY KEY,
+    public_key_pem BLOB NOT NULL,
+    private_key_enc BLOB NOT NULL,
+    sm_public_key_pem BLOB,
+    sm_certificate BLOB,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+-- R3a: cached authorization lease from SM (spec A2.2)
+CREATE TABLE IF NOT EXISTS authorization_lease (
+    id INTEGER PRIMARY KEY,
+    lease_data BLOB NOT NULL,
+    signature BLOB NOT NULL,
+    lease_expiry TEXT NOT NULL,
+    grace_expiry TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
 """
 
 
@@ -145,6 +166,11 @@ class CheckpointManager:
             self._conn.commit()
         except (OSError, sqlite3.Error) as e:
             raise CheckpointWriteError(f"Cannot open checkpoint db {db_path}: {e}")
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """Expose the SQLite connection for identity/lease persistence (R3a)."""
+        return self._conn
 
     # -- checkpoint sweep ---------------------------------------------------
 

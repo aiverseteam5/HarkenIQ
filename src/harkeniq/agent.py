@@ -19,6 +19,9 @@ from typing import Any, Optional
 
 from harkeniq.actions.executor import ActionExecutor
 from harkeniq.actions.queue import ActionQueue
+from harkeniq.autonomy.identity import AgentIdentity
+from harkeniq.autonomy.lease import AuthorizationLease, InvalidLease
+from harkeniq.autonomy.tier import TierLevel, calculate_tier
 from harkeniq.errors import ConfigError, HarkenIQError, HeartbeatError
 from harkeniq.heartbeat.protocol import build_packet, parse_packet
 from harkeniq.heartbeat.tracker import PeerTracker
@@ -107,7 +110,14 @@ class Agent:
         self.action_queue = ActionQueue()
         self.executor: Optional[ActionExecutor] = None
         self.reporter: Optional[SiteManagerReporter] = None
-        self.identity: Any = None
+        self.device_identity: Any = None  # Redfish device info (vendor, model, etc.)
+
+        # R3a: agent cryptographic identity + authorization lease
+        self.agent_identity: Optional[AgentIdentity] = None
+        self.current_lease: Optional[AuthorizationLease] = None
+        self.current_tier: TierLevel = TierLevel.T2
+        self._sm_connected: bool = False
+        self._sm_last_contact: float = 0.0
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
@@ -132,7 +142,7 @@ class Agent:
         )
         await self.client.connect(bmc.get("username", ""), bmc.get("password", ""))
         self.poller = Poller(self.client)
-        self.identity = await self.poller.detect()
+        self.device_identity = await self.poller.detect()
 
         # Load skills
         skills = load_skills(self.skills_dir)
@@ -141,25 +151,8 @@ class Agent:
         self.tracker = PeerTracker(self.config)
         self.reporter = SiteManagerReporter(self.config)
         self.executor = ActionExecutor(
-            self.client, self.identity.vendor, self.config, checkpoint=None
+            self.client, self.device_identity.vendor, self.config, checkpoint=None
         )
-
-        # Best-effort Site Manager registration (R2a) — never fatal:
-        # standalone Observe mode has no Site Manager at all.
-        if self.reporter.enabled:
-            peers = [
-                f"{p.get('host', '')}:{p.get('port', 5150)}"
-                for p in (self.config.get("peers") or [])
-                if isinstance(p, dict) and p.get("host")
-            ]
-            registered = await self.reporter.register_agent(
-                vendor=self.identity.vendor,
-                model=self.identity.model,
-                service_tag=self.identity.service_tag,
-                peers=peers,
-            )
-            if not registered:
-                logger.warning("Site Manager registration failed; continuing standalone")
 
         # Restore checkpoint (baselines, peers, actions survive restarts)
         trending = TrendingEngine(self.config)
@@ -181,9 +174,56 @@ class Agent:
             trending,
         )
 
+        # R3a: load or generate agent cryptographic identity.
+        # Only activate key-derived agent_id when checkpoint is enabled
+        # (persistent identity). Without checkpoint, keep config-based ID
+        # for backward compatibility with standalone and test modes.
+        if self.checkpoint:
+            self.agent_identity = AgentIdentity.load(
+                self.checkpoint.conn, self._checkpoint_path or ""
+            )
+            if self.agent_identity is None:
+                self.agent_identity = AgentIdentity.generate()
+                self.agent_identity.save(self.checkpoint.conn, self._checkpoint_path or "")
+                logger.info("New agent identity: %s", self.agent_identity.agent_id)
+            # Use key-derived agent_id for SM communication
+            self.agent_id = self.agent_identity.agent_id
+            if self.reporter:
+                self.reporter.agent_id = self.agent_id
+
+        # Best-effort Site Manager registration (R2a + R3a identity):
+        # standalone Observe mode has no Site Manager at all.
+        if self.reporter and self.reporter.enabled:
+            peers = [
+                f"{p.get('host', '')}:{p.get('port', 5150)}"
+                for p in (self.config.get("peers") or [])
+                if isinstance(p, dict) and p.get("host")
+            ]
+            reg_ack = await self.reporter.register_agent(
+                vendor=self.device_identity.vendor,
+                model=self.device_identity.model,
+                service_tag=self.device_identity.service_tag,
+                peers=peers,
+                public_key_pem=(
+                    self.agent_identity.public_key_pem
+                    if self.agent_identity else b""
+                ),
+            )
+            if reg_ack is None:
+                logger.warning("Site Manager registration failed; continuing standalone")
+            elif reg_ack.sm_public_key_pem and self.agent_identity:
+                # R3a: pin SM public key and store certificate
+                self.agent_identity.set_sm_public_key(bytes(reg_ack.sm_public_key_pem))
+                self.agent_identity.sm_certificate = bytes(reg_ack.agent_certificate)
+                if self.checkpoint:
+                    self.agent_identity.save(
+                        self.checkpoint.conn, self._checkpoint_path or ""
+                    )
+                logger.info("SM identity bootstrapped for agent %s", self.agent_id)
+
         self.state_machine.transition(
             AgentState.OBSERVING,
-            f"Startup complete: {self.identity.model}, {len(skills)} skills loaded",
+            f"Startup complete: {self.device_identity.model}, {len(skills)} skills loaded",
         )
         self._running = True
 
@@ -349,6 +389,40 @@ class Agent:
                 break
             self.tracker.check_liveness(now=time.time())
 
+    # -- R3a: lease and tier management -----------------------------------------
+
+    def _process_heartbeat_ack(self, ack) -> None:
+        """Extract and verify authorization lease from HeartbeatAck."""
+        if ack is None:
+            self._sm_connected = False
+            return
+
+        self._sm_connected = True
+        self._sm_last_contact = time.time()
+
+        # Parse lease if present (R3a SM sends lease; old SM sends empty bytes)
+        if not ack.authorization_lease:
+            return
+        if self.agent_identity is None or not self.agent_identity.is_valid():
+            return
+
+        try:
+            self.current_lease = AuthorizationLease.parse(
+                bytes(ack.authorization_lease), self.agent_identity
+            )
+            logger.debug(
+                "Lease renewed: expiry=%s, actions=%s",
+                self.current_lease.lease_expiry,
+                self.current_lease.action_classes,
+            )
+        except InvalidLease as e:
+            logger.warning("Invalid lease from SM: %s", e)
+
+    def _update_tier(self) -> None:
+        """Recalculate tier from current peer liveness state."""
+        if self.tracker:
+            self.current_tier = calculate_tier(self.tracker.get_peers())
+
     # -- Site Manager report loop (Doc 06 §10) -------------------------------
 
     async def _report_loop(self) -> None:
@@ -356,11 +430,13 @@ class Agent:
         interval = sm.get("heartbeat_interval", DEFAULT_REPORT_INTERVAL)
         poll_interval = sm.get("action_poll_interval", 5)
         while not self._shutdown.is_set():
-            await self.reporter.send_heartbeat(
+            hb_ack = await self.reporter.send_heartbeat(
                 self.state_machine.current_state.value,
                 self.health_summary(),
                 self._peer_status(),
             )
+            # R3a: process authorization lease from heartbeat ack
+            self._process_heartbeat_ack(hb_ack)
             await self._report_changed_verdicts()
             await self._sync_actions()
             # Approvals must land "in seconds": poll fast while any action

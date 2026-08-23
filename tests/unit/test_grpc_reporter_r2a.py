@@ -95,7 +95,7 @@ class TestRegistration:
             peers=["10.0.0.2:5150"],
         )
         await reporter.close()
-        assert ok is True
+        assert ok is not None
         req = service.registrations[0]
         assert req.agent_id == "agent-aaaa"
         assert req.agent_name == "rack-12-server-04"
@@ -107,7 +107,7 @@ class TestRegistration:
 
     async def test_register_disabled_without_host(self):
         reporter = SiteManagerReporter({})
-        assert await reporter.register_agent() is False
+        assert await reporter.register_agent() is None
 
 
 class TestHeartbeatPeerStatus:
@@ -230,7 +230,7 @@ class TestTLS:
                 tls=True, tls_ca=dev_tls["ca"],
             )
             assert reporter.tls is True
-            assert await reporter.send_heartbeat("OBSERVING", {"fan": "OK"}) is True
+            assert await reporter.send_heartbeat("OBSERVING", {"fan": "OK"}) is not None
             await reporter.close()
             assert service.metadata[0].get("authorization") == "Bearer site-secret"
         finally:
@@ -241,5 +241,5 @@ class TestTLS:
         service, port = sm_server
         reporter = make_reporter(port, tls=True)
         assert reporter.tls is False
-        assert await reporter.send_heartbeat("OBSERVING", {}) is True
+        assert await reporter.send_heartbeat("OBSERVING", {}) is not None
         await reporter.close()

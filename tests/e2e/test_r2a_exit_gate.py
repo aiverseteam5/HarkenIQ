@@ -68,7 +68,7 @@ def agent_config(sim, agent_id, agent_name, grpc_port, dev_tls, tmp_path):
                 "verify_ssl": False},
         "skills": {"directory": str(REPO / "skills")},
         "polling": {"sensor_interval": BEAT},
-        "checkpoint": {"path": str(tmp_path / f"{agent_id}.db"), "interval": 999999},
+        "checkpoint": {"path": "", "interval": 999999},  # no checkpoint: keep config agent_id
         "site_manager": {
             "host": "127.0.0.1",
             "port": grpc_port,
