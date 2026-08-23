@@ -123,6 +123,21 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
         decisions = await self.approvals.poll_decisions(request.agent_id)
         return harkeniq_pb2.DecisionList(decisions=decisions)
 
+    async def PushSkill(self, request, context):
+        """R3b-1 C7: SM pushes validated skills to agents.
+
+        This handler is on the AgentServiceServicer because the SM
+        calls PushSkill on the agent's stub (SM -> Agent direction).
+        In practice, the SM iterates registered agents and pushes.
+        The agent validates + hot-loads the skill.
+        """
+        # Agent-side handling: validate YAML and accept/reject
+        # For now, the SM servicer doesn't implement this (agents do).
+        # This stub exists for proto compatibility.
+        return harkeniq_pb2.SkillDistributionAck(
+            accepted=True, reason="accepted by SM stub"
+        )
+
 
 _SEVERITY_RANK = {"OK": 0, "TRENDING": 1, "UNKNOWN": 2, "WARNING": 3, "CRITICAL": 4}
 

@@ -59,6 +59,11 @@ class AgentServiceStub:
                 request_serializer=harkeniq__pb2.DecisionPoll.SerializeToString,
                 response_deserializer=harkeniq__pb2.DecisionList.FromString,
                 _registered_method=True)
+        self.PushSkill = channel.unary_unary(
+                '/harkeniq.v1.AgentService/PushSkill',
+                request_serializer=harkeniq__pb2.SkillDistribution.SerializeToString,
+                response_deserializer=harkeniq__pb2.SkillDistributionAck.FromString,
+                _registered_method=True)
 
 
 class AgentServiceServicer:
@@ -94,6 +99,13 @@ class AgentServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def PushSkill(self, request, context):
+        """R3b-1 C7: SM pushes validated skills to agents
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -121,6 +133,11 @@ def add_AgentServiceServicer_to_server(servicer, server):
                     servicer.PollActionDecisions,
                     request_deserializer=harkeniq__pb2.DecisionPoll.FromString,
                     response_serializer=harkeniq__pb2.DecisionList.SerializeToString,
+            ),
+            'PushSkill': grpc.unary_unary_rpc_method_handler(
+                    servicer.PushSkill,
+                    request_deserializer=harkeniq__pb2.SkillDistribution.FromString,
+                    response_serializer=harkeniq__pb2.SkillDistributionAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -258,6 +275,33 @@ class AgentService:
             '/harkeniq.v1.AgentService/PollActionDecisions',
             harkeniq__pb2.DecisionPoll.SerializeToString,
             harkeniq__pb2.DecisionList.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PushSkill(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.AgentService/PushSkill',
+            harkeniq__pb2.SkillDistribution.SerializeToString,
+            harkeniq__pb2.SkillDistributionAck.FromString,
             options,
             channel_credentials,
             insecure,

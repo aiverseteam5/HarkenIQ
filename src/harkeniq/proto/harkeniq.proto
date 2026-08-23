@@ -13,6 +13,23 @@ service AgentService {
   rpc RegisterAgent(AgentRegistration) returns (RegistrationAck);
   rpc ReportAction(ActionReport) returns (ActionAck);
   rpc PollActionDecisions(DecisionPoll) returns (DecisionList);
+  // R3b-1 C7: SM pushes validated skills to agents
+  rpc PushSkill(SkillDistribution) returns (SkillDistributionAck);
+}
+
+// R3b-1 C7: Skill distribution (SM -> Agent)
+message SkillDistribution {
+  string skill_id = 1;
+  string version = 2;
+  string yaml_content = 3;           // full skill YAML
+  string tier = 4;                   // core | vendor | community | auto_generated
+  string validation_state = 5;       // tested | promoted
+  string deployed_by = 6;
+}
+
+message SkillDistributionAck {
+  bool accepted = 1;
+  string reason = 2;                 // rejection reason if not accepted
 }
 
 message VerdictReport {

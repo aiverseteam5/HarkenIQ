@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import field
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,6 +127,40 @@ class HardwareDeviceMapper:
 
         return None
 
+    def get_full_mapping(
+        self, redfish_id: str, serial_number: str
+    ) -> Optional["FullDeviceMapping"]:
+        """Full hardware-to-application mapping (R3b-1 C4, doc 04 Cap 8b).
+
+        Maps: Redfish drive -> /dev/sdX -> mount point -> processes -> services.
+        This is the "wow demo": "Drive in Bay 2 is failing. It is /dev/sdb,
+        mounted as /data/postgres. Your PostgreSQL database will lose its
+        primary storage within approximately 72 hours."
+        """
+        base = self.map_drive(redfish_id, serial_number)
+        if base is None:
+            return None
+
+        processes = []
+        if base.mount_point:
+            processes = self._find_processes_using_mount(base.mount_point)
+
+        services = []
+        for proc in processes:
+            svc = self._get_service_for_pid(proc["pid"])
+            if svc and svc not in services:
+                services.append(svc)
+
+        return FullDeviceMapping(
+            redfish_id=base.redfish_id,
+            serial_number=base.serial_number,
+            os_device=base.os_device,
+            mount_point=base.mount_point,
+            filesystem=base.filesystem,
+            processes=processes,
+            services=services,
+        )
+
     def _get_mount_info(self, device: str) -> tuple[str, str]:
         """Get mount point and filesystem for a block device from /proc/mounts."""
         try:
@@ -137,3 +172,95 @@ class HardwareDeviceMapper:
         except OSError:
             pass
         return "", ""
+
+    def _find_processes_using_mount(self, mount_point: str) -> list[dict]:
+        """Find processes with open files on the given mount point.
+
+        Scans /proc/[pid]/fd/ for symlinks pointing into the mount.
+        """
+        import os
+        results = []
+        proc = Path("/proc")
+        if not proc.is_dir():
+            return results
+
+        for pid_dir in proc.iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            pid = int(pid_dir.name)
+            try:
+                fd_dir = pid_dir / "fd"
+                if not fd_dir.is_dir():
+                    continue
+                uses_mount = False
+                for fd in fd_dir.iterdir():
+                    try:
+                        target = os.readlink(str(fd))
+                        if target.startswith(mount_point):
+                            uses_mount = True
+                            break
+                    except OSError:
+                        continue
+                if uses_mount:
+                    comm = ""
+                    try:
+                        comm = (pid_dir / "comm").read_text().strip()
+                    except OSError:
+                        pass
+                    results.append({"pid": pid, "comm": comm})
+            except (OSError, PermissionError):
+                continue
+
+        return results
+
+    def _get_service_for_pid(self, pid: int) -> str:
+        """Get the systemd service name for a PID.
+
+        Reads /proc/[pid]/cgroup to find the systemd slice/service.
+        """
+        cgroup_path = Path(f"/proc/{pid}/cgroup")
+        try:
+            for line in cgroup_path.read_text().splitlines():
+                # Format: hierarchy-ID:controller-list:cgroup-path
+                parts = line.split(":", 2)
+                if len(parts) >= 3:
+                    cgroup = parts[2]
+                    # Extract service name from cgroup path
+                    # e.g., /system.slice/postgresql.service -> postgresql.service
+                    if ".service" in cgroup:
+                        for segment in cgroup.split("/"):
+                            if segment.endswith(".service"):
+                                return segment
+        except OSError:
+            pass
+        return ""
+
+
+@dataclass
+class FullDeviceMapping:
+    """Complete hardware-to-application mapping (R3b-1 C4).
+
+    Extends DeviceMapping with process and service information.
+    """
+
+    redfish_id: str
+    serial_number: str
+    os_device: str
+    mount_point: str = ""
+    filesystem: str = ""
+    processes: list[dict] = field(default_factory=list)  # [{pid, comm}]
+    services: list[str] = field(default_factory=list)     # ["postgresql.service"]
+    confidence: float = 1.0
+
+    def impact_summary(self) -> str:
+        """Human-readable impact statement for the diagnosis."""
+        parts = [f"Hardware: {self.redfish_id} (serial {self.serial_number})"]
+        parts.append(f"OS device: {self.os_device}")
+        if self.mount_point:
+            parts.append(f"Mount: {self.mount_point} ({self.filesystem})")
+        if self.services:
+            parts.append(f"Affected services: {', '.join(self.services)}")
+        elif self.processes:
+            procs = ", ".join(f"{p['comm']}(pid {p['pid']})" for p in self.processes[:5])
+            parts.append(f"Affected processes: {procs}")
+        return " | ".join(parts)
