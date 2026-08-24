@@ -33,6 +33,8 @@ class AppState:
     # Set when an in-memory sqlite DSN was remapped to a temp file;
     # removed on shutdown.
     tmp_db_path: Optional[str] = None
+    # R4-1: live IntelligenceEngine, set by the intelligence loop.
+    intelligence: object = None
 
 
 async def make_state(config: CCConfig) -> AppState:
@@ -64,6 +66,7 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     """Serve until cancelled. ``state`` injection is for tests."""
     from harkeniq_cc.app import create_app  # late: app imports routers
     from harkeniq_cc.fleet_poller import fleet_poll_loop
+    from harkeniq_cc.intelligence import intelligence_loop
     from harkeniq_cc.usage_reporter import usage_report_loop
 
     if state is None:
@@ -94,12 +97,16 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     async def usage_reporter_task() -> None:
         await usage_report_loop(state)
 
+    async def intelligence_task() -> None:
+        await intelligence_loop(state)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(serve_http(), name="http")
             tg.create_task(announce_started(), name="announce")
             tg.create_task(fleet_poller_task(), name="fleet_poller")
             tg.create_task(usage_reporter_task(), name="usage_reporter")
+            tg.create_task(intelligence_task(), name="intelligence")
     finally:
         state.started.clear()
         http_server.should_exit = True

@@ -28,6 +28,20 @@ class AggregateMetrics:
     failure_count: int = 0
     partial_count: int = 0
     fault_resolved_count: int = 0
+    # R4-1 (R-C2): per-site attribution for cross-site correlation.
+    # Keys are site_ids; outcomes without a site_id are not tracked here.
+    site_counts: dict[str, int] = field(default_factory=dict)
+    site_failure_counts: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def site_count(self) -> int:
+        """Number of distinct sites this group's outcomes came from."""
+        return len(self.site_counts)
+
+    @property
+    def failing_site_count(self) -> int:
+        """Number of distinct sites with at least one failure."""
+        return len(self.site_failure_counts)
 
     @property
     def success_rate(self) -> float:
@@ -61,7 +75,7 @@ class OutcomeAggregator:
         """Ingest a batch of outcome dicts and update aggregates.
 
         Each outcome dict has: action_type, vendor, model, outcome,
-        fault_resolved (optional).
+        fault_resolved (optional), site_id (optional, R4-1 R-C2).
 
         Returns number of outcomes ingested.
         """
@@ -72,6 +86,7 @@ class OutcomeAggregator:
             model = oc.get("model", "")
             outcome = oc.get("outcome", "UNKNOWN")
             fault_resolved = oc.get("fault_resolved", False)
+            site_id = oc.get("site_id", "")
 
             key = (action_type, vendor, model)
             if key not in self._metrics:
@@ -80,14 +95,21 @@ class OutcomeAggregator:
                 )
             m = self._metrics[key]
             m.total_count += 1
+            failed = outcome in ("FAILURE", "ROLLBACK")
             if outcome == "SUCCESS":
                 m.success_count += 1
-            elif outcome in ("FAILURE", "ROLLBACK"):
+            elif failed:
                 m.failure_count += 1
             elif outcome == "PARTIAL":
                 m.partial_count += 1
             if fault_resolved:
                 m.fault_resolved_count += 1
+            if site_id:
+                m.site_counts[site_id] = m.site_counts.get(site_id, 0) + 1
+                if failed:
+                    m.site_failure_counts[site_id] = (
+                        m.site_failure_counts.get(site_id, 0) + 1
+                    )
             count += 1
         return count
 

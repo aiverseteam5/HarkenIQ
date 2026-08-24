@@ -63,12 +63,18 @@ class LLMProvider:
             return None
 
     async def _call_openai_compat(self, messages: list[dict[str, str]]) -> Optional[str]:
-        """OpenAI-compatible /chat/completions endpoint."""
+        """OpenAI-compatible /chat/completions endpoint.
+
+        Works against cloud APIs and local inference servers alike
+        (llama.cpp server, vLLM, Ollama). For llama.cpp set api_url to
+        http://host:8080/v1 (R4-1 air-gapped validation); local servers
+        need no API key, so the Authorization header is only sent when a
+        key is configured.
+        """
         url = f"{self.api_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         body = {
             "model": self.model,
             "messages": messages,

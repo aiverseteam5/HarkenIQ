@@ -11,6 +11,7 @@ continues to work. This wrapper is an additional entry point.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional
 
 from harkeniq.protocols.device import ProtocolError
@@ -35,12 +36,23 @@ class RedfishDeviceProtocol:
         self._host = host
         self._verify_ssl = verify_ssl
         self._client: Optional[RedfishClient] = None
+        self._poller: Any = None
         self._identity: Any = None
         self._vendor: str = ""
 
     @property
     def name(self) -> str:
         return "redfish"
+
+    @property
+    def client(self) -> Optional[RedfishClient]:
+        """Underlying RedfishClient (legacy accessor for existing agent code)."""
+        return self._client
+
+    @property
+    def poller(self) -> Any:
+        """Underlying Poller (legacy accessor for existing agent code)."""
+        return self._poller
 
     async def connect(self, credentials: dict) -> None:
         """Connect to BMC via Redfish session authentication."""
@@ -55,37 +67,59 @@ class RedfishDeviceProtocol:
             )
         except Exception as e:
             raise ConnectionError(f"Redfish connection failed: {e}") from e
+        from harkeniq.poller import Poller
+        self._poller = Poller(self._client)
 
     async def disconnect(self) -> None:
         if self._client:
             await self._client.close()
             self._client = None
+            self._poller = None
 
     async def detect_identity(self) -> Any:
         """Detect vendor/model/serial via Redfish service root."""
-        if self._client is None:
+        if self._client is None or self._poller is None:
             raise ProtocolError("Not connected")
-        from harkeniq.poller import Poller
-        poller = Poller(self._client)
-        self._identity = await poller.detect()
+        self._identity = await self._poller.detect()
         self._vendor = self._identity.vendor
         return self._identity
 
     async def poll_sensors(self) -> Any:
         """Poll all Redfish endpoints and normalize to NormalizedDevice."""
-        if self._client is None:
+        if self._client is None or self._poller is None:
             raise ProtocolError("Not connected")
-        from harkeniq.poller import Poller
-        poller = Poller(self._client)
         if self._identity is None:
-            self._identity = await poller.detect()
-            self._vendor = self._identity.vendor
-        return await poller.poll(self._identity)
+            await self.detect_identity()
+        return await self._poller.poll_sensors()
 
     async def execute_action(self, action_type: str, params: dict) -> dict:
-        """Execute a Redfish action (PATCH/POST to BMC endpoint)."""
+        """Execute a Redfish action via the vendor-aware ActionExecutor.
+
+        Policy (allow list, audit) is enforced by the agent-level executor;
+        this protocol-level dispatch is unrestricted by design.
+        """
         if self._client is None:
             raise ProtocolError("Not connected")
-        # Action execution delegates to ActionExecutor
-        # (integrated at the agent level, not here)
-        return {"success": True, "protocol": "redfish"}
+        if self._identity is None:
+            await self.detect_identity()
+        from harkeniq.actions.executor import ActionExecutor
+        from harkeniq.models import Action, ActionType
+
+        try:
+            atype = ActionType(action_type)
+        except ValueError:
+            return {"success": False, "error": f"Unknown action type: {action_type}",
+                    "duration_ms": 0.0}
+        executor = ActionExecutor(
+            self._client,
+            self._vendor,
+            config={"actions": {"allow_list": [t.value for t in ActionType]}},
+        )
+        action = Action(id=f"proto-{uuid.uuid4().hex[:8]}", type=atype,
+                        params=dict(params))
+        outcome = await executor.execute(action)
+        return {
+            "success": outcome.success,
+            "error": outcome.error_message or "",
+            "duration_ms": outcome.duration_ms,
+        }

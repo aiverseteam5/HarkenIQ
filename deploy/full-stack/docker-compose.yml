@@ -129,6 +129,7 @@ services:
   #     dockerfile: deploy/full-stack/Dockerfile.agent
   #   environment:
   #     HARKENIQ_BMC_HOST: http://mock-simulator:9000
+  #     # HARKENIQ_BMC_PROTOCOL: ipmi   # R4-1: redfish (default) | ipmi (RMCP+ UDP 623)
   #     HARKENIQ_BMC_USERNAME: admin
   #     HARKENIQ_BMC_PASSWORD: password
   #     HARKENIQ_SITE_MANAGER_HOST: site-manager

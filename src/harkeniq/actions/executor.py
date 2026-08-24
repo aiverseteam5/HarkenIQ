@@ -37,17 +37,31 @@ class ActionExecutor:
 
     def __init__(
         self,
-        client: RedfishClient,
+        client: Optional[RedfishClient],
         vendor: str,
         config: Optional[dict] = None,
         checkpoint=None,
+        protocol=None,
     ) -> None:
-        if vendor not in _VENDOR_IDS:
-            raise ActionError(f"Unsupported vendor: {vendor}")
+        # R4-1: when a non-Redfish DeviceProtocol is supplied, dispatch goes
+        # through protocol.execute_action() and the Redfish vendor coupling
+        # (chassis/manager IDs) does not apply. Redfish keeps the legacy
+        # direct-dispatch path unchanged.
+        self.protocol = protocol
+        self._protocol_dispatch = (
+            protocol is not None and getattr(protocol, "name", "redfish") != "redfish"
+        )
+        if self._protocol_dispatch:
+            self.vendor = vendor
+            self.chassis_id = ""
+            self.manager_id = ""
+        else:
+            if vendor not in _VENDOR_IDS:
+                raise ActionError(f"Unsupported vendor: {vendor}")
+            self.vendor = vendor
+            self.chassis_id = _VENDOR_IDS[vendor]["chassis"]
+            self.manager_id = _VENDOR_IDS[vendor]["manager"]
         self.client = client
-        self.vendor = vendor
-        self.chassis_id = _VENDOR_IDS[vendor]["chassis"]
-        self.manager_id = _VENDOR_IDS[vendor]["manager"]
         actions_cfg = (config or {}).get("actions") or {}
         self.allow_list: list[str] = list(
             actions_cfg.get("allow_list", DEFAULT_ALLOW_LIST)
@@ -76,7 +90,23 @@ class ActionExecutor:
         await self._audit(action, target, "executing")
         started = time.monotonic()
         try:
-            if action.type == ActionType.IDENTIFY_LED:
+            if self._protocol_dispatch:
+                try:
+                    result = await self.protocol.execute_action(
+                        action.type.value, dict(action.params)
+                    )
+                except (ActionError, RedfishError):
+                    raise
+                except Exception as e:  # ProtocolError, TimeoutError, ...
+                    raise ActionError(
+                        f"{action.type.value} failed via {self.protocol.name}: {e}"
+                    ) from e
+                if not result.get("success"):
+                    raise ActionError(
+                        result.get("error")
+                        or f"{action.type.value} failed via {self.protocol.name}"
+                    )
+            elif action.type == ActionType.IDENTIFY_LED:
                 await self._identify_led(action)
             elif action.type == ActionType.COLLECT_DIAGNOSTICS:
                 await self._collect_diagnostics()

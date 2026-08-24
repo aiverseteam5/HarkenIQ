@@ -28,7 +28,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "bmc": {
         "host": "",
-        "port": 443,
+        "protocol": "redfish",  # "redfish" | "ipmi" (R4-1)
+        "port": 443,  # redfish default; ipmi uses 623 unless overridden
         "username": "",
         "password": "",
         "verify_ssl": False,
@@ -194,6 +195,10 @@ def validate_config(config: Mapping) -> list[str]:
 
     if not config.get("bmc", {}).get("host"):
         errors.append("bmc.host is required")
+
+    protocol = config.get("bmc", {}).get("protocol", "redfish")
+    if protocol not in ("redfish", "ipmi"):
+        errors.append(f"bmc.protocol must be 'redfish' or 'ipmi', got {protocol!r}")
 
     for section, key in (
         ("bmc", "port"),

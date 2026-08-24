@@ -13,6 +13,7 @@ const NAV_SECTIONS: SidebarSection[] = [
     items: [
       { key: "/dashboard", label: "Dashboard", icon: "\u25A6" },
       { key: "/fleet", label: "Fleet Overview", icon: "\u2318" },
+      { key: "/reliability", label: "Vendor Reliability", icon: "\u2696" },
       { key: "/approvals", label: "Approvals", icon: "\u2714" },
       { key: "/agents", label: "Agents", icon: "\u2699" },
     ],

@@ -24,6 +24,7 @@ logger = logging.getLogger("harkeniq.cc.pattern_detector")
 BATCH_FAILURE_THRESHOLD = 0.15    # 15% failure rate triggers batch pattern
 ANOMALY_MULTIPLIER = 3.0          # 3x increase in failure rate triggers anomaly
 MIN_SAMPLES = 5                   # minimum outcomes before pattern detection
+CROSS_SITE_MIN_SITES = 2          # R-C2: failing sites needed for cross-site pattern
 
 
 @dataclass
@@ -31,7 +32,7 @@ class FleetPattern:
     """A detected fleet-wide pattern."""
 
     pattern_id: str
-    pattern_type: str  # "batch_failure" | "anomaly" | "reliability"
+    pattern_type: str  # "batch_failure" | "anomaly" | "reliability" | "cross_site_batch"
     description: str
     affected_scope: dict[str, str]  # {"vendor": "dell", "model": "R750", ...}
     confidence: float  # 0.0 to 1.0
@@ -51,10 +52,12 @@ class PatternDetector:
         batch_threshold: float = BATCH_FAILURE_THRESHOLD,
         anomaly_multiplier: float = ANOMALY_MULTIPLIER,
         min_samples: int = MIN_SAMPLES,
+        cross_site_min_sites: int = CROSS_SITE_MIN_SITES,
     ) -> None:
         self._batch_threshold = batch_threshold
         self._anomaly_multiplier = anomaly_multiplier
         self._min_samples = min_samples
+        self._cross_site_min_sites = cross_site_min_sites
         self._detected: list[FleetPattern] = []
         self._seen_keys: set[tuple[str, str]] = set()  # (pattern_type, scope_key)
 
@@ -62,10 +65,67 @@ class PatternDetector:
         """Run all detection algorithms and return new patterns."""
         new_patterns: list[FleetPattern] = []
         new_patterns.extend(self._detect_batch_failures(aggregator))
+        new_patterns.extend(self._detect_cross_site_batches(aggregator))
         new_patterns.extend(self._detect_anomalies(aggregator))
         new_patterns.extend(self._detect_reliability(aggregator))
         self._detected.extend(new_patterns)
         return new_patterns
+
+    def _detect_cross_site_batches(
+        self, agg: OutcomeAggregator
+    ) -> list[FleetPattern]:
+        """R4-1 (R-C2): batch failure spanning multiple sites.
+
+        A failure pattern confined to one site is likely environmental
+        (power, cooling, network). The same (action_type, vendor, model)
+        failing at 2+ sites points at the hardware batch or firmware --
+        the highest-value fleet signal for design partners.
+        """
+        patterns: list[FleetPattern] = []
+        for m in agg.get_metrics():
+            if m.total_count < self._min_samples:
+                continue
+            if m.failure_rate < self._batch_threshold:
+                continue
+            if m.failing_site_count < self._cross_site_min_sites:
+                continue
+            failing_sites = sorted(m.site_failure_counts)
+            scope_key = f"cross_site:{m.action_type}:{m.vendor}:{m.model}"
+            dedup_key = ("cross_site_batch", scope_key)
+            if dedup_key in self._seen_keys:
+                continue
+            self._seen_keys.add(dedup_key)
+            patterns.append(FleetPattern(
+                pattern_id=FleetPattern.new_id(),
+                pattern_type="cross_site_batch",
+                description=(
+                    f"{m.action_type} fails at {m.failure_rate:.0%} on "
+                    f"{m.vendor} {m.model} across {m.failing_site_count} sites "
+                    f"({m.failure_count}/{m.total_count})"
+                ),
+                affected_scope={
+                    "action_type": m.action_type,
+                    "vendor": m.vendor,
+                    "model": m.model,
+                    "sites": ",".join(failing_sites),
+                },
+                # Multi-site corroboration raises confidence over the
+                # single-site batch signal.
+                confidence=min(
+                    1.0, m.total_count / 20 + 0.1 * m.failing_site_count
+                ),
+                evidence={
+                    "total": m.total_count,
+                    "failures": m.failure_count,
+                    "failure_rate": round(m.failure_rate, 3),
+                    "site_failure_counts": dict(m.site_failure_counts),
+                    "sites_affected": m.failing_site_count,
+                },
+            ))
+            logger.warning(
+                "Cross-site batch failure detected: %s", patterns[-1].description
+            )
+        return patterns
 
     def _detect_batch_failures(self, agg: OutcomeAggregator) -> list[FleetPattern]:
         """Detect: action_type X fails on vendor Y model Z above threshold."""

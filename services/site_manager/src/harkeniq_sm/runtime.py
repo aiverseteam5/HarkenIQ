@@ -83,7 +83,9 @@ async def make_state(config: SMConfig) -> AppState:
     pipeline = ReasoningPipeline()
     pipeline.add_provider(DeterministicReasoner())
     pipeline.add_provider(KnowledgeBaseReasoner())
-    if config.llm_enabled and config.llm_api_url and config.llm_api_key:
+    # R4-1: api_key is optional -- local OpenAI-compatible endpoints
+    # (llama.cpp server, vLLM) run without authentication.
+    if config.llm_enabled and config.llm_api_url:
         from harkeniq_sm.llm_provider import LLMProvider
         llm = LLMProvider(
             api_url=config.llm_api_url,

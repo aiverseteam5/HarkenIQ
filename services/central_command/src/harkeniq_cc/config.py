@@ -30,6 +30,7 @@ class CCConfig:
     license_key_path: str = ""
     usage_report_interval_s: float = 86400.0
     site_poll_interval_s: float = 300.0
+    pattern_detect_interval_s: float = 300.0
     insecure: bool = False
 
     def validate(self) -> list[str]:
@@ -54,6 +55,7 @@ _ENV_MAP = {
     "HARKEN_CC_LICENSE_KEY_PATH": "license_key_path",
     "HARKEN_CC_USAGE_REPORT_INTERVAL_S": "usage_report_interval_s",
     "HARKEN_CC_SITE_POLL_INTERVAL_S": "site_poll_interval_s",
+    "HARKEN_CC_PATTERN_DETECT_INTERVAL_S": "pattern_detect_interval_s",
     "HARKEN_CC_INSECURE": "insecure",
 }
 

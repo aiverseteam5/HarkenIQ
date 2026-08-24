@@ -112,4 +112,9 @@ def create_device_protocol(
     if protocol_name == "redfish":
         from harkeniq.protocols.redfish import RedfishDeviceProtocol
         return RedfishDeviceProtocol(host=host, **kwargs)
-    raise ValueError(f"Unknown protocol: {protocol_name!r}. Supported: redfish")
+    if protocol_name == "ipmi":
+        from harkeniq.protocols.ipmi import IPMIProtocol
+        return IPMIProtocol(host=host, **kwargs)
+    raise ValueError(
+        f"Unknown protocol: {protocol_name!r}. Supported: redfish, ipmi"
+    )

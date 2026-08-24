@@ -47,6 +47,7 @@ from harkeniq.models import (
     VerdictSeverity,
 )
 from harkeniq.poller import Poller
+from harkeniq.protocols.device import create_device_protocol
 from harkeniq.redfish.client import RedfishClient
 from harkeniq.reporting.grpc_stub import SiteManagerReporter
 from harkeniq.skills.engine import _TARGET_COLLECTIONS, SkillEngine
@@ -115,8 +116,9 @@ class Agent:
         )
 
         self.state_machine = StateMachine()
-        self.client: Optional[RedfishClient] = None
-        self.poller: Optional[Poller] = None
+        self.protocol: Any = None  # DeviceProtocol (R4-1)
+        self.client: Optional[RedfishClient] = None  # legacy Redfish accessor
+        self.poller: Optional[Poller] = None  # legacy Redfish accessor
         self.skill_engine: Optional[SkillEngine] = None
         self.checkpoint: Optional[CheckpointManager] = None
         self.tracker: Optional[PeerTracker] = None
@@ -153,13 +155,27 @@ class Agent:
         """Startup sequence (Doc 06 §14), ends in OBSERVING."""
         bmc = self.config["bmc"]
 
-        # Connect to BMC and detect vendor
-        self.client = RedfishClient(
-            host=bmc["host"], verify_ssl=bmc.get("verify_ssl", False)
+        # Connect to BMC via DeviceProtocol and detect vendor (R4-1).
+        # Redfish is the default; bmc.protocol selects alternatives (ipmi).
+        protocol_name = (bmc.get("protocol") or "redfish").lower()
+        proto_kwargs: dict[str, Any] = {}
+        if protocol_name == "redfish":
+            proto_kwargs["verify_ssl"] = bmc.get("verify_ssl", False)
+        elif protocol_name == "ipmi":
+            # bmc.port defaults to 443 (Redfish); treat that as unset for IPMI.
+            port = bmc.get("port")
+            proto_kwargs["port"] = 623 if port in (None, 0, 443) else port
+        self.protocol = create_device_protocol(
+            protocol_name, host=bmc["host"], **proto_kwargs
         )
-        await self.client.connect(bmc.get("username", ""), bmc.get("password", ""))
-        self.poller = Poller(self.client)
-        self.device_identity = await self.poller.detect()
+        await self.protocol.connect(
+            {"username": bmc.get("username", ""), "password": bmc.get("password", "")}
+        )
+        self.device_identity = await self.protocol.detect_identity()
+        if protocol_name == "redfish":
+            # Legacy accessors: existing code and tests reach the raw client.
+            self.client = self.protocol.client
+            self.poller = self.protocol.poller
 
         # Load skills
         skills = load_skills(self.skills_dir)
@@ -168,7 +184,8 @@ class Agent:
         self.tracker = PeerTracker(self.config)
         self.reporter = SiteManagerReporter(self.config)
         self.executor = ActionExecutor(
-            self.client, self.device_identity.vendor, self.config, checkpoint=None
+            self.client, self.device_identity.vendor, self.config,
+            checkpoint=None, protocol=self.protocol,
         )
 
         # Restore checkpoint (baselines, peers, actions survive restarts)
@@ -273,7 +290,12 @@ class Agent:
             self.checkpoint = None
         if self.reporter:
             await self.reporter.close()
-        if self.client:
+        if self.protocol:
+            await self.protocol.disconnect()
+            self.protocol = None
+            self.client = None
+            self.poller = None
+        elif self.client:
             await self.client.close()
             self.client = None
         logger.info("Agent stopped")
@@ -617,7 +639,7 @@ class Agent:
             )
         ts = timestamp if timestamp is not None else time.time()
 
-        device = await self.poller.poll_sensors()
+        device = await self.protocol.poll_sensors()
         self._last_device = device
         self.state_machine.transition(AgentState.EVALUATING, "sensor poll complete")
 

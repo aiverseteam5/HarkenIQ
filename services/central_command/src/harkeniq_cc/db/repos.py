@@ -20,6 +20,8 @@ from harkeniq_cc.db.models import (
     CCAuditLog,
     CCAutonomyBudget,
     CCFleetCache,
+    CCFleetPattern,
+    CCOutcomeHistory,
     CCSite,
     CCUsageSnapshot,
     utcnow,
@@ -636,3 +638,105 @@ class AutonomyBudgetRepo:
     async def delete(self, budget: CCAutonomyBudget) -> None:
         await self.session.delete(budget)
         await self.session.flush()
+
+
+class OutcomeHistoryRepo:
+    """Read path for cc_outcome_history (R4-1: written by the fleet poller,
+    read by the intelligence loop and the outcomes API)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_outcome_dicts(
+        self,
+        tenant_id: str,
+        since: Optional[datetime] = None,
+        limit: int = 10000,
+    ) -> list[dict]:
+        """Outcome rows as aggregator-ready dicts (site_id included).
+
+        Tenant scoping goes through cc_sites: an outcome belongs to the
+        tenant that owns the site it was polled from.
+        """
+        stmt = (
+            select(CCOutcomeHistory)
+            .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
+            .where(CCSite.tenant_id == tenant_id)
+            .order_by(CCOutcomeHistory.ingested_at)
+            .limit(limit)
+        )
+        if since is not None:
+            stmt = stmt.where(CCOutcomeHistory.ingested_at > since)
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [
+            {
+                "action_type": r.action_type,
+                "vendor": r.vendor,
+                "model": r.model,
+                "outcome": r.outcome,
+                "fault_resolved": bool(r.fault_resolved),
+                "site_id": r.site_id,
+                "ingested_at": r.ingested_at,
+            }
+            for r in rows
+        ]
+
+    async def count(self, tenant_id: str) -> int:
+        result = await self.session.execute(
+            select(func.count(CCOutcomeHistory.id))
+            .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
+            .where(CCSite.tenant_id == tenant_id)
+        )
+        return result.scalar() or 0
+
+
+class FleetPatternRepo:
+    """Persistence for detected fleet patterns (R4-1)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def save(self, pattern) -> CCFleetPattern:
+        """Persist a pattern_detector.FleetPattern; idempotent on id."""
+        from datetime import timezone
+
+        row = await self.session.get(CCFleetPattern, pattern.pattern_id)
+        if row is None:
+            row = CCFleetPattern(id=pattern.pattern_id)
+            self.session.add(row)
+        row.pattern_type = pattern.pattern_type
+        row.description = pattern.description
+        row.affected_scope = dict(pattern.affected_scope)
+        row.confidence = pattern.confidence
+        row.evidence = dict(pattern.evidence)
+        row.detected_at = datetime.fromtimestamp(
+            pattern.detected_at, tz=timezone.utc
+        )
+        await self.session.flush()
+        return row
+
+    async def list_patterns(
+        self,
+        pattern_type: Optional[str] = None,
+        status: Optional[str] = "active",
+        limit: int = 200,
+    ) -> Sequence[CCFleetPattern]:
+        stmt = (
+            select(CCFleetPattern)
+            .order_by(CCFleetPattern.detected_at.desc())
+            .limit(limit)
+        )
+        if pattern_type:
+            stmt = stmt.where(CCFleetPattern.pattern_type == pattern_type)
+        if status:
+            stmt = stmt.where(CCFleetPattern.status == status)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def resolve(self, pattern_id: str) -> Optional[CCFleetPattern]:
+        row = await self.session.get(CCFleetPattern, pattern_id)
+        if row is None:
+            return None
+        row.status = "resolved"
+        row.resolved_at = utcnow()
+        await self.session.flush()
+        return row
