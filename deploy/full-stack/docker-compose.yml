@@ -49,6 +49,31 @@ services:
       postgres:
         condition: service_healthy
 
+  # -- Local LLM inference (R4-3, air-gapped mode; optional) ---------------
+  # llama.cpp serves an OpenAI-compatible /v1/chat/completions API, which
+  # the existing SM LLMProvider consumes unchanged. Place the model file
+  # (e.g. mistral-7b-v0.3.Q4_K_M.gguf) in deploy/models/ via offline
+  # transfer and set the two SM model-integrity vars below. CPU inference
+  # is acceptable at HarkenIQ's 5-20 calls/day; for GPU use the
+  # ...:server-cuda image and add a device reservation.
+  # Start with: docker compose --profile airgap-llm up
+
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["airgap-llm"]
+    command: >
+      -m /models/model.gguf --host 0.0.0.0 --port 8080
+      --ctx-size 4096 --threads 4
+    volumes:
+      - ../models:/models:ro
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   # -- Site Manager (L2) --------------------------------------------------
 
   site-manager:
@@ -62,6 +87,16 @@ services:
       HARKEN_SM_INSECURE: "true"
       HARKEN_SM_GRPC_PORT: "50051"
       HARKEN_SM_HTTP_PORT: "8080"
+      # R4-3 air-gapped LLM (uncomment with the airgap-llm profile):
+      # HARKEN_SM_LLM_ENABLED: "true"
+      # HARKEN_SM_LLM_API_URL: http://llama:8080/v1
+      # HARKEN_SM_LLM_MODEL: local-gguf
+      # HARKEN_SM_LLM_MODEL_PATH: /models/model.gguf
+      # HARKEN_SM_LLM_MODEL_SHA256: <sha256 of the model file>
+    # Air-gapped LLM also needs the model visible to SM for the startup
+    # integrity check:
+    # volumes:
+    #   - ../models:/models:ro
     ports:
       - "8080:8080"
       - "50051:50051"

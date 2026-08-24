@@ -6,7 +6,7 @@ from harkeniq_console.permissions import PERMISSIONS, ROLE_PERMISSIONS, has_perm
 class TestPermissionsDefined:
     def test_all_permissions_defined(self):
         """Spec S4: 21 atomic permissions."""
-        assert len(PERMISSIONS) == 21
+        assert len(PERMISSIONS) == 24  # 21 + R4-3 skill.submit/review/install
 
 
 class TestFixedRoles:
@@ -39,6 +39,7 @@ class TestFixedRoles:
             "incident.view", "incident.acknowledge", "billing.manage",
             "billing.view", "license.view", "support.create",
             "support.view", "audit.view", "audit.export",
+            "skill.submit", "skill.install",  # R4-3 marketplace
         }
         assert perms == expected
 

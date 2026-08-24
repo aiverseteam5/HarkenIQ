@@ -64,7 +64,11 @@ async def test_grpc_and_http_side_by_side(config):
             base_url=f"http://127.0.0.1:{state.http_port}"
         ) as client:
             health = await client.get("/healthz")
-            assert health.json() == {"status": "ok", "site": "lab"}
+            payload = health.json()
+            # R4-3: /healthz carries HealthChecker probes + model info
+            assert payload["status"] == "ok"
+            assert payload["site"] == "lab"
+            assert payload["checks"]["database"] is True
 
             async with grpc.aio.insecure_channel(
                 f"127.0.0.1:{state.grpc_port}"

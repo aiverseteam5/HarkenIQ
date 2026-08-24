@@ -89,6 +89,9 @@ class ActionType(Enum):
     POWER_CAP_ADJUST = "POWER_CAP_ADJUST"
     # R4-2 actions (config compliance remediation)
     CONFIG_RESTORE = "CONFIG_RESTORE"
+    # R4-3 actions (firmware orchestration; campaign-driven, never skill-proposed)
+    FIRMWARE_UPDATE = "FIRMWARE_UPDATE"
+    FIRMWARE_ROLLBACK = "FIRMWARE_ROLLBACK"
 
 
 class ActionStatus(Enum):

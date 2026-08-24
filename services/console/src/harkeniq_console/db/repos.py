@@ -24,6 +24,7 @@ from harkeniq_console.db.models import (
     Invoice,
     InvoiceLine,
     License,
+    MarketplaceSkill,
     Payment,
     PaymentProviderCustomer,
     PlatformSetting,
@@ -1161,3 +1162,130 @@ class ImpersonationLogRepo:
         )
         items = (await self.session.execute(stmt)).scalars().all()
         return items, total
+
+
+class MarketplaceRepo:
+    """Skill marketplace persistence (R4-3 P17)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(self, entry_id: str) -> Optional[MarketplaceSkill]:
+        return await self.session.get(MarketplaceSkill, entry_id)
+
+    async def get_by_name_version(
+        self, skill_name: str, version: int
+    ) -> Optional[MarketplaceSkill]:
+        return (
+            await self.session.execute(
+                select(MarketplaceSkill).where(
+                    MarketplaceSkill.skill_name == skill_name,
+                    MarketplaceSkill.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def submit(
+        self,
+        skill_name: str,
+        version: int,
+        yaml_content: str,
+        author_email: str = "",
+        tenant_id: Optional[str] = None,
+        description: str = "",
+        target: str = "",
+        tier: str = "community",
+        validation_report: Optional[dict] = None,
+    ) -> MarketplaceSkill:
+        entry = MarketplaceSkill(
+            skill_name=skill_name,
+            version=version,
+            yaml_content=yaml_content,
+            author_email=author_email,
+            tenant_id=tenant_id,
+            description=description[:512],
+            target=target,
+            tier=tier,
+            validation_report=validation_report,
+        )
+        self.session.add(entry)
+        await self.session.flush()
+        return entry
+
+    async def list_filtered(
+        self,
+        tier: Optional[str] = None,
+        review_status: Optional[str] = None,
+        published: Optional[bool] = None,
+        target: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[MarketplaceSkill], int]:
+        stmt = select(MarketplaceSkill)
+        count_stmt = select(func.count()).select_from(MarketplaceSkill)
+        if tier:
+            stmt = stmt.where(MarketplaceSkill.tier == tier)
+            count_stmt = count_stmt.where(MarketplaceSkill.tier == tier)
+        if review_status:
+            stmt = stmt.where(MarketplaceSkill.review_status == review_status)
+            count_stmt = count_stmt.where(
+                MarketplaceSkill.review_status == review_status
+            )
+        if published is not None:
+            stmt = stmt.where(MarketplaceSkill.published == published)
+            count_stmt = count_stmt.where(MarketplaceSkill.published == published)
+        if target:
+            stmt = stmt.where(MarketplaceSkill.target == target)
+            count_stmt = count_stmt.where(MarketplaceSkill.target == target)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        stmt = (
+            stmt.order_by(MarketplaceSkill.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
+
+    async def review(
+        self,
+        entry: MarketplaceSkill,
+        approve: bool,
+        reviewer_email: str,
+        reason: str = "",
+    ) -> MarketplaceSkill:
+        entry.review_status = "approved" if approve else "rejected"
+        entry.published = approve
+        entry.reviewed_by = reviewer_email
+        entry.reviewed_at = utcnow()
+        entry.rejection_reason = "" if approve else reason[:512]
+        entry.updated_at = utcnow()
+        await self.session.flush()
+        return entry
+
+    async def record_stats(
+        self,
+        entry: MarketplaceSkill,
+        successes: int = 0,
+        failures: int = 0,
+        devices: int = 0,
+    ) -> MarketplaceSkill:
+        entry.success_count += max(0, successes)
+        entry.failure_count += max(0, failures)
+        entry.total_executions += max(0, successes) + max(0, failures)
+        entry.device_count = max(entry.device_count, devices)
+        entry.updated_at = utcnow()
+        await self.session.flush()
+        return entry
+
+    async def record_install(self, entry: MarketplaceSkill) -> MarketplaceSkill:
+        entry.install_count += 1
+        entry.updated_at = utcnow()
+        await self.session.flush()
+        return entry
+
+    async def promote(self, entry: MarketplaceSkill) -> MarketplaceSkill:
+        entry.tier = "verified"
+        entry.promoted_at = utcnow()
+        entry.updated_at = utcnow()
+        await self.session.flush()
+        return entry

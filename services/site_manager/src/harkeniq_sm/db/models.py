@@ -268,3 +268,53 @@ class AuditLogRow(Base):
     entry_hash: Mapped[str] = mapped_column(String(64), default="")
 
     __table_args__ = (UniqueConstraint("seq", name="uq_audit_log_seq"),)
+
+
+class FirmwareCampaign(Base):
+    """Staged, blast-radius-aware firmware rollout (R4-3 P19, OQ-21).
+
+    Lifecycle: draft -> approved (explicit human sign-off, audited) ->
+    running -> completed | halted. A campaign halts on the FIRST device
+    failure -- after rolling that device back blue-green -- and never
+    auto-continues past a failure.
+    """
+
+    __tablename__ = "firmware_campaigns"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"))
+    component: Mapped[str] = mapped_column(String(32), default="bmc")
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    target_version: Mapped[str] = mapped_column(String(64))
+    image_uri: Mapped[str] = mapped_column(String(512), default="")
+    image_sha256: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    current_wave: Mapped[int] = mapped_column(Integer, default=0)
+    wave_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_wave_size: Mapped[int] = mapped_column(Integer, default=5)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    halt_reason: Mapped[str] = mapped_column(String(512), default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FirmwareCampaignTarget(Base):
+    """Per-device state within a firmware campaign."""
+
+    __tablename__ = "firmware_campaign_targets"
+
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("firmware_campaigns.id"), primary_key=True
+    )
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id"), primary_key=True
+    )
+    wave_index: Mapped[int] = mapped_column(Integer, default=0)
+    #: pending | completed | failed | rolled_back | skipped
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    pre_version: Mapped[str] = mapped_column(String(64), default="")
+    post_version: Mapped[str] = mapped_column(String(64), default="")
+    error: Mapped[str] = mapped_column(String(512), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

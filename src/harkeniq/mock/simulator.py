@@ -78,6 +78,10 @@ class MockSimulator:
         self._state: dict[str, Any] = {}
         self._action_state: dict[str, Any] = {"led": {}, "diagnostics": [], "fan_reset": []}
         self._bmc_attributes: dict[str, Any] = dict(_DEFAULT_DELL_ATTRIBUTES)
+        # R4-3 P19: blue-green firmware banks + async update tasks
+        self._firmware_banks: dict[str, dict[str, Any]] = {}
+        self._update_tasks: dict[str, dict[str, Any]] = {}
+        self._fail_next_firmware_update = False
         self._sessions: dict[str, dict] = {}
         self._gradual_tasks: list = []
         self._fixtures_path = FIXTURES_DIR / device.replace("-", "_")
@@ -150,6 +154,9 @@ class MockSimulator:
         self._state = {}
         self._action_state = {"led": {}, "diagnostics": [], "fan_reset": []}
         self._bmc_attributes = dict(_DEFAULT_DELL_ATTRIBUTES)
+        self._firmware_banks = {}
+        self._update_tasks = {}
+        self._fail_next_firmware_update = False
         if not self._fixtures_path.exists():
             logger.warning("No fixtures directory: %s", self._fixtures_path)
             return
@@ -157,6 +164,12 @@ class MockSimulator:
             with open(f) as fh:
                 self._state[f.stem] = json.load(fh)
         self._generate_dimm_fixtures()
+        # R4-3 P19: seed the blue-green BMC firmware bank from the fixture
+        manager = self._state.get("manager", {})
+        self._firmware_banks["bmc"] = {
+            "active": manager.get("FirmwareVersion", ""),
+            "standby": None,
+        }
         logger.info("Loaded %d fixtures from %s", len(self._state), self._fixtures_path)
 
     def _generate_dimm_fixtures(self):
@@ -247,6 +260,21 @@ class MockSimulator:
             self._register_dell_routes(r)
         else:
             self._register_hpe_routes(r)
+
+        # R4-3 P19: UpdateService (vendor-neutral Redfish) with blue-green
+        # firmware banks and an async task state machine
+        r.add_get("/redfish/v1/UpdateService", self._handle_update_service)
+        r.add_post(
+            "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate",
+            self._handle_simple_update,
+        )
+        r.add_get(
+            "/redfish/v1/TaskService/Tasks/{task_id}", self._handle_task_get
+        )
+        r.add_post(
+            "/redfish/v1/UpdateService/Actions/Oem/HarkenIQ.FirmwareRollback",
+            self._handle_firmware_rollback,
+        )
 
         # Session management
         r.add_post("/redfish/v1/SessionService/Sessions", self._handle_create_session)
@@ -506,6 +534,122 @@ class MockSimulator:
     async def _handle_action_state(self, request: web.Request) -> web.Response:
         """Return applied action state for test assertions."""
         return web.json_response(self._action_state)
+
+    # ------------------------------------------------------------------
+    # Firmware update (R4-3 P19): blue-green banks + task state machine
+    # ------------------------------------------------------------------
+
+    @property
+    def firmware_banks(self) -> dict[str, dict[str, Any]]:
+        """Blue-green firmware banks per component (test assertions)."""
+        return {k: dict(v) for k, v in self._firmware_banks.items()}
+
+    def inject_firmware_update_failure(self) -> None:
+        """The next SimpleUpdate task ends in TaskState=Exception."""
+        self._fail_next_firmware_update = True
+
+    async def _handle_update_service(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        return web.json_response({
+            "@odata.id": "/redfish/v1/UpdateService",
+            "ServiceEnabled": True,
+            "FirmwareInventory": {"bmc": dict(self._firmware_banks.get("bmc", {}))},
+            "Actions": {
+                "#UpdateService.SimpleUpdate": {
+                    "target": "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate",
+                },
+            },
+        })
+
+    @staticmethod
+    def _version_from_image_uri(image_uri: str) -> str:
+        """Extract the version token from an image URI, e.g.
+        'https://sm/images/bmc-7.10.30.00.bin' -> '7.10.30.00'."""
+        import re
+        match = re.search(r"(\d+(?:\.\d+)+)", image_uri)
+        return match.group(1) if match else ""
+
+    async def _handle_simple_update(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        image_uri = body.get("ImageURI", "")
+        target_version = self._version_from_image_uri(image_uri)
+        if not target_version:
+            return web.json_response(
+                {"error": {"message": "Cannot determine version from ImageURI"}},
+                status=400,
+            )
+        task_id = f"TASK_{len(self._update_tasks) + 1:04d}"
+        self._update_tasks[task_id] = {
+            "state": "Running",
+            "polls_remaining": 2,
+            "target_version": target_version,
+            "component": "bmc",
+            "fail": self._fail_next_firmware_update,
+        }
+        self._fail_next_firmware_update = False
+        return web.json_response(
+            {
+                "@odata.id": f"/redfish/v1/TaskService/Tasks/{task_id}",
+                "Id": task_id,
+                "TaskState": "Running",
+            },
+            status=202,
+        )
+
+    async def _handle_task_get(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        task_id = request.match_info["task_id"]
+        task = self._update_tasks.get(task_id)
+        if task is None:
+            return web.json_response(
+                {"error": {"message": f"Task {task_id} not found"}}, status=404
+            )
+        if task["state"] == "Running":
+            task["polls_remaining"] -= 1
+            if task["polls_remaining"] <= 0:
+                if task["fail"]:
+                    task["state"] = "Exception"
+                else:
+                    task["state"] = "Completed"
+                    self._apply_firmware(task["component"], task["target_version"])
+        return web.json_response({
+            "@odata.id": f"/redfish/v1/TaskService/Tasks/{task_id}",
+            "Id": task_id,
+            "TaskState": task["state"],
+        })
+
+    def _apply_firmware(self, component: str, version: str) -> None:
+        """Blue-green apply: current active becomes standby, new becomes
+        active; the manager fixture reflects the new running version."""
+        bank = self._firmware_banks.setdefault(
+            component, {"active": "", "standby": None}
+        )
+        bank["standby"] = bank["active"]
+        bank["active"] = version
+        if component == "bmc" and "manager" in self._state:
+            self._state["manager"]["FirmwareVersion"] = version
+
+    async def _handle_firmware_rollback(self, request: web.Request) -> web.Response:
+        """Blue-green swap back to the standby bank (OQ-21)."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        component = body.get("Component", "bmc")
+        bank = self._firmware_banks.get(component)
+        if not bank or bank.get("standby") is None:
+            return web.json_response(
+                {"error": {"message": f"No standby firmware bank for {component}"}},
+                status=400,
+            )
+        bank["active"], bank["standby"] = bank["standby"], bank["active"]
+        if component == "bmc" and "manager" in self._state:
+            self._state["manager"]["FirmwareVersion"] = bank["active"]
+        return web.json_response({"TaskState": "Completed",
+                                  "ActiveVersion": bank["active"]})
 
     # ------------------------------------------------------------------
     # Fault injection (Doc 11 §7)

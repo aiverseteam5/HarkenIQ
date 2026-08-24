@@ -114,6 +114,10 @@ class ActionExecutor:
                 await self._fan_reset()
             elif action.type == ActionType.CONFIG_RESTORE:
                 await self._config_restore(action)
+            elif action.type == ActionType.FIRMWARE_UPDATE:
+                await self._firmware_update(action)
+            elif action.type == ActionType.FIRMWARE_ROLLBACK:
+                await self._firmware_rollback(action)
             else:  # pragma: no cover - allow list guards this
                 raise ActionError(f"Unknown action type: {action.type}")
         except (RedfishError, ActionError) as e:
@@ -187,6 +191,82 @@ class ActionExecutor:
                     f"CONFIG_RESTORE verification failed: {key} is "
                     f"{current.get(key)!r}, expected {expected!r}"
                 )
+
+    # -- firmware update (R4-3 P19, OQ-21) -----------------------------------
+    #
+    # Blue-green semantics: SimpleUpdate writes the new image; the BMC keeps
+    # the previous bank as standby. Verification re-reads the running
+    # version; FIRMWARE_ROLLBACK swaps back to the standby bank. These
+    # actions are campaign-driven (SM FirmwareOrchestrator) -- never
+    # proposed by skills -- and are absent from the default allow list.
+
+    #: Seconds between task polls; tests set 0.
+    task_poll_interval: float = 2.0
+    #: Give up after this many polls (~2 min at the default interval).
+    task_poll_limit: int = 60
+
+    async def _firmware_update(self, action: Action) -> None:
+        target_version = action.params.get("target_version", "")
+        image_uri = action.params.get("image_uri", "")
+        component = action.params.get("component", "bmc")
+        if not target_version:
+            raise ActionError("FIRMWARE_UPDATE requires a 'target_version' param")
+        if component != "bmc":
+            raise ActionError(
+                f"FIRMWARE_UPDATE for component {component!r} not implemented "
+                "(R4-3: BMC first)"
+            )
+        if not image_uri:
+            image_uri = f"harkeniq://firmware/{component}-{target_version}.bin"
+
+        response = await self.client.post(
+            "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate",
+            {"ImageURI": image_uri, "Targets": []},
+        )
+        task_uri = response.get("@odata.id", "")
+        if not task_uri:
+            raise ActionError("SimpleUpdate did not return a task")
+
+        state = await self._poll_task(task_uri)
+        if state != "Completed":
+            raise ActionError(f"Firmware update task ended in {state}")
+
+        # Verify the running version (fresh read; never a cached identity)
+        manager = await self.client.get(
+            f"/redfish/v1/Managers/{self.manager_id}"
+        )
+        running = manager.get("FirmwareVersion", "")
+        if running != target_version:
+            raise ActionError(
+                f"Firmware verification failed: running {running!r}, "
+                f"expected {target_version!r}"
+            )
+
+    async def _firmware_rollback(self, action: Action) -> None:
+        component = action.params.get("component", "bmc")
+        response = await self.client.post(
+            "/redfish/v1/UpdateService/Actions/Oem/HarkenIQ.FirmwareRollback",
+            {"Component": component},
+        )
+        expected = action.params.get("expected_version", "")
+        active = response.get("ActiveVersion", "")
+        if expected and active != expected:
+            raise ActionError(
+                f"Rollback verification failed: active {active!r}, "
+                f"expected {expected!r}"
+            )
+
+    async def _poll_task(self, task_uri: str) -> str:
+        import asyncio
+
+        for _ in range(self.task_poll_limit):
+            task = await self.client.get(task_uri)
+            state = task.get("TaskState", "")
+            if state in ("Completed", "Exception", "Killed", "Cancelled"):
+                return state
+            if self.task_poll_interval > 0:
+                await asyncio.sleep(self.task_poll_interval)
+        raise ActionError(f"Firmware task did not finish: {task_uri}")
 
     async def _fan_reset(self) -> None:
         if self.vendor == "dell":

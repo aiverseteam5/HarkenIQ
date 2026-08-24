@@ -261,8 +261,16 @@ class TestCredentialProviderChain:
 
 @pytest.fixture
 def httpx_mock():
-    """Simple httpx mock for Vault HTTP tests."""
-    return _HttpxMock()
+    """Simple httpx mock for Vault HTTP tests.
+
+    Restores httpx.AsyncClient on teardown — the patch previously leaked
+    into every later test that resolves httpx.AsyncClient at call time.
+    """
+    import httpx as _httpx
+    original = _httpx.AsyncClient
+    mock = _HttpxMock()
+    yield mock
+    _httpx.AsyncClient = original
 
 
 class _HttpxMock:

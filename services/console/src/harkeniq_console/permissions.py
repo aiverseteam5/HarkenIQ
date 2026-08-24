@@ -1,6 +1,6 @@
 """RBAC permissions and fixed role definitions.
 
-Seven fixed roles (spec S4) mapped to 21 atomic permissions. Tenants
+Seven fixed roles (spec S4) mapped to 24 atomic permissions. Tenants
 may define custom roles via ``CustomRole`` records; the
 ``has_permission`` helper merges fixed + custom grants.
 """
@@ -32,6 +32,10 @@ PERMISSIONS: dict[str, str] = {
     "audit.view":             "View audit logs",
     "audit.export":           "Export audit logs",
     "admin.dashboard":        "Access platform admin dashboard",
+    # R4-3: community skill marketplace (OQ-22)
+    "skill.submit":           "Submit skills to the marketplace",
+    "skill.review":           "Review and promote marketplace skills (staff)",
+    "skill.install":          "Install marketplace skills for a tenant",
 }
 
 # ── fixed roles ─────────────────────────────────────────────────────
@@ -63,6 +67,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "support.view",
         "audit.view",
         "audit.export",
+        "skill.submit",
+        "skill.install",
     },
 
     "site_admin": {
@@ -82,6 +88,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "incident.acknowledge",
         "support.create",
         "support.view",
+        "skill.submit",
     },
 
     "auditor": {

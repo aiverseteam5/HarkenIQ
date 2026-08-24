@@ -28,6 +28,7 @@ const NAV_SECTIONS: SidebarSection[] = [
       { key: "/support", label: "Support", icon: "\u2709" },
       { key: "/audit", label: "Audit Logs", icon: "\u2630" },
       { key: "/reports", label: "Reports", icon: "\u2261" },
+      { key: "/marketplace", label: "Skill Marketplace", icon: "\u2606" },
     ],
   },
   {

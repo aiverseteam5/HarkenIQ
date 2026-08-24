@@ -44,6 +44,8 @@ class AppState:
     inference: Optional[InferenceJob] = None
     grpc_port: int = 0
     http_port: int = 0
+    # R4-3 P18: local model integrity result (ModelInfo), set at startup
+    model_info: object = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     # Set when an in-memory sqlite DSN was remapped to a temp file;
     # removed on shutdown.
@@ -83,9 +85,22 @@ async def make_state(config: SMConfig) -> AppState:
     pipeline = ReasoningPipeline()
     pipeline.add_provider(DeterministicReasoner())
     pipeline.add_provider(KnowledgeBaseReasoner())
+
+    # R4-3 P18: verify the local model's integrity before trusting it.
+    # "unconfigured" (no llm_model_path) is the connected-cloud mode and
+    # imposes nothing; anything else must be "ok" for the LLM to serve.
+    from harkeniq_sm.model_integrity import verify_model
+    state.model_info = verify_model(config.llm_model_path, config.llm_model_sha256)
+    model_gate_ok = state.model_info.status in ("ok", "unconfigured")
+    if not model_gate_ok:
+        logger.error(
+            "Local LLM model failed integrity check (%s); LLM reasoning "
+            "DISABLED", state.model_info.status,
+        )
+
     # R4-1: api_key is optional -- local OpenAI-compatible endpoints
     # (llama.cpp server, vLLM) run without authentication.
-    if config.llm_enabled and config.llm_api_url:
+    if config.llm_enabled and config.llm_api_url and model_gate_ok:
         from harkeniq_sm.llm_provider import LLMProvider
         llm = LLMProvider(
             api_url=config.llm_api_url,

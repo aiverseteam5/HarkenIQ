@@ -626,3 +626,51 @@ R4-2 Fleet Intelligence implemented; scope deltas vs. §3 as designed:
 6. **Fleet detail contract fixed:** `GET /api/fleet/{id}` now exists (the
    Console detail panel had been calling it since R2b and 404ing), and the
    list response carries an `items` alias plus per-device warranty status.
+
+---
+
+## Amendment A7 — R4-3 shipped (2026-08-24)
+
+R4-3 Governance & Ecosystem implemented; decisions and scope deltas:
+
+1. **OQ-22 answered (marketplace trust model).** Tiers as designed —
+   community (user-submitted, schema-validated, human-reviewed before
+   publication) -> verified (promoted) -> core (platform-authored).
+   `SkillTier.VERIFIED` added to the core enum. The promotion gate checks
+   RAW COUNTS (>= 95% success over >= 50 executions on >= 50 devices):
+   `SkillOutcomeStats.success_rate` returns 1.0 on zero data and must
+   never be trusted by the gate. The marketplace lives at Console
+   (`marketplace_skills` table, tenant + admin routers, `skill.submit/
+   review/install` permissions, Console UI page); validation reuses the
+   agent's own `parse_skill` schema/DSL whitelist — the actual safety
+   boundary for untrusted YAML. Fleet distribution of installed skills
+   rides the existing (stubbed) PushSkill transport and remains the
+   integration step; the marketplace is the audited source of truth for
+   what a tenant installed.
+2. **Air-gapped LLM (OQ-18 closed).** As designed in §7: llama.cpp server
+   in the full-stack compose (profile `airgap-llm`, model bind-mounted
+   read-only), zero LLMProvider changes. New: SM startup model-integrity
+   gate (`llm_model_path`/`llm_model_sha256`; mismatch or missing model
+   DISABLES the LLM rather than serving a corrupt model) and the R4-0
+   HealthChecker finally wired into SM `/healthz` with database + model
+   probes and model metadata (path, sha256, size, status).
+3. **OQ-21 answered (firmware orchestration).** SM-owned campaigns
+   (`firmware_campaigns` + per-device targets): waves planned so no fault
+   domain ever has two devices in the same wave (plus a wave-size cap);
+   one explicit human approval per campaign; waves strictly sequential;
+   on the FIRST device failure the device is rolled back blue-green
+   (standby-bank swap) and the campaign HALTS — it never auto-continues.
+   Device level: FIRMWARE_UPDATE / FIRMWARE_ROLLBACK actions (risk class
+   "high", absent from default allow list, health-gated preconditions),
+   Redfish UpdateService.SimpleUpdate + task polling + running-version
+   verification; the simulator gained a full UpdateService (task state
+   machine, blue-green banks, failure injection). The orchestrator uses a
+   DeviceUpdater seam and REFUSES to advance without a configured
+   transport — the SM->agent directed-action channel is the remaining
+   integration step and is not faked.
+4. **Predictive maintenance ships as scoring infrastructure, not ML** —
+   the §3 caveat (needs 6+ months of data) holds. CC `predictive.py`:
+   recency-weighted per-device failure rate (30-day half-life), cohort
+   prior fallback below 5 samples, health/warranty modifiers, explicit
+   insufficient_data band, `/api/predictive/risk`. A trained model drops
+   into the same seat once the data exists.

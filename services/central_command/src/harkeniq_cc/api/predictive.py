@@ -1,0 +1,68 @@
+"""Predictive maintenance API (R4-3 P20).
+
+On-demand per-device failure risk over accumulated outcome history,
+enriched with current health and warranty status. Deterministic scoring
+(see harkeniq_cc.predictive); no trained model yet by design.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.auth import UserContext
+from harkeniq_cc.db.repos import FleetCacheRepo, OutcomeHistoryRepo, WarrantyRepo
+from harkeniq_cc.predictive import cohort_failure_rates, score_device
+from harkeniq_cc.warranty.base import warranty_status
+
+router = APIRouter(prefix="/api/predictive", tags=["predictive"])
+
+_BAND_ORDER = {"high": 0, "medium": 1, "low": 2, "insufficient_data": 3}
+
+
+@router.get(
+    "/risk",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def device_risk(
+    band: str | None = Query(None, description="filter: high|medium|low|insufficient_data"),
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Per-device failure risk, riskiest first."""
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id)
+    outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
+        user.tenant_id
+    )
+    warranty_map = await WarrantyRepo(session).get_map(
+        [d.service_tag for d in devices]
+    )
+    cohorts = cohort_failure_rates(outcomes)
+    by_device: dict[str, list[dict]] = {}
+    for oc in outcomes:
+        by_device.setdefault(oc["device_agent_id"], []).append(oc)
+
+    risks = []
+    for dev in devices:
+        warranty = warranty_map.get(dev.service_tag)
+        risk = score_device(
+            agent_id=dev.agent_id,
+            outcomes=by_device.get(dev.agent_id, []),
+            cohort_failure_rate=cohorts.get((dev.vendor, dev.model)),
+            health=dev.health,
+            warranty_status=warranty_status(warranty.end_date) if warranty else "",
+            vendor=dev.vendor,
+            model=dev.model,
+        )
+        if band and risk.band != band:
+            continue
+        risks.append(risk)
+
+    risks.sort(key=lambda r: (_BAND_ORDER.get(r.band, 9), -r.risk_score))
+    return {
+        "risks": [r.to_dict() for r in risks],
+        "devices_scored": len(devices),
+        "outcomes_considered": len(outcomes),
+        "tenant_id": user.tenant_id,
+    }

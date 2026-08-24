@@ -14,6 +14,7 @@ import UserManagement from "./pages/UserManagement";
 import LicenseManagement from "./pages/LicenseManagement";
 import FleetOverview from "./pages/FleetOverview";
 import VendorReliability from "./pages/VendorReliability";
+import SkillMarketplace from "./pages/SkillMarketplace";
 import ApprovalQueue from "./pages/ApprovalQueue";
 import BillingDashboard from "./pages/BillingDashboard";
 import InvoiceDetail from "./pages/InvoiceDetail";
@@ -105,6 +106,7 @@ function AppRoutes() {
         <Route path="/licenses" element={<LicenseManagement />} />
         <Route path="/fleet" element={<FleetOverview />} />
         <Route path="/reliability" element={<VendorReliability />} />
+        <Route path="/marketplace" element={<SkillMarketplace />} />
         <Route path="/approvals" element={<ApprovalQueue />} />
         <Route path="/agents" element={<AgentManagement />} />
         <Route path="/policies" element={<ApprovalPolicies />} />

@@ -263,7 +263,7 @@ def validate_config(config: Mapping) -> list[str]:
     allowed = {
         "IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET",
         "SEL_CLEAR", "BMC_RESET", "POWER_CYCLE", "POWER_CAP_ADJUST",
-        "CONFIG_RESTORE",
+        "CONFIG_RESTORE", "FIRMWARE_UPDATE", "FIRMWARE_ROLLBACK",
     }
     for entry in config.get("actions", {}).get("allow_list", []):
         if entry not in allowed:

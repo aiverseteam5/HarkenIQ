@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from harkeniq_sm.api import actions as actions_api
 from harkeniq_sm.api import audit as audit_api
 from harkeniq_sm.api import devices as devices_api
+from harkeniq_sm.api import firmware_campaigns as firmware_campaigns_api
 from harkeniq_sm.api import domains as domains_api
 from harkeniq_sm.api import incidents as incidents_api
 from harkeniq_sm.api import site as site_api
@@ -31,10 +32,38 @@ def create_app(state) -> FastAPI:
     app.include_router(incidents_api.router)
     app.include_router(actions_api.router)
     app.include_router(audit_api.router)
+    app.include_router(firmware_campaigns_api.router)
+
+    # R4-3 P18: real health checks (R4-0's HealthChecker, finally wired)
+    # with local-LLM model metadata for air-gapped deployments.
+    from harkeniq.metrics import HealthChecker
+
+    checker = HealthChecker("site-manager")
+
+    async def _db_probe() -> bool:
+        from sqlalchemy import text
+        async with state.sessionmaker() as session:
+            await session.execute(text("SELECT 1"))
+        return True
+
+    def _model_probe() -> bool:
+        info = state.model_info
+        # unconfigured (connected mode) is healthy; a configured model
+        # must have passed its checksum.
+        return info is None or info.status in ("ok", "unconfigured")
+
+    checker.add_probe("database", _db_probe)
+    checker.add_probe("llm_model", _model_probe)
 
     @app.get("/healthz")
     async def healthz() -> dict:
-        return {"status": "ok", "site": state.config.site_name}
+        status = await checker.check()
+        payload = status.to_dict()
+        payload["site"] = state.config.site_name
+        payload["status"] = "ok" if status.healthy else "degraded"
+        if state.model_info is not None:
+            payload["llm_model"] = state.model_info.to_dict()
+        return payload
 
     @app.get("/api/coverage", dependencies=[Depends(require_site_token)])
     async def coverage() -> list[dict]:

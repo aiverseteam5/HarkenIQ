@@ -19,6 +19,7 @@ from typing import Any, Optional
 class SkillTier(str, Enum):
     CORE = "core"                # built by HarkenIQ team
     VENDOR = "vendor"            # vendor-specific
+    VERIFIED = "verified"        # community skill promoted via the 95% gate (R4-3, OQ-22)
     COMMUNITY = "community"      # open-source contributions
     AUTO_GENERATED = "auto_generated"  # LLM-created (R3b)
 

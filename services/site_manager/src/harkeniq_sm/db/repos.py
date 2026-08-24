@@ -21,6 +21,8 @@ from harkeniq_sm.db.models import (
     DeviceSubsystemState,
     DomainMembership,
     FaultDomain,
+    FirmwareCampaign,
+    FirmwareCampaignTarget,
     HeartbeatRow,
     Incident,
     Rack,
@@ -545,3 +547,79 @@ class AuditRepo:
             (r.seq, r.prev_hash, r.entry_hash, self._chain_payload(r))
             for r in rows
         )
+
+
+class FirmwareCampaignRepo:
+    """Firmware campaign persistence (R4-3 P19)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(
+        self,
+        site_id: str,
+        component: str,
+        target_version: str,
+        vendor: str = "",
+        image_uri: str = "",
+        image_sha256: str = "",
+        created_by: str = "",
+        max_wave_size: int = 5,
+    ) -> FirmwareCampaign:
+        campaign = FirmwareCampaign(
+            site_id=site_id, component=component, vendor=vendor,
+            target_version=target_version, image_uri=image_uri,
+            image_sha256=image_sha256, created_by=created_by,
+            max_wave_size=max_wave_size,
+        )
+        self.session.add(campaign)
+        await self.session.flush()
+        return campaign
+
+    async def get(self, campaign_id: str) -> Optional[FirmwareCampaign]:
+        return await self.session.get(FirmwareCampaign, campaign_id)
+
+    async def list_for_site(self, site_id: str) -> Sequence[FirmwareCampaign]:
+        return (
+            await self.session.execute(
+                select(FirmwareCampaign)
+                .where(FirmwareCampaign.site_id == site_id)
+                .order_by(FirmwareCampaign.created_at.desc())
+            )
+        ).scalars().all()
+
+    async def add_target(
+        self, campaign_id: str, device_id: str, wave_index: int,
+        pre_version: str = "",
+    ) -> FirmwareCampaignTarget:
+        target = FirmwareCampaignTarget(
+            campaign_id=campaign_id, device_id=device_id,
+            wave_index=wave_index, pre_version=pre_version,
+        )
+        self.session.add(target)
+        await self.session.flush()
+        return target
+
+    async def targets(
+        self, campaign_id: str, wave_index: Optional[int] = None
+    ) -> Sequence[FirmwareCampaignTarget]:
+        stmt = select(FirmwareCampaignTarget).where(
+            FirmwareCampaignTarget.campaign_id == campaign_id
+        )
+        if wave_index is not None:
+            stmt = stmt.where(FirmwareCampaignTarget.wave_index == wave_index)
+        stmt = stmt.order_by(
+            FirmwareCampaignTarget.wave_index, FirmwareCampaignTarget.device_id
+        )
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def update_target(
+        self, target: FirmwareCampaignTarget, status: str,
+        post_version: str = "", error: str = "",
+    ) -> FirmwareCampaignTarget:
+        target.status = status
+        target.post_version = post_version
+        target.error = error[:512]
+        target.updated_at = utcnow()
+        await self.session.flush()
+        return target

@@ -148,11 +148,36 @@ def _check_power_cap_adjust(
     )
 
 
+def _check_firmware_update(
+    action_type: ActionType, device: dict, agent: dict
+) -> PreconditionResult:
+    """Firmware update (R4-3): healthy device, no update already running.
+
+    A firmware write on an already-degraded device compounds risk; the
+    campaign should update healthy devices and let incidents resolve
+    first. This is deliberately stricter than every other action.
+    """
+    failures = []
+    health = str(device.get("overall_health", "")).lower()
+    if health not in ("ok", "healthy"):
+        failures.append(
+            f"Device health must be OK before a firmware update (is {health or 'unknown'!r})"
+        )
+    if device.get("firmware_update_in_progress", False):
+        failures.append("Another firmware update is already in progress")
+    return PreconditionResult(
+        passed=len(failures) == 0,
+        action_type=action_type,
+        failed_checks=failures,
+    )
+
+
 _PRECONDITION_MAP = {
     ActionType.SEL_CLEAR: _check_sel_clear,
     ActionType.BMC_RESET: _check_bmc_reset,
     ActionType.POWER_CYCLE: _check_power_cycle,
     ActionType.POWER_CAP_ADJUST: _check_power_cap_adjust,
+    ActionType.FIRMWARE_UPDATE: _check_firmware_update,
 }
 
 
@@ -168,4 +193,8 @@ ACTION_RISK = {
     ActionType.BMC_RESET: "low",
     ActionType.POWER_CYCLE: "medium",
     ActionType.POWER_CAP_ADJUST: "medium",
+    ActionType.CONFIG_RESTORE: "medium",
+    # R4-3: bricked device = permanent loss; highest risk class in the platform
+    ActionType.FIRMWARE_UPDATE: "high",
+    ActionType.FIRMWARE_ROLLBACK: "high",
 }

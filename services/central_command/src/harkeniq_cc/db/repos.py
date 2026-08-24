@@ -759,6 +759,33 @@ class OutcomeHistoryRepo:
         )
         return result.scalar() or 0
 
+    async def list_device_outcome_dicts(
+        self, tenant_id: str, limit: int = 50000
+    ) -> list[dict]:
+        """Per-device outcome rows for risk scoring (R4-3 P20).
+
+        Uses the ix_outcome_history_device access path; returns dicts
+        with device attribution and recorded_at for recency weighting.
+        """
+        stmt = (
+            select(CCOutcomeHistory)
+            .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
+            .where(CCSite.tenant_id == tenant_id)
+            .order_by(CCOutcomeHistory.recorded_at)
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [
+            {
+                "device_agent_id": r.device_agent_id,
+                "vendor": r.vendor,
+                "model": r.model,
+                "outcome": r.outcome,
+                "recorded_at": r.recorded_at,
+            }
+            for r in rows
+        ]
+
 
 class FleetPatternRepo:
     """Persistence for detected fleet patterns (R4-1)."""

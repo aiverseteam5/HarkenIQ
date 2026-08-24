@@ -457,3 +457,47 @@ class ImpersonationLog(Base):
         Index("ix_impersonation_log_tenant_id", "tenant_id"),
         Index("ix_impersonation_log_admin", "admin_user_id"),
     )
+
+
+class MarketplaceSkill(Base):
+    """Community skill marketplace entry (R4-3 P17, OQ-22).
+
+    Trust tiers: community (user-submitted) -> verified (promoted via
+    the 95% success gate) ; core is reserved for HarkenIQ-authored
+    skills seeded by the platform. Review is a separate axis:
+    submitted -> approved | rejected. Only approved entries publish.
+    """
+
+    __tablename__ = "marketplace_skills"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    skill_name: Mapped[str] = mapped_column(String(255))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    author_email: Mapped[str] = mapped_column(String(320), default="")
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    description: Mapped[str] = mapped_column(String(512), default="")
+    target: Mapped[str] = mapped_column(String(32), default="")
+    yaml_content: Mapped[str] = mapped_column(Text)
+    tier: Mapped[str] = mapped_column(String(16), default="community")
+    review_status: Mapped[str] = mapped_column(String(16), default="submitted")
+    validation_report: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    rejection_reason: Mapped[str] = mapped_column(String(512), default="")
+    reviewed_by: Mapped[str] = mapped_column(String(320), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    install_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Fleet execution stats reported back by CC deployments; back the
+    # promotion gate. NEVER trust a zero-execution success rate.
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_executions: Mapped[int] = mapped_column(Integer, default=0)
+    device_count: Mapped[int] = mapped_column(Integer, default=0)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("skill_name", "version", name="uq_marketplace_skill_version"),
+        Index("ix_marketplace_review_status", "review_status"),
+        Index("ix_marketplace_tier", "tier"),
+    )

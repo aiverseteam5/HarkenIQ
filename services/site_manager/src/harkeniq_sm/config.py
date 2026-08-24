@@ -55,6 +55,13 @@ class SMConfig:
     llm_model: str = ""                # e.g. "claude-sonnet-4-20250514"
     llm_timeout_s: float = 30.0
     llm_max_tokens: int = 1024
+    # R4-3 P18: air-gapped LLM model integrity (OQ-18). When llm_model_path
+    # is set, SM verifies the file's SHA-256 against llm_model_sha256 at
+    # startup and disables the LLM (NullLLMProvider) on mismatch/missing --
+    # a corrupted model must never serve. Model updates are explicit
+    # operator actions (copy file, restart SM); no auto-download.
+    llm_model_path: str = ""
+    llm_model_sha256: str = ""
     correlation: CorrelationThresholds = field(default_factory=CorrelationThresholds)
 
     def validate(self) -> list[str]:
@@ -88,6 +95,8 @@ _ENV_MAP = {
     "HARKEN_SM_LLM_API_URL": "llm_api_url",
     "HARKEN_SM_LLM_API_KEY": "llm_api_key",
     "HARKEN_SM_LLM_MODEL": "llm_model",
+    "HARKEN_SM_LLM_MODEL_PATH": "llm_model_path",
+    "HARKEN_SM_LLM_MODEL_SHA256": "llm_model_sha256",
 }
 
 

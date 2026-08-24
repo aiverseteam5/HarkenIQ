@@ -16,6 +16,7 @@ from harkeniq_console.api import billing as billing_api
 from harkeniq_console.api import internal as internal_api
 from harkeniq_console.api import invoices as invoices_api
 from harkeniq_console.api import licenses as licenses_api
+from harkeniq_console.api import marketplace as marketplace_api
 from harkeniq_console.api import support as support_api
 from harkeniq_console.api import tenants as tenants_api
 from harkeniq_console.api import users as users_api
@@ -45,6 +46,8 @@ def create_app(state) -> FastAPI:
     app.include_router(invoices_api.payments_router)
     app.include_router(apikeys_api.router)
     app.include_router(apikeys_api.impersonation_router)
+    app.include_router(marketplace_api.router)
+    app.include_router(marketplace_api.admin_router)
 
     @app.get("/healthz")
     async def healthz() -> dict:
