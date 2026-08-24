@@ -100,6 +100,16 @@ class ActionStatus(Enum):
     FAILED = "FAILED"
 
 
+class PlaybookStatus(Enum):
+    """Playbook execution lifecycle (R3b-3, spec doc 03)."""
+
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"          # partial step failure, awaiting human review
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+
+
 class ClaimStatus(Enum):
     """Incident claim lifecycle states (R3b-2, spec R-M15 through R-M18)."""
 

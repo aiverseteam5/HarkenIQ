@@ -321,7 +321,7 @@ here) no later than the start of their owning slice.
 | OQ-11 | Correlated-conclusion suppression (shared upstream cause) | TODOS M8 | R3a — **answered, A2.6** (parent incidents in R2a, suppression in R3a) |
 | OQ-12 | Coverage-map presentation: silent device = unobserved, not healthy | TODOS M9 | R2a |
 | OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3b-2 — **answered, A3.2**: implemented as CorrelationProbe (both-sides error counters, 4-way fault location) |
-| OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3b — **rescheduled, A1.3** → A2: agents keep local encrypted creds through R3a; SM credential brokering (JIT) lands in R3b |
+| OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3b-3 — **answered, A4.1**: CredentialProvider interface (Local+Vault+Mock), blue-green rotation |
 | OQ-15 | Application-layer symptom source for cross-layer correlation (Prometheus scrape? logs?) | Platform-Design | R3a (basic: syslog/dmesg hardware-to-OS mapping) / R3b (full: process→service mapping) |
 | OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R2a poll-path (R-S1) minimal / R4 broad |
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
@@ -665,3 +665,57 @@ Seven interfaces/data models introduced in R3a for R3b/R4 extension without rede
 | CorrelationProbe | `autonomy/correlation_probe.py` | Two-device fault location |
 | PartitionFence | `autonomy/partition_fence.py` | Isolation detection + fencing |
 | PeerProtocol | `autonomy/peer_protocol.py` | Contract 7 facade (all 4 stubs implemented) |
+
+### A4 — 2026-08-24 — R3b-3 Advanced Remediation + Fleet Learning (decided: Vinod)
+
+1. **OQ-14 answered — credential provider interface:** `CredentialProvider` protocol
+   with three implementations: `LocalCredentialProvider` (existing encrypted config,
+   permanent fallback per R-H7), `VaultCredentialProvider` (HashiCorp Vault KV v2 via
+   httpx, no SDK dependency), `MockCredentialProvider` (CI/testing). `CredentialProviderChain`
+   tries Vault first, falls back to Local. Same httpx async pattern as LLMProvider.
+
+2. **Credential rotation — blue-green pattern:** `CredentialRotator` implements create new
+   account → verify new → disable old → update store. Rollback if verify fails (re-enable
+   old, delete new). Audit trail for every rotation event. Uses Redfish AccountService API.
+
+3. **Multi-step playbooks:** `Playbook` model with ordered `PlaybookStep` list. Each step:
+   action_type, preconditions, verification_checks, rollback_action (optional), credential_required.
+   `PlaybookExecutor` orchestrates sequential execution with per-step verification, rollback on
+   failure, pause for human review on partial, resume capability. Three built-in playbooks:
+   BMC_RECOVERY, THERMAL_MITIGATION, DISK_REPLACEMENT_PREP.
+
+4. **Fleet outcome reporting:** `FleetOutcome` proto message added to `FleetSnapshot`. SM
+   populates unreported outcomes from `sm_action_outcomes` table (watermark-based). CC ingests
+   into `cc_outcome_history` table during existing fleet poll cycle. Zero new infrastructure.
+
+5. **CC outcome aggregation:** `OutcomeAggregator` groups outcomes by (action_type, vendor,
+   model), computes success_rate, failure_rate, resolution_rate. Snapshot-based trend detection
+   for anomaly identification.
+
+6. **Fleet pattern detection (R-C1):** `PatternDetector` detects three pattern types:
+   batch_failure (action fails above threshold on specific model), anomaly (failure rate
+   increase), reliability (model-specific rate worse than fleet average). Dedup by scope.
+   Results stored in `cc_fleet_patterns` table.
+
+7. **Knowledge distribution (R-C1 loop):** `KnowledgeDistributor` routes detected patterns
+   to Site Managers whose fleet inventory matches the affected scope (vendor/model). Serializes
+   patterns for existing PushPolicy RPC channel. No new RPC needed.
+
+8. **Learning feedback tracker (R-C1 complete):** `LearningFeedbackTracker` tracks full cycle:
+   outcome → pattern → skill → distribution → outcomes. Computes improvement percentage.
+   Auto-promotion criteria: success_rate >= 95% across 50+ devices.
+
+#### A4.9 — Architectural summary
+
+| Component | File | Purpose |
+|---|---|---|
+| CredentialProvider | `security/credentials.py` | Local + Vault + Mock + Chain |
+| CredentialRotator | `security/credential_rotation.py` | Blue-green BMC account rotation |
+| Playbook / PlaybookStep | `actions/playbook.py` | Multi-step data model + built-ins |
+| PlaybookExecutor | `actions/playbook_executor.py` | Step orchestration + verification |
+| OutcomeAggregator | CC `outcome_aggregator.py` | Fleet-wide outcome metrics |
+| PatternDetector | CC `pattern_detector.py` | Batch failure / anomaly / reliability |
+| KnowledgeDistributor | CC `knowledge_distributor.py` | Pattern routing to SMs |
+| LearningFeedbackTracker | CC `learning_feedback.py` | R-C1 complete loop tracking |
+| CCOutcomeHistory | CC `db/models.py` | Outcome persistence for learning |
+| CCFleetPattern | CC `db/models.py` | Detected patterns persistence |

@@ -296,11 +296,43 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     )
                 )
 
+            # R3b-3: include unreported action outcomes for CC learning
+            fleet_outcomes = []
+            try:
+                from harkeniq_sm.db.models import ActionOutcomeRow
+                unreported = (
+                    await session.execute(
+                        select(ActionOutcomeRow).where(
+                            ActionOutcomeRow.reported_to_cc == False  # noqa: E712
+                        ).limit(100)
+                    )
+                ).scalars().all()
+                for oc in unreported:
+                    # Resolve device vendor/model
+                    dev = await DeviceRepo(session).get(oc.device_id) if oc.device_id else None
+                    fleet_outcomes.append(
+                        harkeniq_pb2.FleetOutcome(
+                            action_id=oc.action_id,
+                            action_type=oc.action_type,
+                            device_agent_id=dev.agent_id if dev else oc.device_id,
+                            outcome=oc.outcome,
+                            fault_resolved=oc.fault_resolved or False,
+                            vendor=dev.vendor if dev else "",
+                            model=dev.model if dev else "",
+                            recorded_at_unix=_ts(oc.recorded_at),
+                        )
+                    )
+                    oc.reported_to_cc = True
+                await session.commit()
+            except Exception as e:
+                logger.debug("Outcome reporting skipped: %s", e)
+
         return harkeniq_pb2.FleetSnapshot(
             devices=fleet_devices,
             incidents=fleet_incidents,
             pending_actions=fleet_actions,
             snapshot_at_unix=int(time.time()),
+            outcomes=fleet_outcomes,
         )
 
     async def RouteApproval(self, request, context):

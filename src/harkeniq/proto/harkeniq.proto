@@ -176,11 +176,24 @@ message FleetAction {
   int64 proposed_at_unix = 7;
 }
 
+// R3b-3: outcome reporting for fleet learning (R-C1)
+message FleetOutcome {
+  string action_id = 1;
+  string action_type = 2;
+  string device_agent_id = 3;
+  string outcome = 4;              // SUCCESS, PARTIAL, FAILURE, UNKNOWN, ROLLBACK
+  bool fault_resolved = 5;
+  string vendor = 6;
+  string model = 7;
+  int64 recorded_at_unix = 8;
+}
+
 message FleetSnapshot {
   repeated FleetDevice devices = 1;
   repeated FleetIncident incidents = 2;
   repeated FleetAction pending_actions = 3;
   int64 snapshot_at_unix = 4;
+  repeated FleetOutcome outcomes = 5;  // R3b-3: action outcomes for CC learning
 }
 
 message ApprovalRouteRequest {

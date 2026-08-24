@@ -229,6 +229,7 @@ class ActionOutcomeRow(Base):
     operator_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[str] = mapped_column(String(512), default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reported_to_cc: Mapped[bool] = mapped_column(Boolean, default=False)  # R3b-3: watermark
 
     __table_args__ = (Index("ix_outcomes_device_type", "device_id", "action_type"),)
 

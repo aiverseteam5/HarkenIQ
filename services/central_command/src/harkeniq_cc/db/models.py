@@ -191,3 +191,54 @@ class CCAutonomyBudget(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("tenant_id", "device_type"),)
+
+
+class CCOutcomeHistory(Base):
+    """Fleet-wide action outcome history for learning (R3b-3, R-C1).
+
+    Populated from FleetSnapshot.outcomes reported by each SM during
+    fleet polling. Source of truth for pattern detection.
+    """
+
+    __tablename__ = "cc_outcome_history"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(String(32), ForeignKey("cc_sites.id"))
+    action_id: Mapped[str] = mapped_column(String(64))
+    action_type: Mapped[str] = mapped_column(String(64))
+    device_agent_id: Mapped[str] = mapped_column(String(64))
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    outcome: Mapped[str] = mapped_column(String(32))  # SUCCESS/PARTIAL/FAILURE/UNKNOWN/ROLLBACK
+    fault_resolved: Mapped[bool | None] = mapped_column(nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_outcome_history_type_vendor", "action_type", "vendor"),
+        Index("ix_outcome_history_device", "device_agent_id"),
+    )
+
+
+class CCFleetPattern(Base):
+    """Detected fleet-wide patterns (R3b-3, R-C1).
+
+    Patterns detected by the PatternDetector from aggregated outcomes.
+    Types: batch_failure, anomaly, reliability.
+    """
+
+    __tablename__ = "cc_fleet_patterns"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    pattern_type: Mapped[str] = mapped_column(String(32))
+    description: Mapped[str] = mapped_column(String(512))
+    affected_scope: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_fleet_patterns_type_status", "pattern_type", "status"),
+    )

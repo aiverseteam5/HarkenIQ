@@ -1,4 +1,8 @@
-"""Fleet poller: periodically pull device snapshots from all registered SMs."""
+"""Fleet poller: periodically pull device snapshots from all registered SMs.
+
+R3b-3: also extracts action outcomes from FleetSnapshot.outcomes for the
+CC learning pipeline (R-C1 fleet-wide pattern detection).
+"""
 
 from __future__ import annotations
 
@@ -47,12 +51,18 @@ async def fleet_poll_loop(state) -> None:
                                 health=dev.get("health", ""),
                                 subsystems=dev.get("subsystems"),
                             )
+                        # R3b-3: ingest action outcomes for fleet learning
+                        outcomes = snapshot.get("outcomes", [])
+                        if outcomes:
+                            await _ingest_outcomes(session, site.id, outcomes)
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
                         logger.debug(
-                            "Fleet poll OK for %s: %d devices",
+                            "Fleet poll OK for %s: %d devices, %d outcomes",
                             site.site_name,
                             len(snapshot.get("devices", [])),
+                            len(outcomes),
                         )
                     except Exception as exc:
                         logger.error(
@@ -61,3 +71,26 @@ async def fleet_poll_loop(state) -> None:
                         await session.rollback()
         except Exception as exc:
             logger.error("Fleet poll cycle error: %s", exc)
+
+
+async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
+    """Store action outcomes in cc_outcome_history for pattern detection."""
+    from datetime import datetime, timezone
+    from harkeniq_cc.db.models import CCOutcomeHistory
+
+    for oc in outcomes:
+        row = CCOutcomeHistory(
+            site_id=site_id,
+            action_id=oc.get("action_id", ""),
+            action_type=oc.get("action_type", ""),
+            device_agent_id=oc.get("device_agent_id", ""),
+            vendor=oc.get("vendor", ""),
+            model=oc.get("model", ""),
+            outcome=oc.get("outcome", "UNKNOWN"),
+            fault_resolved=oc.get("fault_resolved"),
+            recorded_at=datetime.fromtimestamp(
+                oc.get("recorded_at_unix", 0), tz=timezone.utc,
+            ) if oc.get("recorded_at_unix") else datetime.now(timezone.utc),
+        )
+        session.add(row)
+    logger.info("Ingested %d outcomes from site %s", len(outcomes), site_id)
