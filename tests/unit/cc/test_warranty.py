@@ -186,7 +186,7 @@ class TestRefreshLoop:
                                       vendor="dell", service_tag="DTAG2")
             await WarrantyRepo(session).upsert_records([
                 WarrantyRecord("DTAG2", "dell", end_date=_iso(200)),
-            ])
+            ], tenant_id=TENANT)
             await session.commit()
 
         provider = MockWarrantyProvider({
@@ -233,7 +233,7 @@ async def client():
         await WarrantyRepo(session).upsert_records([
             WarrantyRecord("DTAG1", "dell", "ProSupport Plus",
                            "2024-01-01", _iso(400), "dell_techdirect"),
-        ])
+        ], tenant_id=TENANT)
         await session.commit()
 
     transport = ASGITransport(app=app)

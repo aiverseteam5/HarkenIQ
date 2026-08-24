@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_console.api.deps import get_session, require_permission
 from harkeniq_console.auth import UserContext
-from harkeniq_console.db.repos import AuditRepo, MarketplaceRepo
+from harkeniq_console.db.repos import (
+    AuditRepo,
+    MarketplaceInstallRepo,
+    MarketplaceRepo,
+)
 from harkeniq_console.marketplace import check_promotion, validate_submission
 
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
@@ -154,6 +158,12 @@ async def install_skill(
     if entry is None or not entry.published:
         raise HTTPException(status_code=404, detail="skill not available")
     await repo.record_install(entry)
+    # R5-2: install event -- CC pulls these to deliver to the tenant's sites
+    if user.tenant_id:
+        await MarketplaceInstallRepo(session).record(
+            tenant_id=user.tenant_id, skill_entry_id=entry.id,
+            installed_by=user.email,
+        )
     await AuditRepo(session).append(
         actor_id=user.user_id, actor_email=user.email,
         action="marketplace.skill.install", subject_type="marketplace_skill",

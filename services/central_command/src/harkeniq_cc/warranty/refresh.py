@@ -45,12 +45,15 @@ async def refresh_once(state, provider: WarrantyProvider) -> int:
         ]
         warranty_repo = WarrantyRepo(session)
         stale = await warranty_repo.stale_or_missing_tags(
-            tags, state.config.warranty_ttl_s
+            tags, state.config.warranty_ttl_s,
+            tenant_id=state.config.tenant_id,
         )
         if not stale:
             return 0
         records = await provider.fetch(stale)
-        count = await warranty_repo.upsert_records(records)
+        count = await warranty_repo.upsert_records(
+            records, tenant_id=state.config.tenant_id
+        )
         await session.commit()
         logger.info(
             "Warranty refresh: %d stale tag(s), %d record(s) updated",

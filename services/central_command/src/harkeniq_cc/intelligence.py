@@ -54,7 +54,7 @@ class IntelligenceEngine:
         if new_patterns:
             patterns_repo = FleetPatternRepo(session)
             for pattern in new_patterns:
-                await patterns_repo.save(pattern)
+                await patterns_repo.save(pattern, tenant_id=tenant_id)
             logger.info(
                 "Intelligence cycle: %d outcomes ingested, %d new patterns",
                 len(outcomes), len(new_patterns),

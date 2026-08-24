@@ -56,7 +56,7 @@ async def list_devices(
     )
     # R4-2 P15: bulk-attach warranty status for the dashboard table
     warranty_map = await WarrantyRepo(session).get_map(
-        [d.service_tag for d in devices]
+        [d.service_tag for d in devices], tenant_id=user.tenant_id
     )
     rows = []
     for d in devices:
@@ -173,7 +173,9 @@ async def get_device(
     if site is None or site.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="device not found")
     warranty = (
-        await WarrantyRepo(session).get_map([row.service_tag])
+        await WarrantyRepo(session).get_map(
+            [row.service_tag], tenant_id=user.tenant_id
+        )
     ).get(row.service_tag)
     detail = _device_dict(row)
     detail.update({

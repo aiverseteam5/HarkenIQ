@@ -25,6 +25,7 @@ from harkeniq_cc.db.models import (
     CCFleetPattern,
     CCOutcomeHistory,
     CCSite,
+    CCSkillDelivery,
     CCUsageSnapshot,
     CCWarranty,
     utcnow,
@@ -440,7 +441,7 @@ class AuditRepo:
         tenant_id: str = "",
         detail: Optional[dict] = None,
     ) -> CCAuditLog:
-        from harkeniq.audit.chain import next_link
+        from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
 
         row = CCAuditLog(
             ts=utcnow(),
@@ -451,6 +452,9 @@ class AuditRepo:
             detail=detail,
         )
         async with _audit_chain_lock:
+            # R5-2: cross-replica serialization on PostgreSQL (held
+            # through the caller's commit); no-op on sqlite.
+            await pg_advisory_chain_lock(self.session, "cc.cc_audit_log")
             tail = (
                 await self.session.execute(
                     select(CCAuditLog.seq, CCAuditLog.entry_hash)
@@ -793,14 +797,15 @@ class FleetPatternRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def save(self, pattern) -> CCFleetPattern:
+    async def save(self, pattern, tenant_id: str = "") -> CCFleetPattern:
         """Persist a pattern_detector.FleetPattern; idempotent on id."""
         from datetime import timezone
 
         row = await self.session.get(CCFleetPattern, pattern.pattern_id)
         if row is None:
-            row = CCFleetPattern(id=pattern.pattern_id)
+            row = CCFleetPattern(id=pattern.pattern_id, tenant_id=tenant_id)
             self.session.add(row)
+        row.tenant_id = tenant_id or row.tenant_id
         row.pattern_type = pattern.pattern_type
         row.description = pattern.description
         row.affected_scope = dict(pattern.affected_scope)
@@ -817,12 +822,15 @@ class FleetPatternRepo:
         pattern_type: Optional[str] = None,
         status: Optional[str] = "active",
         limit: int = 200,
+        tenant_id: Optional[str] = None,
     ) -> Sequence[CCFleetPattern]:
         stmt = (
             select(CCFleetPattern)
             .order_by(CCFleetPattern.detected_at.desc())
             .limit(limit)
         )
+        if tenant_id is not None:
+            stmt = stmt.where(CCFleetPattern.tenant_id == tenant_id)
         if pattern_type:
             stmt = stmt.where(CCFleetPattern.pattern_type == pattern_type)
         if status:
@@ -845,8 +853,10 @@ class CveFeedRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def import_entries(self, entries: list[dict]) -> int:
-        """Upsert feed entries keyed by (cve_id, vendor, component)."""
+    async def import_entries(
+        self, entries: list[dict], tenant_id: str = ""
+    ) -> int:
+        """Upsert feed entries keyed by (tenant, cve_id, vendor, component)."""
         count = 0
         for entry in entries:
             cve_id = str(entry.get("cve_id", "")).strip()
@@ -858,6 +868,7 @@ class CveFeedRepo:
             row = (
                 await self.session.execute(
                     select(CCCveEntry).where(
+                        CCCveEntry.tenant_id == tenant_id,
                         CCCveEntry.cve_id == cve_id,
                         CCCveEntry.vendor == vendor,
                         CCCveEntry.component == component,
@@ -865,7 +876,8 @@ class CveFeedRepo:
                 )
             ).scalar_one_or_none()
             if row is None:
-                row = CCCveEntry(cve_id=cve_id, vendor=vendor, component=component,
+                row = CCCveEntry(tenant_id=tenant_id, cve_id=cve_id,
+                                 vendor=vendor, component=component,
                                  affected_versions=affected)
                 self.session.add(row)
             row.affected_versions = affected
@@ -878,10 +890,12 @@ class CveFeedRepo:
         await self.session.flush()
         return count
 
-    async def list_all(self) -> Sequence[CCCveEntry]:
+    async def list_all(self, tenant_id: str = "") -> Sequence[CCCveEntry]:
         return (
             await self.session.execute(
-                select(CCCveEntry).order_by(CCCveEntry.cve_id)
+                select(CCCveEntry)
+                .where(CCCveEntry.tenant_id == tenant_id)
+                .order_by(CCCveEntry.cve_id)
             )
         ).scalars().all()
 
@@ -892,16 +906,16 @@ class WarrantyRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def upsert_records(self, records: list) -> int:
+    async def upsert_records(self, records: list, tenant_id: str = "") -> int:
         """Upsert WarrantyRecord-shaped objects; returns count stored."""
         count = 0
         for record in records:
             tag = getattr(record, "service_tag", "") or ""
             if not tag:
                 continue
-            row = await self.session.get(CCWarranty, tag)
+            row = await self.session.get(CCWarranty, (tenant_id, tag))
             if row is None:
-                row = CCWarranty(service_tag=tag)
+                row = CCWarranty(tenant_id=tenant_id, service_tag=tag)
                 self.session.add(row)
             row.vendor = getattr(record, "vendor", "") or row.vendor
             row.service_level = getattr(record, "service_level", "")
@@ -913,26 +927,33 @@ class WarrantyRepo:
         await self.session.flush()
         return count
 
-    async def get_map(self, service_tags: list[str]) -> dict[str, CCWarranty]:
+    async def get_map(
+        self, service_tags: list[str], tenant_id: str = ""
+    ) -> dict[str, CCWarranty]:
         tags = [t for t in service_tags if t]
         if not tags:
             return {}
         rows = (
             await self.session.execute(
-                select(CCWarranty).where(CCWarranty.service_tag.in_(tags))
+                select(CCWarranty).where(
+                    CCWarranty.tenant_id == tenant_id,
+                    CCWarranty.service_tag.in_(tags),
+                )
             )
         ).scalars().all()
         return {r.service_tag: r for r in rows}
 
-    async def list_all(self) -> Sequence[CCWarranty]:
+    async def list_all(self, tenant_id: str = "") -> Sequence[CCWarranty]:
         return (
             await self.session.execute(
-                select(CCWarranty).order_by(CCWarranty.service_tag)
+                select(CCWarranty)
+                .where(CCWarranty.tenant_id == tenant_id)
+                .order_by(CCWarranty.service_tag)
             )
         ).scalars().all()
 
     async def stale_or_missing_tags(
-        self, service_tags: list[str], ttl_s: float
+        self, service_tags: list[str], ttl_s: float, tenant_id: str = ""
     ) -> list[str]:
         """Tags with no cached record or a record older than the TTL."""
         from datetime import timedelta
@@ -940,7 +961,7 @@ class WarrantyRepo:
         tags = sorted({t for t in service_tags if t})
         if not tags:
             return []
-        cached = await self.get_map(tags)
+        cached = await self.get_map(tags, tenant_id=tenant_id)
         cutoff = utcnow() - timedelta(seconds=ttl_s)
         stale: list[str] = []
         for tag in tags:
@@ -955,3 +976,38 @@ class WarrantyRepo:
             if fetched is None or fetched < cutoff:
                 stale.append(tag)
         return stale
+
+
+class SkillDeliveryRepo:
+    """Marketplace delivery ledger (R5-2)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, install_id: str, site_id: str) -> Optional[CCSkillDelivery]:
+        return await self.session.get(CCSkillDelivery, (install_id, site_id))
+
+    async def record(
+        self, install_id: str, site_id: str, skill_name: str,
+        skill_version: str, status: str, directives_queued: int = 0,
+        detail: str = "",
+    ) -> CCSkillDelivery:
+        row = await self.get(install_id, site_id)
+        if row is None:
+            row = CCSkillDelivery(install_id=install_id, site_id=site_id)
+            self.session.add(row)
+        row.skill_name = skill_name
+        row.skill_version = skill_version
+        row.status = status
+        row.directives_queued = directives_queued
+        row.detail = detail[:512]
+        row.delivered_at = utcnow()
+        await self.session.flush()
+        return row
+
+    async def list_all(self) -> Sequence[CCSkillDelivery]:
+        return (
+            await self.session.execute(
+                select(CCSkillDelivery).order_by(CCSkillDelivery.delivered_at)
+            )
+        ).scalars().all()

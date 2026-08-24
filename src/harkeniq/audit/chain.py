@@ -20,8 +20,10 @@ a reader who does not trust the store must run full verification anyway.
 Concurrency: appenders must serialize (read tail -> hash -> insert).
 Single-process services use an asyncio.Lock plus a UNIQUE constraint on
 seq as a backstop -- a racing append fails loudly instead of forking
-the chain. Multi-replica deployments need a DB-level advisory lock
-(documented limitation, revisit before multi-replica GA).
+the chain. Multi-replica deployments additionally take a PostgreSQL
+transaction-scoped advisory lock (R5-2, pg_advisory_chain_lock below):
+the lock is held from tail-read through the caller's commit, so two
+replicas can never interleave a chain append.
 """
 
 from __future__ import annotations
@@ -70,6 +72,39 @@ class ChainVerification:
     length: int
     first_bad_seq: Optional[int] = None
     error: str = ""
+
+
+def advisory_lock_key(chain_name: str) -> int:
+    """Stable signed 64-bit key for pg_advisory_xact_lock, derived from
+    the chain's name (e.g. "cc.cc_audit_log")."""
+    digest = hashlib.sha256(chain_name.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+async def pg_advisory_chain_lock(session, chain_name: str) -> bool:
+    """Serialize chain appends across replicas on PostgreSQL (R5-2).
+
+    Takes a TRANSACTION-scoped advisory lock (pg_advisory_xact_lock):
+    held from here through the caller's commit/rollback, so the
+    tail-read + insert + commit sequence is atomic across replicas.
+    Returns True when the lock was taken; False (no-op) on non-Postgres
+    dialects, where the per-process asyncio.Lock is sufficient (sqlite
+    is single-writer anyway).
+
+    SQLAlchemy is imported lazily: the core package does not depend on
+    it, and this helper is only callable from the services (which do).
+    """
+    bind = getattr(session, "bind", None)
+    dialect = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect != "postgresql":
+        return False
+    from sqlalchemy import text
+
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": advisory_lock_key(chain_name)},
+    )
+    return True
 
 
 def verify_chain(

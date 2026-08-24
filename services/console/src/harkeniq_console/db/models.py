@@ -501,3 +501,24 @@ class MarketplaceSkill(Base):
         Index("ix_marketplace_review_status", "review_status"),
         Index("ix_marketplace_tier", "tier"),
     )
+
+
+class MarketplaceInstall(Base):
+    """A tenant's marketplace install event (R5-2).
+
+    The record CC pulls (GET /api/internal/marketplace/installs) to
+    deliver the skill to the tenant's sites. Console is the source of
+    truth for WHAT was installed; delivery state lives at CC.
+    """
+
+    __tablename__ = "marketplace_installs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    skill_entry_id: Mapped[str] = mapped_column(ForeignKey("marketplace_skills.id"))
+    installed_by: Mapped[str] = mapped_column(String(320), default="")
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_marketplace_installs_tenant", "tenant_id", "installed_at"),
+    )

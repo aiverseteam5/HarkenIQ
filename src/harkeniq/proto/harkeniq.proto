@@ -163,6 +163,27 @@ service SiteManagerService {
   rpc RouteApproval(ApprovalRouteRequest) returns (ApprovalRouteAck);
   rpc GetUsageSnapshot(UsageSnapshotRequest) returns (UsageSnapshot);
   rpc PushPolicy(PolicyUpdate) returns (PolicyAck);
+  // R5-2: CC pushes a marketplace skill to the site; the SM queues
+  // skill_install directives its agents pick up on their next poll.
+  rpc InstallSkill(SiteSkillInstall) returns (SiteSkillInstallAck);
+}
+
+// R5-2: marketplace skill install (CC -> SM)
+message SiteSkillInstall {
+  string tenant_id = 1;
+  string site_id = 2;
+  string skill_id = 3;
+  string skill_version = 4;
+  string yaml_content = 5;
+  string tier = 6;
+  string validation_state = 7;
+  string issued_by = 8;          // e.g. "marketplace:<install_id>"
+}
+
+message SiteSkillInstallAck {
+  bool accepted = 1;
+  int32 queued = 2;              // directives queued (one per device)
+  string reason = 3;
 }
 
 message SiteRegistration {

@@ -39,7 +39,7 @@ async def list_warranty(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = await WarrantyRepo(session).list_all()
+    rows = await WarrantyRepo(session).list_all(tenant_id=user.tenant_id)
     return {
         "records": [warranty_dict(r) for r in rows],
         "tenant_id": user.tenant_id,
@@ -69,6 +69,8 @@ async def import_warranty(
         )
         for r in raw if isinstance(r, dict)
     ]
-    imported = await WarrantyRepo(session).upsert_records(records)
+    imported = await WarrantyRepo(session).upsert_records(
+        records, tenant_id=user.tenant_id
+    )
     await session.commit()
     return {"imported": imported, "tenant_id": user.tenant_id}

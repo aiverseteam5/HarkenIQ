@@ -240,6 +240,9 @@ class CCWarranty(Base):
 
     __tablename__ = "cc_warranty"
 
+    # R5-2 (A8): tenant-scoped; composite PK so shared-CC deployments
+    # can never leak one tenant's warranty data to another.
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True, default="")
     service_tag: Mapped[str] = mapped_column(String(255), primary_key=True)
     vendor: Mapped[str] = mapped_column(String(64), default="")
     service_level: Mapped[str] = mapped_column(String(255), default="")
@@ -260,6 +263,8 @@ class CCCveEntry(Base):
     __tablename__ = "cc_cve_feed"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # R5-2 (A8): tenant-scoped feed
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
     cve_id: Mapped[str] = mapped_column(String(32))
     vendor: Mapped[str] = mapped_column(String(64), default="*")
     component: Mapped[str] = mapped_column(String(32), default="*")
@@ -272,7 +277,7 @@ class CCCveEntry(Base):
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
-        UniqueConstraint("cve_id", "vendor", "component",
+        UniqueConstraint("tenant_id", "cve_id", "vendor", "component",
                          name="uq_cc_cve_feed_entry"),
     )
 
@@ -287,6 +292,8 @@ class CCFleetPattern(Base):
     __tablename__ = "cc_fleet_patterns"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # R5-2 (A8): tenant-scoped patterns
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
     pattern_type: Mapped[str] = mapped_column(String(32))
     description: Mapped[str] = mapped_column(String(512))
     affected_scope: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
@@ -298,4 +305,24 @@ class CCFleetPattern(Base):
 
     __table_args__ = (
         Index("ix_fleet_patterns_type_status", "pattern_type", "status"),
+        Index("ix_fleet_patterns_tenant", "tenant_id"),
     )
+
+
+class CCSkillDelivery(Base):
+    """Durable dedup ledger for marketplace skill deliveries (R5-2).
+
+    One row per (install event, site): the sync loop never re-pushes a
+    delivered install, across restarts.
+    """
+
+    __tablename__ = "cc_skill_deliveries"
+
+    install_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    site_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    skill_name: Mapped[str] = mapped_column(String(255), default="")
+    skill_version: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(16), default="delivered")
+    directives_queued: Mapped[int] = mapped_column(default=0)
+    detail: Mapped[str] = mapped_column(String(512), default="")
+    delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

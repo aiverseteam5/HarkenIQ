@@ -215,3 +215,39 @@ class SMClient:
                 "node_count": snap.node_count,
                 "agent_versions": dict(snap.agent_versions),
             }
+
+
+    async def install_skill(
+        self,
+        sm_endpoint: str,
+        token: Optional[str],
+        tenant_id: str,
+        site_id: str,
+        skill_name: str,
+        skill_version: str,
+        yaml_content: str,
+        tier: str = "community",
+        validation_state: str = "tested",
+        issued_by: str = "marketplace",
+    ) -> dict:
+        """R5-2: push a marketplace skill to a Site Manager."""
+        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            ack = await stub.InstallSkill(
+                harkeniq_pb2.SiteSkillInstall(
+                    tenant_id=tenant_id,
+                    site_id=site_id,
+                    skill_id=skill_name,
+                    skill_version=skill_version,
+                    yaml_content=yaml_content,
+                    tier=tier,
+                    validation_state=validation_state,
+                    issued_by=issued_by,
+                ),
+                metadata=_metadata(token),
+            )
+            return {
+                "accepted": ack.accepted,
+                "queued": ack.queued,
+                "reason": ack.reason,
+            }

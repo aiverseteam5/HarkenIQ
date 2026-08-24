@@ -24,6 +24,7 @@ from harkeniq_console.db.models import (
     Invoice,
     InvoiceLine,
     License,
+    MarketplaceInstall,
     MarketplaceSkill,
     Payment,
     PaymentProviderCustomer,
@@ -247,7 +248,7 @@ class AuditRepo:
         tenant_id: Optional[str] = None,
         detail: Optional[dict] = None,
     ) -> ConsoleAuditLog:
-        from harkeniq.audit.chain import next_link
+        from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
 
         row = ConsoleAuditLog(
             ts=utcnow(),
@@ -260,6 +261,9 @@ class AuditRepo:
             detail=detail,
         )
         async with _audit_chain_lock:
+            # R5-2: cross-replica serialization on PostgreSQL (held
+            # through the caller's commit); no-op on sqlite.
+            await pg_advisory_chain_lock(self.session, "console.console_audit_log")
             tail = (
                 await self.session.execute(
                     select(ConsoleAuditLog.seq, ConsoleAuditLog.entry_hash)
@@ -1289,3 +1293,35 @@ class MarketplaceRepo:
         entry.updated_at = utcnow()
         await self.session.flush()
         return entry
+
+
+class MarketplaceInstallRepo:
+    """Install-event persistence (R5-2)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(
+        self, tenant_id: str, skill_entry_id: str, installed_by: str = ""
+    ) -> MarketplaceInstall:
+        install = MarketplaceInstall(
+            tenant_id=tenant_id, skill_entry_id=skill_entry_id,
+            installed_by=installed_by,
+        )
+        self.session.add(install)
+        await self.session.flush()
+        return install
+
+    async def list_for_tenant(
+        self, tenant_id: str, since: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> Sequence[MarketplaceInstall]:
+        stmt = (
+            select(MarketplaceInstall)
+            .where(MarketplaceInstall.tenant_id == tenant_id)
+            .order_by(MarketplaceInstall.installed_at)
+            .limit(limit)
+        )
+        if since is not None:
+            stmt = stmt.where(MarketplaceInstall.installed_at > since)
+        return (await self.session.execute(stmt)).scalars().all()

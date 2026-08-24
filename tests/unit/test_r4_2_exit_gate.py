@@ -188,7 +188,7 @@ async def cc_client():
         await WarrantyRepo(session).upsert_records([
             WarrantyRecord("DTAG1", "dell", "ProSupport", "2024-01-01",
                            "2029-12-31", "dell_techdirect"),
-        ])
+        ], tenant_id=TENANT)
         await session.commit()
         device_id = row.id
 

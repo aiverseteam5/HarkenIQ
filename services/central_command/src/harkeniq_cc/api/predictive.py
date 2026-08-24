@@ -36,7 +36,7 @@ async def device_risk(
         user.tenant_id
     )
     warranty_map = await WarrantyRepo(session).get_map(
-        [d.service_tag for d in devices]
+        [d.service_tag for d in devices], tenant_id=user.tenant_id
     )
     cohorts = cohort_failure_rates(outcomes)
     by_device: dict[str, list[dict]] = {}

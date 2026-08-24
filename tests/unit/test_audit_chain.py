@@ -175,3 +175,63 @@ class TestAgentCheckpointChain:
         assert result.valid is True
         assert result.length == 1
         await cp.close()
+
+
+class TestAdvisoryLock:
+    """R5-2: cross-replica chain serialization on PostgreSQL."""
+
+    def test_lock_key_stable_and_distinct(self):
+        from harkeniq.audit.chain import advisory_lock_key
+
+        assert advisory_lock_key("cc.cc_audit_log") == \
+            advisory_lock_key("cc.cc_audit_log")
+        keys = {advisory_lock_key(n) for n in (
+            "sm.audit_log", "cc.cc_audit_log", "console.console_audit_log",
+        )}
+        assert len(keys) == 3
+        for key in keys:  # must fit pg_advisory_xact_lock's bigint
+            assert -(2**63) <= key < 2**63
+
+    async def test_lock_taken_on_postgres_dialect(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from harkeniq.audit.chain import (
+            advisory_lock_key, pg_advisory_chain_lock,
+        )
+
+        session = MagicMock()
+        session.bind.dialect.name = "postgresql"
+        session.execute = AsyncMock()
+        assert await pg_advisory_chain_lock(session, "cc.cc_audit_log") is True
+        args, kwargs = session.execute.call_args
+        assert "pg_advisory_xact_lock" in str(args[0])
+        assert args[1]["key"] == advisory_lock_key("cc.cc_audit_log")
+
+    async def test_noop_on_sqlite(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from harkeniq.audit.chain import pg_advisory_chain_lock
+
+        session = MagicMock()
+        session.bind.dialect.name = "sqlite"
+        session.execute = AsyncMock()
+        assert await pg_advisory_chain_lock(session, "x") is False
+        session.execute.assert_not_called()
+
+    async def test_appends_still_work_on_sqlite(self, tmp_path):
+        # The wired-in lock call must be transparent on sqlite: the
+        # existing service chain tests all still pass, spot-check here.
+        from harkeniq_sm.db.base import (
+            create_all, make_engine, make_sessionmaker,
+        )
+        from harkeniq_sm.db.repos import AuditRepo
+
+        engine = make_engine(f"sqlite+aiosqlite:///{tmp_path}/a.db")
+        await create_all(engine)
+        async with make_sessionmaker(engine)() as session:
+            repo = AuditRepo(session)
+            await repo.append("op", "one")
+            await repo.append("op", "two")
+            await session.commit()
+            assert (await repo.verify_chain()).valid is True
+        await engine.dispose()

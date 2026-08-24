@@ -164,7 +164,7 @@ async def client():
             ))
         await WarrantyRepo(session).upsert_records([
             WarrantyRecord("BAD1", "dell", end_date="2024-01-01"),  # expired
-        ])
+        ], tenant_id=TENANT)
         await session.commit()
 
     transport = ASGITransport(app=app)

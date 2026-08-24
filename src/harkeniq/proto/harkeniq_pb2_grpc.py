@@ -441,6 +441,11 @@ class SiteManagerServiceStub:
                 request_serializer=harkeniq__pb2.PolicyUpdate.SerializeToString,
                 response_deserializer=harkeniq__pb2.PolicyAck.FromString,
                 _registered_method=True)
+        self.InstallSkill = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/InstallSkill',
+                request_serializer=harkeniq__pb2.SiteSkillInstall.SerializeToString,
+                response_deserializer=harkeniq__pb2.SiteSkillInstallAck.FromString,
+                _registered_method=True)
 
 
 class SiteManagerServiceServicer:
@@ -481,6 +486,14 @@ class SiteManagerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def InstallSkill(self, request, context):
+        """R5-2: CC pushes a marketplace skill to the site; the SM queues
+        skill_install directives its agents pick up on their next poll.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SiteManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -508,6 +521,11 @@ def add_SiteManagerServiceServicer_to_server(servicer, server):
                     servicer.PushPolicy,
                     request_deserializer=harkeniq__pb2.PolicyUpdate.FromString,
                     response_serializer=harkeniq__pb2.PolicyAck.SerializeToString,
+            ),
+            'InstallSkill': grpc.unary_unary_rpc_method_handler(
+                    servicer.InstallSkill,
+                    request_deserializer=harkeniq__pb2.SiteSkillInstall.FromString,
+                    response_serializer=harkeniq__pb2.SiteSkillInstallAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -650,6 +668,33 @@ class SiteManagerService:
             '/harkeniq.v1.SiteManagerService/PushPolicy',
             harkeniq__pb2.PolicyUpdate.SerializeToString,
             harkeniq__pb2.PolicyAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InstallSkill(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/InstallSkill',
+            harkeniq__pb2.SiteSkillInstall.SerializeToString,
+            harkeniq__pb2.SiteSkillInstallAck.FromString,
             options,
             channel_credentials,
             insecure,

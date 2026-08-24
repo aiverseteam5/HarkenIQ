@@ -75,7 +75,8 @@ async def list_patterns(
     """Detected fleet patterns (batch_failure, cross_site_batch, anomaly,
     reliability), newest first."""
     rows = await FleetPatternRepo(session).list_patterns(
-        pattern_type=pattern_type, status=status or None, limit=limit
+        pattern_type=pattern_type, status=status or None, limit=limit,
+        tenant_id=user.tenant_id,
     )
     return {
         "patterns": [

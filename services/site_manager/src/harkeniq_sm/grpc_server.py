@@ -28,7 +28,7 @@ from harkeniq_sm.auth import BearerTokenInterceptor
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.coverage import observation_state, worst_health
 from harkeniq_sm.db.models import Device, DeviceSubsystemState
-from harkeniq_sm.db.repos import ActionRepo, DeviceRepo, IncidentRepo, StatusRepo
+from harkeniq_sm.db.repos import ActionRepo, DeviceRepo, IncidentRepo, SiteRepo, StatusRepo
 from harkeniq_sm.ingest import IngestService
 
 logger = logging.getLogger("harkeniq.sm.grpc")
@@ -206,10 +206,50 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         sessionmaker,
         approvals: ApprovalService,
         config: SMConfig,
+        directives=None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.approvals = approvals
         self.config = config
+        self.directives = directives  # R5-2: skill installs from CC
+
+    async def InstallSkill(self, request, context):
+        """R5-2: CC pushes a marketplace skill; queue directives for
+        every device on the site. Static validation runs BEFORE anything
+        is queued -- an unparseable skill never reaches an agent."""
+        if self.directives is None:
+            return harkeniq_pb2.SiteSkillInstallAck(
+                accepted=False, reason="directive transport not configured"
+            )
+        from harkeniq_sm.skill_validation import SkillValidator
+
+        result = SkillValidator().validate_static(request.yaml_content)
+        if not result.passed:
+            return harkeniq_pb2.SiteSkillInstallAck(
+                accepted=False,
+                reason="; ".join(result.errors)[:256] or "validation failed",
+            )
+        async with self.sessionmaker() as session:
+            site = await SiteRepo(session).get_or_create(self.config.site_name)
+            devices = list(await DeviceRepo(session).list_for_site(site.id))
+            await session.commit()
+        queued = 0
+        for device in devices:
+            await self.directives.enqueue_skill_install(
+                device_id=device.id,
+                skill_id=request.skill_id,
+                skill_version=request.skill_version or "1",
+                yaml_content=request.yaml_content,
+                tier=request.tier or "community",
+                validation_state=request.validation_state or "tested",
+                issued_by=request.issued_by or "marketplace",
+            )
+            queued += 1
+        logger.info(
+            "InstallSkill %s v%s: %d directive(s) queued",
+            request.skill_id, request.skill_version, queued,
+        )
+        return harkeniq_pb2.SiteSkillInstallAck(accepted=True, queued=queued)
 
     async def RegisterSite(self, request, context):
         if not request.license_key_fingerprint:

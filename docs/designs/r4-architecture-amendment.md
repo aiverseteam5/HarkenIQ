@@ -674,3 +674,53 @@ R4-3 Governance & Ecosystem implemented; decisions and scope deltas:
    prior fallback below 5 samples, health/warranty modifiers, explicit
    insufficient_data band, `/api/predictive/risk`. A trained model drops
    into the same seat once the data exists.
+
+---
+
+## Amendment A8 — R5-2 scope (approved 2026-08-24, Vinod)
+
+R5-1 (directed-directive transport) shipped `54afb31`. R5-2 is scoped as
+a COMPLETION slice: finish existing capabilities and harden for
+enterprise, without opening a new architectural surface.
+
+### In scope
+
+1. **Marketplace install automation — Console -> CC -> SM -> Agent.**
+   Completes the path the platform has already built: a tenant's
+   marketplace install (Console) flows to their Central Command, which
+   pushes to its Site Managers, which queue skill_install directives
+   agents already execute (R5-1). Flow decision: **CC PULLS from
+   Console** — CC polls a Console internal endpoint for its tenant's
+   new installs using the existing CC->Console credential pair
+   (console_url + console_api_key, already used for usage reporting).
+   No new trust direction; Console never needs CC credentials.
+2. **Audit-chain multi-replica locking.** The R4-2 chain serialized
+   appenders per process (asyncio lock + unique-seq backstop) with a
+   documented multi-replica limitation. Close it: PostgreSQL advisory
+   locks (pg_advisory_xact_lock) serialize chain appends across
+   replicas; sqlite keeps the in-process lock (single-writer anyway).
+3. **CC tenant scoping** for the R4-2/R4-3 intelligence tables
+   (cc_fleet_patterns, cc_cve_feed, cc_warranty): tenant_id columns,
+   tenant-filtered repos and APIs. CC deploys per tenant (L3), so this
+   is defense-in-depth for shared-CC/lab deployments and a
+   prerequisite for any future consolidation.
+
+### Explicitly deferred (not abandoned)
+
+- **Network Intelligence milestone** (OQ-16 remainder): network device
+  monitoring is its own architectural milestone — new device class,
+  protocol implementation, simulator, fixtures, telemetry model — not
+  an R5 "remainder" item. **The gNMI-vs-NETCONF decision is deferred
+  WITH the milestone** and will be made when implementation starts
+  (gNMI noted as the likely stronger direction for modern telemetry;
+  not locked now, so the choice is made against then-current vendor
+  reality and a selected target device).
+- **Trained predictive models**: still gated on 6+ months of outcome
+  data accumulation (§3); the R4-3 scoring infrastructure is the seat.
+
+### Rationale (as approved)
+
+Do not dilute R5 by mixing two missions: R5 completes what exists
+(marketplace path end-to-end, enterprise hardening for multi-site /
+multi-tenant / compliance); Network Intelligence starts a new one.
+Complete the hardening before significantly expanding the platform.

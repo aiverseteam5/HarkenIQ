@@ -505,12 +505,15 @@ class AuditRepo:
     async def append(
         self, actor: str, action: str, subject: str = "", detail: Optional[dict] = None
     ) -> AuditLogRow:
-        from harkeniq.audit.chain import next_link
+        from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
 
         row = AuditLogRow(
             ts=utcnow(), actor=actor, action=action, subject=subject, detail=detail
         )
         async with _audit_chain_lock:
+            # R5-2: cross-replica serialization on PostgreSQL (held
+            # through the caller's commit); no-op on sqlite.
+            await pg_advisory_chain_lock(self.session, "sm.audit_log")
             tail = (
                 await self.session.execute(
                     select(AuditLogRow.seq, AuditLogRow.entry_hash)

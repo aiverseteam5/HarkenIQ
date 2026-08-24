@@ -63,7 +63,8 @@ async def import_cve_feed(
     """Import CVE feed entries from an offline bundle: {"entries": [...]}."""
     entries = payload.get("entries", [])
     imported = await CveFeedRepo(session).import_entries(
-        entries if isinstance(entries, list) else []
+        entries if isinstance(entries, list) else [],
+        tenant_id=user.tenant_id,
     )
     await session.commit()
     return {"imported": imported, "tenant_id": user.tenant_id}
@@ -77,7 +78,7 @@ async def list_cve_feed(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = await CveFeedRepo(session).list_all()
+    rows = await CveFeedRepo(session).list_all(tenant_id=user.tenant_id)
     return {
         "entries": [
             {
@@ -106,7 +107,7 @@ async def firmware_exposure(
 ) -> dict:
     """Fleet CVE exposure: devices whose firmware matches feed entries."""
     devices = await FleetCacheRepo(session).list_all(user.tenant_id)
-    entries = await CveFeedRepo(session).list_all()
+    entries = await CveFeedRepo(session).list_all(tenant_id=user.tenant_id)
     exposures = match_exposures(devices, entries)
     return {
         "exposures": exposures,

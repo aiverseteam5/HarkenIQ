@@ -144,6 +144,7 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
     )
     sm_servicer = SiteManagerServiceServicer(
         state.sessionmaker, state.approvals, config,
+        directives=getattr(state, "directives", None),
     )
     grpc_server, grpc_port = build_server(config, servicer, sm_servicer=sm_servicer)
     state.grpc_port = grpc_port
