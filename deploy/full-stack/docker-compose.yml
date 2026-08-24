@@ -1,0 +1,144 @@
+# HarkenIQ Full-Stack Development Deployment (R4-0)
+#
+# Starts all four layers: Agent + Site Manager + Central Command + Console
+# plus backing services (PostgreSQL/TimescaleDB, Keycloak).
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose down -v   # remove volumes too
+#
+# Prerequisites:
+#   scripts/gen_dev_certs.sh   # generates TLS certs for SM gRPC
+
+services:
+  # -- Backing Services ---------------------------------------------------
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: harkeniq
+      POSTGRES_PASSWORD: harkeniq
+      POSTGRES_DB: harkeniq
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harkeniq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: start-dev --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: harkeniq
+      KC_DB_PASSWORD: harkeniq
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8180:8080"
+    volumes:
+      - ../r2b/keycloak-realm-platform.json:/opt/keycloak/data/import/harkeniq-realm.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -- Site Manager (L2) --------------------------------------------------
+
+  site-manager:
+    build:
+      context: ../..
+      dockerfile: deploy/site_manager/Dockerfile
+    environment:
+      HARKEN_SM_SITE_NAME: site-1
+      HARKEN_SM_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_sm
+      HARKEN_SM_SITE_TOKEN: dev-token-sm
+      HARKEN_SM_INSECURE: "true"
+      HARKEN_SM_GRPC_PORT: "50051"
+      HARKEN_SM_HTTP_PORT: "8080"
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -- Central Command (L3) -----------------------------------------------
+
+  central-command:
+    build:
+      context: ../..
+      dockerfile: deploy/r2b/Dockerfile.cc
+    environment:
+      HARKEN_CC_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_cc
+      HARKEN_CC_HTTP_PORT: "8090"
+      HARKEN_CC_INSECURE: "true"
+      HARKEN_CC_SITE_POLL_INTERVAL_S: "30"
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      site-manager:
+        condition: service_started
+
+  # -- Console (L4) -------------------------------------------------------
+
+  console:
+    build:
+      context: ../..
+      dockerfile: deploy/r2b/Dockerfile.console
+    environment:
+      HARKEN_CONSOLE_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_console
+      HARKEN_CONSOLE_HTTP_PORT: "8100"
+      HARKEN_CONSOLE_KEYCLOAK_URL: http://keycloak:8080
+      HARKEN_CONSOLE_KEYCLOAK_ADMIN_USER: admin
+      HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD: admin
+      HARKEN_CONSOLE_PLATFORM_REALM: harkeniq-platform
+      HARKEN_CONSOLE_INSECURE: "true"
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+
+  # -- Mock Simulator (test device) ----------------------------------------
+
+  mock-simulator:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.simulator
+    ports:
+      - "9000:9000"
+
+  # -- Agent (L1) ----------------------------------------------------------
+  # Uncomment to run an agent connected to the mock simulator and SM.
+  # For development, running the agent on the host is usually easier.
+  #
+  # agent:
+  #   build:
+  #     context: ../..
+  #     dockerfile: deploy/full-stack/Dockerfile.agent
+  #   environment:
+  #     HARKENIQ_BMC_HOST: http://mock-simulator:9000
+  #     HARKENIQ_BMC_USERNAME: admin
+  #     HARKENIQ_BMC_PASSWORD: password
+  #     HARKENIQ_SITE_MANAGER_HOST: site-manager
+  #     HARKENIQ_SITE_MANAGER_PORT: "50051"
+  #     HARKENIQ_SITE_MANAGER_TOKEN: dev-token-sm
+  #   depends_on:
+  #     site-manager:
+  #       condition: service_started
+  #     mock-simulator:
+  #       condition: service_started
+
+volumes:
+  pgdata:

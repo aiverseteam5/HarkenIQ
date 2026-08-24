@@ -1,0 +1,24 @@
+# Mock Redfish simulator for full-stack testing.
+# Runs the HarkenIQ MockSimulator on port 9000.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install the harkeniq package (includes mock simulator)
+COPY pyproject.toml .
+COPY src/ src/
+RUN pip install --no-cache-dir -e .
+
+EXPOSE 9000
+
+CMD ["python", "-c", "\
+import asyncio;\
+from harkeniq.mock.simulator import MockSimulator;\
+async def main():\n\
+    sim = MockSimulator(device='dell-r750', port=9000, no_auth=True);\n\
+    await sim.start();\n\
+    print('Mock simulator running on port 9000');\n\
+    await asyncio.Event().wait();\n\
+asyncio.run(main())\
+"]
