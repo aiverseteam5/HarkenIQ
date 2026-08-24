@@ -54,6 +54,8 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
         # R3a: if agent sent a public key, register identity and issue cert
         sm_public_key_pem = b""
         agent_certificate = b""
+        peer_keys: dict[str, bytes] = {}
+        peer_keys_signature = b""
         if self.identity_service and request.public_key_pem:
             try:
                 sm_public_key_pem, agent_certificate = (
@@ -66,11 +68,23 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
             except ValueError as e:
                 logger.warning("Agent identity registration failed: %s", e)
 
+            # R3b-2: distribute peer public keys
+            try:
+                peer_keys, peer_keys_signature = (
+                    await self.identity_service.get_peer_keys(
+                        exclude_agent_id=request.agent_id,
+                    )
+                )
+            except Exception as e:
+                logger.warning("Peer key distribution failed: %s", e)
+
         return harkeniq_pb2.RegistrationAck(
             accepted=True,
             site_name=site_name,
             sm_public_key_pem=sm_public_key_pem,
             agent_certificate=agent_certificate,
+            peer_keys=peer_keys,
+            peer_keys_signature=peer_keys_signature,
         )
 
     async def Heartbeat(self, request, context):

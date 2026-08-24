@@ -77,6 +77,8 @@ message RegistrationAck {
   string site_name = 2;
   bytes sm_public_key_pem = 3;    // R3a: SM's Ed25519 public key (agent pins this)
   bytes agent_certificate = 4;    // R3a: SM's signature over agent identity
+  map<string, bytes> peer_keys = 5;      // R3b-2: agent_id -> public_key_pem
+  bytes peer_keys_signature = 6;         // R3b-2: SM signature over canonical(peer_keys)
 }
 
 message ActionReport {

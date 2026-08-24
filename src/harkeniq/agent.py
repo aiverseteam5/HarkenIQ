@@ -19,11 +19,24 @@ from typing import Any, Optional
 
 from harkeniq.actions.executor import ActionExecutor
 from harkeniq.actions.queue import ActionQueue
+from harkeniq.autonomy.claim import Claim, ClaimAck
 from harkeniq.autonomy.identity import AgentIdentity
 from harkeniq.autonomy.lease import AuthorizationLease, InvalidLease
+from harkeniq.autonomy.partition_fence import PartitionFence
+from harkeniq.autonomy.peer_keyring import PeerKeyRing
+from harkeniq.autonomy.peer_protocol import PeerProtocol
 from harkeniq.autonomy.tier import TierLevel, calculate_tier
 from harkeniq.errors import ConfigError, HarkenIQError, HeartbeatError
-from harkeniq.heartbeat.protocol import build_packet, parse_packet
+from harkeniq.heartbeat.protocol import (
+    MSG_CLAIM,
+    MSG_CLAIM_ACK,
+    MSG_HEARTBEAT,
+    MSG_SUSPICION,
+    build_envelope,
+    build_packet,
+    parse_envelope,
+    parse_packet,
+)
 from harkeniq.heartbeat.tracker import PeerTracker
 from harkeniq.models import (
     Action,
@@ -118,6 +131,10 @@ class Agent:
         self.current_tier: TierLevel = TierLevel.T2
         self._sm_connected: bool = False
         self._sm_last_contact: float = 0.0
+        # R3b-2: mesh protocol components
+        self.peer_keyring: PeerKeyRing = PeerKeyRing()
+        self.peer_protocol: Optional[PeerProtocol] = None
+        self.partition_fence: Optional[PartitionFence] = None
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
@@ -220,6 +237,26 @@ class Agent:
                         self.checkpoint.conn, self._checkpoint_path or ""
                     )
                 logger.info("SM identity bootstrapped for agent %s", self.agent_id)
+
+                # R3b-2: load peer public keys from SM-signed bundle
+                if reg_ack.peer_keys and reg_ack.peer_keys_signature:
+                    try:
+                        from cryptography.hazmat.primitives import serialization as _ser
+                        sm_pub = _ser.load_pem_public_key(
+                            bytes(reg_ack.sm_public_key_pem)
+                        )
+                        peer_keys = {
+                            k: bytes(v) for k, v in reg_ack.peer_keys.items()
+                        }
+                        loaded = self.peer_keyring.load_from_bundle(
+                            peer_keys,
+                            bytes(reg_ack.peer_keys_signature),
+                            sm_pub,
+                            exclude_self=self.agent_id,
+                        )
+                        logger.info("Loaded %d peer keys from SM", loaded)
+                    except Exception as e:
+                        logger.warning("Peer key loading failed: %s", e)
 
         self.state_machine.transition(
             AgentState.OBSERVING,
@@ -336,22 +373,71 @@ class Agent:
 
     async def _open_heartbeat_endpoint(self) -> None:
         hb = self.config.get("heartbeat") or {}
+        bind_addr = hb.get("bind", "0.0.0.0")
+        port = hb.get("port", 5150)
         loop = asyncio.get_running_loop()
         self._hb_transport, _ = await loop.create_datagram_endpoint(
             lambda: _HeartbeatProtocol(self),
-            local_addr=("0.0.0.0", hb.get("port", 5150)),
+            local_addr=(bind_addr, port),
         )
-        logger.info("Heartbeat UDP endpoint listening on port %d", hb.get("port", 5150))
+        logger.info("Heartbeat UDP endpoint listening on %s:%d", bind_addr, port)
 
     def _on_heartbeat_datagram(self, data: bytes, addr) -> None:
+        # R3b-2: dispatch by message type envelope
+        try:
+            msg_type, payload = parse_envelope(data)
+        except HeartbeatError:
+            # Backward compat: raw JSON (no envelope) is a heartbeat
+            msg_type, payload = MSG_HEARTBEAT, data
+
+        if msg_type == MSG_HEARTBEAT:
+            self._on_heartbeat_payload(payload, addr)
+        elif msg_type == MSG_CLAIM:
+            self._on_claim_payload(payload, addr)
+        elif msg_type == MSG_CLAIM_ACK:
+            self._on_claim_ack_payload(payload, addr)
+        elif msg_type == MSG_SUSPICION:
+            self._on_suspicion_payload(payload, addr)
+        else:
+            logger.warning("Unknown message type %#x from %s", msg_type, addr[0])
+
+    def _on_heartbeat_payload(self, payload: bytes, addr) -> None:
         secret = (self.config.get("heartbeat") or {}).get("secret", "")
         try:
-            packet = parse_packet(data, secret)
+            packet = parse_packet(payload, secret)
         except HeartbeatError as e:
             logger.warning("Invalid heartbeat from %s: %s", addr[0], e)
             return
         if self.tracker:
             self.tracker.record_heartbeat(packet, addr[0], now=time.time())
+
+    def _on_claim_payload(self, payload: bytes, addr) -> None:
+        """Process an inbound claim from a peer (R3b-2)."""
+        if self.peer_protocol is None or self.peer_protocol.claim_exchange is None:
+            return
+        try:
+            claim = Claim.deserialize(payload)
+        except (ValueError, KeyError) as e:
+            logger.warning("Invalid claim from %s: %s", addr[0], e)
+            return
+        self.peer_protocol.claim_exchange.receive_claim(claim)
+
+    def _on_claim_ack_payload(self, payload: bytes, addr) -> None:
+        """Process an inbound claim ack from a peer (R3b-2)."""
+        if self.peer_protocol is None or self.peer_protocol.claim_exchange is None:
+            return
+        try:
+            ack = ClaimAck.deserialize(payload)
+        except (ValueError, KeyError) as e:
+            logger.warning("Invalid claim ack from %s: %s", addr[0], e)
+            return
+        self.peer_protocol.claim_exchange.receive_ack(ack)
+
+    def _on_suspicion_payload(self, payload: bytes, addr) -> None:
+        """Process inbound suspicion exchange (R3b-2 Phase 5)."""
+        # Suspicion messages are JSON with HMAC (same auth as heartbeats)
+        # Full implementation uses SuspicionTracker.receive_peer()
+        pass
 
     def _send_heartbeat(self, state: Optional[str] = None) -> None:
         if self._hb_transport is None or self._hb_transport.is_closing():
@@ -368,7 +454,8 @@ class Agent:
             health_summary=self.health_summary(),
         )
         try:
-            data = build_packet(packet, hb.get("secret", ""))
+            payload = build_packet(packet, hb.get("secret", ""))
+            data = build_envelope(MSG_HEARTBEAT, payload)
         except HeartbeatError as e:
             logger.warning("Cannot build heartbeat packet: %s", e)
             return

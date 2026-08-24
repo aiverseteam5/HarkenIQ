@@ -100,6 +100,24 @@ class ActionStatus(Enum):
     FAILED = "FAILED"
 
 
+class ClaimStatus(Enum):
+    """Incident claim lifecycle states (R3b-2, spec R-M15 through R-M18)."""
+
+    ACTIVE = "ACTIVE"        # claim is owned and lease is valid
+    LAPSED = "LAPSED"        # owner failed to renew; claimable again
+    RESOLVED = "RESOLVED"    # investigation complete
+
+
+class QuorumVerdict(Enum):
+    """Four-way quorum disambiguation result (spec §3.4)."""
+
+    DEVICE_DOWN = "DEVICE_DOWN"      # all neighbours lost device
+    LINK_DOWN = "LINK_DOWN"          # one neighbour lost it, others reach it
+    NODE_FAILED = "NODE_FAILED"      # link up, agent silent → agent crashed
+    ISOLATED = "ISOLATED"            # this node is the isolated party
+    INCONCLUSIVE = "INCONCLUSIVE"    # insufficient peers for quorum
+
+
 # ---------------------------------------------------------------------------
 # Sensor Reading — raw Redfish data (Doc 10 §1.2)
 # ---------------------------------------------------------------------------

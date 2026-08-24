@@ -427,9 +427,9 @@ class TestArchitecturalContracts:
         proto = PeerProtocol(tracker)
         assert proto.get_reachable_peers() == 0  # none alive yet
 
-        # R3b methods raise NotImplementedError
-        with pytest.raises(NotImplementedError):
-            proto.broadcast_claim("subject", {})
+        # R3b-2: methods are now implemented (no longer raise NotImplementedError)
+        result = proto.broadcast_claim("subject", {})
+        assert result is None  # returns None (no identity configured)
 
     def test_all_contracts_import_cleanly(self):
         """Smoke test: all contract modules import without error."""

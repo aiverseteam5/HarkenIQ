@@ -4,6 +4,10 @@ Packets are compact JSON with an ``hmac`` field carrying an HMAC-SHA256
 hex digest computed over the canonical JSON encoding (sorted keys, no
 whitespace) of the payload *without* the ``hmac`` field. Total packet
 size must stay under 576 bytes so UDP datagrams never fragment.
+
+R3b-2 adds a message-type envelope so heartbeats, claims, claim acks,
+and suspicion messages share the same UDP port. The envelope is a single
+prefix byte followed by the authenticated payload.
 """
 
 from __future__ import annotations
@@ -17,6 +21,40 @@ from harkeniq.models import HeartbeatPacket
 
 PROTOCOL_VERSION = 1
 MAX_PACKET_BYTES = 576
+
+# -- R3b-2: message type envelope -------------------------------------------
+
+MSG_HEARTBEAT = 0x01
+MSG_CLAIM = 0x02
+MSG_CLAIM_ACK = 0x03
+MSG_SUSPICION = 0x04
+
+_VALID_MSG_TYPES = {MSG_HEARTBEAT, MSG_CLAIM, MSG_CLAIM_ACK, MSG_SUSPICION}
+
+
+def build_envelope(msg_type: int, payload: bytes) -> bytes:
+    """Wrap a payload with a message-type byte prefix."""
+    if msg_type not in _VALID_MSG_TYPES:
+        raise HeartbeatError(f"Unknown message type: {msg_type:#x}")
+    data = bytes([msg_type]) + payload
+    if len(data) > MAX_PACKET_BYTES:
+        raise HeartbeatError(
+            f"Envelope is {len(data)} bytes, exceeds {MAX_PACKET_BYTES}"
+        )
+    return data
+
+
+def parse_envelope(data: bytes) -> tuple[int, bytes]:
+    """Extract message type and payload from an envelope.
+
+    Returns (msg_type, payload).  Raises HeartbeatError on invalid data.
+    """
+    if len(data) < 2:
+        raise HeartbeatError(f"Datagram too short for envelope: {len(data)} bytes")
+    msg_type = data[0]
+    if msg_type not in _VALID_MSG_TYPES:
+        raise HeartbeatError(f"Unknown message type: {msg_type:#x}")
+    return msg_type, data[1:]
 
 _REQUIRED_FIELDS = ("v", "agent_id", "name", "seq", "ts", "state", "health_summary", "hmac")
 

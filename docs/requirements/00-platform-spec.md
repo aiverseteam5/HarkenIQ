@@ -311,7 +311,7 @@ here) no later than the start of their owning slice.
 | OQ-1 | CMDB/topology import for the site model — design partner's source of truth? | doc 04 §6 Q4 | R2a — **answered, A1.1** |
 | OQ-2 | Workload scope: containers / VMs / bare metal for OS-level signals? | doc 04 §6 Q6 | R3 |
 | OQ-3 | Hardware-action approval workflow: native only, or ServiceNow/Jira/ticketing integration? | doc 04 §6 Q7 | R2b (native) / R3 (integrations) |
-| OQ-4 | Dual-tier fault injection on real hardware without outage (mesh success criterion 1) | TODOS M1 | R3b (full mesh) |
+| OQ-4 | Dual-tier fault injection on real hardware without outage (mesh success criterion 1) | TODOS M1 | R3b-2 — **answered, A3.1** |
 | OQ-5 | Release action allow-list for autonomy (beyond R1's LED/diagnostics/fan-reset) | TODOS M2 | R3a — **answered, A2.1** |
 | OQ-6 | Authorization lease duration vs partition detection time | TODOS M3 | R3a — **answered, A2.2** |
 | OQ-7 | Baseline confidence refusal threshold (propose-vs-act cutoff) | TODOS M4 | R3a — **answered, A2.3** |
@@ -320,7 +320,7 @@ here) no later than the start of their owning slice.
 | OQ-10 | Node resource ceilings, enforced + observable | TODOS M7 | R3a — **answered, A2.5** |
 | OQ-11 | Correlated-conclusion suppression (shared upstream cause) | TODOS M8 | R3a — **answered, A2.6** (parent incidents in R2a, suppression in R3a) |
 | OQ-12 | Coverage-map presentation: silent device = unobserved, not healthy | TODOS M9 | R2a |
-| OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3b — **answered, A2.7**: R3a uses existing peer count for tier gating; full two-device correlation probe in R3b with full mesh |
+| OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3b-2 — **answered, A3.2**: implemented as CorrelationProbe (both-sides error counters, 4-way fault location) |
 | OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3b — **rescheduled, A1.3** → A2: agents keep local encrypted creds through R3a; SM credential brokering (JIT) lands in R3b |
 | OQ-15 | Application-layer symptom source for cross-layer correlation (Prometheus scrape? logs?) | Platform-Design | R3a (basic: syslog/dmesg hardware-to-OS mapping) / R3b (full: process→service mapping) |
 | OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R2a poll-path (R-S1) minimal / R4 broad |
@@ -598,3 +598,70 @@ Seven interfaces/data models introduced in R3a for R3b/R4 extension without rede
 
 6. Development readiness for R3a confirmed 2026-08-23. No further scope questions are
    open for R3a.
+
+### A3 — 2026-08-24 — R3b-2 Full Mesh Protocol (decided: Vinod)
+
+1. **OQ-4 answered — fault injection test approach:** Simulated multi-agent test harness
+   with in-process agents on loopback, compressed timing (0.2s beat / 0.6s timeout),
+   fault injection by killing/pausing agents and dropping heartbeats. No real hardware
+   required. The protocol logic is identical; transport is tested by the integration
+   harness. Real hardware validation deferred to design partner sites.
+
+2. **OQ-13 answered — two-device correlation probe:** Implemented as `CorrelationProbe`
+   class. On LINK_DOWN quorum verdict, both sides report receive-side error counters
+   (CRC errors, FCS errors, interface resets, RX errors). Four-way fault diagnosis:
+   LOCAL_PORT (our errors, no remote), REMOTE_PORT (their errors, no ours), CABLE
+   (both sides), INCONCLUSIVE (no errors detected).
+
+3. **Peer key distribution — SM-brokered:** SM distributes peer public keys in
+   `RegistrationAck.peer_keys` (map<agent_id, public_key_pem>), SM-signed with
+   `peer_keys_signature`. Agent verifies bundle with pinned SM public key before
+   trusting any peer key. No direct peer-to-peer key exchange.
+
+4. **Claim transport — UDP with envelope:** Claims travel over the existing heartbeat
+   UDP port using a 1-byte message type prefix: 0x01=heartbeat, 0x02=claim,
+   0x03=claim_ack, 0x04=suspicion. Thin reliability layer: retransmit until all
+   peers ack or max retries (5) exhausted.
+
+5. **Claim ownership protocol (R-M15 through R-M18):**
+   - First-claim wins; ties broken by lexicographically lower agent_id (deterministic,
+     not timestamp-based — clocks drift under network impairment per R-M15).
+   - Claim subject is always the device (R-M16); link vs device is a conclusion.
+   - Claim lease duration: 120s (shorter than SM auth lease 300s).
+   - Lapsed lease returns incident to claimable with inherited evidence (R-M17).
+   - Isolated node (0 reachable peers) cannot claim (R-M19).
+
+6. **Quorum disambiguation (§3.4, 4-way):**
+   - DEVICE_DOWN: all neighbours lost device, reach each other.
+   - LINK_DOWN: one+ neighbours still reach it.
+   - NODE_FAILED: link up, agent silent (check_node_failed refinement).
+   - ISOLATED: lost every neighbour simultaneously (R-AGENT-6: self-report).
+   - INCONCLUSIVE: insufficient observers (< 2 per R-M14).
+
+7. **Suspicion exchange (R-M20 through R-M22):**
+   - Per-component float scores from local observations and peers.
+   - Time-based decay (configurable rate, default 0.01/s).
+   - Threshold-triggered claims when cross-node evidence >= threshold AND >= 2 observers.
+   - Greedy set-cover for smallest explaining set (R-M21).
+   - Bundle coverage tracking for synthetic measurement (R-M22).
+
+8. **Partition fencing (R-M19, R-AGENT-6, A2.2):**
+   - All-peers-lost detection triggers ISOLATED state.
+   - Isolated node is fenced: propose-only (T2), cannot execute actions.
+   - ClaimManager respects both claim lease AND authorization lease.
+   - Recovery: fence lifts when any peer returns.
+
+#### A3.9 — Architectural summary
+
+| Component | File | Purpose |
+|---|---|---|
+| PeerKeyRing | `autonomy/peer_keyring.py` | Store + verify peer Ed25519 public keys |
+| Message envelope | `heartbeat/protocol.py` | 1-byte type prefix for UDP multiplexing |
+| Claim / ClaimAck | `autonomy/claim.py` | Data model, wire format, Ed25519 signing |
+| ClaimExchange | `autonomy/claim_exchange.py` | UDP broadcast + ack reliability layer |
+| ClaimManager | `autonomy/claim_manager.py` | First-claim-wins, lease management |
+| QuorumEngine | `autonomy/quorum.py` | Four-way disambiguation |
+| SuspicionTracker | `autonomy/suspicion.py` | Continuous suspicion + threshold claims |
+| CorrelationProbe | `autonomy/correlation_probe.py` | Two-device fault location |
+| PartitionFence | `autonomy/partition_fence.py` | Isolation detection + fencing |
+| PeerProtocol | `autonomy/peer_protocol.py` | Contract 7 facade (all 4 stubs implemented) |

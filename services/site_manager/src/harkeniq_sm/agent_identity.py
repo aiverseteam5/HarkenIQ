@@ -155,6 +155,39 @@ class AgentIdentityService:
         lease_expiry_unix = int(now + lease_duration)
         return payload_bytes + signature, lease_expiry_unix
 
+    async def get_peer_keys(
+        self, exclude_agent_id: str = "",
+    ) -> tuple[dict[str, bytes], bytes]:
+        """Return all non-revoked agent public keys with an SM signature.
+
+        Returns (peer_keys, signature) where peer_keys is
+        {agent_id: public_key_pem} and signature is the SM Ed25519
+        signature over canonical JSON of the key bundle.
+        """
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                select(AgentIdentityRow).where(
+                    AgentIdentityRow.revoked_at.is_(None)
+                )
+            )
+            rows = result.scalars().all()
+
+        peer_keys: dict[str, bytes] = {}
+        for row in rows:
+            if row.agent_id == exclude_agent_id:
+                continue
+            pem = row.public_key_pem
+            if isinstance(pem, str):
+                pem = pem.encode("utf-8")
+            peer_keys[row.agent_id] = pem
+
+        # Sign the key bundle so agents can verify authenticity
+        canonical = _canonical_json(
+            {k: v.hex() for k, v in sorted(peer_keys.items())}
+        )
+        signature = self._sm_private_key.sign(canonical)
+        return peer_keys, signature
+
     async def verify_agent_signature(
         self, agent_id: str, message: bytes, signature: bytes
     ) -> bool:
