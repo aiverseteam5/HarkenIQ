@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from harkeniq_sm.api import actions as actions_api
+from harkeniq_sm.api import audit as audit_api
 from harkeniq_sm.api import devices as devices_api
 from harkeniq_sm.api import domains as domains_api
 from harkeniq_sm.api import incidents as incidents_api
@@ -29,6 +30,7 @@ def create_app(state) -> FastAPI:
     app.include_router(devices_api.router)
     app.include_router(incidents_api.router)
     app.include_router(actions_api.router)
+    app.include_router(audit_api.router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

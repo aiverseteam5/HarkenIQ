@@ -6,6 +6,7 @@ so multi-table updates remain atomic.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Optional, Sequence
 
@@ -19,11 +20,13 @@ from harkeniq_cc.db.models import (
     CCApprovalRoute,
     CCAuditLog,
     CCAutonomyBudget,
+    CCCveEntry,
     CCFleetCache,
     CCFleetPattern,
     CCOutcomeHistory,
     CCSite,
     CCUsageSnapshot,
+    CCWarranty,
     utcnow,
 )
 
@@ -102,6 +105,8 @@ class FleetCacheRepo:
         observation: str = "",
         health: str = "",
         subsystems: Optional[dict] = None,
+        service_tag: str = "",
+        firmware: Optional[list] = None,
     ) -> CCFleetCache:
         row = (
             await self.session.execute(
@@ -121,6 +126,9 @@ class FleetCacheRepo:
         row.health = health or row.health
         if subsystems is not None:
             row.subsystems = subsystems
+        row.service_tag = service_tag or row.service_tag
+        if firmware is not None:
+            row.firmware = firmware
         row.snapshot_at = utcnow()
         await self.session.flush()
         return row
@@ -391,9 +399,38 @@ class UsageSnapshotRepo:
         ).scalars().all()
 
 
+#: Serializes hash-chain appends within this process (R4-2 P12); the
+#: UNIQUE constraint on cc_audit_log.seq is the cross-process backstop.
+_audit_chain_lock = asyncio.Lock()
+
+
 class AuditRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    @staticmethod
+    def _chain_ts(ts) -> str:
+        """Timezone-stable timestamp string for hashing.
+
+        sqlite returns naive datetimes for values written tz-aware, so
+        normalize to naive UTC before formatting -- the payload string
+        must be identical at write time and at verify time.
+        """
+        from datetime import timezone as _tz
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(_tz.utc).replace(tzinfo=None)
+        return ts.isoformat()
+
+    @staticmethod
+    def _chain_payload(row: CCAuditLog) -> dict:
+        return {
+            "ts": AuditRepo._chain_ts(row.ts),
+            "actor": row.actor,
+            "action": row.action,
+            "subject": row.subject,
+            "tenant_id": row.tenant_id,
+            "detail": row.detail,
+        }
 
     async def append(
         self,
@@ -403,16 +440,49 @@ class AuditRepo:
         tenant_id: str = "",
         detail: Optional[dict] = None,
     ) -> CCAuditLog:
+        from harkeniq.audit.chain import next_link
+
         row = CCAuditLog(
+            ts=utcnow(),
             actor=actor,
             action=action,
             subject=subject,
             tenant_id=tenant_id,
             detail=detail,
         )
-        self.session.add(row)
-        await self.session.flush()
+        async with _audit_chain_lock:
+            tail = (
+                await self.session.execute(
+                    select(CCAuditLog.seq, CCAuditLog.entry_hash)
+                    .where(CCAuditLog.seq.isnot(None))
+                    .order_by(CCAuditLog.seq.desc())
+                    .limit(1)
+                )
+            ).first()
+            row.seq, row.prev_hash, row.entry_hash = next_link(
+                tail[0] if tail else 0,
+                tail[1] if tail else None,
+                self._chain_payload(row),
+            )
+            self.session.add(row)
+            await self.session.flush()
         return row
+
+    async def verify_chain(self):
+        """Verify the audit hash chain (R4-2 P12); returns ChainVerification."""
+        from harkeniq.audit.chain import verify_chain
+
+        rows = (
+            await self.session.execute(
+                select(CCAuditLog)
+                .where(CCAuditLog.seq.isnot(None))
+                .order_by(CCAuditLog.seq)
+            )
+        ).scalars().all()
+        return verify_chain(
+            (r.seq, r.prev_hash, r.entry_hash, self._chain_payload(r))
+            for r in rows
+        )
 
     async def list_filtered(
         self,
@@ -740,3 +810,121 @@ class FleetPatternRepo:
         row.resolved_at = utcnow()
         await self.session.flush()
         return row
+
+
+class CveFeedRepo:
+    """Local CVE feed persistence (R4-2 P14)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def import_entries(self, entries: list[dict]) -> int:
+        """Upsert feed entries keyed by (cve_id, vendor, component)."""
+        count = 0
+        for entry in entries:
+            cve_id = str(entry.get("cve_id", "")).strip()
+            affected = str(entry.get("affected_versions", "")).strip()
+            if not cve_id or not affected:
+                continue
+            vendor = str(entry.get("vendor", "*")) or "*"
+            component = str(entry.get("component", "*")) or "*"
+            row = (
+                await self.session.execute(
+                    select(CCCveEntry).where(
+                        CCCveEntry.cve_id == cve_id,
+                        CCCveEntry.vendor == vendor,
+                        CCCveEntry.component == component,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = CCCveEntry(cve_id=cve_id, vendor=vendor, component=component,
+                                 affected_versions=affected)
+                self.session.add(row)
+            row.affected_versions = affected
+            row.fixed_version = str(entry.get("fixed_version", ""))
+            row.severity = str(entry.get("severity", "medium"))
+            row.description = str(entry.get("description", ""))[:512]
+            row.published = str(entry.get("published", ""))
+            row.imported_at = utcnow()
+            count += 1
+        await self.session.flush()
+        return count
+
+    async def list_all(self) -> Sequence[CCCveEntry]:
+        return (
+            await self.session.execute(
+                select(CCCveEntry).order_by(CCCveEntry.cve_id)
+            )
+        ).scalars().all()
+
+
+class WarrantyRepo:
+    """Warranty cache persistence (R4-2 P15)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert_records(self, records: list) -> int:
+        """Upsert WarrantyRecord-shaped objects; returns count stored."""
+        count = 0
+        for record in records:
+            tag = getattr(record, "service_tag", "") or ""
+            if not tag:
+                continue
+            row = await self.session.get(CCWarranty, tag)
+            if row is None:
+                row = CCWarranty(service_tag=tag)
+                self.session.add(row)
+            row.vendor = getattr(record, "vendor", "") or row.vendor
+            row.service_level = getattr(record, "service_level", "")
+            row.start_date = getattr(record, "start_date", "")
+            row.end_date = getattr(record, "end_date", "")
+            row.source = getattr(record, "source", "")
+            row.fetched_at = utcnow()
+            count += 1
+        await self.session.flush()
+        return count
+
+    async def get_map(self, service_tags: list[str]) -> dict[str, CCWarranty]:
+        tags = [t for t in service_tags if t]
+        if not tags:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(CCWarranty).where(CCWarranty.service_tag.in_(tags))
+            )
+        ).scalars().all()
+        return {r.service_tag: r for r in rows}
+
+    async def list_all(self) -> Sequence[CCWarranty]:
+        return (
+            await self.session.execute(
+                select(CCWarranty).order_by(CCWarranty.service_tag)
+            )
+        ).scalars().all()
+
+    async def stale_or_missing_tags(
+        self, service_tags: list[str], ttl_s: float
+    ) -> list[str]:
+        """Tags with no cached record or a record older than the TTL."""
+        from datetime import timedelta
+
+        tags = sorted({t for t in service_tags if t})
+        if not tags:
+            return []
+        cached = await self.get_map(tags)
+        cutoff = utcnow() - timedelta(seconds=ttl_s)
+        stale: list[str] = []
+        for tag in tags:
+            row = cached.get(tag)
+            if row is None:
+                stale.append(tag)
+                continue
+            fetched = row.fetched_at
+            if fetched is not None and fetched.tzinfo is None:
+                from datetime import timezone as _tz
+                fetched = fetched.replace(tzinfo=_tz.utc)
+            if fetched is None or fetched < cutoff:
+                stale.append(tag)
+        return stale

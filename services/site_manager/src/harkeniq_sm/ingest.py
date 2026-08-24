@@ -64,6 +64,7 @@ class IngestService:
         service_tag: str = "",
         bmc_location_json: str = "",
         peers: Optional[list[str]] = None,
+        firmware_json: str = "",
     ) -> str:
         """Upsert the device row; returns the site name (RegistrationAck)."""
         bmc_location = None
@@ -72,6 +73,14 @@ class IngestService:
                 bmc_location = json.loads(bmc_location_json)
             except ValueError:
                 logger.warning("Unparseable bmc_location_json from %s", agent_id)
+        firmware = None
+        if firmware_json:
+            try:
+                parsed = json.loads(firmware_json)
+                if isinstance(parsed, list):
+                    firmware = parsed
+            except ValueError:
+                logger.warning("Unparseable firmware_json from %s", agent_id)
         async with self.sessionmaker() as session:
             site_id = await self._site(session)
             await DeviceRepo(session).upsert_registration(
@@ -84,6 +93,7 @@ class IngestService:
                 bmc_location=bmc_location,
                 peers=peers,
                 rack_suggestion=rack_hint(agent_name),
+                firmware=firmware,
             )
             await session.commit()
         return self.config.site_name

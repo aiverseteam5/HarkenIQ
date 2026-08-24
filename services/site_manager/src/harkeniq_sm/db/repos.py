@@ -6,6 +6,7 @@ event / API request) so multi-table updates remain atomic.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Optional, Sequence
 
@@ -76,6 +77,7 @@ class DeviceRepo:
         bmc_location: Optional[dict] = None,
         peers: Optional[list[str]] = None,
         rack_suggestion: Optional[str] = None,
+        firmware: Optional[list[dict]] = None,
     ) -> Device:
         device = await self.get_by_agent_id(agent_id)
         if device is None:
@@ -91,6 +93,8 @@ class DeviceRepo:
             device.peers = list(peers)
         if rack_suggestion:
             device.rack_suggestion = rack_suggestion
+        if firmware is not None:
+            device.firmware = firmware
         device.last_seen_at = utcnow()
         await self.session.flush()
         return device
@@ -462,19 +466,82 @@ class ActionRepo:
         ).scalars().all()
 
 
+#: Serializes hash-chain appends within this process (R4-2 P12). The
+#: UNIQUE constraint on audit_log.seq is the cross-process backstop: a
+#: racing appender fails loudly instead of forking the chain.
+_audit_chain_lock = asyncio.Lock()
+
+
 class AuditRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    @staticmethod
+    def _chain_ts(ts) -> str:
+        """Timezone-stable timestamp string for hashing.
+
+        sqlite returns naive datetimes for values written tz-aware, so
+        normalize to naive UTC before formatting -- the payload string
+        must be identical at write time and at verify time.
+        """
+        from datetime import timezone as _tz
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(_tz.utc).replace(tzinfo=None)
+        return ts.isoformat()
+
+    @staticmethod
+    def _chain_payload(row: AuditLogRow) -> dict:
+        return {
+            "ts": AuditRepo._chain_ts(row.ts),
+            "actor": row.actor,
+            "action": row.action,
+            "subject": row.subject,
+            "detail": row.detail,
+        }
+
     async def append(
         self, actor: str, action: str, subject: str = "", detail: Optional[dict] = None
     ) -> AuditLogRow:
-        row = AuditLogRow(actor=actor, action=action, subject=subject, detail=detail)
-        self.session.add(row)
-        await self.session.flush()
+        from harkeniq.audit.chain import next_link
+
+        row = AuditLogRow(
+            ts=utcnow(), actor=actor, action=action, subject=subject, detail=detail
+        )
+        async with _audit_chain_lock:
+            tail = (
+                await self.session.execute(
+                    select(AuditLogRow.seq, AuditLogRow.entry_hash)
+                    .where(AuditLogRow.seq.isnot(None))
+                    .order_by(AuditLogRow.seq.desc())
+                    .limit(1)
+                )
+            ).first()
+            row.seq, row.prev_hash, row.entry_hash = next_link(
+                tail[0] if tail else 0,
+                tail[1] if tail else None,
+                self._chain_payload(row),
+            )
+            self.session.add(row)
+            await self.session.flush()
         return row
 
     async def list_all(self) -> Sequence[AuditLogRow]:
         return (
             await self.session.execute(select(AuditLogRow).order_by(AuditLogRow.ts))
         ).scalars().all()
+
+    async def verify_chain(self):
+        """Verify the audit hash chain (R4-2 P12); returns ChainVerification."""
+        from harkeniq.audit.chain import verify_chain
+
+        rows = (
+            await self.session.execute(
+                select(AuditLogRow)
+                .where(AuditLogRow.seq.isnot(None))
+                .order_by(AuditLogRow.seq)
+            )
+        ).scalars().all()
+        return verify_chain(
+            (r.seq, r.prev_hash, r.entry_hash, self._chain_payload(r))
+            for r in rows
+        )

@@ -333,7 +333,7 @@ R4-0 is strictly sequential (everything else depends on it). R4-1 through R4-3 h
 |---|---|---|---|
 | OQ-16 | Non-Redfish device coverage | R4-1 | Implement IPMI as first proof point. gNMI deferred to R4-2 or R5. |
 | OQ-18 | Air-gapped LLM | R4-3 | See workload analysis below. |
-| OQ-20 (new) | Compliance audit chain format | R4-2 | SHA-256 chain with per-service sequence numbers. Verify on read or async? |
+| OQ-20 (new) | Compliance audit chain format | R4-2 | **ANSWERED (R4-2, 2026-08-24):** SHA-256 chain, one chain per audit store (agent checkpoint, SM, CC, Console), explicit `seq` starting at 1 with a UNIQUE constraint, genesis prev_hash of 64 zeros, `entry_hash = SHA-256(canonical_json({seq, prev, payload}))`. Chained at WRITE time; verified ON DEMAND (repo method + `/api/audit/verify` endpoints + agent `verify_audit_chain()`), never on the read path — verify-on-read costs O(chain) per query and adds nothing a distrusting reader wouldn't re-verify anyway. Shared primitives: `harkeniq/audit/chain.py` (stdlib-only, imported by all four stores). Known limit: appenders serialize per process (asyncio lock + unique-seq backstop); multi-replica deployments need a DB advisory lock before GA. |
 | OQ-21 (new) | Firmware orchestration rollback strategy | R4-3 | Blue-green firmware (new partition, verify, swap boot). Requires vendor-specific implementation. |
 | OQ-22 (new) | Skill marketplace trust model | R4-3 | Three tiers: core (HarkenIQ-authored), verified (reviewed), community (user-submitted). Promotion requires 95% success rate. |
 | OQ-23 (new) | Minimum viable full-stack deployment | R4-0 | Docker Compose on single machine, 4GB RAM, no GPU required. |
@@ -591,3 +591,38 @@ Remaining open items the reviewer flagged:
 - Compliance audit chain format needs deeper investigation (deferred to R4-2 design phase)
 - Firmware rollback is vendor-specific (Dell dual-partition vs HPE mechanism) -- acknowledged, requires per-vendor investigation in R4-3
 - Predictive maintenance exit criteria reframed as "pipeline deployed + validated on synthetic data" rather than requiring 6 months of production data
+
+---
+
+## Amendment A6 — R4-2 shipped (2026-08-24)
+
+R4-2 Fleet Intelligence implemented; scope deltas vs. §3 as designed:
+
+1. **OQ-20 answered** (see §5 table): chain-at-write, verify-on-demand.
+2. **Playbooks finished, not just extended.** The R3b-3 PlaybookExecutor's
+   `_run_action` was a stub and nothing invoked the executor outside tests.
+   R4-2 wired steps to the real ActionExecutor (allow list + audit apply to
+   playbook steps — a playbook is not a policy bypass), implemented rollback
+   execution, and added `dry_run` mode per the risk register. Config drift
+   remediation (CONFIG_RESTORE action, Dell DellAttributes first) is the
+   first playbook that actually executes.
+3. **Warranty vendor-API reality (verified 2026-08):** Dell TechDirect is
+   real (OAuth2 client-credentials + asset-entitlements v5, ≤100 tags/call)
+   and implemented as the only API adapter. **HPE has NO public warranty API
+   for ProLiant** — only the support.hpe.com web lookup; the "HP Warranty
+   API" covers HP Inc. PCs. HPE coverage is via the manual import endpoint
+   (`POST /api/warranty/import`), which also serves air-gapped deployments.
+   Warranty records live in `cc_warranty` keyed by service tag with a TTL
+   (the fleet cache is rebuilt every poll cycle and cannot hold enrichment).
+4. **CVE matching is local-feed only** (air-gap safe): operator imports a
+   JSON bundle (`POST /api/firmware/cve-feed`); no NVD/vendor phone-home.
+   Example bundle: `deploy/cve-feed-example.json` (synthetic entries).
+5. **Firmware inventory** is harvested from endpoints the poller already
+   reads (manager/system/power) — no UpdateService dependency; carried
+   agent→SM via `AgentRegistration.firmware_json` (tag 10) and SM→CC via
+   `FleetDevice.inventory_json`/`service_tag` (tags 9/10), both
+   backward-compatible proto additions. `polling.inventory_interval`
+   (declared since R1, never read) now drives the refresh loop.
+6. **Fleet detail contract fixed:** `GET /api/fleet/{id}` now exists (the
+   Console detail panel had been calling it since R2b and 404ing), and the
+   list response carries an `items` alias plus per-device warranty status.

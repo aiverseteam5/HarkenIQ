@@ -87,6 +87,15 @@ DEFAULTS: dict[str, Any] = {
         "approval_mode": "queue",
         "allow_list": ["IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET"],
     },
+    # R4-2: config compliance (drift detection + playbook remediation).
+    # dry_run defaults True per the R4 risk register: auto-changing config
+    # could break services, so writes require explicit opt-in AND approval.
+    "compliance": {
+        "enabled": False,
+        "policy_directory": "/etc/harkeniq/policies",
+        "interval": 3600,
+        "dry_run": True,
+    },
 }
 
 _ENV_PREFIX = "HARKENIQ_"
@@ -209,6 +218,7 @@ def validate_config(config: Mapping) -> list[str]:
         ("heartbeat", "interval"),
         ("heartbeat", "timeout_multiplier"),
         ("checkpoint", "interval"),
+        ("compliance", "interval"),
         ("site_manager", "port"),
         ("site_manager", "heartbeat_interval"),
         ("site_manager", "action_poll_interval"),
@@ -253,6 +263,7 @@ def validate_config(config: Mapping) -> list[str]:
     allowed = {
         "IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET",
         "SEL_CLEAR", "BMC_RESET", "POWER_CYCLE", "POWER_CAP_ADJUST",
+        "CONFIG_RESTORE",
     }
     for entry in config.get("actions", {}).get("allow_list", []):
         if entry not in allowed:

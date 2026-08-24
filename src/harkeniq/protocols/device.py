@@ -88,6 +88,24 @@ class DeviceProtocol(Protocol):
         """
         ...
 
+    async def collect_config(self) -> dict:
+        """Collect the device's BMC configuration attributes (R4-2 P13).
+
+        Returns a flat {attribute_name: value} dict for config-drift
+        detection. Protocols/vendors without a config surface return {}
+        (drift detection then reports UNKNOWN, never a false drift).
+        """
+        ...
+
+    async def collect_firmware_inventory(self) -> list[dict]:
+        """Collect per-component firmware versions (R4-2 P14, R-AGENT-17).
+
+        Returns [{"component": "bmc"|"bios"|"psu"|..., "name": str,
+        "version": str}]. Components the protocol cannot observe are
+        omitted, never guessed.
+        """
+        ...
+
     @property
     def name(self) -> str:
         """Protocol name: 'redfish' | 'ipmi' | 'gnmi' | etc."""

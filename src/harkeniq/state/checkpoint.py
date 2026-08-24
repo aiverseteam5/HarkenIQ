@@ -119,7 +119,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     authorization TEXT,
     outcome TEXT NOT NULL,
     evidence_json TEXT,
-    logged_at TEXT NOT NULL
+    logged_at TEXT NOT NULL,
+    -- R4-2 P12: SHA-256 hash chain (seq 1..N, prev links, see harkeniq.audit.chain)
+    seq INTEGER,
+    prev_hash TEXT,
+    entry_hash TEXT
 );
 
 -- R3a: per-agent Ed25519 identity (spec A2.4)
@@ -163,9 +167,28 @@ class CheckpointManager:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
+            self._migrate_audit_chain_columns()
             self._conn.commit()
         except (OSError, sqlite3.Error) as e:
             raise CheckpointWriteError(f"Cannot open checkpoint db {db_path}: {e}")
+
+    def _migrate_audit_chain_columns(self) -> None:
+        """Add R4-2 chain columns to audit_log on pre-R4-2 checkpoint files.
+
+        CREATE TABLE IF NOT EXISTS never alters an existing table, so
+        checkpoints created before R4-2 lack seq/prev_hash/entry_hash.
+        Pre-chain rows keep NULL chain columns; the chain starts at the
+        first post-migration entry (verification skips NULL-seq rows).
+        """
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(audit_log)")
+        }
+        for name, decl in (
+            ("seq", "INTEGER"), ("prev_hash", "TEXT"), ("entry_hash", "TEXT"),
+        ):
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE audit_log ADD COLUMN {name} {decl}")
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -432,17 +455,78 @@ class CheckpointManager:
         authorization: Optional[str] = None,
         evidence_json: Optional[str] = None,
     ) -> None:
-        """Append to the audit trail (append-only, never pruned; Doc 06 §7.2)."""
+        """Append to the audit trail (append-only, never pruned; Doc 06 §7.2).
+
+        R4-2 P12: every entry is hash-chained (harkeniq.audit.chain). The
+        read-tail-then-insert pair runs inside one transaction; the agent
+        is single-process/single-loop, so no cross-process appender race.
+        """
+        from harkeniq.audit.chain import next_link
+
+        logged_at = _utc_now()
+        payload = {
+            "action": action,
+            "target": target,
+            "authorization": authorization,
+            "outcome": outcome,
+            "evidence_json": evidence_json,
+            "logged_at": logged_at,
+        }
         try:
             with self._conn:
+                tail = self._conn.execute(
+                    "SELECT seq, entry_hash FROM audit_log "
+                    "WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1"
+                ).fetchone()
+                tail_seq = tail["seq"] if tail else 0
+                tail_hash = tail["entry_hash"] if tail else None
+                seq, prev_hash, entry_hash = next_link(tail_seq, tail_hash, payload)
                 self._conn.execute(
                     "INSERT INTO audit_log "
-                    "(action, target, authorization, outcome, evidence_json, logged_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (action, target, authorization, outcome, evidence_json, _utc_now()),
+                    "(action, target, authorization, outcome, evidence_json, "
+                    " logged_at, seq, prev_hash, entry_hash) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (action, target, authorization, outcome, evidence_json,
+                     logged_at, seq, prev_hash, entry_hash),
                 )
         except sqlite3.Error as e:
             raise CheckpointWriteError(f"Audit write failed: {e}")
+
+    async def list_audit_entries(self) -> list[dict]:
+        """All audit entries as dicts, chained rows in seq order first."""
+        rows = self._conn.execute(
+            "SELECT * FROM audit_log ORDER BY seq IS NULL, seq, id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def verify_audit_chain(self):
+        """Verify the hash chain over all chained audit rows (R4-2 P12).
+
+        Pre-R4-2 rows (NULL seq, written before the chain existed) are
+        outside the chain and skipped. Returns a ChainVerification.
+        """
+        from harkeniq.audit.chain import verify_chain
+
+        rows = self._conn.execute(
+            "SELECT * FROM audit_log WHERE seq IS NOT NULL ORDER BY seq"
+        ).fetchall()
+        entries = (
+            (
+                row["seq"],
+                row["prev_hash"],
+                row["entry_hash"],
+                {
+                    "action": row["action"],
+                    "target": row["target"],
+                    "authorization": row["authorization"],
+                    "outcome": row["outcome"],
+                    "evidence_json": row["evidence_json"],
+                    "logged_at": row["logged_at"],
+                },
+            )
+            for row in rows
+        )
+        return verify_chain(entries)
 
     async def update_log_cursor(self, log_source: str, last_entry_id: str) -> None:
         try:

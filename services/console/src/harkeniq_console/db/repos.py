@@ -6,6 +6,7 @@ request) so multi-table updates remain atomic.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Optional, Sequence
 
@@ -200,9 +201,40 @@ class CustomRoleRepo:
         ).scalars().all()
 
 
+#: Serializes hash-chain appends within this process (R4-2 P12); the
+#: UNIQUE constraint on console_audit_log.seq is the cross-process backstop.
+_audit_chain_lock = asyncio.Lock()
+
+
 class AuditRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    @staticmethod
+    def _chain_ts(ts) -> str:
+        """Timezone-stable timestamp string for hashing.
+
+        sqlite returns naive datetimes for values written tz-aware, so
+        normalize to naive UTC before formatting -- the payload string
+        must be identical at write time and at verify time.
+        """
+        from datetime import timezone as _tz
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(_tz.utc).replace(tzinfo=None)
+        return ts.isoformat()
+
+    @staticmethod
+    def _chain_payload(row: ConsoleAuditLog) -> dict:
+        return {
+            "ts": AuditRepo._chain_ts(row.ts),
+            "actor_id": row.actor_id,
+            "actor_email": row.actor_email,
+            "action": row.action,
+            "subject_type": row.subject_type,
+            "subject_id": row.subject_id,
+            "tenant_id": row.tenant_id,
+            "detail": row.detail,
+        }
 
     async def append(
         self,
@@ -214,7 +246,10 @@ class AuditRepo:
         tenant_id: Optional[str] = None,
         detail: Optional[dict] = None,
     ) -> ConsoleAuditLog:
+        from harkeniq.audit.chain import next_link
+
         row = ConsoleAuditLog(
+            ts=utcnow(),
             actor_id=actor_id,
             actor_email=actor_email,
             action=action,
@@ -223,9 +258,39 @@ class AuditRepo:
             tenant_id=tenant_id,
             detail=detail,
         )
-        self.session.add(row)
-        await self.session.flush()
+        async with _audit_chain_lock:
+            tail = (
+                await self.session.execute(
+                    select(ConsoleAuditLog.seq, ConsoleAuditLog.entry_hash)
+                    .where(ConsoleAuditLog.seq.isnot(None))
+                    .order_by(ConsoleAuditLog.seq.desc())
+                    .limit(1)
+                )
+            ).first()
+            row.seq, row.prev_hash, row.entry_hash = next_link(
+                tail[0] if tail else 0,
+                tail[1] if tail else None,
+                self._chain_payload(row),
+            )
+            self.session.add(row)
+            await self.session.flush()
         return row
+
+    async def verify_chain(self):
+        """Verify the audit hash chain (R4-2 P12); returns ChainVerification."""
+        from harkeniq.audit.chain import verify_chain
+
+        rows = (
+            await self.session.execute(
+                select(ConsoleAuditLog)
+                .where(ConsoleAuditLog.seq.isnot(None))
+                .order_by(ConsoleAuditLog.seq)
+            )
+        ).scalars().all()
+        return verify_chain(
+            (r.seq, r.prev_hash, r.entry_hash, self._chain_payload(r))
+            for r in rows
+        )
 
     async def list_filtered(
         self,

@@ -71,6 +71,8 @@ class Device(Base):
     model: Mapped[str] = mapped_column(String(255), default="")
     service_tag: Mapped[str] = mapped_column(String(255), default="")
     bmc_location: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # R4-2 P14: firmware inventory [{component, name, version}] (R-AGENT-17)
+    firmware: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
     rack_id: Mapped[str | None] = mapped_column(ForeignKey("racks.id"), nullable=True)
     rack_suggestion: Mapped[str | None] = mapped_column(String(255), nullable=True)
     peers: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
@@ -258,3 +260,11 @@ class AuditLogRow(Base):
     action: Mapped[str] = mapped_column(String(64))
     subject: Mapped[str] = mapped_column(String(255), default="")
     detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
+    # service, seq 1..N, unique so a racing appender fails instead of
+    # forking the chain.
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="")
+    entry_hash: Mapped[str] = mapped_column(String(64), default="")
+
+    __table_args__ = (UniqueConstraint("seq", name="uq_audit_log_seq"),)

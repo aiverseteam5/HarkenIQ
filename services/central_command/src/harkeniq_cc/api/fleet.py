@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo
+from harkeniq_cc.api.warranty import warranty_dict
+from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo, WarrantyRepo
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
@@ -23,6 +24,8 @@ def _device_dict(dev) -> dict:
         "observation": dev.observation,
         "health": dev.health,
         "subsystems": dev.subsystems,
+        "service_tag": dev.service_tag,
+        "firmware": dev.firmware or [],
         "snapshot_at": dev.snapshot_at.isoformat() if dev.snapshot_at else None,
     }
 
@@ -51,8 +54,20 @@ async def list_devices(
         page=page,
         page_size=page_size,
     )
+    # R4-2 P15: bulk-attach warranty status for the dashboard table
+    warranty_map = await WarrantyRepo(session).get_map(
+        [d.service_tag for d in devices]
+    )
+    rows = []
+    for d in devices:
+        entry = _device_dict(d)
+        warranty = warranty_map.get(d.service_tag)
+        entry["warranty"] = warranty_dict(warranty) if warranty else None
+        rows.append(entry)
     return {
-        "devices": [_device_dict(d) for d in devices],
+        "devices": rows,
+        # alias for console-ui's PaginatedResponse shape
+        "items": rows,
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -132,6 +147,44 @@ async def list_incidents(
         "total": total,
         "tenant_id": user.tenant_id,
     }
+
+
+@router.get(
+    "/{device_id}",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def get_device(
+    device_id: str,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Device detail with warranty (R4-2 P15).
+
+    This endpoint also closes a pre-existing console-ui contract gap:
+    FleetOverview's detail panel always called /api/fleet/{id}, which
+    did not exist until now.
+    """
+    from harkeniq_cc.db.models import CCFleetCache, CCSite
+
+    row = await session.get(CCFleetCache, device_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="device not found")
+    site = await session.get(CCSite, row.site_id)
+    if site is None or site.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="device not found")
+    warranty = (
+        await WarrantyRepo(session).get_map([row.service_tag])
+    ).get(row.service_tag)
+    detail = _device_dict(row)
+    detail.update({
+        # aliases the console-ui detail panel expects
+        "name": row.agent_name or row.agent_id,
+        "site_name": site.site_name,
+        "subsystems_json": row.subsystems or {},
+        "last_seen_at": row.snapshot_at.isoformat() if row.snapshot_at else None,
+        "warranty": warranty_dict(warranty) if warranty else None,
+    })
+    return detail
 
 
 @router.get(

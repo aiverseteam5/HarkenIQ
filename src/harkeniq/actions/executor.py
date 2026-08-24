@@ -112,6 +112,8 @@ class ActionExecutor:
                 await self._collect_diagnostics()
             elif action.type == ActionType.FAN_RESET:
                 await self._fan_reset()
+            elif action.type == ActionType.CONFIG_RESTORE:
+                await self._config_restore(action)
             else:  # pragma: no cover - allow list guards this
                 raise ActionError(f"Unknown action type: {action.type}")
         except (RedfishError, ActionError) as e:
@@ -151,6 +153,40 @@ class ActionExecutor:
             await self.client.get(
                 f"/redfish/v1/Managers/{self.manager_id}/ActiveHealthSystem"
             )
+
+    async def _config_restore(self, action: Action) -> None:
+        """Restore drifted BMC config attributes to policy values (R4-2).
+
+        Params: {"attributes_json": '{"Key": "expected", ...}'}. Dell:
+        PATCH DellAttributes then GET to verify each restored value.
+        """
+        raw = action.params.get("attributes_json", "")
+        if not raw:
+            raise ActionError("CONFIG_RESTORE requires an 'attributes_json' param")
+        try:
+            attributes = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ActionError(f"CONFIG_RESTORE attributes_json is not valid JSON: {e}")
+        if not isinstance(attributes, dict) or not attributes:
+            raise ActionError("CONFIG_RESTORE attributes_json must be a non-empty object")
+
+        if self.vendor != "dell":
+            raise ActionError(
+                f"CONFIG_RESTORE not implemented for vendor {self.vendor!r} (R4-2: Dell first)"
+            )
+        path = (
+            f"/redfish/v1/Managers/{self.manager_id}/Oem/Dell/DellAttributes"
+            f"/{self.manager_id}"
+        )
+        await self.client.patch(path, {"Attributes": attributes})
+        data = await self.client.get(path)
+        current = data.get("Attributes", {})
+        for key, expected in attributes.items():
+            if current.get(key) != expected:
+                raise ActionError(
+                    f"CONFIG_RESTORE verification failed: {key} is "
+                    f"{current.get(key)!r}, expected {expected!r}"
+                )
 
     async def _fan_reset(self) -> None:
         if self.vendor == "dell":

@@ -65,6 +65,9 @@ class CCFleetCache(Base):
     observation: Mapped[str] = mapped_column(String(32), default="")
     health: Mapped[str] = mapped_column(String(32), default="")
     subsystems: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # R4-2 P14/P15: warranty lookup key + firmware inventory
+    service_tag: Mapped[str] = mapped_column(String(255), default="")
+    firmware: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
     snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_fleet_cache_site_id", "site_id"),)
@@ -106,10 +109,16 @@ class CCAuditLog(Base):
     subject: Mapped[str] = mapped_column(String(255), default="")
     tenant_id: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
+    # service, seq unique so racing appenders fail instead of forking.
+    seq: Mapped[int | None] = mapped_column(nullable=True)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="")
+    entry_hash: Mapped[str] = mapped_column(String(64), default="")
 
     __table_args__ = (
         Index("ix_cc_audit_log_ts", "ts"),
         Index("ix_cc_audit_log_tenant_id", "tenant_id"),
+        UniqueConstraint("seq", name="uq_cc_audit_log_seq"),
     )
 
 
@@ -217,6 +226,54 @@ class CCOutcomeHistory(Base):
     __table_args__ = (
         Index("ix_outcome_history_type_vendor", "action_type", "vendor"),
         Index("ix_outcome_history_device", "device_agent_id"),
+    )
+
+
+class CCWarranty(Base):
+    """Warranty/lifecycle cache keyed by service tag (R4-2 P15).
+
+    A separate table (NOT columns on cc_fleet_cache) because the fleet
+    poller rebuilds the cache from scratch every cycle -- enrichment on
+    cache rows would be wiped. TTL-refreshed by the warranty loop; also
+    the caching layer the vendor API rate limits require.
+    """
+
+    __tablename__ = "cc_warranty"
+
+    service_tag: Mapped[str] = mapped_column(String(255), primary_key=True)
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    service_level: Mapped[str] = mapped_column(String(255), default="")
+    start_date: Mapped[str] = mapped_column(String(32), default="")
+    end_date: Mapped[str] = mapped_column(String(32), default="")
+    source: Mapped[str] = mapped_column(String(32), default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCCveEntry(Base):
+    """Local CVE feed for firmware exposure matching (R4-2 P14).
+
+    Air-gap safe by design: entries are imported from an offline JSON
+    bundle by an operator (POST /api/firmware/cve-feed); CC never
+    phones home to NVD or vendor feeds.
+    """
+
+    __tablename__ = "cc_cve_feed"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    cve_id: Mapped[str] = mapped_column(String(32))
+    vendor: Mapped[str] = mapped_column(String(64), default="*")
+    component: Mapped[str] = mapped_column(String(32), default="*")
+    #: version-range expression (harkeniq.compliance.versions), e.g. "< 7.10.30.00"
+    affected_versions: Mapped[str] = mapped_column(String(255))
+    fixed_version: Mapped[str] = mapped_column(String(64), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="medium")
+    description: Mapped[str] = mapped_column(String(512), default="")
+    published: Mapped[str] = mapped_column(String(32), default="")
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("cve_id", "vendor", "component",
+                         name="uq_cc_cve_feed_entry"),
     )
 
 

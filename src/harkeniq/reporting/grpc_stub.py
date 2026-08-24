@@ -114,6 +114,7 @@ class SiteManagerReporter:
         bmc_location: Optional[dict] = None,
         peers: Optional[list[str]] = None,
         public_key_pem: Optional[bytes] = None,
+        firmware: Optional[list[dict]] = None,
     ) -> Optional["harkeniq_pb2.RegistrationAck"]:
         """Register this agent with the Site Manager (best-effort).
 
@@ -131,6 +132,7 @@ class SiteManagerReporter:
             bmc_location_json=json.dumps(bmc_location) if bmc_location else "",
             peers=list(peers or []),
             public_key_pem=public_key_pem or b"",
+            firmware_json=json.dumps(firmware) if firmware else "",
         )
         return await self._call("RegisterAgent", request, want_response=True)
 

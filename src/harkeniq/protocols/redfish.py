@@ -92,6 +92,73 @@ class RedfishDeviceProtocol:
             await self.detect_identity()
         return await self._poller.poll_sensors()
 
+    async def collect_config(self) -> dict:
+        """Collect BMC config attributes for drift detection (R4-2 P13).
+
+        Dell: GET DellAttributes -> Attributes dict. Other vendors
+        return {} until their attribute surface is mapped.
+        """
+        if self._client is None:
+            raise ProtocolError("Not connected")
+        if self._identity is None:
+            await self.detect_identity()
+        if self._vendor != "dell":
+            return {}
+        manager_id = self._identity.manager_id or "iDRAC.Embedded.1"
+        path = (
+            f"/redfish/v1/Managers/{manager_id}/Oem/Dell/DellAttributes"
+            f"/{manager_id}"
+        )
+        try:
+            data = await self._client.get(path)
+        except Exception as e:
+            logger.warning("Config collection failed: %s", e)
+            return {}
+        attributes = data.get("Attributes", {})
+        return dict(attributes) if isinstance(attributes, dict) else {}
+
+    async def collect_firmware_inventory(self) -> list[dict]:
+        """Collect BMC / BIOS / PSU firmware versions (R4-2 P14).
+
+        Harvested from endpoints the poller already knows (manager,
+        system, power) -- no UpdateService dependency, which older BMC
+        firmware often lacks.
+        """
+        if self._client is None or self._poller is None:
+            raise ProtocolError("Not connected")
+        if self._identity is None:
+            await self.detect_identity()
+        inventory: list[dict] = []
+        if self._identity.firmware_version:
+            inventory.append({
+                "component": "bmc",
+                "name": self._identity.controller_type or "BMC",
+                "version": str(self._identity.firmware_version),
+            })
+        paths = self._poller.paths
+        try:
+            system = await self._client.get(paths.system)
+            bios = system.get("BiosVersion", "")
+            if bios:
+                inventory.append(
+                    {"component": "bios", "name": "BIOS", "version": str(bios)}
+                )
+        except Exception as e:
+            logger.warning("BIOS version collection failed: %s", e)
+        try:
+            power = await self._client.get(paths.power)
+            for psu in power.get("PowerSupplies", []):
+                version = psu.get("FirmwareVersion", "")
+                if version:
+                    inventory.append({
+                        "component": "psu",
+                        "name": psu.get("Name") or psu.get("MemberId", "PSU"),
+                        "version": str(version),
+                    })
+        except Exception as e:
+            logger.warning("PSU firmware collection failed: %s", e)
+        return inventory
+
     async def execute_action(self, action_type: str, params: dict) -> dict:
         """Execute a Redfish action via the vendor-aware ActionExecutor.
 

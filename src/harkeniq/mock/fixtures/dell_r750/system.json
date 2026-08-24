@@ -7,8 +7,30 @@
   "Manufacturer": "Dell Inc.",
   "SerialNumber": "DEMO001SN",
   "SKU": "DEMO001",
-  "Status": {"State": "Enabled", "Health": "OK", "HealthRollup": "OK"},
-  "MemorySummary": {"TotalSystemMemoryGiB": 512, "Status": {"Health": "OK", "HealthRollup": "OK"}},
-  "ProcessorSummary": {"Count": 2, "Model": "Intel Xeon Gold 6338", "Status": {"Health": "OK", "HealthRollup": "OK"}},
-  "Oem": {"Dell": {"ServiceTag": "DEMO001"}}
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "HealthRollup": "OK"
+  },
+  "MemorySummary": {
+    "TotalSystemMemoryGiB": 512,
+    "Status": {
+      "Health": "OK",
+      "HealthRollup": "OK"
+    }
+  },
+  "ProcessorSummary": {
+    "Count": 2,
+    "Model": "Intel Xeon Gold 6338",
+    "Status": {
+      "Health": "OK",
+      "HealthRollup": "OK"
+    }
+  },
+  "Oem": {
+    "Dell": {
+      "ServiceTag": "DEMO001"
+    }
+  },
+  "BiosVersion": "1.15.2"
 }

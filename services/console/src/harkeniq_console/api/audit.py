@@ -30,6 +30,9 @@ def _entry_dict(e) -> dict:
         "subject_id": e.subject_id,
         "tenant_id": e.tenant_id,
         "detail": e.detail,
+        "seq": e.seq,
+        "prev_hash": e.prev_hash,
+        "entry_hash": e.entry_hash,
     }
 
 
@@ -88,7 +91,7 @@ async def export_audit_logs(
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf,
-        fieldnames=["id", "ts", "actor_id", "actor_email", "action", "subject_type", "subject_id", "detail"],
+        fieldnames=["id", "ts", "actor_id", "actor_email", "action", "subject_type", "subject_id", "detail", "seq", "prev_hash", "entry_hash"],
     )
     writer.writeheader()
     for e in entries:
@@ -103,6 +106,21 @@ async def export_audit_logs(
 
 
 # ── admin (platform-wide) ───────────────────────────────────────────
+
+
+@admin_router.get("/verify")
+async def admin_verify_audit_chain(
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_super_admin),
+) -> dict:
+    """Verify the SHA-256 audit hash chain (R4-2 P12, OQ-20: on-demand)."""
+    result = await AuditRepo(session).verify_chain()
+    return {
+        "valid": result.valid,
+        "length": result.length,
+        "first_bad_seq": result.first_bad_seq,
+        "error": result.error,
+    }
 
 
 @admin_router.get("/")
@@ -156,7 +174,7 @@ async def admin_export_audit(
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf,
-        fieldnames=["id", "ts", "actor_id", "actor_email", "action", "subject_type", "subject_id", "tenant_id", "detail"],
+        fieldnames=["id", "ts", "actor_id", "actor_email", "action", "subject_type", "subject_id", "tenant_id", "detail", "seq", "prev_hash", "entry_hash"],
     )
     writer.writeheader()
     for e in entries:

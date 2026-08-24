@@ -1,0 +1,116 @@
+"""Firmware API: CVE feed import + fleet exposure scan (R4-2 P14).
+
+The feed is local and operator-imported (air-gap safe). Exposure is
+computed on demand: every fleet-cache device with a firmware inventory
+is matched against the feed using the shared cross-vendor version
+comparator (harkeniq.compliance.versions).
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Body, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from harkeniq.compliance.versions import version_in_range
+from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.auth import UserContext
+from harkeniq_cc.db.repos import CveFeedRepo, FleetCacheRepo
+
+router = APIRouter(prefix="/api/firmware", tags=["firmware"])
+
+
+def match_exposures(devices, entries) -> list[dict]:
+    """Match devices' firmware inventories against CVE feed entries."""
+    exposures: list[dict] = []
+    for dev in devices:
+        for fw in (dev.firmware or []):
+            component = str(fw.get("component", ""))
+            version = str(fw.get("version", ""))
+            if not version:
+                continue
+            for entry in entries:
+                if entry.vendor not in ("*", dev.vendor):
+                    continue
+                if entry.component not in ("*", component):
+                    continue
+                if version_in_range(version, entry.affected_versions):
+                    exposures.append({
+                        "agent_id": dev.agent_id,
+                        "agent_name": dev.agent_name,
+                        "site_id": dev.site_id,
+                        "vendor": dev.vendor,
+                        "model": dev.model,
+                        "component": component,
+                        "component_name": str(fw.get("name", "")),
+                        "version": version,
+                        "cve_id": entry.cve_id,
+                        "severity": entry.severity,
+                        "description": entry.description,
+                        "fixed_version": entry.fixed_version,
+                    })
+    return exposures
+
+
+@router.post(
+    "/cve-feed",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def import_cve_feed(
+    payload: dict = Body(...),
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Import CVE feed entries from an offline bundle: {"entries": [...]}."""
+    entries = payload.get("entries", [])
+    imported = await CveFeedRepo(session).import_entries(
+        entries if isinstance(entries, list) else []
+    )
+    await session.commit()
+    return {"imported": imported, "tenant_id": user.tenant_id}
+
+
+@router.get(
+    "/cve-feed",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def list_cve_feed(
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    rows = await CveFeedRepo(session).list_all()
+    return {
+        "entries": [
+            {
+                "cve_id": r.cve_id,
+                "vendor": r.vendor,
+                "component": r.component,
+                "affected_versions": r.affected_versions,
+                "fixed_version": r.fixed_version,
+                "severity": r.severity,
+                "description": r.description,
+                "published": r.published,
+            }
+            for r in rows
+        ],
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.get(
+    "/exposure",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def firmware_exposure(
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Fleet CVE exposure: devices whose firmware matches feed entries."""
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id)
+    entries = await CveFeedRepo(session).list_all()
+    exposures = match_exposures(devices, entries)
+    return {
+        "exposures": exposures,
+        "devices_scanned": len(devices),
+        "feed_entries": len(entries),
+        "tenant_id": user.tenant_id,
+    }

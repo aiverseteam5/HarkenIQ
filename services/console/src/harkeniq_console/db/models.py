@@ -109,10 +109,16 @@ class ConsoleAuditLog(Base):
     subject_id: Mapped[str] = mapped_column(String(64), default="")
     tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
+    # service, seq unique so racing appenders fail instead of forking.
+    seq: Mapped[int | None] = mapped_column(nullable=True)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="")
+    entry_hash: Mapped[str] = mapped_column(String(64), default="")
 
     __table_args__ = (
         Index("ix_console_audit_ts", "ts"),
         Index("ix_console_audit_tenant_id", "tenant_id"),
+        UniqueConstraint("seq", name="uq_console_audit_seq"),
     )
 
 

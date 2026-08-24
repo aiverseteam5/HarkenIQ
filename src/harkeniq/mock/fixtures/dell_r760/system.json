@@ -31,5 +31,6 @@
     "Dell": {
       "ServiceTag": "DEMO002"
     }
-  }
+  },
+  "BiosVersion": "2.3.1"
 }

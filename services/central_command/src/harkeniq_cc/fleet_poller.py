@@ -50,6 +50,8 @@ async def fleet_poll_loop(state) -> None:
                                 observation=dev.get("observation", ""),
                                 health=dev.get("health", ""),
                                 subsystems=dev.get("subsystems"),
+                                service_tag=dev.get("service_tag", ""),
+                                firmware=dev.get("firmware"),
                             )
                         # R3b-3: ingest action outcomes for fleet learning
                         outcomes = snapshot.get("outcomes", [])

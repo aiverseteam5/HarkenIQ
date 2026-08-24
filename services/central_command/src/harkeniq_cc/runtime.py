@@ -68,6 +68,7 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     from harkeniq_cc.fleet_poller import fleet_poll_loop
     from harkeniq_cc.intelligence import intelligence_loop
     from harkeniq_cc.usage_reporter import usage_report_loop
+    from harkeniq_cc.warranty.refresh import warranty_refresh_loop
 
     if state is None:
         state = await make_state(config)
@@ -100,6 +101,9 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     async def intelligence_task() -> None:
         await intelligence_loop(state)
 
+    async def warranty_task() -> None:
+        await warranty_refresh_loop(state)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(serve_http(), name="http")
@@ -107,6 +111,7 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
             tg.create_task(fleet_poller_task(), name="fleet_poller")
             tg.create_task(usage_reporter_task(), name="usage_reporter")
             tg.create_task(intelligence_task(), name="intelligence")
+            tg.create_task(warranty_task(), name="warranty")
     finally:
         state.started.clear()
         http_server.should_exit = True

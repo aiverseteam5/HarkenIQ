@@ -70,6 +70,7 @@ message AgentRegistration {
   repeated string peers = 7;      // configured peer adjacency, "host:port"
   bytes public_key_pem = 8;       // R3a: agent's Ed25519 public key
   string resource_profile = 9;    // R3a: "constrained" | "standard" | "performance"
+  string firmware_json = 10;      // R4-2: firmware inventory [{component,name,version}]
 }
 
 message RegistrationAck {
@@ -154,6 +155,8 @@ message FleetDevice {
   string health = 6;            // ok, warning, critical, unknown
   string subsystems_json = 7;   // per-subsystem severity map
   int64 last_seen_unix = 8;
+  string service_tag = 9;       // R4-2: warranty lookup key
+  string inventory_json = 10;   // R4-2: {"firmware": [{component,name,version}]}
 }
 
 message FleetIncident {

@@ -118,6 +118,12 @@ class SMClient:
                         subsystems = json.loads(d.subsystems_json)
                     except (json.JSONDecodeError, TypeError):
                         pass
+                inventory = {}
+                if d.inventory_json:
+                    try:
+                        inventory = json.loads(d.inventory_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 devices.append({
                     "agent_id": d.agent_id,
                     "agent_name": d.agent_name,
@@ -127,6 +133,8 @@ class SMClient:
                     "health": d.health,
                     "subsystems": subsystems,
                     "last_seen_unix": d.last_seen_unix,
+                    "service_tag": d.service_tag,
+                    "firmware": inventory.get("firmware") or [],
                 })
             incidents = []
             for inc in snap.incidents:

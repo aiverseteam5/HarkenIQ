@@ -60,17 +60,22 @@ class PlaybookExecutor:
         credential_provider=None,
         get_device_state=None,
         verification_wait_scale: float = 1.0,
+        dry_run: bool = False,
     ) -> None:
         """
         Args:
             action_executor: ActionExecutor instance (or mock for tests).
             credential_provider: CredentialProvider for JIT credentials.
             get_device_state: async callable(device_id) -> dict (current state).
+            dry_run: log actions instead of executing them (R4-2 risk
+                register: config-changing playbooks default to dry-run).
+                Verification is skipped in dry-run -- nothing changed.
         """
         self._executor = action_executor
         self._cred_provider = credential_provider
         self._get_state = get_device_state
         self._wait_scale = verification_wait_scale  # 0.0 for tests
+        self.dry_run = dry_run
 
     async def execute_playbook(
         self,
@@ -221,12 +226,12 @@ class PlaybookExecutor:
 
         # 4. Wait verification window (scaled for tests)
         wait = step.verification_wait_seconds * self._wait_scale
-        if wait > 0:
+        if wait > 0 and not self.dry_run:
             await asyncio.sleep(wait)
 
-        # 5. Verify outcome
+        # 5. Verify outcome (skipped in dry-run: nothing was changed)
         post_state = await self._get_current_state(device_id)
-        if step.verification_checks:
+        if step.verification_checks and not self.dry_run:
             all_pass = True
             for check in step.verification_checks:
                 value = post_state.get(check.field_path)
@@ -256,11 +261,23 @@ class PlaybookExecutor:
         )
 
     async def _run_action(self, step: PlaybookStep) -> Optional[dict]:
-        """Run a single action via the ActionExecutor or mock."""
+        """Run a single action via the ActionExecutor (R4-2: wired for real).
+
+        The ActionExecutor's allow list and audit trail apply to playbook
+        steps exactly as to directly approved actions -- a playbook is
+        not a policy bypass.
+        """
         if self._executor is None:
-            return {"success": True}  # mock mode
-        # Real executor integration delegated to Phase 7
-        return {"success": True}
+            return {"success": True}  # mock mode (tests without executor)
+        if self.dry_run:
+            logger.info(
+                "[dry-run] would execute %s with params %s",
+                step.action_type.value, dict(step.params),
+            )
+            return {"success": True, "dry_run": True}
+        action = self._build_action(step.action_type, dict(step.params))
+        outcome = await self._executor.execute(action)
+        return {"success": outcome.success, "error": outcome.error_message or ""}
 
     async def _execute_rollback(
         self, rollback_action: ActionType, device_id: str,
@@ -269,7 +286,25 @@ class PlaybookExecutor:
         logger.info("Executing rollback %s on %s", rollback_action.value, device_id)
         if self._executor is None:
             return True  # mock mode
-        return True
+        if self.dry_run:
+            logger.info("[dry-run] would roll back via %s", rollback_action.value)
+            return True
+        action = self._build_action(rollback_action, {})
+        outcome = await self._executor.execute(action)
+        return outcome.success
+
+    @staticmethod
+    def _build_action(action_type: ActionType, params: dict):
+        import uuid
+
+        from harkeniq.models import Action
+
+        return Action(
+            id=f"pb-{uuid.uuid4().hex[:8]}",
+            type=action_type,
+            params=params,
+            skill_name="playbook",
+        )
 
     async def _get_current_state(self, device_id: str) -> dict:
         """Get current device state for verification."""

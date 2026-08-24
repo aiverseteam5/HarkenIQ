@@ -1,13 +1,30 @@
-"""Audit API: paginated audit log entries."""
+"""Audit API: paginated audit log entries + chain verification (R4-2)."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_current_user
+from harkeniq_cc.api.deps import get_current_user, get_session
 from harkeniq_cc.auth import UserContext
+from harkeniq_cc.db.repos import AuditRepo
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
+
+
+def _entry_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "ts": row.ts.isoformat() if row.ts else None,
+        "actor": row.actor,
+        "action": row.action,
+        "subject": row.subject,
+        "tenant_id": row.tenant_id,
+        "detail": row.detail,
+        "seq": row.seq,
+        "prev_hash": row.prev_hash,
+        "entry_hash": row.entry_hash,
+    }
 
 
 @router.get("/", dependencies=[Depends(get_current_user)])
@@ -17,12 +34,36 @@ async def list_audit(
     actor: str | None = None,
     action: str | None = None,
     user: UserContext = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Paginated audit entries."""
+    rows = await AuditRepo(session).list_filtered(
+        tenant_id=user.tenant_id,
+        actor=actor,
+        action=action,
+        page=page,
+        page_size=page_size,
+    )
     return {
-        "entries": [],
+        "entries": [_entry_dict(r) for r in rows],
         "page": page,
         "page_size": page_size,
-        "total": 0,
+        "total": len(rows),
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.get("/verify", dependencies=[Depends(get_current_user)])
+async def verify_audit_chain(
+    user: UserContext = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Verify the SHA-256 audit hash chain (R4-2 P12, OQ-20: on-demand)."""
+    result = await AuditRepo(session).verify_chain()
+    return {
+        "valid": result.valid,
+        "length": result.length,
+        "first_bad_seq": result.first_bad_seq,
+        "error": result.error,
         "tenant_id": user.tenant_id,
     }

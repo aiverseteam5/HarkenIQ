@@ -237,6 +237,27 @@ class IPMIProtocol:
         device.health_rollup = compute_health_rollup(device)
         return device
 
+    async def collect_firmware_inventory(self) -> list[dict]:
+        """IPMI exposes the BMC firmware via FRU only (R4-2 P14)."""
+        if self._backend is None:
+            raise ProtocolError("Not connected")
+        if self._identity is None:
+            await self.detect_identity()
+        if self._identity.firmware_version:
+            return [{
+                "component": "bmc",
+                "name": "BMC",
+                "version": str(self._identity.firmware_version),
+            }]
+        return []
+
+    async def collect_config(self) -> dict:
+        """IPMI exposes no rich config-attribute surface in scope (R4-2);
+        return {} so drift detection reports UNKNOWN, never false drift."""
+        if self._backend is None:
+            raise ProtocolError("Not connected")
+        return {}
+
     async def execute_action(self, action_type: str, params: dict) -> dict:
         """Execute an IPMI action. Supported: IDENTIFY_LED, SEL_CLEAR."""
         if self._backend is None:

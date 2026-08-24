@@ -1,0 +1,9 @@
+policy_id: bmc-baseline
+name: BMC baseline configuration
+description: NTP and remote syslog must stay enabled; web UI must redirect to HTTPS.
+device_types: ["dell"]
+severity: WARNING
+expected:
+  NTPConfigGroup.1.NTPEnable: Enabled
+  SysLog.1.SysLogEnable: Enabled
+  WebServer.1.HttpsRedirection: Enabled

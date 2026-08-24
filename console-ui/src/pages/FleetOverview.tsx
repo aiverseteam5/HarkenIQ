@@ -21,10 +21,20 @@ interface FleetSummary {
   sites: number;
 }
 
+interface WarrantyInfo {
+  service_level: string;
+  start_date: string;
+  end_date: string;
+  status: string;      // active | expiring | expired | unknown
+  source: string;
+}
+
 interface FleetDeviceDetail extends FleetDevice {
   name: string;
   observation: string;
   subsystems_json: Record<string, string> | null;
+  warranty?: WarrantyInfo | null;
+  firmware?: { component: string; name: string; version: string }[];
 }
 
 interface FleetRow extends FleetDevice {
@@ -49,6 +59,13 @@ const OBSERVATION_VARIANT: Record<string, "success" | "warning" | "critical" | "
   normal: "success",
   degraded: "warning",
   faulted: "critical",
+  unknown: "neutral",
+};
+
+const WARRANTY_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
+  active: "success",
+  expiring: "warning",
+  expired: "critical",
   unknown: "neutral",
 };
 
@@ -97,16 +114,6 @@ const detailValue: CSSProperties = {
   color: "var(--text-primary)",
   fontWeight: 500,
   textAlign: "right",
-};
-
-const noteStyle: CSSProperties = {
-  marginTop: "1.25rem",
-  padding: "0.75rem",
-  background: "var(--bg-primary)",
-  borderRadius: "var(--radius-md)",
-  fontSize: "0.75rem",
-  color: "var(--text-muted)",
-  textAlign: "center",
 };
 
 /* ── Helpers ──────────────────────────────────────── */
@@ -454,6 +461,49 @@ export default function FleetOverview() {
               <span style={detailValue}>{formatDate(selectedDevice.last_seen_at)}</span>
             </div>
 
+            <div style={sectionTitle}>Warranty & Lifecycle</div>
+            {selectedDevice.warranty ? (
+              <>
+                <div style={detailRow}>
+                  <span style={detailLabel}>Status</span>
+                  <span style={detailValue}>
+                    <StatusBadge
+                      status={selectedDevice.warranty.status}
+                      variant={WARRANTY_VARIANT[selectedDevice.warranty.status] ?? "neutral"}
+                      size="sm"
+                    />
+                  </span>
+                </div>
+                <div style={detailRow}>
+                  <span style={detailLabel}>Service Level</span>
+                  <span style={detailValue}>{selectedDevice.warranty.service_level || "--"}</span>
+                </div>
+                <div style={detailRow}>
+                  <span style={detailLabel}>Expires</span>
+                  <span style={detailValue}>{selectedDevice.warranty.end_date || "--"}</span>
+                </div>
+              </>
+            ) : (
+              <div style={detailRow}>
+                <span style={detailLabel}>Status</span>
+                <span style={detailValue}>
+                  <StatusBadge status="unknown" variant="neutral" size="sm" />
+                </span>
+              </div>
+            )}
+
+            {selectedDevice.firmware && selectedDevice.firmware.length > 0 && (
+              <>
+                <div style={sectionTitle}>Firmware</div>
+                {selectedDevice.firmware.map((fw, i) => (
+                  <div key={`${fw.component}-${i}`} style={detailRow}>
+                    <span style={detailLabel}>{fw.name || fw.component}</span>
+                    <span style={detailValue}><code>{fw.version}</code></span>
+                  </div>
+                ))}
+              </>
+            )}
+
             {selectedDevice.subsystems_json && Object.keys(selectedDevice.subsystems_json).length > 0 && (
               <>
                 <div style={sectionTitle}>Subsystem States</div>
@@ -472,9 +522,6 @@ export default function FleetOverview() {
               </>
             )}
 
-            <div style={noteStyle}>
-              No detailed data available in fleet cache — view on Site Manager for full details
-            </div>
           </>
         ) : null}
       </DetailPanel>

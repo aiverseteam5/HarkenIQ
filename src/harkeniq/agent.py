@@ -41,6 +41,7 @@ from harkeniq.heartbeat.tracker import PeerTracker
 from harkeniq.models import (
     Action,
     ActionStatus,
+    ActionType,
     AgentState,
     HeartbeatPacket,
     Verdict,
@@ -138,6 +139,12 @@ class Agent:
         self.peer_protocol: Optional[PeerProtocol] = None
         self.partition_fence: Optional[PartitionFence] = None
 
+        # R4-2 P13: config compliance state
+        self.config_policies: dict[str, Any] = {}
+        self._last_drift_findings: list[Any] = []
+        # R4-2 P14: firmware inventory (R-AGENT-17)
+        self.firmware_inventory: list[dict] = []
+
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
         self._last_checkpoint_at: float = 0.0
@@ -177,8 +184,25 @@ class Agent:
             self.client = self.protocol.client
             self.poller = self.protocol.poller
 
+        # R4-2 P14: collect firmware inventory at startup (R-AGENT-17)
+        try:
+            self.firmware_inventory = await self.protocol.collect_firmware_inventory()
+        except Exception as e:
+            logger.warning("Firmware inventory collection failed: %s", e)
+            self.firmware_inventory = []
+
         # Load skills
         skills = load_skills(self.skills_dir)
+
+        # R4-2 P13: load config compliance policies when enabled
+        compliance_cfg = self.config.get("compliance") or {}
+        if compliance_cfg.get("enabled"):
+            from harkeniq.compliance.config_policy import load_config_policies
+            self.config_policies = load_config_policies(
+                compliance_cfg.get("policy_directory", "/etc/harkeniq/policies")
+            )
+            logger.info("Loaded %d config compliance policies",
+                        len(self.config_policies))
 
         # Peer tracker + Site Manager reporter + action executor
         self.tracker = PeerTracker(self.config)
@@ -242,6 +266,7 @@ class Agent:
                     self.agent_identity.public_key_pem
                     if self.agent_identity else b""
                 ),
+                firmware=self.firmware_inventory,
             )
             if reg_ack is None:
                 logger.warning("Site Manager registration failed; continuing standalone")
@@ -322,6 +347,7 @@ class Agent:
         if peers_configured:
             await self._open_heartbeat_endpoint()
 
+        compliance_cfg = self.config.get("compliance") or {}
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._poll_loop(), name="poller")
@@ -330,6 +356,9 @@ class Agent:
                     tg.create_task(self._liveness_loop(), name="liveness")
                 if self.reporter and self.reporter.enabled:
                     tg.create_task(self._report_loop(), name="reporter")
+                    tg.create_task(self._inventory_loop(), name="inventory")
+                if compliance_cfg.get("enabled"):
+                    tg.create_task(self._compliance_loop(), name="compliance")
         finally:
             await self._shutdown_sequence(install_signal_handlers, loop)
 
@@ -384,6 +413,167 @@ class Agent:
                     )
             if await self._pause(interval):
                 break
+
+    # -- firmware inventory (R4-2 P14, R-AGENT-17) ---------------------------
+
+    async def _inventory_loop(self) -> None:
+        """Re-collect firmware inventory on polling.inventory_interval and
+        re-register with SM when it changed (registration is an upsert)."""
+        interval = (self.config.get("polling") or {}).get("inventory_interval", 300)
+        while not self._shutdown.is_set():
+            if await self._pause(interval):
+                break
+            try:
+                inventory = await self.protocol.collect_firmware_inventory()
+            except Exception as e:
+                logger.warning("Firmware inventory refresh failed: %s", e)
+                continue
+            if inventory != self.firmware_inventory:
+                logger.info("Firmware inventory changed (%d components)",
+                            len(inventory))
+                self.firmware_inventory = inventory
+                if self.reporter and self.reporter.enabled:
+                    await self.reporter.register_agent(
+                        vendor=self.device_identity.vendor,
+                        model=self.device_identity.model,
+                        service_tag=self.device_identity.service_tag,
+                        firmware=inventory,
+                    )
+
+    # -- config compliance (R4-2 P13) ----------------------------------------
+
+    async def _compliance_loop(self) -> None:
+        compliance_cfg = self.config.get("compliance") or {}
+        interval = compliance_cfg.get("interval", 3600)
+        while not self._shutdown.is_set():
+            try:
+                await self.check_compliance()
+            except (HarkenIQError, RuntimeError) as e:
+                logger.warning("Compliance check failed: %s", e)
+            if await self._pause(interval):
+                break
+
+    async def check_compliance(self) -> list:
+        """Collect config, detect drift, propose CONFIG_RESTORE for approval.
+
+        Returns the drift findings from this cycle. Proposals go through
+        the normal approval queue -- config writes always need approval
+        (R4 risk register), and dedup in ActionQueue prevents re-proposing
+        while a remediation is already pending.
+        """
+        from harkeniq.compliance.config_policy import detect_drift
+
+        snapshot = await self.protocol.collect_config()
+        vendor = self.device_identity.vendor if self.device_identity else ""
+        findings = []
+        for policy in self.config_policies.values():
+            if not policy.matches_device(vendor):
+                continue
+            policy_findings = detect_drift(snapshot, policy)
+            findings.extend(policy_findings)
+            drifted = [f for f in policy_findings if f.status == "DRIFT"]
+            if not drifted:
+                continue
+            logger.warning(
+                "Config drift on policy %s: %d attribute(s) off baseline",
+                policy.policy_id, len(drifted),
+            )
+            attributes = {f.key: f.expected for f in drifted}
+            rec = Action(
+                id="",  # assigned by the queue
+                type=ActionType.CONFIG_RESTORE,
+                params={"attributes_json": json.dumps(attributes, sort_keys=True)},
+                sensor_id=f"config:{policy.policy_id}",
+                skill_name=f"config-policy:{policy.policy_id}",
+                verdict_severity=VerdictSeverity[policy.severity],
+            )
+            await self._propose_actions([rec])
+        self._last_drift_findings = findings
+        return findings
+
+    async def _execute_config_restore_playbook(self, action: Action) -> None:
+        """Run an approved CONFIG_RESTORE through the playbook pipeline.
+
+        The playbook's single step executes via the real ActionExecutor
+        (allow list + audit apply) and is verified by re-reading each
+        restored attribute. dry_run comes from compliance config.
+        """
+        from harkeniq.actions.playbook import Playbook, PlaybookStep
+        from harkeniq.actions.playbook_executor import PlaybookExecutor
+        from harkeniq.autonomy.verification import VerificationCheck
+        from harkeniq.models import ActionOutcome, PlaybookStatus
+
+        compliance_cfg = self.config.get("compliance") or {}
+        try:
+            attributes = json.loads(action.params.get("attributes_json", "{}"))
+        except json.JSONDecodeError:
+            attributes = {}
+        checks = [
+            VerificationCheck(
+                description=f"{key} restored to {expected!r}",
+                field_path=key,
+                operator="equals",
+                expected=expected,
+            )
+            for key, expected in attributes.items()
+        ]
+        playbook = Playbook(
+            playbook_id=f"config-drift-{action.sensor_id}",
+            name="Config drift remediation",
+            description=action.skill_name,
+            device_types=["*"],
+            steps=[PlaybookStep(
+                step_index=0,
+                action_type=ActionType.CONFIG_RESTORE,
+                description=f"Restore {len(attributes)} drifted attribute(s)",
+                params=dict(action.params),
+                verification_checks=checks,
+                verification_wait_seconds=1.0,
+            )],
+            risk_level="medium",
+        )
+
+        async def _config_state(device_id: str) -> dict:
+            return await self.protocol.collect_config()
+
+        executor = PlaybookExecutor(
+            action_executor=self.executor,
+            get_device_state=_config_state,
+            verification_wait_scale=compliance_cfg.get(
+                "verification_wait_scale", 1.0
+            ),
+            dry_run=compliance_cfg.get("dry_run", True),
+        )
+        execution = await executor.execute_playbook(playbook, self.agent_id)
+
+        success = execution.status == PlaybookStatus.COMPLETED
+        action.outcome = ActionOutcome(
+            action_id=action.id,
+            type=action.type,
+            target=action.sensor_id,
+            success=success,
+            error_message=None if success else (
+                execution.error_message
+                or (execution.step_outcomes[-1].error_message
+                    if execution.step_outcomes else "playbook failed")
+            ),
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        action.status = (
+            ActionStatus.COMPLETED if success else ActionStatus.FAILED
+        )
+        action.completed_at = action.outcome.timestamp
+        if self.checkpoint:
+            await self.checkpoint.save_audit_entry(
+                action="CONFIG_RESTORE_PLAYBOOK",
+                target=action.sensor_id,
+                outcome="success" if success else "failed",
+                evidence_json=json.dumps({
+                    "playbook_id": playbook.playbook_id,
+                    "dry_run": executor.dry_run,
+                    "status": execution.status.value,
+                }),
+            )
 
     def _recover_to_observing(self, reason: str) -> None:
         """Walk the state machine back to OBSERVING after a failed cycle."""
@@ -664,7 +854,12 @@ class Agent:
                     AgentState.ACTING, f"executing {len(approved)} approved action(s)"
                 )
                 for action in approved:
-                    await self.executor.execute(action)
+                    if action.type == ActionType.CONFIG_RESTORE:
+                        # R4-2 P13: config writes run through the playbook
+                        # pipeline (precondition/verify/rollback machinery).
+                        await self._execute_config_restore_playbook(action)
+                    else:
+                        await self.executor.execute(action)
                 self.state_machine.transition(AgentState.REPORTING, "actions executed")
             else:
                 self.state_machine.transition(

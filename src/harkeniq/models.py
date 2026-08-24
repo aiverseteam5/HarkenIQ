@@ -87,6 +87,8 @@ class ActionType(Enum):
     BMC_RESET = "BMC_RESET"
     POWER_CYCLE = "POWER_CYCLE"
     POWER_CAP_ADJUST = "POWER_CAP_ADJUST"
+    # R4-2 actions (config compliance remediation)
+    CONFIG_RESTORE = "CONFIG_RESTORE"
 
 
 class ActionStatus(Enum):

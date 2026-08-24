@@ -40,6 +40,17 @@ DEVICE_PROFILES = {
 }
 
 
+# R4-2 P13: default BMC config attributes (iDRAC-style keys) served from
+# the DellAttributes endpoint; mutable so tests can inject config drift.
+_DEFAULT_DELL_ATTRIBUTES = {
+    "NTPConfigGroup.1.NTPEnable": "Enabled",
+    "NTPConfigGroup.1.NTP1": "pool.ntp.org",
+    "SysLog.1.SysLogEnable": "Enabled",
+    "WebServer.1.HttpsRedirection": "Enabled",
+    "ThermalSettings.1.FanSpeedOffset": "Off",
+}
+
+
 class MockSimulator:
     """Mock Redfish BMC simulator with fault injection."""
 
@@ -66,6 +77,7 @@ class MockSimulator:
         self._port: int = 0
         self._state: dict[str, Any] = {}
         self._action_state: dict[str, Any] = {"led": {}, "diagnostics": [], "fan_reset": []}
+        self._bmc_attributes: dict[str, Any] = dict(_DEFAULT_DELL_ATTRIBUTES)
         self._sessions: dict[str, dict] = {}
         self._gradual_tasks: list = []
         self._fixtures_path = FIXTURES_DIR / device.replace("-", "_")
@@ -82,6 +94,15 @@ class MockSimulator:
     def action_state(self) -> dict[str, Any]:
         """Applied action state (LED, diagnostics, fan reset) for assertions."""
         return self._action_state
+
+    @property
+    def bmc_attributes(self) -> dict[str, Any]:
+        """Current BMC config attributes (R4-2 P13)."""
+        return dict(self._bmc_attributes)
+
+    def inject_config_drift(self, key: str, value: Any) -> None:
+        """Drift one BMC config attribute away from its default (R4-2 P13)."""
+        self._bmc_attributes[key] = value
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -128,6 +149,7 @@ class MockSimulator:
         """Load all JSON fixture files into mutable in-memory state."""
         self._state = {}
         self._action_state = {"led": {}, "diagnostics": [], "fan_reset": []}
+        self._bmc_attributes = dict(_DEFAULT_DELL_ATTRIBUTES)
         if not self._fixtures_path.exists():
             logger.warning("No fixtures directory: %s", self._fixtures_path)
             return
@@ -272,6 +294,11 @@ class MockSimulator:
         r.add_patch(
             f"/redfish/v1/Managers/{mid}/Oem/Dell/DellAttributes/{mid}",
             self._handle_dell_attributes_patch,
+        )
+        # R4-2 P13: config attribute surface for drift detection
+        r.add_get(
+            f"/redfish/v1/Managers/{mid}/Oem/Dell/DellAttributes/{mid}",
+            self._handle_dell_attributes_get,
         )
 
         # Individual DIMMs and MemoryMetrics
@@ -449,7 +476,14 @@ class MockSimulator:
         body = await request.json()
         attributes = body.get("Attributes", {})
         self._action_state["fan_reset"].append({"vendor": "dell", "attributes": attributes})
+        # R4-2 P13: attribute writes persist, so CONFIG_RESTORE is verifiable
+        self._bmc_attributes.update(attributes)
         return web.json_response({"Attributes": attributes})
+
+    async def _handle_dell_attributes_get(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        return web.json_response({"Attributes": dict(self._bmc_attributes)})
 
     async def _handle_hpe_ahs(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
