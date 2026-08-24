@@ -1,10 +1,11 @@
-import { type CSSProperties, useEffect } from "react";
+import { type CSSProperties, type ReactNode, useEffect } from "react";
 import Spinner from "./Spinner";
 
 interface Props {
-  open: boolean;
+  open?: boolean;
   title: string;
-  message: string;
+  message?: string;
+  children?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: "danger" | "default";
@@ -52,9 +53,10 @@ const actionsStyle: CSSProperties = {
 };
 
 export default function ConfirmDialog({
-  open,
+  open = true,
   title,
   message,
+  children,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   variant = "default",
@@ -84,7 +86,7 @@ export default function ConfirmDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <h3 id="confirm-title" style={titleStyle}>{title}</h3>
-        <p style={messageStyle}>{message}</p>
+        <div style={messageStyle}>{message ?? children}</div>
         <div style={actionsStyle}>
           <button className="btn" onClick={onCancel} disabled={loading}>
             {cancelLabel}

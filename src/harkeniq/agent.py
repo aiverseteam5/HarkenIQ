@@ -144,6 +144,9 @@ class Agent:
         self._last_drift_findings: list[Any] = []
         # R4-2 P14: firmware inventory (R-AGENT-17)
         self.firmware_inventory: list[dict] = []
+        # R5: directed directives from SM (in-flight dedup + task refs)
+        self._directives_in_flight: set[str] = set()
+        self._directive_tasks: set[asyncio.Task] = set()
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
@@ -738,6 +741,7 @@ class Agent:
             self._process_heartbeat_ack(hb_ack)
             await self._report_changed_verdicts()
             await self._sync_actions()
+            await self._process_directives()
             # Approvals must land "in seconds": poll fast while any action
             # is awaiting a decision or awaiting execution.
             pause = poll_interval if self._actions_in_flight() else interval
@@ -813,6 +817,100 @@ class Agent:
                 )
         if applied and self.checkpoint:
             await self.checkpoint.save_actions(self.action_queue.all())
+
+    # -- directed directives (R5) --------------------------------------------
+
+    async def _process_directives(self) -> None:
+        """Pick up SM-initiated directives and execute them (R5).
+
+        Execution runs in background tasks so a slow firmware flash never
+        stalls heartbeats. The agent's own allow list, preconditions, and
+        audit apply through the normal executor path -- a directive is
+        delivery, not a policy bypass.
+        """
+        directives = await self.reporter.poll_directives()
+        for directive in directives:
+            if directive.directive_id in self._directives_in_flight:
+                continue
+            self._directives_in_flight.add(directive.directive_id)
+            task = asyncio.create_task(self._execute_directive(directive))
+            self._directive_tasks.add(task)
+            task.add_done_callback(self._directive_tasks.discard)
+
+    async def _execute_directive(self, directive) -> None:
+        try:
+            if directive.kind == "action":
+                success, detail = await self._run_directed_action(directive)
+            elif directive.kind == "skill_install":
+                success, detail = self._install_directed_skill(directive)
+            else:
+                success, detail = False, f"unknown directive kind {directive.kind!r}"
+        except Exception as e:  # never leave a directive unsettled
+            success, detail = False, str(e)
+        logger.info(
+            "Directive %s (%s) %s%s",
+            directive.directive_id, directive.kind,
+            "completed" if success else "failed",
+            f": {detail}" if detail and not success else "",
+        )
+        await self.reporter.report_directive_result(
+            directive.directive_id, success, detail
+        )
+        if self.checkpoint:
+            await self.checkpoint.save_audit_entry(
+                action=f"DIRECTIVE_{directive.kind.upper()}",
+                target=directive.action_type or directive.skill_id,
+                outcome="success" if success else "failed",
+                authorization=f"sm:{directive.issued_by}",
+                evidence_json=json.dumps(
+                    {"directive_id": directive.directive_id,
+                     "detail": detail[:200]}
+                ),
+            )
+
+    async def _run_directed_action(self, directive) -> tuple[bool, str]:
+        try:
+            action_type = ActionType(directive.action_type)
+        except ValueError:
+            return False, f"unknown action type {directive.action_type!r}"
+        try:
+            params = json.loads(directive.params_json or "{}")
+        except json.JSONDecodeError:
+            return False, "unparseable params_json"
+        action = Action(
+            id=f"dir-{directive.directive_id[:8]}",
+            type=action_type,
+            params={k: str(v) for k, v in params.items()},
+            status=ActionStatus.APPROVED,  # SM authority; audited at SM
+            sensor_id=f"directive:{directive.directive_id}",
+            skill_name=directive.issued_by or "sm-directive",
+        )
+        if action_type == ActionType.CONFIG_RESTORE:
+            await self._execute_config_restore_playbook(action)
+        else:
+            await self.executor.execute(action)
+        outcome = action.outcome
+        if outcome is None:
+            return False, "no outcome recorded"
+        return outcome.success, outcome.error_message or ""
+
+    def _install_directed_skill(self, directive) -> tuple[bool, str]:
+        from harkeniq.autonomy.skill_receiver import SkillReceiver
+
+        receiver = SkillReceiver(self.skills_dir)
+        accepted, reason = receiver.receive(
+            skill_id=directive.skill_id,
+            version=directive.skill_version,
+            yaml_content=directive.yaml_content,
+            tier=directive.tier,
+            validation_state=directive.validation_state,
+        )
+        if accepted:
+            try:
+                self.reload_skills()
+            except HarkenIQError as e:
+                return False, f"installed but reload failed: {e}"
+        return accepted, reason
 
     # -- main cycle ----------------------------------------------------------
 

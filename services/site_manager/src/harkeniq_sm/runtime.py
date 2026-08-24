@@ -46,6 +46,9 @@ class AppState:
     http_port: int = 0
     # R4-3 P18: local model integrity result (ModelInfo), set at startup
     model_info: object = None
+    # R5: directed-directive service + firmware updater over it
+    directives: object = None
+    firmware_updater: object = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     # Set when an in-memory sqlite DSN was remapped to a temp file;
     # removed on shutdown.
@@ -114,6 +117,17 @@ async def make_state(config: SMConfig) -> AppState:
     state.ingest.reasoning_pipeline = pipeline
     state.inference = InferenceJob(state.sessionmaker, config)
     state.approvals = ApprovalService(state.sessionmaker, config)
+
+    # R5: SM->agent directed-directive transport + firmware campaign
+    # updater over it. This closes the R4-3 integration gap: campaign
+    # advance now drives real agents instead of refusing.
+    from harkeniq_sm.directives import AgentDirectedUpdater, DirectiveService
+    state.directives = DirectiveService(state.sessionmaker, config)
+    state.firmware_updater = AgentDirectedUpdater(
+        state.directives,
+        timeout_s=config.directive_timeout_s,
+        poll_interval_s=config.directive_poll_interval_s,
+    )
     return state
 
 
@@ -124,7 +138,10 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
     if state is None:
         state = await make_state(config)
 
-    servicer = AgentServiceServicer(state.ingest, approvals=state.approvals)
+    servicer = AgentServiceServicer(
+        state.ingest, approvals=state.approvals,
+        directives=getattr(state, "directives", None),
+    )
     sm_servicer = SiteManagerServiceServicer(
         state.sessionmaker, state.approvals, config,
     )

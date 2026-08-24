@@ -5,7 +5,7 @@ import { type CSSProperties } from "react";
 export interface FilterDef {
   key: string;
   label: string;
-  type: "text" | "select" | "dateRange";
+  type: "text" | "select" | "date" | "dateRange";
   options?: { value: string; label: string }[];
   placeholder?: string;
 }
@@ -84,7 +84,7 @@ export default function FilterBar({ filters, values, onChange, onClear }: Props)
             </select>
           );
         }
-        if (f.type === "dateRange") {
+        if (f.type === "date" || f.type === "dateRange") {
           return (
             <input
               key={f.key}

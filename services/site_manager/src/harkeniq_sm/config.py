@@ -62,6 +62,10 @@ class SMConfig:
     # operator actions (copy file, restart SM); no auto-download.
     llm_model_path: str = ""
     llm_model_sha256: str = ""
+    # R5: directed-directive transport (firmware campaigns wait on the
+    # agent to poll, execute, and report -- allow for slow BMC flashes)
+    directive_timeout_s: float = 900.0
+    directive_poll_interval_s: float = 2.0
     correlation: CorrelationThresholds = field(default_factory=CorrelationThresholds)
 
     def validate(self) -> list[str]:
@@ -97,6 +101,8 @@ _ENV_MAP = {
     "HARKEN_SM_LLM_MODEL": "llm_model",
     "HARKEN_SM_LLM_MODEL_PATH": "llm_model_path",
     "HARKEN_SM_LLM_MODEL_SHA256": "llm_model_sha256",
+    "HARKEN_SM_DIRECTIVE_TIMEOUT_S": "directive_timeout_s",
+    "HARKEN_SM_DIRECTIVE_POLL_INTERVAL_S": "directive_poll_interval_s",
 }
 
 

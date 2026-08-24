@@ -6,7 +6,7 @@ import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
-import { getJson, postJson } from "../api";
+import { getJson } from "../api";
 
 /* ── Types ────────────────────────────────────────── */
 

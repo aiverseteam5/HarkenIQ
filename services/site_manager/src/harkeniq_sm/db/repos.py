@@ -19,6 +19,7 @@ from harkeniq_sm.db.models import (
     AuditLogRow,
     Device,
     DeviceSubsystemState,
+    DirectedDirective,
     DomainMembership,
     FaultDomain,
     FirmwareCampaign,
@@ -623,3 +624,67 @@ class FirmwareCampaignRepo:
         target.updated_at = utcnow()
         await self.session.flush()
         return target
+
+
+class DirectiveRepo:
+    """Directed-directive persistence (R5 SM->agent transport)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def enqueue(
+        self,
+        device_id: str,
+        kind: str,
+        action_type: str = "",
+        params: Optional[dict] = None,
+        skill_id: str = "",
+        skill_version: str = "",
+        yaml_content: Optional[str] = None,
+        tier: str = "",
+        validation_state: str = "",
+        issued_by: str = "",
+    ) -> DirectedDirective:
+        directive = DirectedDirective(
+            device_id=device_id, kind=kind, action_type=action_type,
+            params=params, skill_id=skill_id, skill_version=skill_version,
+            yaml_content=yaml_content, tier=tier,
+            validation_state=validation_state, issued_by=issued_by,
+        )
+        self.session.add(directive)
+        await self.session.flush()
+        return directive
+
+    async def get(self, directive_id: str) -> Optional[DirectedDirective]:
+        return await self.session.get(DirectedDirective, directive_id)
+
+    async def pending_for_device(
+        self, device_id: str
+    ) -> Sequence[DirectedDirective]:
+        return (
+            await self.session.execute(
+                select(DirectedDirective)
+                .where(
+                    DirectedDirective.device_id == device_id,
+                    DirectedDirective.status == "pending",
+                )
+                .order_by(DirectedDirective.created_at)
+            )
+        ).scalars().all()
+
+    async def mark_delivered(self, directive: DirectedDirective) -> None:
+        directive.status = "delivered"
+        directive.delivered_at = utcnow()
+        await self.session.flush()
+
+    async def complete(
+        self, directive_id: str, success: bool, detail: str = ""
+    ) -> Optional[DirectedDirective]:
+        directive = await self.get(directive_id)
+        if directive is None:
+            return None
+        directive.status = "completed" if success else "failed"
+        directive.result_detail = detail[:512]
+        directive.completed_at = utcnow()
+        await self.session.flush()
+        return directive

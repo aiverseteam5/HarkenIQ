@@ -35,10 +35,14 @@ logger = logging.getLogger("harkeniq.sm.grpc")
 
 
 class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
-    def __init__(self, ingest: IngestService, approvals=None, identity_service=None) -> None:
+    def __init__(
+        self, ingest: IngestService, approvals=None, identity_service=None,
+        directives=None,
+    ) -> None:
         self.ingest = ingest
         self.approvals = approvals  # attached by the approvals phase
         self.identity_service = identity_service  # R3a: AgentIdentityService
+        self.directives = directives  # R5: DirectiveService
 
     async def RegisterAgent(self, request, context):
         site_name = await self.ingest.register(
@@ -137,6 +141,25 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
             return harkeniq_pb2.DecisionList()
         decisions = await self.approvals.poll_decisions(request.agent_id)
         return harkeniq_pb2.DecisionList(decisions=decisions)
+
+    async def PollDirectives(self, request, context):
+        """R5: hand pending SM-initiated directives to the polling agent."""
+        if self.directives is None:
+            return harkeniq_pb2.DirectiveList()
+        directives = await self.directives.poll(request.agent_id)
+        return harkeniq_pb2.DirectiveList(directives=directives)
+
+    async def ReportDirectiveResult(self, request, context):
+        """R5: agent settles a directive it executed."""
+        if self.directives is None:
+            return harkeniq_pb2.DirectiveAck(accepted=False)
+        accepted = await self.directives.report_result(
+            agent_id=request.agent_id,
+            directive_id=request.directive_id,
+            success=request.success,
+            detail=request.detail,
+        )
+        return harkeniq_pb2.DirectiveAck(accepted=accepted)
 
     async def PushSkill(self, request, context):
         """R3b-1 C7: SM pushes validated skills to agents.

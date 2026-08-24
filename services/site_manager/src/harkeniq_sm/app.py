@@ -18,6 +18,7 @@ from harkeniq_sm.api import firmware_campaigns as firmware_campaigns_api
 from harkeniq_sm.api import domains as domains_api
 from harkeniq_sm.api import incidents as incidents_api
 from harkeniq_sm.api import site as site_api
+from harkeniq_sm.api import skills as skills_api
 from harkeniq_sm.api.deps import require_site_token
 from harkeniq_sm.coverage import coverage_entry
 from harkeniq_sm.db.repos import DeviceRepo, SiteRepo, StatusRepo
@@ -33,6 +34,7 @@ def create_app(state) -> FastAPI:
     app.include_router(actions_api.router)
     app.include_router(audit_api.router)
     app.include_router(firmware_campaigns_api.router)
+    app.include_router(skills_api.router)
 
     # R4-3 P18: real health checks (R4-0's HealthChecker, finally wired)
     # with local-LLM model metadata for air-gapped deployments.

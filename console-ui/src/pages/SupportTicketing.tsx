@@ -9,7 +9,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
-import { getJson, postJson, patchJson } from "../api";
+import { getJson, postJson } from "../api";
 
 /* ── Types ────────────────────────────────────────── */
 

@@ -171,6 +171,30 @@ class SiteManagerReporter:
             return []
         return list(response.decisions)
 
+    async def poll_directives(self) -> list:
+        """Fetch SM-initiated directives (R5). Returns [] when unavailable."""
+        if not self.enabled:
+            return []
+        request = harkeniq_pb2.DirectivePoll(agent_id=self.agent_id)
+        response = await self._call("PollDirectives", request, want_response=True)
+        if response is None:
+            return []
+        return list(response.directives)
+
+    async def report_directive_result(
+        self, directive_id: str, success: bool, detail: str = ""
+    ) -> bool:
+        """Settle an executed directive with the SM (R5)."""
+        if not self.enabled:
+            return False
+        request = harkeniq_pb2.DirectiveResult(
+            agent_id=self.agent_id,
+            directive_id=directive_id,
+            success=success,
+            detail=detail[:512],
+        )
+        return await self._call("ReportDirectiveResult", request)
+
     async def close(self) -> None:
         if self._channel is not None:
             await self._channel.close()

@@ -318,3 +318,40 @@ class FirmwareCampaignTarget(Base):
     post_version: Mapped[str] = mapped_column(String(64), default="")
     error: Mapped[str] = mapped_column(String(512), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DirectedDirective(Base):
+    """SM-initiated work delivered to an agent on its poll (R5).
+
+    The delivery inversion: agents dial out to the SM; the SM cannot
+    dial agents. Directed work (firmware campaign steps, marketplace
+    skill installs) is queued here, handed out on PollDirectives, and
+    closed by ReportDirectiveResult.
+
+    Lifecycle: pending -> delivered -> completed | failed. A directive
+    that stays delivered past its deadline is treated as failed by the
+    waiting caller (e.g. the firmware updater's timeout).
+    """
+
+    __tablename__ = "sm_directives"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"))
+    kind: Mapped[str] = mapped_column(String(32))  # action | skill_install
+    action_type: Mapped[str] = mapped_column(String(64), default="")
+    params: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    skill_id: Mapped[str] = mapped_column(String(255), default="")
+    skill_version: Mapped[str] = mapped_column(String(32), default="")
+    yaml_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tier: Mapped[str] = mapped_column(String(32), default="")
+    validation_state: Mapped[str] = mapped_column(String(32), default="")
+    issued_by: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    result_detail: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_sm_directives_device_status", "device_id", "status"),
+    )

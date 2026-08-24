@@ -64,6 +64,16 @@ class AgentServiceStub:
                 request_serializer=harkeniq__pb2.SkillDistribution.SerializeToString,
                 response_deserializer=harkeniq__pb2.SkillDistributionAck.FromString,
                 _registered_method=True)
+        self.PollDirectives = channel.unary_unary(
+                '/harkeniq.v1.AgentService/PollDirectives',
+                request_serializer=harkeniq__pb2.DirectivePoll.SerializeToString,
+                response_deserializer=harkeniq__pb2.DirectiveList.FromString,
+                _registered_method=True)
+        self.ReportDirectiveResult = channel.unary_unary(
+                '/harkeniq.v1.AgentService/ReportDirectiveResult',
+                request_serializer=harkeniq__pb2.DirectiveResult.SerializeToString,
+                response_deserializer=harkeniq__pb2.DirectiveAck.FromString,
+                _registered_method=True)
 
 
 class AgentServiceServicer:
@@ -106,6 +116,21 @@ class AgentServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def PollDirectives(self, request, context):
+        """R5: SM->agent directed directives. Agents dial out; the SM cannot
+        dial agents, so SM-initiated work (firmware campaigns, marketplace
+        skill installs) is queued at the SM and delivered on this poll.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportDirectiveResult(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -138,6 +163,16 @@ def add_AgentServiceServicer_to_server(servicer, server):
                     servicer.PushSkill,
                     request_deserializer=harkeniq__pb2.SkillDistribution.FromString,
                     response_serializer=harkeniq__pb2.SkillDistributionAck.SerializeToString,
+            ),
+            'PollDirectives': grpc.unary_unary_rpc_method_handler(
+                    servicer.PollDirectives,
+                    request_deserializer=harkeniq__pb2.DirectivePoll.FromString,
+                    response_serializer=harkeniq__pb2.DirectiveList.SerializeToString,
+            ),
+            'ReportDirectiveResult': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportDirectiveResult,
+                    request_deserializer=harkeniq__pb2.DirectiveResult.FromString,
+                    response_serializer=harkeniq__pb2.DirectiveAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -302,6 +337,60 @@ class AgentService:
             '/harkeniq.v1.AgentService/PushSkill',
             harkeniq__pb2.SkillDistribution.SerializeToString,
             harkeniq__pb2.SkillDistributionAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PollDirectives(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.AgentService/PollDirectives',
+            harkeniq__pb2.DirectivePoll.SerializeToString,
+            harkeniq__pb2.DirectiveList.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportDirectiveResult(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.AgentService/ReportDirectiveResult',
+            harkeniq__pb2.DirectiveResult.SerializeToString,
+            harkeniq__pb2.DirectiveAck.FromString,
             options,
             channel_credentials,
             insecure,

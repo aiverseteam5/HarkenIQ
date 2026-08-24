@@ -15,6 +15,44 @@ service AgentService {
   rpc PollActionDecisions(DecisionPoll) returns (DecisionList);
   // R3b-1 C7: SM pushes validated skills to agents
   rpc PushSkill(SkillDistribution) returns (SkillDistributionAck);
+  // R5: SM->agent directed directives. Agents dial out; the SM cannot
+  // dial agents, so SM-initiated work (firmware campaigns, marketplace
+  // skill installs) is queued at the SM and delivered on this poll.
+  rpc PollDirectives(DirectivePoll) returns (DirectiveList);
+  rpc ReportDirectiveResult(DirectiveResult) returns (DirectiveAck);
+}
+
+// R5: directed directive (SM -> Agent via agent poll)
+message DirectivePoll {
+  string agent_id = 1;
+}
+
+message Directive {
+  string directive_id = 1;
+  string kind = 2;               // "action" | "skill_install"
+  string action_type = 3;        // kind=action: ActionType value
+  string params_json = 4;        // kind=action: action params
+  string skill_id = 5;           // kind=skill_install
+  string skill_version = 6;
+  string yaml_content = 7;
+  string tier = 8;
+  string validation_state = 9;
+  string issued_by = 10;         // e.g. "firmware-campaign:<id>" | "marketplace"
+}
+
+message DirectiveList {
+  repeated Directive directives = 1;
+}
+
+message DirectiveResult {
+  string agent_id = 1;
+  string directive_id = 2;
+  bool success = 3;
+  string detail = 4;             // error message or outcome JSON
+}
+
+message DirectiveAck {
+  bool accepted = 1;
 }
 
 // R3b-1 C7: Skill distribution (SM -> Agent)

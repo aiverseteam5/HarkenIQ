@@ -8,7 +8,7 @@ interface Breadcrumb {
 interface Props {
   title: string;
   breadcrumbs?: Breadcrumb[];
-  actions?: ReactNode;
+  actions?: ReactNode | HeaderAction[];
 }
 
 const wrapperStyle: CSSProperties = {
@@ -42,7 +42,41 @@ const titleStyle: CSSProperties = {
   color: "var(--text-primary)",
 };
 
+export interface HeaderAction {
+  label: string;
+  onClick: () => void | Promise<void> | undefined;
+  variant?: "primary" | "default" | "danger";
+}
+
+function isActionArray(value: ReactNode | HeaderAction[]): value is HeaderAction[] {
+  return Array.isArray(value) && value.every(
+    (item) => item !== null && typeof item === "object" && "label" in item && "onClick" in item,
+  );
+}
+
+const ACTION_CLASS: Record<string, string> = {
+  primary: "btn btn-primary",
+  danger: "btn btn-danger",
+  default: "btn",
+};
+
 export default function PageHeader({ title, breadcrumbs, actions }: Props) {
+  const renderedActions = isActionArray(actions) ? (
+    <>
+      {actions.map((action) => (
+        <button
+          key={action.label}
+          type="button"
+          className={ACTION_CLASS[action.variant ?? "default"] ?? "btn"}
+          onClick={() => void action.onClick()}
+        >
+          {action.label}
+        </button>
+      ))}
+    </>
+  ) : (
+    actions
+  );
   return (
     <div style={wrapperStyle}>
       {breadcrumbs && breadcrumbs.length > 0 && (
@@ -63,7 +97,7 @@ export default function PageHeader({ title, breadcrumbs, actions }: Props) {
       )}
       <div style={rowStyle}>
         <h1 style={titleStyle}>{title}</h1>
-        {actions && <div className="flex gap-sm">{actions}</div>}
+        {renderedActions && <div className="flex gap-sm">{renderedActions}</div>}
       </div>
     </div>
   );

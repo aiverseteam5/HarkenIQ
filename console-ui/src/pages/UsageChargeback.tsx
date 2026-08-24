@@ -63,17 +63,6 @@ const trendRow: CSSProperties = {
   padding: "0.5rem 0",
 };
 
-const exportButton: CSSProperties = {
-  background: "var(--bg-card)",
-  border: "1px solid var(--border-light)",
-  borderRadius: "var(--radius-sm)",
-  padding: "0.375rem 0.75rem",
-  fontSize: "0.8125rem",
-  fontWeight: 500,
-  cursor: "pointer",
-  color: "var(--text-primary)",
-};
-
 /* ── Helpers ──────────────────────────────────────── */
 
 function formatCents(cents: number, currency: string): string {

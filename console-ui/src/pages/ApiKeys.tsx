@@ -4,7 +4,6 @@ import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
-import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
