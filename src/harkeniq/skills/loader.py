@@ -29,7 +29,7 @@ logger = logging.getLogger("harkeniq.skills.loader")
 
 DEFAULT_SKILLS_DIR = "/etc/harkeniq/skills"
 
-VALID_TARGETS = ("fan", "disk", "memory", "psu", "thermal")
+VALID_TARGETS = ("fan", "disk", "memory", "psu", "thermal", "interface")
 
 # Baseline-derived fields, available for every target when confidence >= 0.5
 # (Doc 07 §3.4)
@@ -62,6 +62,17 @@ VALID_FIELDS: dict[str, set[str]] = {
         "name", "reading_c", "health",
         "threshold_warning", "threshold_critical", "threshold_fatal",
         "threshold_cold_warning", "threshold_cold_critical", "context",
+    },
+    # R6: network port. Skills see RATES, never raw counters (design doc §7
+    # decision 7); *_total fields are deliberately absent from this list.
+    "interface": {
+        "name", "admin_state", "oper_state", "speed_mbps", "health",
+        "in_error_rate", "out_error_rate", "in_discard_rate",
+        "out_discard_rate", "crc_error_rate", "in_octet_rate",
+        "out_octet_rate",
+        "queue_occupancy_max_pct", "crc_error_rate_max", "ber_trend",
+        "optics_tx_power_dbm", "optics_rx_power_dbm", "optics_temperature_c",
+        "pre_fec_ber", "lag_name",
     },
 }
 

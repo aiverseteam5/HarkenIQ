@@ -156,6 +156,7 @@ _TARGET_COLLECTIONS = {
     "memory": "memory",
     "psu": "psus",
     "thermal": "thermals",
+    "interface": "interfaces",  # R6
 }
 
 # BMC health pass-through mapping used in learning mode (Doc 13 §2.3)

@@ -1002,10 +1002,23 @@ class Agent:
         return self.action_queue.pending()
 
     def health_summary(self) -> dict[str, str]:
-        """Per-subsystem worst-verdict summary for heartbeats (Doc 06 §9.2)."""
+        """Per-subsystem worst-verdict summary for heartbeats (Doc 06 §9.2).
+
+        The interface subsystem (R6) appears only when interface verdicts
+        exist: a server with no ports must not report interface "OK" —
+        that would claim an observation nothing made (OQ-12: silent is
+        unobserved, never healthy). Server heartbeats stay byte-identical
+        to pre-R6.
+        """
         summary: dict[str, VerdictSeverity] = {
-            t: VerdictSeverity.HEALTHY for t in _TARGET_COLLECTIONS
+            t: VerdictSeverity.HEALTHY
+            for t in _TARGET_COLLECTIONS
+            if t != "interface"
         }
+        for verdict in self._last_verdicts:
+            if verdict.sensor_id.split(":", 1)[0] == "interface":
+                summary["interface"] = VerdictSeverity.HEALTHY
+                break
         for verdict in self._last_verdicts:
             target = verdict.sensor_id.split(":", 1)[0]
             if target in summary and (
