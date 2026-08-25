@@ -52,6 +52,7 @@ from harkeniq.models import (
     ActionStatus,
     ActionType,
     AgentState,
+    Evidence,
     HeartbeatPacket,
     Verdict,
     VerdictSeverity,
@@ -171,6 +172,11 @@ class Agent:
         self._directive_tasks: set[asyncio.Task] = set()
         # QA-031: checkpoint-recovered playbook executions (id -> state)
         self.playbook_executions: dict[str, Any] = {}
+        # QA-024 / A2.7: OS signals + BMC log poll (both finally wired)
+        self.os_collector: Any = None
+        self._os_signal_verdicts: dict[str, Verdict] = {}
+        self._log_cursors: dict[str, str] = {}
+        self._sel_events_forwarded = False
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
@@ -241,6 +247,12 @@ class Agent:
             logger.info("Loaded %d config compliance policies",
                         len(self.config_policies))
 
+        # QA-024 / A2.7: OS signal sources, auto-registered only when
+        # their backing exists on this host (quiet in containers).
+        os_cfg = self.config.get("os_signals") or {}
+        if os_cfg.get("enabled", True):
+            self.os_collector = self._build_os_collector()
+
         # Peer tracker + Site Manager reporter + action executor
         self.tracker = PeerTracker(self.config)
         self.reporter = SiteManagerReporter(self.config)
@@ -261,6 +273,9 @@ class Agent:
                             len(state["baselines"]))
             if state["peers"]:
                 self.tracker.restore_peers(state["peers"])
+            # QA-024: SEL/IML cursors survive restarts (log_cursors was a
+            # dead table until R7)
+            self._log_cursors = dict(state.get("log_cursors", {}))
             self.action_queue.restore(await self.checkpoint.load_actions())
             # QA-031: playbook executions survive restarts. In-flight ones
             # come back PAUSED (unknowable step outcome), awaiting a
@@ -419,6 +434,9 @@ class Agent:
                     tg.create_task(self._inventory_loop(), name="inventory")
                 if compliance_cfg.get("enabled"):
                     tg.create_task(self._compliance_loop(), name="compliance")
+                # QA-024: OS signals + BMC log poll (SEL/IML -> verdicts)
+                if self.os_collector is not None or self.poller is not None:
+                    tg.create_task(self._log_signals_loop(), name="os_signals")
         finally:
             await self._shutdown_sequence(install_signal_handlers, loop)
 
@@ -825,6 +843,156 @@ class Agent:
         if self.tracker:
             self.current_tier = calculate_tier(self.tracker.get_peers())
 
+    # -- QA-024 / A2.7: OS signals + BMC log poll ---------------------------
+
+    def _build_os_collector(self):
+        """Register only the signal sources whose backing exists here."""
+        import shutil as _shutil
+
+        from harkeniq.os_signals.collector import OSSignalCollector
+        from harkeniq.os_signals.dmesg import DmesgSource
+        from harkeniq.os_signals.journal import JournalSource
+        from harkeniq.os_signals.smartctl import SmartctlSource
+        from harkeniq.os_signals.syslog import SyslogSource
+
+        collector = OSSignalCollector()
+        syslog = SyslogSource()
+        if syslog._log_path:
+            collector.register(syslog)
+        if _shutil.which("dmesg"):
+            collector.register(DmesgSource())
+        if _shutil.which("journalctl"):
+            collector.register(JournalSource())
+        if _shutil.which("smartctl"):
+            collector.register(SmartctlSource())
+        if not collector.active_sources:
+            logger.info("No OS signal sources available on this host")
+            return None
+        logger.info(
+            "OS signal sources active: %s", ", ".join(collector.active_sources)
+        )
+        return collector
+
+    async def _log_signals_loop(self) -> None:
+        """Collect OS events and BMC log entries into verdicts (QA-024)."""
+        os_cfg = self.config.get("os_signals") or {}
+        interval = os_cfg.get("interval", 60)
+        log_interval = (self.config.get("polling") or {}).get("log_interval", 300)
+        last_log_poll = 0.0
+        while not self._shutdown.is_set():
+            if await self._pause(interval):
+                break
+            if self.os_collector is not None:
+                try:
+                    events = await asyncio.to_thread(
+                        self.os_collector.collect_all
+                    )
+                    self._ingest_os_events(events)
+                except Exception as e:
+                    logger.warning("OS signal collection failed: %s", e)
+            now = time.time()
+            if self.poller is not None and now - last_log_poll >= log_interval:
+                last_log_poll = now
+                try:
+                    await self._poll_bmc_logs()
+                except Exception as e:
+                    logger.warning("BMC log poll failed: %s", e)
+
+    def _ingest_os_events(self, events: list) -> None:
+        """Map error/warning OS events onto reportable verdicts."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for event in events:
+            if event.severity not in ("error", "warning"):
+                continue
+            # Corroborating-signal posture: OS logs point at hardware but
+            # are not the hardware authority — error caps at WARNING
+            # unless the category is a direct hardware fault channel.
+            severity = (
+                VerdictSeverity.CRITICAL
+                if event.severity == "error"
+                and event.category in ("mce", "nvme", "disk_io")
+                else VerdictSeverity.WARNING
+            )
+            sensor_id = f"os:{event.category}"
+            self._os_signal_verdicts[sensor_id] = Verdict(
+                sensor_id=sensor_id,
+                skill_name=f"os-signals:{event.source.value}",
+                severity=severity,
+                message=event.message[:512],
+                evidence=[Evidence(
+                    sensor_id=sensor_id,
+                    skill_name=f"os-signals:{event.source.value}",
+                    rule_index=-1,
+                    condition=f"os_event:{event.category}",
+                    fields={
+                        "raw": event.raw_line[:512],
+                        "device_path": event.device_path,
+                        "component_hint": event.component_hint,
+                    },
+                    timestamp=now_iso,
+                )],
+                timestamp=now_iso,
+            )
+
+    async def _poll_bmc_logs(self) -> None:
+        """SEL/IML entries -> verdicts, cursored so only NEW entries alert."""
+        entries = await self.poller.poll_logs()
+        if not entries:
+            return
+        cursor = self._log_cursors.get("bmc_sel", "")
+        seen_ids = set(cursor.split(",")) if cursor else set()
+        fresh = [
+            e for e in entries
+            if e.id and e.id not in seen_ids
+            and e.severity.lower() in ("critical", "warning")
+        ]
+        # Cursor = the full current id set (SEL ids restart after a clear,
+        # so a high-water mark would suppress post-clear entries).
+        self._log_cursors["bmc_sel"] = ",".join(
+            e.id for e in entries if e.id
+        )[:4000]
+        if not fresh:
+            return
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        worst = (
+            VerdictSeverity.CRITICAL
+            if any(e.severity.lower() == "critical" for e in fresh)
+            else VerdictSeverity.WARNING
+        )
+        self._os_signal_verdicts["log:sel"] = Verdict(
+            sensor_id="log:sel",
+            skill_name="bmc-log-poll",
+            severity=worst,
+            message=(
+                f"{len(fresh)} new BMC log entr"
+                f"{'y' if len(fresh) == 1 else 'ies'}: "
+                + "; ".join(e.message[:120] for e in fresh[:3])
+            ),
+            evidence=[Evidence(
+                sensor_id="log:sel",
+                skill_name="bmc-log-poll",
+                rule_index=-1,
+                condition="new_log_entries",
+                fields={
+                    "entries": [
+                        {"id": e.id, "severity": e.severity,
+                         "message": e.message[:200], "timestamp": e.timestamp}
+                        for e in fresh[:10]
+                    ],
+                },
+                timestamp=now_iso,
+            )],
+            timestamp=now_iso,
+        )
+        # A2.1: SEL_CLEAR's precondition needs the events to have reached
+        # the SM first; the report loop forwards these verdicts.
+        if self.reporter and self.reporter.enabled:
+            self._sel_events_forwarded = True
+        logger.warning(
+            "BMC log poll: %d new %s entr%s",
+            len(fresh), worst.value, "y" if len(fresh) == 1 else "ies",
+        )
+
     # -- Site Manager report loop (Doc 06 §10) -------------------------------
 
     async def _report_loop(self) -> None:
@@ -858,7 +1026,11 @@ class Agent:
         }
 
     async def _report_changed_verdicts(self) -> None:
-        for verdict in self._last_verdicts:
+        # QA-024: OS-signal and BMC-log verdicts ride the same channel
+        verdicts = list(self._last_verdicts) + list(
+            self._os_signal_verdicts.values()
+        )
+        for verdict in verdicts:
             if self._reported_severity.get(verdict.sensor_id) == verdict.severity:
                 continue
             if await self.reporter.report_verdict(verdict):
@@ -1106,10 +1278,10 @@ class Agent:
         agent_state: dict[str, Any] = {
             "bmc_consecutive_poll_failures": self._poll_failures,
             "alive_peer_count": alive_peers,
-            # Honest fail-closed defaults: the OS-signals and log-forward
-            # loops are not wired yet (QA-024), so the agent cannot claim
-            # SEL forwarding or OS-heartbeat absence.
-            "sel_events_forwarded": False,
+            # QA-024: true once the log loop has forwarded SEL/IML
+            # verdicts to the SM. OS-heartbeat absence still has no
+            # observer — stays fail-closed.
+            "sel_events_forwarded": self._sel_events_forwarded,
             "os_heartbeat_absent_seconds": 0,
         }
         return device_state, agent_state
@@ -1368,7 +1540,7 @@ class Agent:
                 "agent_id": self.agent_id,
                 "state": self.state_machine.current_state.value,
             },
-            log_cursors={},
+            log_cursors=dict(self._log_cursors),
         )
         self._last_checkpoint_at = ts
 

@@ -48,6 +48,13 @@ DEFAULTS: dict[str, Any] = {
         "profile": "standard",  # constrained | standard | performance
         "check_interval": 30,
     },
+    # QA-024 / A2.7: OS signal collection (syslog/dmesg/journal/smartctl).
+    # Sources auto-register only when their backing exists on this host,
+    # so containers without host logs stay quiet.
+    "os_signals": {
+        "enabled": True,
+        "interval": 60,
+    },
     "heartbeat": {
         "port": 5150,
         "interval": 10,
