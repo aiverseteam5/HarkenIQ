@@ -35,6 +35,8 @@ class AppState:
     tmp_db_path: Optional[str] = None
     # R4-1: live IntelligenceEngine, set by the intelligence loop.
     intelligence: object = None
+    # QA-019: verified LicenseInfo (None = no license configured)
+    license: object = None
 
 
 async def make_state(config: CCConfig) -> AppState:
@@ -73,6 +75,13 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
 
     if state is None:
         state = await make_state(config)
+
+    # QA-019: load + verify the license at startup. Integrity failures
+    # raise LicenseError and CC refuses to start; expired licenses run in
+    # grace posture (see harkeniq_cc.license for the posture table).
+    if state.license is None:
+        from harkeniq_cc.license import load_license
+        state.license = load_license(config)
 
     uv_config = uvicorn.Config(
         create_app(state),

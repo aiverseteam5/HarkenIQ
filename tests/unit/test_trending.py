@@ -299,6 +299,84 @@ class TestComputeTrend:
         assert engine.compute_trend("fan:Fan1", [declining_rule()], self.CONTEXT) == []
 
 
+class TestCounterRates:
+    """QA-032 (Doc 13 §5.6): ECC counters baseline the rate, not the raw
+    count."""
+
+    def test_first_sample_primes_no_rate(self):
+        engine = make_engine()
+        assert engine.counter_to_rate("memory:D1", 100.0, T0) is None
+
+    def test_steady_counter_yields_rate_per_hour(self):
+        engine = make_engine()
+        engine.counter_to_rate("memory:D1", 100.0, T0)
+        # +2 errors over 60s -> 120/hr
+        rate = engine.counter_to_rate("memory:D1", 102.0, T0 + 60)
+        assert rate == pytest.approx(120.0)
+
+    def test_reset_detected_and_skipped(self, caplog):
+        engine = make_engine()
+        engine.counter_to_rate("memory:D1", 100.0, T0)
+        with caplog.at_level("WARNING"):
+            rate = engine.counter_to_rate("memory:D1", 5.0, T0 + 60)
+        assert rate is None
+        assert "counter reset detected" in caplog.text
+        # Rate tracking restarts from the new value
+        rate = engine.counter_to_rate("memory:D1", 6.0, T0 + 120)
+        assert rate == pytest.approx(60.0)
+
+    def test_zero_elapsed_returns_none(self):
+        engine = make_engine()
+        engine.counter_to_rate("memory:D1", 100.0, T0)
+        assert engine.counter_to_rate("memory:D1", 101.0, T0) is None
+
+    def test_zero_rate_dimm_stays_healthy(self):
+        """A DIMM producing no errors has all-zero rates: stddev = 0,
+        slope = 0 -> no trend (Doc 13 §5.1 / §5.6)."""
+        engine = make_engine()
+        rule = TrendingRule(
+            field="ecc_correctable_lifetime", direction="rising",
+            verdict=VerdictSeverity.TRENDING,
+            message_template="rate {current_rate}/hr", counter=True,
+        )
+        count = 500.0
+        for i in range(21):
+            rate = engine.counter_to_rate("memory:D1", count, T0 + i * STEP)
+            if rate is not None:
+                engine.update_baseline("memory:D1", rate, T0 + i * STEP, "OK")
+        results = engine.compute_trend(
+            "memory:D1", [rule], {"ecc_correctable_lifetime": count}
+        )
+        assert results == []
+
+    def test_accelerating_rate_trends_with_rate_message(self):
+        """An accelerating error rate produces TRENDING with the current
+        RATE in the message, never the raw lifetime count."""
+        engine = make_engine()
+        rule = TrendingRule(
+            field="ecc_correctable_lifetime", direction="rising",
+            verdict=VerdictSeverity.TRENDING,
+            message_template="DIMM {name} rate {current_rate}/hr", counter=True,
+        )
+        count = 0.0
+        for i in range(25):
+            count += i * 2.0  # growing delta each poll -> rising rate
+            rate = engine.counter_to_rate("memory:D1", count, T0 + i * STEP)
+            if rate is not None:
+                engine.update_baseline("memory:D1", rate, T0 + i * STEP, "OK")
+        results = engine.compute_trend(
+            "memory:D1", [rule],
+            {"name": "D1", "ecc_correctable_lifetime": count},
+        )
+        assert len(results) == 1
+        r = results[0]
+        assert r.slope > 0
+        # current_value is the last RATE (48 errors / 60s = 2880/hr),
+        # not the raw counter (600)
+        assert r.current_value == pytest.approx(2880.0)
+        assert "2880.0/hr" in r.message and str(count) not in r.message
+
+
 class TestCheckpointRoundTrip:
     def test_restore_preserves_baseline_and_trending(self):
         engine = make_engine()

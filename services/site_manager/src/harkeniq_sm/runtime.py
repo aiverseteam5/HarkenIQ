@@ -83,6 +83,20 @@ async def make_state(config: SMConfig) -> AppState:
     state.sessionmaker = make_sessionmaker(state.engine)
     state.ingest = IngestService(state.sessionmaker, config)
 
+    # QA-033: reload CC-pushed fleet patterns into the enrichment mirror
+    from harkeniq_sm.db.repos import SMFleetPatternRepo
+    async with state.sessionmaker() as session:
+        for row in await SMFleetPatternRepo(session).list_all():
+            state.ingest.fleet_patterns[row.pattern_id] = {
+                "pattern_id": row.pattern_id,
+                "pattern_type": row.pattern_type,
+                "description": row.description,
+                "affected_scope": row.affected_scope,
+                "confidence": row.confidence,
+                "evidence": row.evidence,
+                "detected_at": row.detected_at,
+            }
+
     # QA-021: instantiate the autonomy chain that R3a built but never
     # constructed. Leases are now signed with a persisted SM keypair and
     # carry real budgets, stop-switch state, and suppression domains.
@@ -169,6 +183,7 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
         state.sessionmaker, state.approvals, config,
         directives=getattr(state, "directives", None),
         autonomy=getattr(state, "autonomy", None),
+        ingest=state.ingest,
     )
     grpc_server, grpc_port = build_server(config, servicer, sm_servicer=sm_servicer)
     state.grpc_port = grpc_port

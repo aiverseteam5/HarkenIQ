@@ -63,10 +63,20 @@ class IntelligenceEngine:
 
 
 async def intelligence_loop(state) -> None:
-    """Background task: run detection cycles at the configured interval."""
+    """Background task: run detection cycles at the configured interval.
+
+    QA-033: each cycle also distributes fleet patterns to scope-matched
+    Site Managers (R-C1) — the KnowledgeDistributor finally runs inside
+    a loop instead of only in tests.
+    """
+    from harkeniq_cc.knowledge_distributor import (
+        KnowledgeDistributor, distribute_patterns,
+    )
+
     interval = state.config.pattern_detect_interval_s
     engine = IntelligenceEngine()
     state.intelligence = engine
+    distributor = KnowledgeDistributor()
     logger.info("Intelligence loop started (interval=%.0fs)", interval)
     while True:
         await asyncio.sleep(interval)
@@ -74,5 +84,12 @@ async def intelligence_loop(state) -> None:
             async with state.sessionmaker() as session:
                 await engine.run_cycle(session, state.config.tenant_id)
                 await session.commit()
+            delivered = await distribute_patterns(
+                state.config, state.sessionmaker, distributor=distributor
+            )
+            if delivered:
+                logger.info(
+                    "Distributed %d pattern delivery(ies) to SMs", delivered
+                )
         except Exception as exc:
             logger.error("Intelligence cycle error: %s", exc)

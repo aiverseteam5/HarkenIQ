@@ -152,6 +152,12 @@ services:
       # The SPA is one OIDC client; CC validates the same tokens (QA-005).
       HARKEN_CC_KEYCLOAK_CLIENT_ID: harkeniq-console
       HARKEN_CC_KEYCLOAK_PUBLIC_URL: http://localhost:8180
+      # QA-019: mount a Console-issued .lic + verify key into
+      # /etc/harkeniq (e.g. via a bind volume) and set these to enable
+      # startup license verification. Empty = lab passthrough (loud
+      # warning in the CC log).
+      HARKEN_CC_LICENSE_KEY_PATH: ${HARKENIQ_CC_LICENSE_KEY_PATH:-}
+      HARKEN_CC_LICENSE_VERIFY_KEY_PATH: ${HARKENIQ_CC_LICENSE_VERIFY_KEY_PATH:-}
     ports:
       - "8090:8090"
     healthcheck:

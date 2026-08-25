@@ -292,6 +292,10 @@ message PolicyUpdate {
   string site_id = 2;
   string approval_policies_json = 3;
   string autonomy_budgets_json = 4;
+  // QA-033 (R-C1): fleet patterns learned at CC, distributed to
+  // scope-matched sites. JSON list of {pattern_id, pattern_type,
+  // description, affected_scope, confidence, evidence, detected_at}.
+  string learned_patterns_json = 5;
 }
 
 message PolicyAck {

@@ -81,7 +81,7 @@ VALID_TRENDING_DIRECTIONS = ("declining", "rising")
 
 _SKILL_KEYS = {"name", "version", "target", "description", "rules", "trending", "default_verdict"}
 _RULE_KEYS = {"condition", "verdict", "message", "debounce", "action"}
-_TRENDING_KEYS = {"field", "direction", "verdict", "message", "threshold_field"}
+_TRENDING_KEYS = {"field", "direction", "verdict", "message", "threshold_field", "counter"}
 _DEBOUNCE_KEYS = {"count", "window"}
 _ACTION_KEYS = {"type", "params"}
 
@@ -209,12 +209,19 @@ def _parse_trending(name: str, target: str, index: int, raw: Any) -> TrendingRul
                 f"nor a known field for target '{target}'"
             )
 
+    counter = raw.get("counter", False)
+    if not isinstance(counter, bool):
+        raise SkillValidationError(
+            name, f"trending {index}: counter must be a boolean"
+        )
+
     return TrendingRule(
         field=field_name,
         direction=direction,
         verdict=verdict,
         message_template=message,
         threshold_field=threshold_field,
+        counter=counter,
     )
 
 

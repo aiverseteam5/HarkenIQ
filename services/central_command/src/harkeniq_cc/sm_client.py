@@ -276,12 +276,15 @@ class SMClient:
         site_id: str,
         autonomy_budgets_json: str = "",
         approval_policies_json: str = "",
+        learned_patterns_json: str = "",
     ) -> dict:
-        """QA-022: push autonomy budgets + stop switch to a Site Manager.
+        """QA-022/033: push autonomy policy + fleet knowledge to an SM.
 
         ``autonomy_budgets_json`` shape is defined in
-        harkeniq_cc.policy_push (stop_switch + policies list); the SM
-        applies it to its SMAutonomyEnforcer, and leases carry it.
+        harkeniq_cc.policy_push (stop_switch + policies list);
+        ``learned_patterns_json`` is a list of fleet-pattern dicts
+        (KnowledgeDistributor.prepare_payload). The SM applies budgets to
+        its enforcer and upserts patterns for reasoning enrichment.
         """
         async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
@@ -291,6 +294,7 @@ class SMClient:
                     site_id=site_id,
                     approval_policies_json=approval_policies_json,
                     autonomy_budgets_json=autonomy_budgets_json,
+                    learned_patterns_json=learned_patterns_json,
                 ),
                 metadata=_metadata(token),
             )

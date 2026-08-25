@@ -6,6 +6,7 @@ and PushPolicy RPCs against an in-memory DB with seeded test data.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -315,6 +316,50 @@ class TestPushPolicy:
         ack = await servicer.PushPolicy(request, None)
         assert ack.accepted is True
         assert servicer.autonomy.stop_switch_active is False
+
+    async def test_learned_patterns_stored_and_mirrored(self, sm_env, db):
+        """QA-033: pushed fleet patterns land in sm_fleet_patterns AND in
+        the ingest mirror the enrichment path reads."""
+        from harkeniq_sm.db.repos import SMFleetPatternRepo
+        from harkeniq_sm.ingest import IngestService
+
+        servicer = sm_env["servicer"]
+        servicer.ingest = IngestService(db, _config())
+        pattern = {
+            "pattern_id": "pat-9", "pattern_type": "batch_failure",
+            "description": "Dell R750 PSU batch failing",
+            "affected_scope": {"vendor": "Dell", "model": "R750"},
+            "confidence": 0.9, "evidence": {"failures": 7},
+            "detected_at": 1700000000.0,
+        }
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            learned_patterns_json=json.dumps([pattern]),
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        async with db() as session:
+            rows = await SMFleetPatternRepo(session).list_all()
+        assert len(rows) == 1
+        assert rows[0].pattern_id == "pat-9"
+        assert rows[0].affected_scope["vendor"] == "Dell"
+        assert servicer.ingest.fleet_patterns["pat-9"]["confidence"] == 0.9
+
+        # Re-push is an idempotent upsert, never a duplicate
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        async with db() as session:
+            assert len(await SMFleetPatternRepo(session).list_all()) == 1
+
+    async def test_invalid_patterns_json_rejected(self, sm_env):
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            learned_patterns_json="{broken",
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is False
+        assert "learned_patterns_json" in ack.reason
 
     async def test_invalid_json_rejected(self, sm_env):
         servicer = sm_env["servicer"]

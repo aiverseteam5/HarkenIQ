@@ -204,6 +204,25 @@ class ActionRow(Base):
     __table_args__ = (UniqueConstraint("device_id", "agent_action_id"),)
 
 
+class SMFleetPatternRow(Base):
+    """QA-033 (R-C1): fleet patterns pushed from CC via PushPolicy.
+
+    Upserted by pattern_id so re-pushes are idempotent; consumed by the
+    reasoning enrichment path as fleet evidence.
+    """
+
+    __tablename__ = "sm_fleet_patterns"
+
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pattern_type: Mapped[str] = mapped_column(String(64), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    affected_scope: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    detected_at: Mapped[str] = mapped_column(String(64), default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class SMSettingRow(Base):
     """Key-value settings store (QA-021: SM identity keypair persistence)."""
 

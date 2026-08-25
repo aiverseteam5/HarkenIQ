@@ -51,6 +51,21 @@ async def register_site(
 
     Stores the site locally, then calls RegisterSite on the SM via gRPC.
     """
+    # QA-019: when CC holds a verified license, its fingerprint IS the
+    # registration credential — never a caller-typed string. A mismatched
+    # body value is rejected; without a loaded license (lab), the body
+    # passthrough remains.
+    fingerprint = body.license_fingerprint
+    lic = getattr(state, "license", None)
+    if lic is not None:
+        if fingerprint and fingerprint != lic.fingerprint:
+            raise HTTPException(
+                status_code=400,
+                detail="license_fingerprint does not match this CC's "
+                       "verified license",
+            )
+        fingerprint = lic.fingerprint
+
     repo = SiteRepo(session)
     existing = await repo.get_by_name(user.tenant_id, body.site_name)
     if existing is not None and existing.sm_token:
@@ -65,7 +80,7 @@ async def register_site(
         tenant_id=user.tenant_id,
         site_name=body.site_name,
         sm_endpoint=body.sm_endpoint,
-        license_fingerprint=body.license_fingerprint,
+        license_fingerprint=fingerprint,
     )
 
     # Attempt SM registration via gRPC
@@ -76,7 +91,7 @@ async def register_site(
             sm_endpoint=body.sm_endpoint,
             tenant_id=user.tenant_id,
             site_name=body.site_name,
-            license_fingerprint=body.license_fingerprint,
+            license_fingerprint=fingerprint,
             site_id=site.id,
         )
         if sm_result.get("site_token"):

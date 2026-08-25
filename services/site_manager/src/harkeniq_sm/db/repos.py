@@ -29,6 +29,7 @@ from harkeniq_sm.db.models import (
     Incident,
     Rack,
     Site,
+    SMFleetPatternRow,
     VerdictReportRow,
     utcnow,
 )
@@ -489,6 +490,37 @@ class ActionRepo:
 #: UNIQUE constraint on audit_log.seq is the cross-process backstop: a
 #: racing appender fails loudly instead of forking the chain.
 _audit_chain_lock = asyncio.Lock()
+
+
+class SMFleetPatternRepo:
+    """QA-033: CC-pushed fleet patterns (idempotent upsert by id)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, pattern: dict) -> SMFleetPatternRow:
+        pattern_id = str(pattern.get("pattern_id", ""))
+        row = await self.session.get(SMFleetPatternRow, pattern_id)
+        if row is None:
+            row = SMFleetPatternRow(pattern_id=pattern_id)
+            self.session.add(row)
+        row.pattern_type = str(pattern.get("pattern_type", ""))
+        row.description = str(pattern.get("description", ""))
+        row.affected_scope = pattern.get("affected_scope")
+        row.confidence = float(pattern.get("confidence", 0.0) or 0.0)
+        row.evidence = pattern.get("evidence")
+        row.detected_at = str(pattern.get("detected_at", ""))
+        await self.session.flush()
+        return row
+
+    async def list_all(self) -> Sequence[SMFleetPatternRow]:
+        return (
+            await self.session.execute(
+                select(SMFleetPatternRow).order_by(
+                    SMFleetPatternRow.received_at.desc()
+                )
+            )
+        ).scalars().all()
 
 
 class AuditRepo:

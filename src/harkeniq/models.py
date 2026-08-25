@@ -248,6 +248,9 @@ class TrendingRule:
     verdict: VerdictSeverity  # always TRENDING
     message_template: str
     threshold_field: Optional[str] = None
+    # QA-032 (Doc 13 §5.6): monotonic counters (ECC counts) baseline the
+    # RATE of change per hour, never the raw value.
+    counter: bool = False
 
 
 @dataclass

@@ -242,12 +242,14 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         config: SMConfig,
         directives=None,
         autonomy=None,
+        ingest=None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.approvals = approvals
         self.config = config
         self.directives = directives  # R5-2: skill installs from CC
         self.autonomy = autonomy  # QA-021/022: SMAutonomyEnforcer
+        self.ingest = ingest  # QA-033: fleet-pattern mirror lives here
 
     async def InstallSkill(self, request, context):
         """R5-2: CC pushes a marketplace skill; queue directives for
@@ -514,6 +516,33 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             return harkeniq_pb2.PolicyAck(
                 accepted=False, reason="autonomy enforcer not configured"
             )
+        # QA-033: fleet patterns land durably (idempotent upsert) and in
+        # the ingest mirror the enrichment path reads.
+        if request.learned_patterns_json:
+            try:
+                patterns = json.loads(request.learned_patterns_json)
+            except json.JSONDecodeError as e:
+                return harkeniq_pb2.PolicyAck(
+                    accepted=False, reason=f"invalid learned_patterns_json: {e}"
+                )
+            patterns = [
+                p for p in (patterns if isinstance(patterns, list) else [])
+                if isinstance(p, dict) and p.get("pattern_id")
+            ]
+            if patterns:
+                from harkeniq_sm.db.repos import SMFleetPatternRepo
+                async with self.sessionmaker() as session:
+                    repo = SMFleetPatternRepo(session)
+                    for pattern in patterns:
+                        await repo.upsert(pattern)
+                    await session.commit()
+                if self.ingest is not None:
+                    for pattern in patterns:
+                        self.ingest.fleet_patterns[pattern["pattern_id"]] = pattern
+                logger.info(
+                    "Stored %d fleet pattern(s) from CC", len(patterns)
+                )
+
         if not request.autonomy_budgets_json:
             return harkeniq_pb2.PolicyAck(accepted=True)
         try:

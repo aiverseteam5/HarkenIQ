@@ -31,6 +31,13 @@ def main() -> int:
         asyncio.run(run(config))
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        from harkeniq_cc.license import LicenseError
+
+        if isinstance(exc, LicenseError):
+            print(f"license error: {exc}", file=sys.stderr)
+            return 2
+        raise
     return 0
 
 

@@ -246,7 +246,16 @@ class SkillEngine:
         # 1. Baseline update (Doc 13 §4.1 step 1)
         value = getattr(sensor, metric_field, None) if metric_field else None
         if value is not None:
-            self.trending.update_baseline(sensor_id, float(value), ts_unix, health)
+            # QA-032 (Doc 13 §5.6): monotonic counters baseline the rate
+            # of change per hour, never the raw count.
+            if skill.trending and skill.trending[0].counter:
+                value = self.trending.counter_to_rate(
+                    sensor_id, float(value), ts_unix
+                )
+            if value is not None:
+                self.trending.update_baseline(
+                    sensor_id, float(value), ts_unix, health
+                )
         confidence = self.trending.confidence(sensor_id)
 
         # 2. Skill evaluation with confidence gating (Doc 13 §2.3)

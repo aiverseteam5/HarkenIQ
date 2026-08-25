@@ -105,3 +105,44 @@ class TestVerdict:
             state = await SubsystemStateRepo(session).get(device.id, "psu")
             assert state.severity == "OK"
             assert state.onset_at is None
+
+
+class TestFleetPatternEnrichment:
+    """QA-033: CC-pushed patterns become evidence for reasoning."""
+
+    async def test_matching_patterns_selected_by_scope(self, db, ingest):
+        await ingest.register(
+            agent_id="a1", agent_name="srv-01", vendor="Dell", model="R750",
+        )
+        ingest.fleet_patterns = {
+            "pat-1": {
+                "pattern_id": "pat-1", "pattern_type": "batch_failure",
+                "description": "Dell R750 PSU batch failing",
+                "affected_scope": {"vendor": "Dell", "model": "R750"},
+                "confidence": 0.9,
+            },
+            "pat-2": {
+                "pattern_id": "pat-2", "pattern_type": "anomaly",
+                "description": "HPE-only issue",
+                "affected_scope": {"vendor": "HPE"},
+                "confidence": 0.8,
+            },
+            "pat-3": {
+                "pattern_id": "pat-3", "pattern_type": "reliability",
+                "description": "Fleet-wide (wildcard scope)",
+                "affected_scope": {},
+                "confidence": 0.7,
+            },
+        }
+        evidence = await ingest._matching_fleet_patterns("a1")
+        ids = {e["fleet_pattern"]["pattern_id"] for e in evidence}
+        assert ids == {"pat-1", "pat-3"}  # HPE-scoped pattern excluded
+
+    async def test_unknown_device_yields_nothing(self, db, ingest):
+        ingest.fleet_patterns = {
+            "pat-1": {"pattern_id": "pat-1", "affected_scope": {}},
+        }
+        assert await ingest._matching_fleet_patterns("ghost") == []
+
+    async def test_empty_mirror_fast_path(self, ingest):
+        assert await ingest._matching_fleet_patterns("a1") == []

@@ -48,6 +48,10 @@ class IngestService:
         self.on_onset: Optional[OnsetHook] = None
         # R3b-1 C1: reasoning pipeline for LLM enrichment (set by runtime)
         self.reasoning_pipeline = None
+        # QA-033: CC-pushed fleet patterns, mirrored in memory for the
+        # (sync-shaped) enrichment path. Loaded from sm_fleet_patterns at
+        # startup; updated live by PushPolicy.
+        self.fleet_patterns: dict[str, dict] = {}
 
     async def _site(self, session) -> str:
         if self._site_id is None:
@@ -188,6 +192,10 @@ class IngestService:
                 severity=severity,
                 evidence=[{"skill": skill_name, "data": evidence}] if evidence else [],
             )
+            # QA-033: fleet knowledge from CC informs the explanation
+            context.evidence.extend(
+                await self._matching_fleet_patterns(agent_id)
+            )
             # Check for LLMReasoner in the pipeline and call async directly
             for provider in self.reasoning_pipeline._providers:
                 if isinstance(provider, LLMReasoner):
@@ -197,6 +205,40 @@ class IngestService:
                     break
         except Exception as e:
             logger.warning("LLM enrichment failed for %s/%s: %s", agent_id, sensor_id, e)
+
+    async def _matching_fleet_patterns(self, agent_id: str) -> list[dict]:
+        """Fleet patterns whose scope matches this device (QA-033).
+
+        Empty vendor/model in affected_scope is a wildcard. Best-effort:
+        any failure returns no extra evidence, never blocks enrichment.
+        """
+        if not self.fleet_patterns:
+            return []
+        try:
+            from harkeniq_sm.db.repos import DeviceRepo
+            async with self.sessionmaker() as session:
+                device = await DeviceRepo(session).get_by_agent_id(agent_id)
+            if device is None:
+                return []
+            matches = []
+            for pattern in self.fleet_patterns.values():
+                scope = pattern.get("affected_scope") or {}
+                vendor = scope.get("vendor", "")
+                model = scope.get("model", "")
+                if vendor and vendor != device.vendor:
+                    continue
+                if model and model != device.model:
+                    continue
+                matches.append({"fleet_pattern": {
+                    "pattern_id": pattern.get("pattern_id", ""),
+                    "pattern_type": pattern.get("pattern_type", ""),
+                    "description": pattern.get("description", ""),
+                    "confidence": pattern.get("confidence", 0.0),
+                }})
+            return matches
+        except Exception as e:
+            logger.debug("Fleet pattern matching failed: %s", e)
+            return []
 
     async def _store_explanation(self, agent_id: str, sensor_id: str, result) -> None:
         """Store the LLM explanation on the open incident for this device+subsystem."""
