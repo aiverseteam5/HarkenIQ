@@ -1,0 +1,105 @@
+# HarkenIQ — Production Demo Runbook
+
+Click-by-click script for the four-tier live demo (QA-014). Total time:
+~15 minutes. Everything runs locally; authentication is real.
+
+## 0. Preflight (before the audience arrives)
+
+```bash
+cd deploy/full-stack
+docker compose up -d
+watch docker compose ps        # wait until every service reads (healthy)
+../../scripts/seed-demo.sh     # tenant + site registration (idempotent)
+```
+
+Healthy means healthy: CC and Console health checks probe the database;
+a green stack is a working stack.
+
+Optional wow-factor prep — LLM Explain (pick ONE):
+
+- **Cloud:** uncomment the five `HARKEN_SM_LLM_*` lines in
+  `docker-compose.yml`, set `HARKEN_SM_LLM_API_URL` to an OpenAI-compatible
+  `/v1` endpoint + `HARKEN_SM_LLM_API_KEY`, `docker compose up -d site-manager`.
+- **Air-gapped:** place a `.gguf` in `deploy/models/` as `model.gguf`,
+  set `HARKEN_SM_LLM_MODEL_PATH: /models/model.gguf` and
+  `HARKEN_SM_LLM_MODEL_SHA256: $(sha256sum deploy/models/model.gguf)`,
+  then `docker compose --profile airgap-llm up -d`.
+
+Without an LLM the demo still works — deterministic + knowledge-base
+reasoners always run; the explanation panel simply doesn't appear.
+
+## 1. The 60-second story (terminal, R1 heritage)
+
+```bash
+harken demo --speed 10
+```
+
+Narrate: "One agent, one server, zero cloud. It caught the fan bearing
+failure **44 hours before the fan died** — from RPM trend against a
+learned per-device baseline, not a threshold."
+
+## 2. Observe (SM dashboard)
+
+Open **http://localhost:8080** → token `dev-token-sm`.
+
+- Devices: the containerized agent, `observed / OBSERVING`, PowerEdge R750.
+- Point out: "silent means unobserved, never healthy" (coverage states).
+
+## 3. A fault happens
+
+```bash
+curl -sk -X POST https://localhost:9000/test/inject \
+  -H 'Content-Type: application/json' \
+  -d '{"fault_type":"fan","target":"Fan1A","params":{"health":"Critical","speed_rpm":0}}'
+```
+
+Within one poll (~15s): SM **Incidents** shows the fan incident. With LLM
+configured, the **DIAGNOSIS panel** renders: summary, confidence,
+suggested action, expandable reasoning.
+
+## 4. Approve (the human-in-the-loop moment)
+
+SM dashboard → **Approvals**: the agent proposed `COLLECT_DIAGNOSTICS` /
+`IDENTIFY_LED`. Approve one. Narrate: "approval in seconds, named in the
+audit trail, and a denial is FINAL — the platform never nags."
+
+Verify the audit chain live:
+
+```bash
+curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/audit/verify
+```
+
+## 5. Console (L4 — the business layer)
+
+Open **http://localhost:8100** → real Keycloak login
+(`admin@harkeniq.com` / `admin`).
+
+Walk: Fleet Overview (device_class column — servers and switches),
+Approval Policies (groups + autonomy budgets), Vendor Reliability,
+Audit Logs, Billing. All 27 screens are live against real APIs — the
+L3 surfaces proxy through to Central Command with the same token.
+
+## 6. Network Intelligence (R6 encore)
+
+```bash
+docker compose --profile network-sim up -d
+```
+
+A second agent speaks **gNMI** to a SONiC-shaped switch simulator —
+same skills engine, same approval chain, per-port baselines. Narrate:
+"one brain, servers AND switches; the gNMI path was validated against
+real SONiC."
+
+## 7. If asked about security
+
+- OIDC RS256 against Keycloak JWKS; no token, no API (try
+  `curl http://localhost:8090/api/fleet/` → 401).
+- Every store carries a SHA-256 hash-chained audit (step 4's verify).
+- The demo stack still runs lab defaults (admin/admin, dev-token-sm) —
+  say so if asked; production hardening is config, not code.
+
+## Reset between demos
+
+```bash
+docker compose down -v && docker compose up -d && ../../scripts/seed-demo.sh
+```
