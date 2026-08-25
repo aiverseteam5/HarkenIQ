@@ -180,6 +180,8 @@ services:
       HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD: admin
       HARKEN_CONSOLE_PLATFORM_REALM: harkeniq-platform
       HARKEN_CONSOLE_INSECURE: "false"
+      # QA-029: Console proxies L3 (CC) API prefixes for the SPA.
+      HARKEN_CONSOLE_CC_URL: http://central-command:8090
     ports:
       - "8100:8100"
     healthcheck:

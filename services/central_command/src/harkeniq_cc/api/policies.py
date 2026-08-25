@@ -64,6 +64,11 @@ class GroupUpdateRequest(BaseModel):
     escalation_chain: Optional[dict] = None
 
 
+class GroupMemberRequest(BaseModel):
+    email: str
+    role: str = "approver"
+
+
 class BudgetCreateRequest(BaseModel):
     device_type: str = "*"
     level: int = 0
@@ -248,9 +253,15 @@ async def list_groups(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List approval groups for the tenant."""
-    groups = await ApprovalGroupRepo(session).list_all(user.tenant_id)
+    repo = ApprovalGroupRepo(session)
+    groups = await repo.list_all(user.tenant_id)
+    rows = []
+    for g in groups:
+        entry = _group_dict(g)
+        entry["members_count"] = len(await repo.list_members(g.id))
+        rows.append(entry)
     return {
-        "groups": [_group_dict(g) for g in groups],
+        "groups": rows,
         "total": len(groups),
         "tenant_id": user.tenant_id,
     }
@@ -284,6 +295,87 @@ async def create_group(
     )
     await session.commit()
     return {"group": _group_dict(group)}
+
+
+@router.get(
+    "/groups/{group_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def get_group(
+    group_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Group detail with members (QA-036: the Console detail panel's shape)."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    members = await repo.list_members(group_id)
+    payload = _group_dict(group)
+    payload["members"] = [
+        {"id": m.id, "email": m.user_email, "role": m.role} for m in members
+    ]
+    payload["members_count"] = len(members)
+    return payload
+
+
+@router.post(
+    "/groups/{group_id}/members",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def add_group_member(
+    group_id: str,
+    body: GroupMemberRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Add a member to an approval group (QA-036: route existed only in the UI)."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    member = await repo.add_member(group_id, body.email, body.role)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.member.add",
+        subject=group_id,
+        tenant_id=user.tenant_id,
+        detail={"email": body.email, "role": body.role},
+    )
+    await session.commit()
+    return {"member": {"id": member.id, "email": member.user_email,
+                       "role": member.role}}
+
+
+@router.delete(
+    "/groups/{group_id}/members/{member_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def remove_group_member(
+    group_id: str,
+    member_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove a member from an approval group."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    member = await repo.get_member(member_id)
+    if member is None or member.group_id != group_id:
+        raise HTTPException(status_code=404, detail="member not found")
+    await repo.remove_member(member)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.member.remove",
+        subject=group_id,
+        tenant_id=user.tenant_id,
+        detail={"email": member.user_email},
+    )
+    await session.commit()
+    return {"removed": True, "member_id": member_id}
 
 
 @router.patch(

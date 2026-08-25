@@ -74,6 +74,57 @@ def create_app(state) -> FastAPI:
         payload["status"] = "ok" if status.healthy else "degraded"
         return JSONResponse(payload, status_code=200 if status.healthy else 503)
 
+    # QA-029: the SPA calls L3 (Central Command) surfaces against its own
+    # origin; without this proxy half the Console screens 404 in every
+    # shipped configuration. The bearer token is forwarded — CC validates
+    # the same Keycloak-issued token (QA-005). Prefixes are CC-owned and
+    # collision-free with Console routes.
+    _CC_PREFIXES = (
+        "fleet", "approvals", "agents", "policies", "outcomes",
+        "predictive", "warranty", "firmware", "sites", "audit",
+    )
+    if state.config.cc_url:
+        import httpx
+        from fastapi import Request
+        from fastapi.responses import Response
+
+        cc_base = state.config.cc_url.rstrip("/")
+        cc_client = httpx.AsyncClient(base_url=cc_base, timeout=30.0)
+
+        async def _proxy_cc(request: Request, rest: str, prefix: str) -> Response:
+            upstream = await cc_client.request(
+                request.method,
+                f"/api/{prefix}/{rest}" if rest else f"/api/{prefix}",
+                params=request.query_params,
+                content=await request.body(),
+                headers={
+                    key: value
+                    for key, value in request.headers.items()
+                    if key.lower() in ("authorization", "content-type")
+                },
+            )
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("content-type"),
+            )
+
+        for _prefix in _CC_PREFIXES:
+            def _make(prefix: str):
+                async def handler(request: Request, rest: str = "") -> Response:
+                    return await _proxy_cc(request, rest, prefix)
+                return handler
+
+            methods = ["GET", "POST", "PATCH", "PUT", "DELETE"]
+            app.add_api_route(
+                f"/api/{_prefix}", _make(_prefix), methods=methods,
+                include_in_schema=False,
+            )
+            app.add_api_route(
+                f"/api/{_prefix}/{{rest:path}}", _make(_prefix),
+                methods=methods, include_in_schema=False,
+            )
+
     # Dashboard build (ui/dist) — mounted last so API routes win.
     if state.config.ui_dist:
         dist = Path(state.config.ui_dist)

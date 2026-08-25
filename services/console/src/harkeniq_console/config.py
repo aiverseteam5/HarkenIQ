@@ -29,6 +29,10 @@ class ConsoleConfig:
     keycloak_admin_password: str = ""
     platform_realm: str = "harkeniq-platform"
     platform_client_id: str = "harkeniq-console"
+    # QA-029: Central Command base URL. The SPA calls L3 surfaces (fleet,
+    # approvals, policies, ...) against its own origin; the Console proxies
+    # those prefixes to CC. Empty = proxy disabled (screens 404 as before).
+    cc_url: str = ""
     license_signing_key_path: str = ""
     license_verify_key_path: str = ""
     razorpay_key_id: str = ""
@@ -61,6 +65,7 @@ _ENV_MAP = {
     "HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD": "keycloak_admin_password",
     "HARKEN_CONSOLE_PLATFORM_REALM": "platform_realm",
     "HARKEN_CONSOLE_PLATFORM_CLIENT_ID": "platform_client_id",
+    "HARKEN_CONSOLE_CC_URL": "cc_url",
     "HARKEN_CONSOLE_LICENSE_SIGNING_KEY_PATH": "license_signing_key_path",
     "HARKEN_CONSOLE_LICENSE_VERIFY_KEY_PATH": "license_verify_key_path",
     "HARKEN_CONSOLE_RAZORPAY_KEY_ID": "razorpay_key_id",

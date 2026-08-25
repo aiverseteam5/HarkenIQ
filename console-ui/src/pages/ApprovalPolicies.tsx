@@ -466,7 +466,7 @@ export default function ApprovalPolicies() {
       const params = new URLSearchParams();
       params.set("page", String(grpPage));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<ApprovalGroup>>(`/api/groups?${params.toString()}`);
+      const res = await getJson<PaginatedResponse<ApprovalGroup>>(`/api/policies/groups?${params.toString()}`);
       setGroups(res.items);
       setGrpTotal(res.total);
     } catch (err) {
@@ -496,10 +496,10 @@ export default function ApprovalPolicies() {
         github_team: grpForm.github_team || null,
       };
       if (grpEditing) {
-        await patchJson(`/api/groups/${grpEditing}`, payload);
+        await patchJson(`/api/policies/groups/${grpEditing}`, payload);
         toast("Group updated", "success");
       } else {
-        await postJson("/api/groups", payload);
+        await postJson("/api/policies/groups", payload);
         toast("Group created", "success");
       }
       setGrpModalOpen(false);
@@ -517,7 +517,7 @@ export default function ApprovalPolicies() {
     if (!grpDeleteConfirm) return;
     setGrpDeleting(true);
     try {
-      await deleteJson(`/api/groups/${grpDeleteConfirm.id}`);
+      await deleteJson(`/api/policies/groups/${grpDeleteConfirm.id}`);
       toast("Group deleted", "success");
       setGrpDeleteConfirm(null);
       void fetchGroups();
@@ -533,7 +533,7 @@ export default function ApprovalPolicies() {
       setGrpDetailOpen(true);
       setGrpDetailLoading(true);
       try {
-        const detail = await getJson<ApprovalGroup>(`/api/groups/${group.id}`);
+        const detail = await getJson<ApprovalGroup>(`/api/policies/groups/${group.id}`);
         setGrpSelected(detail);
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load group", "error");
@@ -548,14 +548,14 @@ export default function ApprovalPolicies() {
   const handleAddMember = useCallback(async () => {
     if (!grpSelected || !addMemberEmail.trim()) return;
     try {
-      await postJson(`/api/groups/${grpSelected.id}/members`, {
+      await postJson(`/api/policies/groups/${grpSelected.id}/members`, {
         email: addMemberEmail,
         role: addMemberRole,
       });
       toast("Member added", "success");
       setAddMemberEmail("");
       // Refresh detail
-      const detail = await getJson<ApprovalGroup>(`/api/groups/${grpSelected.id}`);
+      const detail = await getJson<ApprovalGroup>(`/api/policies/groups/${grpSelected.id}`);
       setGrpSelected(detail);
       void fetchGroups();
     } catch (err) {
@@ -567,9 +567,9 @@ export default function ApprovalPolicies() {
     async (memberId: string) => {
       if (!grpSelected) return;
       try {
-        await deleteJson(`/api/groups/${grpSelected.id}/members/${memberId}`);
+        await deleteJson(`/api/policies/groups/${grpSelected.id}/members/${memberId}`);
         toast("Member removed", "success");
-        const detail = await getJson<ApprovalGroup>(`/api/groups/${grpSelected.id}`);
+        const detail = await getJson<ApprovalGroup>(`/api/policies/groups/${grpSelected.id}`);
         setGrpSelected(detail);
         void fetchGroups();
       } catch (err) {
@@ -610,7 +610,7 @@ export default function ApprovalPolicies() {
       const params = new URLSearchParams();
       params.set("page", String(budPage));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<AutonomyBudget>>(`/api/autonomy?${params.toString()}`);
+      const res = await getJson<PaginatedResponse<AutonomyBudget>>(`/api/policies/autonomy?${params.toString()}`);
       setBudgets(res.items);
       setBudTotal(res.total);
     } catch (err) {
@@ -635,10 +635,10 @@ export default function ApprovalPolicies() {
         ramp_increment: budForm.learning_ramp ? budForm.ramp_increment : null,
       };
       if (budEditing) {
-        await patchJson(`/api/autonomy/${budEditing}`, payload);
+        await patchJson(`/api/policies/autonomy/${budEditing}`, payload);
         toast("Budget updated", "success");
       } else {
-        await postJson("/api/autonomy", payload);
+        await postJson("/api/policies/autonomy", payload);
         toast("Budget created", "success");
       }
       setBudModalOpen(false);
@@ -656,7 +656,7 @@ export default function ApprovalPolicies() {
     if (!budDeleteConfirm) return;
     setBudDeleting(true);
     try {
-      await deleteJson(`/api/autonomy/${budDeleteConfirm.id}`);
+      await deleteJson(`/api/policies/autonomy/${budDeleteConfirm.id}`);
       toast("Budget deleted", "success");
       setBudDeleteConfirm(null);
       void fetchBudgets();

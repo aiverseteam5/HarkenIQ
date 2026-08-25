@@ -662,6 +662,13 @@ class ApprovalGroupRepo:
         await self.session.flush()
         return row
 
+    async def get_member(self, member_id: str) -> Optional[CCApprovalGroupMember]:
+        return await self.session.get(CCApprovalGroupMember, member_id)
+
+    async def remove_member(self, member: CCApprovalGroupMember) -> None:
+        await self.session.delete(member)
+        await self.session.flush()
+
 
 class AutonomyBudgetRepo:
     def __init__(self, session: AsyncSession) -> None:
