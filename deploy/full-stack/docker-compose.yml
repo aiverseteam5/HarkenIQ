@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: harkeniq
-      POSTGRES_PASSWORD: harkeniq
+      POSTGRES_PASSWORD: ${HARKENIQ_PG_PASSWORD:-harkeniq}
       POSTGRES_DB: harkeniq
     # QA-004: not published to the host — any machine with a local postgres
     # (very common) failed to boot the stack on the 5432 collision.
@@ -44,9 +44,9 @@ services:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: harkeniq
-      KC_DB_PASSWORD: harkeniq
+      KC_DB_PASSWORD: ${HARKENIQ_PG_PASSWORD:-harkeniq}
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${HARKENIQ_KC_ADMIN_PASSWORD:-admin}
       KC_HEALTH_ENABLED: "true"
       # Stable issuer: tokens minted for the browser (localhost:8180) must
       # carry the same iss the backends validate (QA-005).
@@ -102,9 +102,9 @@ services:
     environment:
       HARKEN_SM_SITE_NAME: site-1
       HARKEN_SM_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_sm
-      HARKEN_SM_SITE_TOKEN: dev-token-sm
+      HARKEN_SM_SITE_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
       # QA-037: bootstrap credential for the CC RegisterSite RPC.
-      HARKEN_SM_LICENSE_FINGERPRINT: demo
+      HARKEN_SM_LICENSE_FINGERPRINT: ${HARKENIQ_LICENSE_FINGERPRINT:-demo}
       HARKEN_SM_INSECURE: "true"
       HARKEN_SM_GRPC_PORT: "50051"
       HARKEN_SM_HTTP_PORT: "8080"
@@ -146,7 +146,7 @@ services:
       # silently disabled without these).
       HARKEN_CC_TENANT_ID: tenant-demo
       HARKEN_CC_CONSOLE_URL: http://console:8100
-      HARKEN_CC_CONSOLE_API_KEY: demo-console-cc-key
+      HARKEN_CC_CONSOLE_API_KEY: ${HARKENIQ_INTERNAL_API_KEY:-demo-console-cc-key}
       HARKEN_CC_KEYCLOAK_URL: http://keycloak:8080
       HARKEN_CC_KEYCLOAK_REALM: harkeniq-platform
       # The SPA is one OIDC client; CC validates the same tokens (QA-005).
@@ -179,11 +179,13 @@ services:
       # Browser-facing issuer base (tokens carry this iss — QA-005):
       HARKEN_CONSOLE_KEYCLOAK_PUBLIC_URL: http://localhost:8180
       HARKEN_CONSOLE_KEYCLOAK_ADMIN_USER: admin
-      HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD: admin
+      HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD: ${HARKENIQ_KC_ADMIN_PASSWORD:-admin}
       HARKEN_CONSOLE_PLATFORM_REALM: harkeniq-platform
       HARKEN_CONSOLE_INSECURE: "false"
       # QA-029: Console proxies L3 (CC) API prefixes for the SPA.
       HARKEN_CONSOLE_CC_URL: http://central-command:8090
+      # QA-035: must match HARKEN_CC_CONSOLE_API_KEY.
+      HARKEN_CONSOLE_INTERNAL_API_KEY: ${HARKENIQ_INTERNAL_API_KEY:-demo-console-cc-key}
     ports:
       - "8100:8100"
     healthcheck:
@@ -230,7 +232,7 @@ services:
       HARKENIQ_BMC_PASSWORD: password
       HARKENIQ_SITE_MANAGER_HOST: site-manager
       HARKENIQ_SITE_MANAGER_PORT: "50051"
-      HARKENIQ_SITE_MANAGER_TOKEN: dev-token-sm
+      HARKENIQ_SITE_MANAGER_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
       # SM runs HARKEN_SM_INSECURE in this stack; without this the agent's
       # config validation exits 3 requiring a tls_ca (QA-003).
       HARKENIQ_SITE_MANAGER_TLS: "false"
@@ -284,7 +286,7 @@ services:
       # switch and dropped every verdict on the floor.
       HARKENIQ_SITE_MANAGER_HOST: site-manager
       HARKENIQ_SITE_MANAGER_PORT: "50051"
-      HARKENIQ_SITE_MANAGER_TOKEN: dev-token-sm
+      HARKENIQ_SITE_MANAGER_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
       HARKENIQ_SITE_MANAGER_TLS: "false"
       # D12: network devices run the standard profile (100MB hard).
       HARKENIQ_RESOURCES_PROFILE: standard

@@ -16,7 +16,7 @@ this campaign's live testing.
 | QA-003 | Deploy | BLOCKER | Default stack has no agent service (commented out); uncommented block exits 3 on TLS validation (no `HARKENIQ_SITE_MANAGER_TLS:"false"`) | FIXED@pending — agent in default stack w/ SITE_MANAGER_TLS false; verified live: registered + OBSERVING at SM |
 | QA-004 | Deploy | BLOCKER | Host-port collisions: postgres publishes 5432 (dies on hosts with local postgres — verified); `network-sim` profile double-binds 50051 | FIXED@pending — postgres host publish removed (opt-in comment); switch-sim on host 50052 |
 | QA-005 | Console+CC backend | BLOCKER | No real auth: secure mode raises HTTP 501; insecure mode grants `platform_super_admin` to every caller | FIXED@pending — real JWKS validation (harkeniq/security/oidc.py) in Console (dual-realm) + CC (single-realm; configure_auth finally CALLED); compose runs INSECURE=false; verified live: real Keycloak token accepted at both, no/garbage token 401; 11 unit tests |
-| QA-006 | SM UI/API | BLOCKER | Approver identity self-asserted (free-text input → `decided_by`); audit proves nothing | OPEN |
+| QA-006 | SM UI/API | BLOCKER | Approver identity self-asserted (free-text input → `decided_by`); audit proves nothing | FIXED@c8e1beb — CC approvals attribute the authenticated JWT email through RouteApproval+audit; SM-local decisions recorded as sm-local:<name>, empty actor 422, UI disables buttons until named |
 | QA-007 | Agent CLI | BLOCKER | `harken diagnose` crashes (TypeError: `_TARGET_COLLECTIONS` values called as functions; wrong `engine.evaluate` signature); no Nagios exit codes; zero test coverage | FIXED@82308a2 — 4 crashes fixed, Nagios exit codes 0/1/2/3, one-shot debounce + honest confidence; 5 e2e subprocess tests |
 | QA-008 | Agent demo | BLOCKER | Trending slope uses wall-clock hours under compressed demo time → `-5,402,706 RPM/hr … 0 hours`; "46 hours before failure" unproducible | FIXED@0bfdac3 — narrative clock (1 poll = 1 narrative hour) via SkillEngine time_fn; live output now `-170.6 RPM/hr ... in 44 hours`; doc-09 -200 RPM rate + 90d guardrail restored |
 | QA-009 | SM UI | BLOCKER | LLM explanation computed/stored/served but rendered by no UI (Incident TS type lacks `explanation`) | FIXED@074d851 — DIAGNOSIS panel (summary/confidence/action/reasoning) on parent + child incidents; SM UI build green |
@@ -25,9 +25,9 @@ this campaign's live testing.
 | QA-012 | Deploy | MAJOR | Agent identity/baselines unpersisted in compose (re-enrolls each restart) | FIXED@pending — named volumes for agent + network-agent /var/lib/harkeniq |
 | QA-013 | Deploy | MAJOR | Compose omits Console↔CC linkage env (tenant id, console URL/API key) — marketplace sync + usage reporting silently disabled | FIXED@pending — CC tenant/console/keycloak env linkage restored in compose |
 | QA-014 | Docs | BLOCKER | No README/quickstart/DEMO runbook/seed data (README = 22 bytes UTF-16) | FIXED@2054b57+ — README, DEMO.md runbook, seed-demo.sh; ALL runbook steps executed live this session (inject path corrected to /test/inject-fault) |
-| QA-015 | Security | MAJOR | Checked-in creds: Keycloak admin/admin (temporary:false), postgres harkeniq/harkeniq, SM token dev-token-sm | OPEN |
-| QA-016 | Agent | MAJOR | Peer HMAC secret defaults ""; empty accepted → forgeable heartbeats | OPEN |
-| QA-017 | Agent | MAJOR | Agent silently downgrades to plaintext when tls:true but tls_ca empty | OPEN |
+| QA-015 | Security | MAJOR | Checked-in creds: Keycloak admin/admin (temporary:false), postgres harkeniq/harkeniq, SM token dev-token-sm | FIXED@pending — all 10 compose credential sites env-overridable (${VAR:-labdefault}) + .env.example; lab defaults documented in DEMO.md §7 |
+| QA-016 | Agent | MAJOR | Peer HMAC secret defaults ""; empty accepted → forgeable heartbeats | FIXED@pending — peers + empty heartbeat.secret is a startup config error (R-X15) |
+| QA-017 | Agent | MAJOR | Agent silently downgrades to plaintext when tls:true but tls_ca empty | FIXED@pending — reporter refuses tls:true without tls_ca (was silent plaintext downgrade) |
 | QA-018 | CC | MAJOR | CC→SM gRPC unconditionally plaintext (no TLS option in SMClient) | OPEN |
 | QA-019 | Console | MAJOR | License signing key auto-generated into DB; `license_signing_key_path` never read; CC never verifies any license | OPEN |
 | QA-020 | Agent | MAJOR | Autonomy chain unwired: preconditions/lease-gate/budget/blast-radius/verification never called by Agent or executor; four R3a actions have no Redfish executor branch | OPEN |
@@ -49,7 +49,7 @@ this campaign's live testing.
 | QA-036 | Console UI/CC | MAJOR | SPA called /api/groups + /api/autonomy (bare) which exist nowhere; CC lacked group detail + member add/remove routes the UI always called | FIXED@pending — 13 SPA call sites rewritten to /api/policies/...; CC gained GET /groups/{id}, POST/DELETE members (audited, 3 tests) |
 | QA-037 | SM/CC | BLOCKER | RegisterSite chicken-and-egg: SM token interceptor required the site token on the very RPC that ISSUES it — CC could never register a site; also CC 409'd forever on half-registrations; found LIVE (fleet poll UNAUTHENTICATED) | FIXED@pending — interceptor exempts /harkeniq.v1.SiteManagerService/RegisterSite (fingerprint is the bootstrap credential, HARKEN_SM_LICENSE_FINGERPRINT enforced when set); CC heals token-less sites; 3 over-the-wire tests (direct-call suites could never catch an interceptor bug) |
 | QA-038 | Tests | MINOR | test_directives bound the real 50051 (unrunnable beside a dev stack) | FIXED@pending — grpc_port=0 |
-| QA-035 | Console | MAJOR | `/api/internal` endpoints have NO auth (docstring: "No auth (internal network)") despite R5-2 ledger claiming a CC->Console credential pair | OPEN |
+| QA-035 | Console | MAJOR | `/api/internal` endpoints have NO auth (docstring: "No auth (internal network)") despite R5-2 ledger claiming a CC->Console credential pair | FIXED@pending — /api/internal enforces the CC<->Console bearer key (constant-time; secure+unconfigured fails closed 503; 5 tests); compose wires matching keys |
 
 (Statuses updated in place as the campaign proceeds; new live findings appended.)
 
