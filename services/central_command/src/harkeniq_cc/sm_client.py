@@ -62,9 +62,24 @@ def _metadata(token: Optional[str]) -> list[tuple[str, str]]:
 class SMClient:
     """gRPC client for Site Manager RPCs.
 
-    Each method creates an async insecure channel, calls the RPC, and
-    returns a plain dict for easy JSON serialization.
+    Each method opens a channel, calls the RPC, and returns a plain dict.
+    QA-018: TLS when constructed with a CA bundle (``tls_ca`` — typically
+    ``CCConfig.sm_tls_ca``); plaintext only when no CA is configured, which
+    was previously the ONLY mode — site tokens and fleet telemetry crossed
+    the wire in the clear with no way to turn TLS on.
     """
+
+    def __init__(self, tls_ca: str = "") -> None:
+        self.tls_ca = tls_ca
+
+    def _channel(self, sm_endpoint: str):
+        if self.tls_ca:
+            with open(self.tls_ca, "rb") as ca_file:
+                creds = grpc.ssl_channel_credentials(
+                    root_certificates=ca_file.read()
+                )
+            return grpc.aio.secure_channel(sm_endpoint, creds)
+        return grpc.aio.insecure_channel(sm_endpoint)
 
     async def register_site(
         self,
@@ -76,7 +91,7 @@ class SMClient:
         cc_endpoint: str = "",
     ) -> dict:
         """Register this CC tenant with a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.RegisterSite(
                 harkeniq_pb2.SiteRegistration(
@@ -101,7 +116,7 @@ class SMClient:
         site_id: str,
     ) -> dict:
         """Pull the current fleet snapshot from a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             snap = await stub.GetFleetSnapshot(
                 harkeniq_pb2.FleetSnapshotRequest(
@@ -176,7 +191,7 @@ class SMClient:
         tenant_id: str = "",
     ) -> dict:
         """Push an approval decision to a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.RouteApproval(
                 harkeniq_pb2.ApprovalRouteRequest(
@@ -202,7 +217,7 @@ class SMClient:
         date: str,
     ) -> dict:
         """Pull usage data for a given date from a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             snap = await stub.GetUsageSnapshot(
                 harkeniq_pb2.UsageSnapshotRequest(
@@ -232,7 +247,7 @@ class SMClient:
         issued_by: str = "marketplace",
     ) -> dict:
         """R5-2: push a marketplace skill to a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.InstallSkill(
                 harkeniq_pb2.SiteSkillInstall(

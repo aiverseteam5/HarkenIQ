@@ -28,8 +28,8 @@ this campaign's live testing.
 | QA-015 | Security | MAJOR | Checked-in creds: Keycloak admin/admin (temporary:false), postgres harkeniq/harkeniq, SM token dev-token-sm | FIXED@pending — all 10 compose credential sites env-overridable (${VAR:-labdefault}) + .env.example; lab defaults documented in DEMO.md §7 |
 | QA-016 | Agent | MAJOR | Peer HMAC secret defaults ""; empty accepted → forgeable heartbeats | FIXED@pending — peers + empty heartbeat.secret is a startup config error (R-X15) |
 | QA-017 | Agent | MAJOR | Agent silently downgrades to plaintext when tls:true but tls_ca empty | FIXED@pending — reporter refuses tls:true without tls_ca (was silent plaintext downgrade) |
-| QA-018 | CC | MAJOR | CC→SM gRPC unconditionally plaintext (no TLS option in SMClient) | OPEN |
-| QA-019 | Console | MAJOR | License signing key auto-generated into DB; `license_signing_key_path` never read; CC never verifies any license | OPEN |
+| QA-018 | CC | MAJOR | CC→SM gRPC unconditionally plaintext (no TLS option in SMClient) | FIXED@pending — SMClient takes tls_ca (CCConfig.sm_tls_ca / HARKEN_CC_SM_TLS_CA); all 6 channel sites TLS-capable; plaintext only when no CA configured |
+| QA-019 | Console | MAJOR | License signing key auto-generated into DB; `license_signing_key_path` never read; CC never verifies any license | PARTIAL@pending — Console honors license_signing_key_path (file wins; DB autogen now LAB-ONLY, secure mode without a key file refuses 503). OPEN half: CC-side license load+verify at startup/site-registration |
 | QA-020 | Agent | MAJOR | Autonomy chain unwired: preconditions/lease-gate/budget/blast-radius/verification never called by Agent or executor; four R3a actions have no Redfish executor branch | OPEN |
 | QA-021 | SM | MAJOR | SuppressionEngine + SMAutonomyEnforcer never instantiated; leases carry defaults (unlimited budget, stop_switch=False) | OPEN |
 | QA-022 | CC | MAJOR | Stop switch = in-process dict; never persisted, never reaches SM/lease | OPEN |
@@ -62,3 +62,4 @@ this campaign's live testing.
 | 2026-08-25 | Baseline | Full suite 2157 collected / 2155 pass, 2 expected skips; e2e 17/17; `harken demo` exit 0 |
 | 2026-08-25 | Boot+Auth | FIRST fully healthy fresh boot: 7/7 services healthy; agent registered+OBSERVING at SM; CC+Console in SECURE mode accept a real Keycloak token (password grant, platform admin), reject absent/garbage tokens with 401 |
 | 2026-08-25 | Demo flow | FULL RUNBOOK EXECUTED LIVE: seed (tenant+site, token healed) -> CC fleet shows agent w/ device_class -> Console proxy serves CC data -> fault injected -> agent CRITICAL verdict -> SM incident (confidence 1.0) -> COLLECT_DIAGNOSTICS proposed -> approved via API |
+| 2026-08-25 | Compose gate | GATE GREEN from scratch (gate3): build -> boot -> healthy -> seed -> register -> observe -> CC fleet -> Console proxy -> 401 negatives -> fault -> incident -> proposal -> named approval (sm-local:ci-gate) -> audit chain valid. Wired as a CI job |

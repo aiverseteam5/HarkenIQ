@@ -71,7 +71,7 @@ async def register_site(
     # Attempt SM registration via gRPC
     sm_result = {"accepted": False, "site_token": "", "reason": "not attempted"}
     try:
-        client = SMClient()
+        client = SMClient(state.config.sm_tls_ca)
         sm_result = await client.register_site(
             sm_endpoint=body.sm_endpoint,
             tenant_id=user.tenant_id,

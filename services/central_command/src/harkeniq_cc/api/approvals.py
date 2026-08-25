@@ -71,7 +71,7 @@ async def _route_decision(
     # Route to the SM via gRPC
     delivery = {"accepted": False, "delivered": False, "reason": "not attempted"}
     try:
-        client = SMClient()
+        client = SMClient(state.config.sm_tls_ca)
         delivery = await client.route_approval(
             sm_endpoint=site.sm_endpoint,
             token=site.sm_token or "",

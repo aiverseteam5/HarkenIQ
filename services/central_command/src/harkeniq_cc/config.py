@@ -28,6 +28,8 @@ class CCConfig:
     keycloak_realm: str = ""
     keycloak_client_id: str = "harkeniq-cc"
     console_url: str = ""
+    # QA-018: CA bundle for TLS to Site Managers; empty = plaintext (lab).
+    sm_tls_ca: str = ""
     console_api_key: str = ""
     license_key_path: str = ""
     usage_report_interval_s: float = 86400.0
@@ -61,6 +63,7 @@ _ENV_MAP = {
     "HARKEN_CC_KEYCLOAK_REALM": "keycloak_realm",
     "HARKEN_CC_KEYCLOAK_CLIENT_ID": "keycloak_client_id",
     "HARKEN_CC_CONSOLE_URL": "console_url",
+    "HARKEN_CC_SM_TLS_CA": "sm_tls_ca",
     "HARKEN_CC_CONSOLE_API_KEY": "console_api_key",
     "HARKEN_CC_LICENSE_KEY_PATH": "license_key_path",
     "HARKEN_CC_USAGE_REPORT_INTERVAL_S": "usage_report_interval_s",

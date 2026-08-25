@@ -23,7 +23,7 @@ async def fleet_poll_loop(state) -> None:
     Failures are logged per-site and do not abort the cycle.
     """
     interval = state.config.site_poll_interval_s
-    client = SMClient()
+    client = SMClient(state.config.sm_tls_ca)
     logger.info("Fleet poller started (interval=%.0fs)", interval)
     while True:
         await asyncio.sleep(interval)
