@@ -192,11 +192,19 @@ def agent_checkpoint(checkpoint_path):
 
 @main.command()
 @click.option("--config", "config_path", default=None, help="Config file path")
+@click.option("--bmc-ip", default=None, help="BMC IP/URL (overrides config)")
+@click.option("--bmc-user", default=None, help="BMC username")
+@click.option("--bmc-pass", default=None, help="BMC password")
+@click.option("--verbose", is_flag=True, help="Show healthy subsystems too")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def diagnose(config_path, json_output):
-    """One-shot diagnosis: poll BMC, evaluate skills, print structured results (R3a)."""
+@click.pass_context
+def diagnose(ctx, config_path, bmc_ip, bmc_user, bmc_pass, verbose, json_output):
+    """One-shot diagnosis: poll BMC, evaluate skills, print structured results.
+
+    Exit codes (Doc 06 §6.3, Nagios-compatible): 0 healthy, 1 warning,
+    2 critical, 3 unknown/unreachable.
+    """
     import asyncio
-    import json
     import logging
 
     from harkeniq.config import load_config, validate_config
@@ -204,20 +212,31 @@ def diagnose(config_path, json_output):
 
     logging.basicConfig(level=logging.WARNING)
 
+    overrides: dict = {}
+    if bmc_ip:
+        overrides.setdefault("bmc", {})["host"] = bmc_ip
+    if bmc_user:
+        overrides.setdefault("bmc", {})["username"] = bmc_user
+    if bmc_pass:
+        overrides.setdefault("bmc", {})["password"] = bmc_pass
+
     try:
-        config = load_config(config_path)
+        config = load_config(config_path, cli_overrides=overrides)
     except ConfigError as e:
-        raise click.ClickException(str(e))
+        click.echo(f"UNKNOWN: {e}", err=True)
+        ctx.exit(3)
     errors = validate_config(config)
     if errors:
-        raise click.ClickException("; ".join(errors))
+        click.echo("UNKNOWN: " + "; ".join(errors), err=True)
+        ctx.exit(3)
 
     async def _run():
         from harkeniq.autonomy.diagnosis import ConfidenceDimension, Diagnosis
         from harkeniq.autonomy.tier import TierLevel
+        from harkeniq.models import VerdictSeverity
         from harkeniq.poller import Poller
         from harkeniq.redfish.client import RedfishClient
-        from harkeniq.skills.engine import _TARGET_COLLECTIONS, SkillEngine
+        from harkeniq.skills.engine import SkillEngine
         from harkeniq.skills.loader import load_skills
         from harkeniq.skills.trending import TrendingEngine
 
@@ -227,62 +246,94 @@ def diagnose(config_path, json_output):
             await client.connect(bmc.get("username", ""), bmc.get("password", ""))
             poller = Poller(client)
             identity = await poller.detect()
-            device = await poller.poll_all()
+            device = await poller.poll_sensors()
 
             skills = load_skills(
                 (config.get("skills") or {}).get("directory", "skills")
             )
             trending = TrendingEngine(config)
-            engine = SkillEngine(list(skills.values()), config.get("debounce"), trending)
-
-            # Evaluate all skills against current device state
-            verdicts = []
-            for target, collection in _TARGET_COLLECTIONS.items():
-                items = collection(device)
-                for item in items:
-                    result = engine.evaluate(target, item)
-                    verdicts.extend(result)
-
-            # Build Diagnosis objects from verdicts
-            diagnoses = []
-            for v in verdicts:
-                d = Diagnosis(
-                    device_id=identity.service_tag or identity.system_id or "unknown",
-                    component=v.sensor_id,
-                    summary=v.message,
-                    tier=TierLevel.T2,  # standalone = no peers = T2
-                )
-                d.add_evidence("redfish", v.sensor_id, v.severity.value)
-                d.confidence = [
-                    ConfidenceDimension(
-                        name="skill_match",
-                        value=1.0,  # all conditions matched
-                        detail=f"Skill: {v.skill_name}",
-                    ),
-                ]
-                d.recommended_action = v.recommended_action if hasattr(v, "recommended_action") else ""
-                d.add_reasoning_step(f"Skill '{v.skill_name}' matched")
-                diagnoses.append(d)
+            # One-shot: a single observation is all there is — debounce
+            # windows (built for the continuous poll loop) would swallow
+            # every first-sight fault and report healthy.
+            one_shot_debounce = {
+                "critical": [1, 1], "warning": [1, 1], "recovery": [1, 1],
+            }
+            engine = SkillEngine(
+                list(skills.values()), one_shot_debounce, trending
+            )
+            verdicts = await engine.evaluate(device)
         finally:
             await client.close()
 
-        return identity, diagnoses
+        # One proposed action per sensor, when a matched rule carried one.
+        actions_by_sensor = {
+            a.sensor_id: a.type.value for a in engine.get_pending_actions()
+        }
+
+        diagnoses = []
+        for v in verdicts:
+            if v.severity == VerdictSeverity.HEALTHY and not verbose:
+                continue
+            evidence = v.evidence[0] if v.evidence else None
+            baseline_confidence = (
+                evidence.baseline_confidence if evidence is not None else 0.0
+            )
+            d = Diagnosis(
+                device_id=identity.service_tag or identity.system_id or "unknown",
+                component=v.sensor_id,
+                summary=v.message,
+                tier=TierLevel.T2,  # standalone one-shot = no peers = T2
+            )
+            d.add_evidence("redfish", v.sensor_id, v.severity.value)
+            # Honest confidence: a one-shot poll has no learned baseline, so
+            # baseline confidence is what the engine actually had — never
+            # asserted as 1.0 (that was the pre-QA bug's claim).
+            d.confidence = [
+                ConfidenceDimension(
+                    name="baseline",
+                    value=baseline_confidence,
+                    detail="one-shot poll; baselines not learned",
+                ),
+            ]
+            d.recommended_action = actions_by_sensor.get(v.sensor_id, "")
+            d.add_reasoning_step(
+                f"Skill '{v.skill_name}' verdict {v.severity.value}"
+            )
+            diagnoses.append(d)
+
+        worst = max(
+            (v.severity for v in verdicts), default=VerdictSeverity.UNKNOWN
+        )
+        return identity, diagnoses, worst
 
     try:
-        identity, diagnoses = asyncio.run(_run())
+        identity, diagnoses, worst = asyncio.run(_run())
     except HarkenIQError as e:
-        raise click.ClickException(str(e))
+        click.echo(f"UNKNOWN: {e}", err=True)
+        ctx.exit(3)
+    except OSError as e:
+        click.echo(f"UNKNOWN: BMC unreachable: {e}", err=True)
+        ctx.exit(3)
 
     vendor = {"dell": "Dell", "hpe": "HPE"}.get(identity.vendor, identity.vendor)
+
+    # Doc 06 §6.3 Nagios-compatible exit code from the worst verdict.
+    from harkeniq.models import VerdictSeverity as _Sev
+
+    exit_code = {
+        _Sev.CRITICAL: 2, _Sev.WARNING: 1,
+        _Sev.TRENDING: 0, _Sev.HEALTHY: 0,
+    }.get(worst, 3)
 
     if json_output:
         import json as json_mod
         click.echo(json_mod.dumps({
             "device": {"vendor": vendor, "model": identity.model,
                        "service_tag": identity.service_tag},
+            "worst_severity": worst.value,
             "diagnoses": [d.to_dict() for d in diagnoses],
         }, indent=2))
-        return
+        ctx.exit(exit_code)
 
     click.echo(f"Device: {vendor} {identity.model} ({identity.service_tag})")
     click.echo(f"Diagnoses: {len(diagnoses)}")
@@ -297,6 +348,7 @@ def diagnose(config_path, json_output):
         if d.recommended_action:
             click.echo(f"    Action: {d.recommended_action}")
         click.echo()
+    ctx.exit(exit_code)
 
 
 @main.command()
