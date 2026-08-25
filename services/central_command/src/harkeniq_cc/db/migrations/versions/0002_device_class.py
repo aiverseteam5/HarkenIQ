@@ -18,6 +18,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # 0001 is a create_all from CURRENT models — fresh databases already
+    # have the column; only pre-R6 databases need the ALTER (same live
+    # finding as the SM 0002).
+    inspector = sa.inspect(op.get_bind())
+    columns = {c["name"] for c in inspector.get_columns("cc_fleet_cache")}
+    if "device_class" in columns:
+        return
     op.add_column(
         "cc_fleet_cache",
         sa.Column(

@@ -19,6 +19,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # 0001 is a create_all from CURRENT models, so a fresh database is born
+    # with this column already present — only pre-R6 databases need the
+    # ALTER. Idempotence is mandatory for every additive migration in this
+    # chain (found live: fresh full-stack boot crash-looped on the
+    # duplicate column).
+    inspector = sa.inspect(op.get_bind())
+    columns = {c["name"] for c in inspector.get_columns("devices")}
+    if "device_class" in columns:
+        return
     op.add_column(
         "devices",
         sa.Column(
