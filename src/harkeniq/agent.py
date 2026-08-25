@@ -169,6 +169,8 @@ class Agent:
         # R5: directed directives from SM (in-flight dedup + task refs)
         self._directives_in_flight: set[str] = set()
         self._directive_tasks: set[asyncio.Task] = set()
+        # QA-031: checkpoint-recovered playbook executions (id -> state)
+        self.playbook_executions: dict[str, Any] = {}
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
@@ -260,6 +262,24 @@ class Agent:
             if state["peers"]:
                 self.tracker.restore_peers(state["peers"])
             self.action_queue.restore(await self.checkpoint.load_actions())
+            # QA-031: playbook executions survive restarts. In-flight ones
+            # come back PAUSED (unknowable step outcome), awaiting a
+            # human-driven resume.
+            from harkeniq.models import PlaybookStatus
+            self.playbook_executions = {
+                e.execution_id: e
+                for e in await self.checkpoint.load_playbook_executions()
+            }
+            interrupted = [
+                e.execution_id
+                for e in self.playbook_executions.values()
+                if e.status == PlaybookStatus.PAUSED
+            ]
+            if interrupted:
+                logger.warning(
+                    "Recovered %d paused playbook execution(s) from "
+                    "checkpoint: %s", len(interrupted), interrupted,
+                )
 
         self.skill_engine = SkillEngine(
             list(skills.values()),
@@ -618,6 +638,7 @@ class Agent:
                 "verification_wait_scale", 1.0
             ),
             dry_run=compliance_cfg.get("dry_run", True),
+            checkpoint=self.checkpoint,  # QA-031: crash-safe state
         )
         execution = await executor.execute_playbook(playbook, self.agent_id)
 

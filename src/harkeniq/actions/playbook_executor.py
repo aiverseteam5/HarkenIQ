@@ -61,6 +61,7 @@ class PlaybookExecutor:
         get_device_state=None,
         verification_wait_scale: float = 1.0,
         dry_run: bool = False,
+        checkpoint=None,
     ) -> None:
         """
         Args:
@@ -70,12 +71,27 @@ class PlaybookExecutor:
             dry_run: log actions instead of executing them (R4-2 risk
                 register: config-changing playbooks default to dry-run).
                 Verification is skipped in dry-run -- nothing changed.
+            checkpoint: CheckpointManager; when present, execution state
+                is persisted after every step (QA-031: a crash leaves a
+                resumable PAUSED record instead of losing everything).
         """
         self._executor = action_executor
         self._cred_provider = credential_provider
         self._get_state = get_device_state
         self._wait_scale = verification_wait_scale  # 0.0 for tests
         self.dry_run = dry_run
+        self._checkpoint = checkpoint
+
+    async def _persist(self, execution) -> None:
+        if self._checkpoint is None:
+            return
+        try:
+            await self._checkpoint.save_playbook_execution(execution)
+        except Exception as e:  # persistence must never abort a playbook
+            logger.warning(
+                "Playbook execution checkpoint failed for %s: %s",
+                execution.execution_id, e,
+            )
 
     async def execute_playbook(
         self,
@@ -90,6 +106,7 @@ class PlaybookExecutor:
         """
         execution = PlaybookExecution.create(playbook, device_id)
         execution.current_step_index = from_step
+        await self._persist(execution)  # QA-031: RUNNING is on disk
 
         logger.info(
             "Starting playbook %s on %s (steps %d-%d)",
@@ -102,6 +119,7 @@ class PlaybookExecutor:
 
             outcome = await self._execute_step(step, device_id)
             execution.record_step(outcome)
+            await self._persist(execution)  # QA-031: every step lands
 
             if not outcome.success:
                 # Try rollback if defined
@@ -131,6 +149,7 @@ class PlaybookExecutor:
                 playbook.name, device_id, playbook.step_count,
             )
 
+        await self._persist(execution)  # QA-031: terminal state on disk
         return execution
 
     async def resume(
@@ -160,6 +179,7 @@ class PlaybookExecutor:
         else:
             execution.status = resumed.status
             execution.error_message = resumed.error_message
+        await self._persist(execution)  # QA-031
         return execution
 
     async def _execute_step(

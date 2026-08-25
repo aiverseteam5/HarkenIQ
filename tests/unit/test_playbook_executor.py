@@ -222,3 +222,75 @@ class TestFromStep:
         assert execution.status == PlaybookStatus.COMPLETED
         assert len(execution.step_outcomes) == 1  # only step 1
         assert execution.step_outcomes[0].action_type == "BMC_RESET"
+
+
+class TestCheckpointPersistence:
+    """QA-031: playbook executions survive a crash."""
+
+    @pytest.fixture
+    def checkpoint(self, tmp_path):
+        from harkeniq.state.checkpoint import CheckpointManager
+        return CheckpointManager(tmp_path / "checkpoint.db")
+
+    def _healthy_states(self):
+        return {"dev-1": {
+            "sel_entry_count": 0,
+            "sel_events_forwarded": True,
+            "sel_percent_full": 90,
+            "bmc_responsive": True,
+            "bmc_consecutive_poll_failures": 3,
+            "firmware_update_in_progress": False,
+        }}
+
+    async def test_execution_persisted_and_reloadable(self, checkpoint):
+        executor = PlaybookExecutor(
+            action_executor=None,
+            get_device_state=_state_provider(self._healthy_states()),
+            verification_wait_scale=0.0,
+            checkpoint=checkpoint,
+        )
+        execution = await executor.execute_playbook(BMC_RECOVERY, "dev-1")
+        assert execution.is_terminal
+
+        recovered = await checkpoint.load_playbook_executions()
+        assert len(recovered) == 1
+        loaded = recovered[0]
+        assert loaded.execution_id == execution.execution_id
+        assert loaded.status == execution.status
+        assert len(loaded.step_outcomes) == len(execution.step_outcomes)
+
+    async def test_running_comes_back_paused(self, checkpoint):
+        """A crash mid-flight leaves RUNNING on disk; reload flips it to
+        PAUSED with an honest unknown-outcome message, persisted."""
+        execution = PlaybookExecution.create(BMC_RECOVERY, "dev-1")
+        assert execution.status == PlaybookStatus.RUNNING
+        await checkpoint.save_playbook_execution(execution)
+
+        recovered = await checkpoint.load_playbook_executions()
+        assert recovered[0].status == PlaybookStatus.PAUSED
+        assert "interrupted by agent restart" in recovered[0].error_message
+        # The flip persisted: a second load stays PAUSED
+        again = await checkpoint.load_playbook_executions()
+        assert again[0].status == PlaybookStatus.PAUSED
+
+    async def test_roundtrip_preserves_step_outcomes(self):
+        from harkeniq.actions.playbook import StepOutcome
+        execution = PlaybookExecution.create(BMC_RECOVERY, "dev-1")
+        execution.record_step(StepOutcome(
+            step_index=0, action_type="SEL_CLEAR", success=True,
+            duration_ms=12.5, post_state={"sel_entry_count": 0},
+        ))
+        execution.complete()
+        loaded = PlaybookExecution.from_dict(execution.to_dict())
+        assert loaded.status == PlaybookStatus.COMPLETED
+        assert loaded.step_outcomes[0].action_type == "SEL_CLEAR"
+        assert loaded.step_outcomes[0].post_state == {"sel_entry_count": 0}
+
+    async def test_no_checkpoint_still_works(self):
+        executor = PlaybookExecutor(
+            action_executor=None,
+            get_device_state=_state_provider(self._healthy_states()),
+            verification_wait_scale=0.0,
+        )
+        execution = await executor.execute_playbook(BMC_RECOVERY, "dev-1")
+        assert execution.is_terminal

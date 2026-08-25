@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS actions (
     approved_by TEXT
 );
 
+CREATE TABLE IF NOT EXISTS playbook_executions (
+    execution_id TEXT PRIMARY KEY,
+    playbook_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     action TEXT NOT NULL,
@@ -446,6 +454,61 @@ class CheckpointManager:
         return actions
 
     # -- audit / cursors ----------------------------------------------------
+
+    async def save_playbook_execution(self, execution) -> None:
+        """Persist a PlaybookExecution (QA-031: crash-safe resume state)."""
+        try:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO playbook_executions "
+                    "(execution_id, playbook_id, status, state_json, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        execution.execution_id,
+                        execution.playbook_id,
+                        execution.status.value,
+                        json.dumps(execution.to_dict()),
+                        _utc_now(),
+                    ),
+                )
+        except sqlite3.Error as e:
+            raise CheckpointWriteError(f"Playbook execution write failed: {e}")
+
+    async def load_playbook_executions(self) -> list:
+        """Load persisted playbook executions (QA-031).
+
+        Executions found RUNNING crashed mid-flight: their in-flight
+        step's result is unknowable, so they come back PAUSED with an
+        explanatory error (mirrors load_actions' EXECUTING handling) and
+        the flip is persisted.
+        """
+        from harkeniq.actions.playbook import PlaybookExecution
+        from harkeniq.models import PlaybookStatus
+
+        executions: list[PlaybookExecution] = []
+        try:
+            rows = self._conn.execute(
+                "SELECT state_json FROM playbook_executions ORDER BY updated_at"
+            ).fetchall()
+        except sqlite3.Error as e:
+            raise CheckpointWriteError(f"Playbook execution read failed: {e}")
+        for row in rows:
+            try:
+                execution = PlaybookExecution.from_dict(
+                    json.loads(row["state_json"])
+                )
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                logger.warning("Skipping unreadable playbook execution: %s", e)
+                continue
+            if execution.status == PlaybookStatus.RUNNING:
+                execution.status = PlaybookStatus.PAUSED
+                execution.error_message = (
+                    "interrupted by agent restart; in-flight step outcome "
+                    "unknown"
+                )
+                await self.save_playbook_execution(execution)
+            executions.append(execution)
+        return executions
 
     async def save_audit_entry(
         self,
