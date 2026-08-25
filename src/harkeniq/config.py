@@ -28,11 +28,12 @@ DEFAULTS: dict[str, Any] = {
     },
     "bmc": {
         "host": "",
-        "protocol": "redfish",  # "redfish" | "ipmi" (R4-1)
-        "port": 443,  # redfish default; ipmi uses 623 unless overridden
+        "protocol": "redfish",  # "redfish" | "ipmi" (R4-1) | "gnmi" (R6)
+        "port": 443,  # redfish default; ipmi 623, gnmi 8080 unless overridden
         "username": "",
         "password": "",
         "verify_ssl": False,
+        "plaintext": False,  # R6 gnmi: insecure channel (simulator/dev only)
         "session_timeout": 300,
     },
     "polling": {
@@ -206,8 +207,10 @@ def validate_config(config: Mapping) -> list[str]:
         errors.append("bmc.host is required")
 
     protocol = config.get("bmc", {}).get("protocol", "redfish")
-    if protocol not in ("redfish", "ipmi"):
-        errors.append(f"bmc.protocol must be 'redfish' or 'ipmi', got {protocol!r}")
+    if protocol not in ("redfish", "ipmi", "gnmi"):
+        errors.append(
+            f"bmc.protocol must be 'redfish', 'ipmi', or 'gnmi', got {protocol!r}"
+        )
 
     for section, key in (
         ("bmc", "port"),

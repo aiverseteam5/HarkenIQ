@@ -1,0 +1,75 @@
+# R6-P8 (review 5B, decided by Vinod): the agent container publish pipeline.
+#
+# On every version tag (v*), build the agent image for amd64 + arm64 (switch
+# control planes ship both), run the network exit-gate smoke against the
+# freshly built image, and only then push to GHCR. Image tag = git tag.
+# main-branch pushes build + smoke without publishing (PR safety net).
+
+name: publish-agent
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (amd64, loadable for smoke)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/full-stack/Dockerfile.agent
+          platforms: linux/amd64
+          load: true
+          tags: harkeniq-agent:smoke
+
+      - name: Exit-gate smoke — agent runs against the switch simulator
+        run: |
+          docker network create smoke-net
+          docker run -d --name switch-sim --network smoke-net \
+            harkeniq-agent:smoke \
+            harken mock switch --ports 8 --port 50051 --host 0.0.0.0 --writable
+          sleep 3
+          docker run -d --name agent --network smoke-net \
+            -e HARKENIQ_BMC_HOST=switch-sim \
+            -e HARKENIQ_BMC_PORT=50051 \
+            -e HARKENIQ_BMC_PROTOCOL=gnmi \
+            -e HARKENIQ_BMC_PLAINTEXT=true \
+            -e HARKENIQ_POLLING_SENSOR_INTERVAL=10 \
+            harkeniq-agent:smoke
+          sleep 25
+          docker logs agent 2>&1 | tail -20
+          # The agent must reach OBSERVING and complete a poll cycle.
+          docker logs agent 2>&1 | grep -q "BOOTING -> OBSERVING" || exit 1
+          docker logs agent 2>&1 | grep -q "Poll complete" || exit 1
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch image
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/full-stack/Dockerfile.agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/harkeniq-agent:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/harkeniq-agent:latest

@@ -156,6 +156,22 @@ partner site with network devices.
 | Vendor NOS normalization (Arista/Cisco) | Follow-on slice after R6 |
 | Router device class | Follow-on; simulator models switches first |
 
+## 4a. Exit gate — RESULTS (run 2026-08-25)
+
+| §4 item | Result | Evidence |
+|---|---|---|
+| 1. Real SONiC streams into NormalizedDevice | **PASS (live)** | GNMIProtocol vs docker-sonic-vs + docker-sonic-gnmi pod (TLS, TOFU-pinned, CN override): identity sonic/Force10-S6000/switch, 32 interfaces, Subscribe SAMPLE streamed counters on all 32 ports, rates derived, 32 config keys. Fidelity finding folded back: the real server resolves the DB target from the request PREFIX (path-level targets NOT_FOUND) — protocol and simulator both corrected |
+| 2. Optic decay → hardware degradation w/ exoneration | PASS (suite) | test_network_detection: injected decay classified CRITICAL hardware; healthy port stays HEALTHY (R-M21 spirit); congestion negative branch proves R-M5 |
+| 3. Two-sided probe verdicts | PASS (suite) | LOCAL_PORT / CABLE / INCONCLUSIVE on real interface counters |
+| 4. Gated disable + self-preservation refusal | PASS (suite) | executor+protocol disable with read-back verify; refusals: self-preservation (incl. fail-closed resolution), redundant-path, quorum propose-only, LAG blast radius, D16 denial finality |
+| 5. Agent in container within profile | **PASS (live)** | 43.3MiB steady-state under an ENFORCED 50MiB cap (server workload); network agents run standard per D12; containerized gnmi agent full Observe loop proven (compose smoke = CI smoke) |
+| 6. Suite green; NETCONF honesty | PASS | 2155 passed / 2 expected skips; P5 dropped by D13 — §5 partner-site gates recorded |
+
+**R6 exit gate: GREEN.** Simulator-scoped items are labeled per §5; the
+partner-site gates (gNMI Set persistence, optics/BER/microburst on silicon,
+N0 on a real switch) remain open by design and close at the first design
+partner with network devices.
+
 ## 6. Amendment A9 summary (recorded in spec §9, 2026-08-25)
 
 ### A9 — 2026-08-25 — R6 Network Intelligence scope (decided: Vinod)

@@ -467,6 +467,46 @@ def mock_start(device, port, host, no_auth):
             raise click.ClickException(str(e))
 
 
+@mock.command(name="switch")
+@click.option("--ports", default=8, type=int, help="Number of front-panel ports")
+@click.option("--port", default=50051, type=int, help="gNMI listen port")
+@click.option("--host", default="127.0.0.1",
+              help="Bind address (0.0.0.0 for container use)")
+@click.option("--writable", is_flag=True,
+              help="Enable translib write + client_auth none (P6 action testing)")
+def mock_switch(ports, port, host, writable):
+    """Start the switch simulator's gNMI server (R6-P2; runs until Ctrl+C).
+
+    Serves the P0-fixture-faithful gNMI surface on an insecure channel —
+    pair with the agent's `bmc.protocol: gnmi` + `plaintext` for compose
+    testing without a real SONiC pod.
+    """
+    import asyncio
+
+    async def _run():
+        from harkeniq.mock.switch_sim import SwitchSimulator
+
+        sim = SwitchSimulator(
+            num_ports=ports, port=port, host=host,
+            translib_write=writable,
+            client_auth="none" if writable else "password",
+        )
+        await sim.start()
+        click.echo(f"Switch simulator gNMI on port {sim.port} "
+                   f"({ports} ports, writes {'ON' if writable else 'off'})")
+        try:
+            while True:
+                sim.state.tick(1.0)
+                await asyncio.sleep(1.0)
+        finally:
+            await sim.stop()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
 @main.group()
 def config():
     """Configuration commands."""

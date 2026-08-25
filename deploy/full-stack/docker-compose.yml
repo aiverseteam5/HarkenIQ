@@ -176,5 +176,39 @@ services:
   #     mock-simulator:
   #       condition: service_started
 
+  # ---------------------------------------------------------------------
+  # R6-P8: network simulation profile.
+  # Start with: docker compose --profile network-sim up
+  # A switch simulator (P0-fixture-faithful gNMI) + an agent speaking the
+  # gnmi protocol against it. For the REAL SONiC pod (docker-sonic-vs +
+  # docker-sonic-gnmi sharing netns + /var/run/redis), see
+  # docs/designs/r6-p0-spike-report.md §(b)1 — images come from the
+  # sonic-net Azure pipeline, not a registry, so they are not composed here.
+
+  switch-sim:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.agent
+    profiles: ["network-sim"]
+    command: ["harken", "mock", "switch", "--ports", "8",
+              "--port", "50051", "--host", "0.0.0.0", "--writable"]
+    ports:
+      - "50051:50051"
+
+  network-agent:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.agent
+    profiles: ["network-sim"]
+    depends_on:
+      - switch-sim
+    environment:
+      HARKENIQ_BMC_HOST: switch-sim
+      HARKENIQ_BMC_PORT: "50051"
+      HARKENIQ_BMC_PROTOCOL: gnmi
+      HARKENIQ_BMC_PLAINTEXT: "true"
+      # D12: network devices run the standard profile (100MB hard).
+      HARKENIQ_RESOURCES_PROFILE: standard
+
 volumes:
   pgdata:

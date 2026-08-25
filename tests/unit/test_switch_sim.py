@@ -34,9 +34,14 @@ def payload_of(response: gnmi_pb2.GetResponse) -> dict:
 
 
 async def gnmi_get(stub, path: gnmi_pb2.Path) -> gnmi_pb2.GetResponse:
-    return await stub.Get(gnmi_pb2.GetRequest(
-        path=[path], encoding=gnmi_pb2.Encoding.JSON_IETF
-    ))
+    # Real-server semantics (P8): the DB target rides the request PREFIX.
+    request = gnmi_pb2.GetRequest(encoding=gnmi_pb2.Encoding.JSON_IETF)
+    if path.target:
+        request.prefix.target = path.target
+        request.path.append(gnmi_pb2.Path(elem=path.elem))
+    else:
+        request.path.append(path)
+    return await stub.Get(request)
 
 
 def enabled_update(port_name: str, enabled: bool) -> gnmi_pb2.Update:

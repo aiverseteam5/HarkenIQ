@@ -175,6 +175,11 @@ class Agent:
             # bmc.port defaults to 443 (Redfish); treat that as unset for IPMI.
             port = bmc.get("port")
             proto_kwargs["port"] = 623 if port in (None, 0, 443) else port
+        elif protocol_name == "gnmi":
+            # R6: bmc.port defaults to 443 (Redfish); gNMI default is 8080.
+            port = bmc.get("port")
+            proto_kwargs["port"] = 8080 if port in (None, 0, 443) else port
+            proto_kwargs["plaintext"] = bool(bmc.get("plaintext", False))
         self.protocol = create_device_protocol(
             protocol_name, host=bmc["host"], **proto_kwargs
         )

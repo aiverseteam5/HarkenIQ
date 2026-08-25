@@ -323,7 +323,7 @@ here) no later than the start of their owning slice.
 | OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3b-2 — **answered, A3.2**: implemented as CorrelationProbe (both-sides error counters, 4-way fault location) |
 | OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3b-3 — **answered, A4.1**: CredentialProvider interface (Local+Vault+Mock), blue-green rotation |
 | OQ-15 | Application-layer symptom source for cross-layer correlation (Prometheus scrape? logs?) | Platform-Design | R3a (basic: syslog/dmesg hardware-to-OS mapping) / R3b (full: process→service mapping) |
-| OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R4-1 (IPMI, server BMC — **answered**) / R6 (network devices, scoped by **A9**) |
+| OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R4-1 (IPMI — **answered**) / R6 (network — **answered 2026-08-25**: gNMI on SONiC, full loop shipped; vendor NOS breadth is follow-on; partner-site gates in A9 design doc §5) |
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |

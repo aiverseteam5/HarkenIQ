@@ -389,7 +389,10 @@ class SwitchGNMIService(gnmi_pb2_grpc.gNMIServicer):
         await self._stall_check(context)
         notifications = []
         for path in request.path:
-            target = request.prefix.target or path.target
+            # Fidelity (P8 live finding): the real server resolves the DB
+            # from the request PREFIX only; a path-level target is ignored
+            # and the lookup falls through to NOT_FOUND.
+            target = request.prefix.target
             elems = [e.name for e in path.elem]
             # OpenConfig keyed interface paths
             if elems and elems[0] in (
@@ -579,6 +582,7 @@ class SwitchSimulator:
         self,
         num_ports: int = 8,
         port: int = 0,
+        host: str = "127.0.0.1",
         translib_write: bool = False,
         client_auth: str = "password",
         lags: Optional[dict[str, list[str]]] = None,
@@ -590,6 +594,7 @@ class SwitchSimulator:
             client_auth=client_auth,
         )
         self._requested_port = port
+        self._host = host
         self.port: Optional[int] = None
         self._server: Optional[grpc.aio.Server] = None
 
@@ -597,10 +602,10 @@ class SwitchSimulator:
         self._server = grpc.aio.server()
         gnmi_pb2_grpc.add_gNMIServicer_to_server(self.service, self._server)
         self.port = self._server.add_insecure_port(
-            f"127.0.0.1:{self._requested_port}"
+            f"{self._host}:{self._requested_port}"
         )
         await self._server.start()
-        logger.info("Switch simulator gNMI on 127.0.0.1:%d", self.port)
+        logger.info("Switch simulator gNMI on %s:%d", self._host, self.port)
 
     async def stop(self) -> None:
         if self._server is not None:

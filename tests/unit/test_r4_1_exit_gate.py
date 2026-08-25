@@ -76,9 +76,10 @@ class TestConfigProtocolSelection:
         assert validate_config(config) == []
 
     def test_unknown_protocol_rejected(self):
+        # "gnmi" became a real protocol in R6; snmp remains unknown.
         config = load_config(env={
             "HARKENIQ_BMC_HOST": "10.0.0.9",
-            "HARKENIQ_BMC_PROTOCOL": "gnmi",
+            "HARKENIQ_BMC_PROTOCOL": "snmp",
         })
         errors = validate_config(config)
         assert any("bmc.protocol" in e for e in errors)

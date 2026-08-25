@@ -160,14 +160,24 @@ class GNMIProtocol:
             else:
                 # Real SONiC serves TLS (self-signed in the field). Python
                 # gRPC cannot skip verification, so pin the presented cert
-                # (TOFU, same posture as SM key pinning in A2.4).
+                # (TOFU, same posture as SM key pinning in A2.4). The fetch
+                # must offer ALPN h2 — gRPC servers reset bare TLS probes.
                 pem = await asyncio.to_thread(
-                    ssl.get_server_certificate, (self.host, self.port)
+                    _fetch_server_cert_pem, self.host, self.port
                 )
                 creds = grpc.ssl_channel_credentials(
                     root_certificates=pem.encode()
                 )
-                self._channel = grpc.aio.secure_channel(address, creds)
+                # Self-signed certs carry their own CN, not our address;
+                # pinning makes the name check redundant, so point it at
+                # the pinned cert's subject.
+                options = []
+                cn = _cert_common_name(pem)
+                if cn:
+                    options.append(("grpc.ssl_target_name_override", cn))
+                self._channel = grpc.aio.secure_channel(
+                    address, creds, options=options
+                )
             self._stub = gnmi_pb2_grpc.gNMIStub(self._channel)
             # Liveness + capability check.
             await self._stub.Capabilities(
@@ -435,11 +445,18 @@ class GNMIProtocol:
     async def _get_json(self, path: gnmi_pb2.Path) -> dict:
         if self._stub is None:
             raise ProtocolError("gNMI not connected")
+        # Real SONiC resolves the DB name from the request PREFIX target,
+        # not a path-level target (P8 live finding — path-level targets get
+        # NOT_FOUND). Hoist it.
+        request = gnmi_pb2.GetRequest(encoding=gnmi_pb2.Encoding.JSON_IETF)
+        if path.target:
+            request.prefix.target = path.target
+            request.path.append(gnmi_pb2.Path(elem=path.elem))
+        else:
+            request.path.append(path)
         try:
             response = await self._stub.Get(
-                gnmi_pb2.GetRequest(
-                    path=[path], encoding=gnmi_pb2.Encoding.JSON_IETF
-                ),
+                request,
                 metadata=self._metadata,
                 timeout=self.request_timeout,
             )
@@ -564,6 +581,33 @@ class GNMIProtocol:
 
 
 # -- helpers -------------------------------------------------------------------
+
+
+def _fetch_server_cert_pem(host: str, port: int, timeout: float = 10.0) -> str:
+    """Fetch the server's TLS cert for TOFU pinning, offering ALPN h2."""
+    import socket
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.set_alpn_protocols(["h2"])
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=host) as tls:
+            der = tls.getpeercert(binary_form=True)
+    return ssl.DER_cert_to_PEM_cert(der)
+
+
+def _cert_common_name(pem: str) -> str:
+    """Subject CN of a PEM cert (empty string when unparseable)."""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+
+        cert = x509.load_pem_x509_certificate(pem.encode())
+        attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        return str(attrs[0].value) if attrs else ""
+    except Exception:  # noqa: BLE001 — fall back to strict name check
+        return ""
 
 
 def _updown(value: Optional[str]) -> str:
