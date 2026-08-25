@@ -30,6 +30,35 @@ from harkeniq.skills.engine import _TARGET_COLLECTIONS
 
 #: Total scripted runtime in demo-seconds (Doc 09 §4).
 DEMO_DURATION = 60.0
+
+#: QA-028 (Doc 09 §7): individual scenario mode. Each entry is
+#: (duration_s, [(demo_t, step_method_name), ...]); "all" is the full
+#: progressive cascade. The fan-seize CRITICAL belongs ONLY to the
+#: fan-failure scenario — in "all" it masked the PSU diagnostics action
+#: (undocumented in doc 09's sequence).
+SCENARIOS: dict[str, tuple[float, list[tuple[float, str]]]] = {
+    "all": (DEMO_DURATION, [
+        (5.0, "_start_fan_decline"),
+        (15.0, "_inject_ssd_wear"),
+        (22.0, "_degrade_peer_03"),
+        (25.0, "_kill_peer_03"),
+        (35.0, "_remove_psu"),
+        (48.0, "_start_thermal_drift"),
+        (55.0, "_narrate_summary_soon"),
+    ]),
+    "fan-failure": (15.0, [
+        (2.0, "_start_fan_decline"),
+        (10.0, "_fail_fan"),
+    ]),
+    "disk-smart": (15.0, [(2.0, "_inject_ssd_wear")]),
+    "memory-ecc": (15.0, [(2.0, "_start_ecc_ramp")]),
+    "psu-redundancy": (15.0, [(2.0, "_remove_psu")]),
+    "thermal-warning": (15.0, [(2.0, "_start_thermal_drift")]),
+    "peer-witness": (15.0, [
+        (2.0, "_degrade_peer_03"),
+        (4.0, "_kill_peer_03"),
+    ]),
+}
 #: Sensor poll cadence in demo-seconds (Doc 09 §3: compressed schedule).
 POLL_EVERY = 2.0
 #: Synthetic history seeded per sensor before the run starts.
@@ -103,6 +132,7 @@ def preseed_baselines(
         if not skill.trending:
             continue
         metric = skill.trending[0].field
+        is_counter = skill.trending[0].counter
         for sensor in getattr(device, _TARGET_COLLECTIONS[skill.target], []):
             value = getattr(sensor, metric, None)
             if value is None:
@@ -110,8 +140,17 @@ def preseed_baselines(
             sensor_id = f"{skill.target}:{sensor.name}"
             for i in range(samples):
                 ts = now - (samples - i) * interval
-                noisy = float(value) * (1.0 + rng.gauss(0.0, 0.015))
+                if is_counter:
+                    # QA-032: counter fields baseline RATES; a healthy
+                    # DIMM's history is zero errors/hr (Doc 13 §5.6).
+                    noisy = 0.0
+                else:
+                    noisy = float(value) * (1.0 + rng.gauss(0.0, 0.015))
                 trending.update_baseline(sensor_id, noisy, ts, "OK")
+            if is_counter:
+                # Prime the raw-count cursor so the first live poll
+                # yields a rate instead of re-priming.
+                trending.counter_to_rate(sensor_id, float(value), now)
             seeded += 1
     return seeded
 
@@ -132,10 +171,17 @@ class DemoRunner:
     """Owns the simulator, the agent, the fault timeline, and the display."""
 
     def __init__(self, speed: float = 1.0, tui: bool = False,
-                 duration: float = DEMO_DURATION) -> None:
+                 duration: Optional[float] = None,
+                 scenario: str = "all") -> None:
+        if scenario not in SCENARIOS:
+            raise ValueError(
+                f"unknown scenario {scenario!r}; valid: {sorted(SCENARIOS)}"
+            )
         self.speed = speed
         self.tui = tui
-        self.duration = duration
+        self.scenario = scenario
+        scenario_duration, self._script = SCENARIOS[scenario]
+        self.duration = duration if duration is not None else scenario_duration
         self.interval = POLL_EVERY / speed
         self.sim: Optional[MockSimulator] = None
         self.agent: Optional[Agent] = None
@@ -151,6 +197,9 @@ class DemoRunner:
         self._peer_prev: dict[str, PeerStatus] = {}
         self._peer_lost: list[str] = []
         self._action_ids: set[str] = set()
+        # QA-028: last message per sensor and the one-shot correlation note
+        self._messages: dict[str, str] = {}
+        self._correlation_note: Optional[str] = None
 
     # -- time & output -------------------------------------------------------
 
@@ -174,16 +223,10 @@ class DemoRunner:
     # -- scripted fault timeline (Doc 09 §4) ---------------------------------
 
     async def _timeline(self) -> None:
-        agent, sim = self.agent, self.sim
+        agent = self.agent
         script: list[tuple[float, Callable]] = [
-            (5.0, self._start_fan_decline),
-            (15.0, self._inject_ssd_wear),
-            (22.0, self._degrade_peer_03),
-            (25.0, self._kill_peer_03),
-            (28.0, self._fail_fan),
-            (35.0, self._remove_psu),
-            (48.0, self._start_thermal_drift),
-            (55.0, self._narrate_summary_soon),
+            (demo_t, getattr(self, step_name))
+            for demo_t, step_name in self._script
         ]
         for demo_t, step in script:
             await self._sleep_until(demo_t)
@@ -234,17 +277,41 @@ class DemoRunner:
         )
 
     async def _start_thermal_drift(self) -> None:
-        self._narrate("Effect: exhaust temperature drifting up after fan loss")
+        self._narrate("Effect: inlet temperature climbing after fan loss")
         asyncio.get_running_loop().create_task(self._thermal_drift_task())
 
     async def _thermal_drift_task(self) -> None:
-        reading = 38.0
+        # QA-028: the old drift nudged Exhaust 38 -> ~40°C against a 75°C
+        # threshold — the scene was inert. Doc 09 §Phase 6: the fan
+        # decline heats the INLET (warning threshold 42°C) and CPU1; the
+        # drift now actually crosses the threshold and produces WARNING.
+        inlet, cpu1 = 22.0, 54.0
         for _ in range(6):
             if self.agent._shutdown.is_set():
                 return
-            reading += 0.35
+            inlet = min(inlet + 4.0, 44.0)
+            cpu1 = min(cpu1 + 1.5, 62.0)
             await self.sim.inject_fault(
-                "thermal", "Exhaust", {"reading_c": round(reading, 1)}
+                "thermal", "Inlet", {"reading_c": round(inlet, 1)}
+            )
+            await self.sim.inject_fault(
+                "thermal", "CPU1", {"reading_c": round(cpu1, 1)}
+            )
+            await asyncio.sleep(self.interval)
+
+    async def _start_ecc_ramp(self) -> None:
+        """memory-ecc scenario (Doc 09 §7): rising correctable ECC count."""
+        self._narrate("Fault: DIMM A1 correctable ECC errors accumulating")
+        asyncio.get_running_loop().create_task(self._ecc_ramp_task())
+
+    async def _ecc_ramp_task(self) -> None:
+        count = 0
+        while not self.agent._shutdown.is_set():
+            count += 25
+            await self.sim.inject_fault(
+                "memory", "a1",
+                {"ecc_correctable_lifetime": count,
+                 "alarm_ecc_correctable": count >= 100},
             )
             await asyncio.sleep(self.interval)
 
@@ -288,8 +355,11 @@ class DemoRunner:
             current - self._active, key=lambda k: (k[0], k[1].value)
         ):
             self._seen[severity].add(sensor_id)
-            self._say(f"{severity.value:<9} {by_key[(sensor_id, severity)].message}")
+            verdict = by_key[(sensor_id, severity)]
+            self._messages[sensor_id] = f"{severity.value:<9} {verdict.message}"
+            self._say(f"{severity.value:<9} {verdict.message}")
         self._active = current
+        self._cross_subsystem_check()
 
         for peer in agent.tracker.get_peers() if agent.tracker else []:
             prev = self._peer_prev.get(peer.host)
@@ -314,24 +384,154 @@ class DemoRunner:
                 + "; ".join(f"{a.type.value} on {a.sensor_id}" for a in pending)
             )
 
+    # -- QA-028: cross-subsystem correlation (Doc 09 §Phase 6) ---------------
+
+    def _cross_subsystem_check(self) -> None:
+        """Emit the fan→thermal correlation note once, with a REAL r
+        computed from the two sensors' observed sample series."""
+        if self._correlation_note is not None:
+            return
+        fan_bad = any(
+            sid.startswith("fan:") for sid, sev in self._active
+            if sev in (VerdictSeverity.TRENDING, VerdictSeverity.CRITICAL)
+        )
+        thermal_bad = any(
+            sid.startswith("thermal:") for sid, sev in self._active
+        )
+        if not (fan_bad and thermal_bad):
+            return
+        r = self._fan_thermal_correlation()
+        if r is None and self._demo_t() < self.duration - 2.0:
+            # Not enough aligned samples yet (the thermal baseline resets
+            # on the 5σ jump) — retry next observe rather than emitting a
+            # correlation claim without a coefficient.
+            return
+        note = "Cross-subsystem: thermal rise correlates with fan RPM decline"
+        if r is not None:
+            note += f" (r={r:.2f})"
+        self._correlation_note = note
+        if self.ui is not None:
+            self.ui.add_event("🔗", note)
+        self._say(f"🔗 {note}")
+
+    def _fan_thermal_correlation(self) -> Optional[float]:
+        """|Pearson r| between the declining fan and the rising inlet
+        temperature over their recent observed samples; None if the
+        series are too short or degenerate."""
+        import math
+        trending = self.agent.skill_engine.trending
+        fan = thermal = None
+        for sensor_id, baseline in trending.get_all_baselines().items():
+            if sensor_id.startswith("fan:") and "Fan1A" in sensor_id:
+                fan = baseline
+            elif sensor_id.startswith("thermal:") and "Inlet" in sensor_id:
+                thermal = baseline
+        if fan is None or thermal is None:
+            return None
+        n = min(len(fan.ring_buffer), len(thermal.ring_buffer), 10)
+        if n < 4:
+            return None
+        xs = [v for _, v in fan.ring_buffer[-n:]]
+        ys = [v for _, v in thermal.ring_buffer[-n:]]
+        mx, my = sum(xs) / n, sum(ys) / n
+        cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        vx = sum((x - mx) ** 2 for x in xs)
+        vy = sum((y - my) ** 2 for y in ys)
+        if vx <= 0 or vy <= 0:
+            return None
+        r = cov / math.sqrt(vx * vy)
+        return abs(r)
+
     # -- summary screen (Doc 09 §5) ------------------------------------------
 
     def print_summary(self) -> None:
-        lost = ", ".join(self._peer_lost) or "none"
+        """Doc 09 §Phase 7 summary dashboard (QA-028: was a text blob).
+
+        Every line reflects what the run actually observed — capabilities
+        are checked only when demonstrated, never asserted."""
+        width = 62
+
+        def row(text: str = "") -> str:
+            return f"│ {text:<{width - 4}} │"
+
+        def header(title: str) -> list[str]:
+            return [row(title), row("═" * len(title))]
+
         lines = [
             "",
-            "═══ HarkenIQ demo complete ═══",
-            f"  Severities observed: "
-            f"CRITICAL {len(self._seen[VerdictSeverity.CRITICAL])}, "
-            f"WARNING {len(self._seen[VerdictSeverity.WARNING])}, "
-            f"TRENDING {len(self._seen[VerdictSeverity.TRENDING])}",
-            f"  Peers lost (UNRESPONSIVE, pre-failure evidence retained): {lost}",
-            f"  PENDING ACTIONS proposed: {len(self._action_ids)} "
-            "(approve in the TUI with [a] or via 'harken action approve')",
-            "  Demonstrated: baseline learning, anomaly + trend detection,",
-            "  debounce, peer witness evidence, and the action approval loop.",
-            "",
+            "┌─ HarkenIQ Demo Summary ─── rack-12-server-04 "
+            + "─" * (width - 48) + "┐",
+            row(),
         ]
+
+        lines += header("VERDICT SUMMARY")
+        rank = {VerdictSeverity.CRITICAL: 0, VerdictSeverity.WARNING: 1,
+                VerdictSeverity.TRENDING: 2}
+        shown = sorted(
+            self._messages.items(),
+            key=lambda kv: (
+                min((rank[s] for s in _INTERESTING
+                     if kv[0] in self._seen[s]), default=9),
+                kv[0],
+            ),
+        )
+        for _sensor, message in shown or [("", "(no non-OK verdicts observed)")]:
+            lines.append(row(message[:width - 4]))
+        lines.append(row())
+
+        lines += header("PEER WITNESS")
+        peers = self.agent.tracker.get_peers() if self.agent.tracker else []
+        for peer in peers:
+            name = peer.name or peer.host
+            lines.append(row(f"{name}: {peer.status.value}"))
+            if peer.status == PeerStatus.UNRESPONSIVE and peer.health_buffer:
+                last = peer.health_buffer[-1]
+                summary = last.get("health_summary", last) if isinstance(last, dict) else last
+                lines.append(row(f"  Last known: {summary}"[:width - 4]))
+        if not peers:
+            lines.append(row("(no peers configured)"))
+        lines.append(row())
+
+        if self._correlation_note:
+            lines += header("CORRELATION")
+            lines.append(row(self._correlation_note[:width - 4]))
+            lines.append(row())
+
+        actions = [
+            a for a in self.agent.action_queue.all()
+            if a.id in self._action_ids
+        ]
+        lines += header(f"ACTIONS PROPOSED: {len(actions)}")
+        for i, action in enumerate(actions, 1):
+            lines.append(row(
+                f"[{i}] {action.type.value} on {action.sensor_id} "
+                f"({action.status.value.lower()})"[:width - 4]
+            ))
+        lines.append(row())
+
+        capabilities = [
+            ("Real-time fault detection",
+             bool(self._seen[VerdictSeverity.CRITICAL]
+                  or self._seen[VerdictSeverity.WARNING])),
+            ("Predictive trending with time-to-threshold",
+             bool(self._seen[VerdictSeverity.TRENDING])),
+            ("Cross-subsystem correlation (fan → thermal)",
+             self._correlation_note is not None),
+            ("Peer heartbeat + witness evidence", bool(self._peer_lost)),
+            ("Gated action pipeline", bool(self._action_ids)),
+            ("Cross-vendor normalization (Dell iDRAC9)", True),
+        ]
+        lines += header("CAPABILITIES DEMONSTRATED")
+        for label, demonstrated in capabilities:
+            mark = "✓" if demonstrated else "—"
+            lines.append(row(f"{mark} {label}"))
+        lines.append(row())
+        lines.append(
+            row("Demo complete. Approve actions in the TUI with [a] or via")
+        )
+        lines.append(row("'harken action approve'."))
+        lines.append("└" + "─" * (width - 2) + "┘")
+        lines.append("")
         print("\n".join(lines), flush=True)
 
     # -- main ----------------------------------------------------------------

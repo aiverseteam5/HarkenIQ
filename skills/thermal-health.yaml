@@ -19,6 +19,10 @@ rules:
   - condition: "reading_c >= threshold_warning AND threshold_warning > 0"
     verdict: WARNING
     message: "Sensor {name} at {reading_c}°C — above warning threshold {threshold_warning}°C"
+    action:
+      type: FAN_RESET
+      params:
+        reason: "Rising temperature on {name}: {reading_c}°C"
 
   - condition: "reading_c <= threshold_cold_critical AND threshold_cold_critical != 0"
     verdict: WARNING

@@ -357,7 +357,13 @@ def diagnose(ctx, config_path, bmc_ip, bmc_user, bmc_pass, verbose, json_output)
 @click.option("--speed", default=1.0, show_default=True, type=float,
               help="Time compression factor (10 = 6-second run)")
 @click.option("--plain", is_flag=True, help="Line-mode output instead of the TUI")
-def demo(mock, speed, plain):
+@click.option("--scenario", default="all", show_default=True,
+              type=click.Choice([
+                  "all", "fan-failure", "disk-smart", "memory-ecc",
+                  "psu-redundancy", "thermal-warning", "peer-witness",
+              ]),
+              help="Run a single fault scenario (Doc 09 §7)")
+def demo(mock, speed, plain, scenario):
     """Run the 60-second automated showcase (Doc 09)."""
     import asyncio
     import logging
@@ -375,7 +381,7 @@ def demo(mock, speed, plain):
 
     tui = (not plain) and sys.stdout.isatty()
     try:
-        asyncio.run(DemoRunner(speed=speed, tui=tui).run())
+        asyncio.run(DemoRunner(speed=speed, tui=tui, scenario=scenario).run())
     except KeyboardInterrupt:
         pass
     except HarkenIQError as e:

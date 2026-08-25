@@ -112,8 +112,15 @@ class TrendingEngine:
         value: float,
         timestamp: float,
         current_health: str,
+        degradation_direction: Optional[str] = None,
     ) -> Baseline:
-        """Add a new sample to the sensor's baseline (Doc 13 §2.5)."""
+        """Add a new sample to the sensor's baseline (Doc 13 §2.5).
+
+        ``degradation_direction`` ("rising"/"declining", from the skill's
+        trending rule) enables the Doc 13 §5.2 amendment: a >5σ jump
+        TOWARD failure is degradation to alert on, never a discontinuity
+        to silently re-learn.
+        """
         baseline = self._baselines.get(sensor_id)
         if baseline is None:
             baseline = self._new_baseline(sensor_id, timestamp)
@@ -131,17 +138,32 @@ class TrendingEngine:
         # Sudden discontinuity (Doc 13 §5.2): > 5 sigma jump resets the
         # baseline. Only applies once the baseline is trusted — during
         # learning the running stddev is too unstable to gate on.
+        # R7 amendment (QA-028/R7-P1): a jump in the sensor's degradation
+        # direction is kept — resetting would blind the threshold and
+        # deviation rules exactly when the fault accelerates.
         if (
             baseline.sample_count >= self.min_samples
             and baseline.stddev > 0
             and abs(value - baseline.mean) > 5 * baseline.stddev
         ):
-            z = abs(value - baseline.mean) / baseline.stddev
-            logger.warning(
-                "Baseline reset for %s: value %s deviates %.1f sigma from mean %.1f",
-                sensor_id, value, z, baseline.mean,
+            toward_failure = (
+                degradation_direction == "rising" and value > baseline.mean
+            ) or (
+                degradation_direction == "declining" and value < baseline.mean
             )
-            baseline = self._new_baseline(sensor_id, timestamp)
+            z = abs(value - baseline.mean) / baseline.stddev
+            if toward_failure:
+                logger.warning(
+                    "%s jumped %.1f sigma TOWARD failure (%.1f -> %s); "
+                    "keeping baseline so rules can alert (Doc 13 §5.2 "
+                    "amendment)", sensor_id, z, baseline.mean, value,
+                )
+            else:
+                logger.warning(
+                    "Baseline reset for %s: value %s deviates %.1f sigma "
+                    "from mean %.1f", sensor_id, value, z, baseline.mean,
+                )
+                baseline = self._new_baseline(sensor_id, timestamp)
 
         # Time gap (Doc 13 §5.4): start a new regression segment
         if baseline.ring_buffer:

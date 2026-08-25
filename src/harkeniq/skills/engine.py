@@ -254,7 +254,10 @@ class SkillEngine:
                 )
             if value is not None:
                 self.trending.update_baseline(
-                    sensor_id, float(value), ts_unix, health
+                    sensor_id, float(value), ts_unix, health,
+                    degradation_direction=(
+                        skill.trending[0].direction if skill.trending else None
+                    ),
                 )
         confidence = self.trending.confidence(sensor_id)
 
@@ -366,10 +369,11 @@ class SkillEngine:
             deviation = 0.0  # Doc 13 §5.1: constant baseline => zero deviation
         else:
             deviation = (float(value) - baseline.mean) / baseline.stddev
+        # Rounded: these land verbatim in operator-facing rule messages
         return {
-            "baseline_mean": baseline.mean,
-            "baseline_stddev": baseline.stddev,
-            "deviation": deviation,
+            "baseline_mean": round(baseline.mean, 1),
+            "baseline_stddev": round(baseline.stddev, 2),
+            "deviation": round(deviation, 1),
             "baseline_confidence": confidence,
         }
 
