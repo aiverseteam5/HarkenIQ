@@ -36,6 +36,13 @@ DEFAULT_LIMITS: dict[ActionType, RateLimit] = {
     ActionType.BMC_RESET: RateLimit(max_per_window=1, window_seconds=14400, cooldown_seconds=900),
     ActionType.POWER_CYCLE: RateLimit(max_per_window=1, window_seconds=1800, cooldown_seconds=1800),
     ActionType.POWER_CAP_ADJUST: RateLimit(max_per_window=3, window_seconds=3600, cooldown_seconds=300),
+    # R6 network actions. Per-type limits here; the LAG/switch fault-domain
+    # rule ("never 2 ports of one LAG") lives in
+    # autonomy/network_safety.NetworkActionTracker (domains, not types).
+    ActionType.CLEAR_COUNTERS: RateLimit(max_per_window=999, window_seconds=3600, cooldown_seconds=0),
+    ActionType.INTERFACE_RESET: RateLimit(max_per_window=1, window_seconds=1800, cooldown_seconds=1800),
+    ActionType.INTERFACE_DISABLE: RateLimit(max_per_window=1, window_seconds=1800, cooldown_seconds=1800),
+    ActionType.INTERFACE_ENABLE: RateLimit(max_per_window=3, window_seconds=1800, cooldown_seconds=60),
 }
 
 

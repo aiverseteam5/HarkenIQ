@@ -172,12 +172,156 @@ def _check_firmware_update(
     )
 
 
+# ---------------------------------------------------------------------------
+# R6 network action preconditions (A9 D6; design doc §7 decisions 4, 9, 10)
+# ---------------------------------------------------------------------------
+
+
+def _network_disruptive_common(device: dict, agent: dict) -> list[str]:
+    """Checks shared by INTERFACE_RESET and INTERFACE_DISABLE.
+
+    Fail-closed throughout: a missing input is a failed check, never a
+    waved-through one.
+    """
+    failures = []
+    target = device.get("target_interface")
+    if not target:
+        return ["no target interface specified"]
+    interfaces: dict = device.get("interfaces") or {}
+    iface = interfaces.get(target)
+    if iface is None:
+        return [f"target interface {target!r} not in current device state"]
+
+    # Self-preservation (review 3A): the resolved management-path set.
+    # Key ABSENT = resolution failed = cannot prove safety = refuse.
+    mgmt = agent.get("mgmt_interfaces")
+    if mgmt is None:
+        failures.append(
+            "management path could not be resolved — refusing (fail-closed): "
+            "an action that cannot be proven safe is not safe"
+        )
+    elif target in mgmt or (iface.get("lag_name") or "") in mgmt:
+        failures.append(
+            f"self-preservation: {target} carries this agent's own "
+            "management path to the Site Manager"
+        )
+
+    # Redundant path (review T6). Local leg: another oper-Up member of the
+    # same LAG. Cross-device leg: the SM verifies against the site model at
+    # approval time and stamps sm_redundancy_verified into the approval.
+    lag = iface.get("lag_name")
+    lag_redundant = lag is not None and any(
+        other.get("lag_name") == lag and other.get("oper_state") == "Up"
+        for name, other in interfaces.items() if name != target
+    )
+    if not lag_redundant and not agent.get("sm_redundancy_verified", False):
+        failures.append(
+            "redundant path unverifiable: no oper-Up LAG sibling locally "
+            "and no SM site-model verification in the approval"
+        )
+
+    # T1 quorum corroboration gate (decision 9): >= 2 peers whose evidence
+    # is consistent with the diagnosis. Degraded topology -> propose-only.
+    corroborating = agent.get("corroborating_peers", 0)
+    if corroborating < 2:
+        failures.append(
+            f"T1 quorum: only {corroborating} corroborating peers (need >= 2) "
+            "— propose-only"
+        )
+
+    # Fault-domain blast radius (decision 10): never two ports of one LAG,
+    # one disruptive action per switch domain per window.
+    tracker = agent.get("network_tracker")
+    if tracker is None:
+        failures.append("no fault-domain tracker — refusing (fail-closed)")
+    else:
+        allowed, reason = tracker.allows(target, lag)
+        if not allowed:
+            failures.append(reason)
+    return failures
+
+
+def _check_interface_disable(
+    action_type: ActionType, device: dict, agent: dict
+) -> PreconditionResult:
+    """Disable additionally requires a confident hardware-degradation
+    diagnosis (A9 D6): confidence >= 0.8 AND classification is hardware,
+    never load-correlated congestion (R-M5)."""
+    failures = _network_disruptive_common(device, agent)
+    confidence = device.get("diagnosis_confidence", 0.0)
+    if confidence < 0.8:
+        failures.append(
+            f"diagnosis confidence {confidence:.2f} below 0.8 disable floor"
+        )
+    classification = device.get("diagnosis_classification", "")
+    if classification != "hardware_degradation":
+        failures.append(
+            f"diagnosis classification {classification or 'unknown'!r} is not "
+            "hardware_degradation — congestion is never disabled away (R-M5)"
+        )
+    return PreconditionResult(
+        passed=len(failures) == 0, action_type=action_type,
+        failed_checks=failures,
+    )
+
+
+def _check_interface_reset(
+    action_type: ActionType, device: dict, agent: dict
+) -> PreconditionResult:
+    failures = _network_disruptive_common(device, agent)
+    return PreconditionResult(
+        passed=len(failures) == 0, action_type=action_type,
+        failed_checks=failures,
+    )
+
+
+def _check_interface_enable(
+    action_type: ActionType, device: dict, agent: dict
+) -> PreconditionResult:
+    """Enable is LOW risk only as a restore (review 7A): a recorded
+    HarkenIQ pre-state must exist for the port. An arbitrary enable fails
+    here and travels the HIGH approval path instead — re-energizing a port
+    a human deliberately shut is a real operational landmine."""
+    failures = []
+    target = device.get("target_interface")
+    if not target:
+        failures.append("no target interface specified")
+    elif not device.get("prestate_exists", False):
+        failures.append(
+            f"no recorded HarkenIQ pre-state for {target}: arbitrary enable "
+            "classifies HIGH and requires full approval"
+        )
+    return PreconditionResult(
+        passed=len(failures) == 0, action_type=action_type,
+        failed_checks=failures,
+    )
+
+
+def _check_clear_counters(
+    action_type: ActionType, device: dict, agent: dict
+) -> PreconditionResult:
+    """Counters must be snapshotted pre-clear (A9 D6) and the trending
+    engine notified (design decision 7) — a zeroed counter must never read
+    as recovery."""
+    failures = []
+    if not device.get("counters_snapshot_recorded", False):
+        failures.append("pre-clear counter snapshot not recorded")
+    return PreconditionResult(
+        passed=len(failures) == 0, action_type=action_type,
+        failed_checks=failures,
+    )
+
+
 _PRECONDITION_MAP = {
     ActionType.SEL_CLEAR: _check_sel_clear,
     ActionType.BMC_RESET: _check_bmc_reset,
     ActionType.POWER_CYCLE: _check_power_cycle,
     ActionType.POWER_CAP_ADJUST: _check_power_cap_adjust,
     ActionType.FIRMWARE_UPDATE: _check_firmware_update,
+    ActionType.INTERFACE_DISABLE: _check_interface_disable,
+    ActionType.INTERFACE_RESET: _check_interface_reset,
+    ActionType.INTERFACE_ENABLE: _check_interface_enable,
+    ActionType.CLEAR_COUNTERS: _check_clear_counters,
 }
 
 
@@ -197,4 +341,11 @@ ACTION_RISK = {
     # R4-3: bricked device = permanent loss; highest risk class in the platform
     ActionType.FIRMWARE_UPDATE: "high",
     ActionType.FIRMWARE_ROLLBACK: "high",
+    # R6 network actions (A9 D6). ENABLE is "low" only because its
+    # precondition demands restore semantics (recorded pre-state); an
+    # arbitrary enable fails the precondition and rides the approval path.
+    ActionType.CLEAR_COUNTERS: "low",
+    ActionType.INTERFACE_RESET: "high",
+    ActionType.INTERFACE_DISABLE: "high",
+    ActionType.INTERFACE_ENABLE: "low",
 }

@@ -92,6 +92,12 @@ class ActionType(Enum):
     # R4-3 actions (firmware orchestration; campaign-driven, never skill-proposed)
     FIRMWARE_UPDATE = "FIRMWARE_UPDATE"
     FIRMWARE_ROLLBACK = "FIRMWARE_ROLLBACK"
+    # R6 network actions (A9 D6; high-risk ones gated by T1 quorum + SM +
+    # CC approval, self-preservation, redundant-path, and LAG blast radius)
+    CLEAR_COUNTERS = "CLEAR_COUNTERS"
+    INTERFACE_RESET = "INTERFACE_RESET"
+    INTERFACE_DISABLE = "INTERFACE_DISABLE"
+    INTERFACE_ENABLE = "INTERFACE_ENABLE"
 
 
 class ActionStatus(Enum):
