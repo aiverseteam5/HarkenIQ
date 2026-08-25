@@ -206,11 +206,13 @@ class NormalizedInterface:
     crc_error_rate: Optional[float] = None
     in_octet_rate: Optional[float] = None  # load signal for R-M5 correlation
     out_octet_rate: Optional[float] = None
-    # Raw totals (evidence only; never baselined)
+    # Raw totals (evidence only; never baselined). crc_errors_total feeds
+    # the two-device correlation probe (R3b-2) as receive-side evidence.
     in_errors_total: Optional[int] = None
     out_errors_total: Optional[int] = None
     in_discards_total: Optional[int] = None
     out_discards_total: Optional[int] = None
+    crc_errors_total: Optional[int] = None
     # Stream-derived window features (O(1) accumulators, wall-clock windows;
     # design doc §7 decision 2 / review 9A)
     queue_occupancy_max_pct: Optional[float] = None

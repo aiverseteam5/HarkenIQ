@@ -101,3 +101,21 @@ class CorrelationProbe:
             if isinstance(val, (int, float)) and val > 0:
                 return True
         return False
+
+
+def error_counters_from_interface(iface) -> dict:
+    """Build the probe's receive-side error dict from a NormalizedInterface.
+
+    R6-P4: the probe was designed against stub counters in R3b-2; real gNMI
+    data now feeds it. Fields the platform cannot observe (None) are
+    reported as 0 — absence of evidence, handled by the probe's
+    significance check, never fabricated errors. Only switch↔switch links
+    have both sides in v1 (design doc §7: switch↔server links are
+    probe-blind until servers carry interface data — TODOS.md N1).
+    """
+    return {
+        "crc_errors": iface.crc_errors_total or 0,
+        "fcs_errors": 0,  # not exported by SONiC COUNTERS_DB
+        "interface_resets": 0,  # not exported
+        "rx_errors": iface.in_errors_total or 0,
+    }

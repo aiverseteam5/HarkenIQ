@@ -76,6 +76,7 @@ _TOTAL_FIELDS = {
     "SAI_PORT_STAT_IF_OUT_ERRORS": "out_errors_total",
     "SAI_PORT_STAT_IF_IN_DISCARDS": "in_discards_total",
     "SAI_PORT_STAT_IF_OUT_DISCARDS": "out_discards_total",
+    "SAI_PORT_STAT_ETHER_STATS_CRC_ALIGN_ERRORS": "crc_errors_total",
 }
 
 

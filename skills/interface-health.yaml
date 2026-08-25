@@ -1,0 +1,59 @@
+name: interface-health
+version: 1
+target: interface
+description: >
+  Network port health (R6-P4): hardware degradation vs load-correlated
+  congestion per R-M5. All counter conditions use protocol-derived RATES,
+  never raw totals; fields the platform does not export are None and never
+  trigger a verdict (Doc 07 §3.6).
+
+rules:
+  # Hardware degradation: physical-class errors at LOW load (R-M5 — worse
+  # or independent at low load convicts hardware, exonerates congestion).
+  - condition: "crc_error_rate > 1.0 AND in_octet_rate < 50000000"
+    verdict: CRITICAL
+    message: "Port {name} CRC errors at {crc_error_rate}/s under low load — hardware degradation (optic/cable/port), not congestion"
+
+  # Optic receive power: absolute floors (SFP+ LOS thresholds ~-14dBm).
+  - condition: "optics_rx_power_dbm < -14.0"
+    verdict: CRITICAL
+    message: "Port {name} optic Rx power {optics_rx_power_dbm}dBm below receiver floor — link failure imminent"
+
+  - condition: "optics_rx_power_dbm < -12.0"
+    verdict: WARNING
+    message: "Port {name} optic Rx power {optics_rx_power_dbm}dBm degrading toward receiver floor"
+
+  # Pre-FEC BER: the leading indicator (doc 01 R-M3) — correction hides
+  # rising BER until it exhausts; catch it while the link still looks clean.
+  - condition: "pre_fec_ber > 0.0001"
+    verdict: CRITICAL
+    message: "Port {name} pre-FEC BER {pre_fec_ber} — error correction near exhaustion, abrupt link failure likely"
+
+  - condition: "pre_fec_ber > 0.000001"
+    verdict: WARNING
+    message: "Port {name} pre-FEC BER {pre_fec_ber} rising — leading indicator of link degradation"
+
+  # Congestion: load-correlated by definition (discards WITH high queue
+  # occupancy). Deliberately WARNING-only and action-free — congestion is
+  # a capacity conversation, never an autonomous hardware action.
+  - condition: "in_discard_rate > 100.0 AND queue_occupancy_max_pct > 80.0"
+    verdict: WARNING
+    message: "Port {name} discarding {in_discard_rate}/s with queue at {queue_occupancy_max_pct}% — congestion (load-correlated), not a hardware fault"
+
+  # NOS-reported link health (protocol asserts Critical on admin-up/oper-down).
+  - condition: "health == 'Critical'"
+    verdict: CRITICAL
+    message: "Port {name} link down while administratively up"
+
+trending:
+  - field: optics_rx_power_dbm
+    direction: declining
+    verdict: TRENDING
+    message: "Port {name} optic Rx power declining at {rate}dBm/hr — projected receiver floor in {time_to_threshold}"
+
+  - field: crc_error_rate
+    direction: rising
+    verdict: TRENDING
+    message: "Port {name} CRC error rate rising at {rate}/s per hour — monotonic hardware degradation pattern"
+
+default_verdict: HEALTHY
