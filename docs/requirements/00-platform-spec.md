@@ -323,7 +323,7 @@ here) no later than the start of their owning slice.
 | OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3b-2 — **answered, A3.2**: implemented as CorrelationProbe (both-sides error counters, 4-way fault location) |
 | OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3b-3 — **answered, A4.1**: CredentialProvider interface (Local+Vault+Mock), blue-green rotation |
 | OQ-15 | Application-layer symptom source for cross-layer correlation (Prometheus scrape? logs?) | Platform-Design | R3a (basic: syslog/dmesg hardware-to-OS mapping) / R3b (full: process→service mapping) |
-| OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R2a poll-path (R-S1) minimal / R4 broad |
+| OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R4-1 (IPMI, server BMC — **answered**) / R6 (network devices, scoped by **A9**) |
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
@@ -719,3 +719,29 @@ Seven interfaces/data models introduced in R3a for R3b/R4 extension without rede
 | LearningFeedbackTracker | CC `learning_feedback.py` | R-C1 complete loop tracking |
 | CCOutcomeHistory | CC `db/models.py` | Outcome persistence for learning |
 | CCFleetPattern | CC `db/models.py` | Detected patterns persistence |
+
+### A5–A8 — 2026-08-24 — recorded in `docs/designs/r4-architecture-amendment.md`
+
+A5 (R4-0 platform validation), A6 (R4-2 shipped), A7 (R4-3 shipped), and A8
+(R5-2 scope + Network Intelligence deferral) were recorded in the R4
+architecture amendment document rather than here; that document is part of the
+amendment record.
+
+### A9 — 2026-08-25 — R6 Network Intelligence scope (decided: Vinod)
+
+1. OQ-16 remainder becomes slice **R6 — Network Intelligence**: full
+   Observe→Reason→Act→Verify for network switches.
+2. Anchor device: community SONiC (container). Protocols: gNMI (primary,
+   streaming telemetry per R-M3) + NETCONF (config ops), both behind
+   DeviceProtocol. NETCONF is simulator-validated only until a real
+   NETCONF-capable device is available — explicit open gate.
+3. Placement: N0 on-switch from day one (SONiC app container, constrained
+   profile per A2.5); off-box operation is the inherent fallback.
+4. Actions: LED locate, counter clear (low risk); interface reset and
+   interface disable (high risk, T1 quorum + SM + CC approval, redundant-path
+   preconditions, self-preservation invariant: never sever own management
+   path or last redundant uplink).
+5. Deliverables: NetworkDevice model, GNMIProtocol, NETCONFProtocol, switch
+   simulator with fault injection, N0 packaging, port baselines + probe
+   integration, SM/CC network surfaces. Exit gate per design doc
+   `docs/designs/network-intelligence-milestone.md` §4.
