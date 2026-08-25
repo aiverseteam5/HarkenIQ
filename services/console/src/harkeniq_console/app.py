@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+# Request/Response at MODULE level: `from __future__ import annotations`
+# turns handler annotations into strings, and FastAPI resolves them against
+# module globals — a function-local Request import made the proxy handlers
+# grow a required `request` QUERY param (QA-029 live finding).
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 
 from harkeniq_console.api import admin as admin_api
 from harkeniq_console.api import audit as audit_api
@@ -85,16 +90,17 @@ def create_app(state) -> FastAPI:
     )
     if state.config.cc_url:
         import httpx
-        from fastapi import Request
-        from fastapi.responses import Response
 
         cc_base = state.config.cc_url.rstrip("/")
         cc_client = httpx.AsyncClient(base_url=cc_base, timeout=30.0)
 
         async def _proxy_cc(request: Request, rest: str, prefix: str) -> Response:
+            # rest="" targets the collection root: CC's canonical form is
+            # the trailing slash (returning its 307 verbatim would send
+            # the browser into a redirect loop between the two origins).
             upstream = await cc_client.request(
                 request.method,
-                f"/api/{prefix}/{rest}" if rest else f"/api/{prefix}",
+                f"/api/{prefix}/{rest}" if rest else f"/api/{prefix}/",
                 params=request.query_params,
                 content=await request.body(),
                 headers={

@@ -53,13 +53,15 @@ async def register_site(
     """
     repo = SiteRepo(session)
     existing = await repo.get_by_name(user.tenant_id, body.site_name)
-    if existing is not None:
+    if existing is not None and existing.sm_token:
         raise HTTPException(
             status_code=409,
             detail=f"site '{body.site_name}' already registered",
         )
-
-    site = await repo.upsert(
+    # QA-037: an existing row WITHOUT a token is a half-registration (the
+    # RegisterSite RPC failed after the row was created) — re-running the
+    # registration must heal it, not 409 forever.
+    site = existing or await repo.upsert(
         tenant_id=user.tenant_id,
         site_name=body.site_name,
         sm_endpoint=body.sm_endpoint,

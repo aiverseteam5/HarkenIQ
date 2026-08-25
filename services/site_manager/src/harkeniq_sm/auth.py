@@ -19,6 +19,15 @@ def token_matches(provided: str, expected: str) -> bool:
     return hmac.compare_digest(provided.encode(), expected.encode())
 
 
+#: The one bootstrap RPC that cannot yet hold the site token: CC calls it
+#: to OBTAIN the token. It authenticates via license fingerprint inside
+#: the handler instead (spec §3: the license binds the pair at deploy).
+#: QA-037: requiring the token here made site registration impossible —
+#: a chicken-and-egg that shipped because no test drove CC->SM over the
+#: real wire.
+_BOOTSTRAP_METHODS = ("/harkeniq.v1.SiteManagerService/RegisterSite",)
+
+
 class BearerTokenInterceptor(grpc.aio.ServerInterceptor):
     """Rejects any RPC without ``authorization: Bearer <site_token>``."""
 
@@ -31,6 +40,8 @@ class BearerTokenInterceptor(grpc.aio.ServerInterceptor):
         self._reject = grpc.unary_unary_rpc_method_handler(abort)
 
     async def intercept_service(self, continuation, handler_call_details):
+        if handler_call_details.method in _BOOTSTRAP_METHODS:
+            return await continuation(handler_call_details)
         metadata = dict(handler_call_details.invocation_metadata or ())
         provided = metadata.get("authorization", "")
         if hmac.compare_digest(provided.encode(), self._expected.encode()):

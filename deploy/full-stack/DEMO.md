@@ -48,7 +48,7 @@ Open **http://localhost:8080** → token `dev-token-sm`.
 ## 3. A fault happens
 
 ```bash
-curl -sk -X POST https://localhost:9000/test/inject \
+curl -sk -X POST https://localhost:9000/test/inject-fault \
   -H 'Content-Type: application/json' \
   -d '{"fault_type":"fan","target":"Fan1A","params":{"health":"Critical","speed_rpm":0}}'
 ```

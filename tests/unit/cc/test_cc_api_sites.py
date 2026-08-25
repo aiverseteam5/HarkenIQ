@@ -90,7 +90,12 @@ class TestSiteRegistration:
 
     @patch("harkeniq_cc.api.sites.SMClient")
     async def test_register_duplicate(self, mock_sm_cls, client):
-        c, _ = client
+        # QA-037: only a FULLY registered site (token held) is a duplicate.
+        c, sessionmaker = client
+        async with sessionmaker() as session:
+            site = await SiteRepo(session).get_by_name(TENANT, "dc-blr-1")
+            site.sm_token = "already-registered"
+            await session.commit()
         r = await c.post(
             "/api/sites/register",
             json={
@@ -99,6 +104,31 @@ class TestSiteRegistration:
             },
         )
         assert r.status_code == 409
+
+    @patch("harkeniq_cc.api.sites.SMClient")
+    async def test_register_heals_half_registration(self, mock_sm_cls, client):
+        # QA-037: a row created while the RegisterSite RPC failed (no
+        # sm_token) must be healable by re-running registration — it 409'd
+        # forever before, making the seed script unable to recover.
+        mock_instance = AsyncMock()
+        mock_instance.register_site.return_value = {
+            "accepted": True, "site_token": "tok-healed", "reason": "",
+        }
+        mock_sm_cls.return_value = mock_instance
+
+        c, sessionmaker = client
+        r = await c.post(
+            "/api/sites/register",
+            json={
+                "site_name": "dc-blr-1",
+                "sm_endpoint": "https://sm.lab:50051",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["sm_registration"]["accepted"] is True
+        async with sessionmaker() as session:
+            site = await SiteRepo(session).get_by_name(TENANT, "dc-blr-1")
+            assert site.sm_token == "tok-healed"
 
 
 class TestSiteList:

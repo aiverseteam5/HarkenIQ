@@ -42,6 +42,6 @@ echo "  Site Manager (L2): http://localhost:8080  token: dev-token-sm"
 echo "  Keycloak:          $KEYCLOAK (admin/admin)"
 echo
 echo "Inject a fault to light up the pipeline:"
-echo "  curl -sk -X POST https://localhost:9000/test/inject \\"
+echo "  curl -sk -X POST https://localhost:9000/test/inject-fault \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"fault_type\":\"fan\",\"target\":\"Fan1A\",\"params\":{\"health\":\"Critical\",\"speed_rpm\":0}}'"

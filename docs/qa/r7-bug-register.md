@@ -17,14 +17,14 @@ this campaign's live testing.
 | QA-004 | Deploy | BLOCKER | Host-port collisions: postgres publishes 5432 (dies on hosts with local postgres — verified); `network-sim` profile double-binds 50051 | FIXED@pending — postgres host publish removed (opt-in comment); switch-sim on host 50052 |
 | QA-005 | Console+CC backend | BLOCKER | No real auth: secure mode raises HTTP 501; insecure mode grants `platform_super_admin` to every caller | FIXED@pending — real JWKS validation (harkeniq/security/oidc.py) in Console (dual-realm) + CC (single-realm; configure_auth finally CALLED); compose runs INSECURE=false; verified live: real Keycloak token accepted at both, no/garbage token 401; 11 unit tests |
 | QA-006 | SM UI/API | BLOCKER | Approver identity self-asserted (free-text input → `decided_by`); audit proves nothing | OPEN |
-| QA-007 | Agent CLI | BLOCKER | `harken diagnose` crashes (TypeError: `_TARGET_COLLECTIONS` values called as functions; wrong `engine.evaluate` signature); no Nagios exit codes; zero test coverage | OPEN |
-| QA-008 | Agent demo | BLOCKER | Trending slope uses wall-clock hours under compressed demo time → `-5,402,706 RPM/hr … 0 hours`; "46 hours before failure" unproducible | OPEN |
-| QA-009 | SM UI | BLOCKER | LLM explanation computed/stored/served but rendered by no UI (Incident TS type lacks `explanation`) | OPEN |
+| QA-007 | Agent CLI | BLOCKER | `harken diagnose` crashes (TypeError: `_TARGET_COLLECTIONS` values called as functions; wrong `engine.evaluate` signature); no Nagios exit codes; zero test coverage | FIXED@82308a2 — 4 crashes fixed, Nagios exit codes 0/1/2/3, one-shot debounce + honest confidence; 5 e2e subprocess tests |
+| QA-008 | Agent demo | BLOCKER | Trending slope uses wall-clock hours under compressed demo time → `-5,402,706 RPM/hr … 0 hours`; "46 hours before failure" unproducible | FIXED@0bfdac3 — narrative clock (1 poll = 1 narrative hour) via SkillEngine time_fn; live output now `-170.6 RPM/hr ... in 44 hours`; doc-09 -200 RPM rate + 90d guardrail restored |
+| QA-009 | SM UI | BLOCKER | LLM explanation computed/stored/served but rendered by no UI (Incident TS type lacks `explanation`) | FIXED@074d851 — DIAGNOSIS panel (summary/confidence/action/reasoning) on parent + child incidents; SM UI build green |
 | QA-010 | Deploy | MAJOR | No restart policies on any service; CC/Console healthz hardcoded ok (no DB probe); depends_on = service_started only | FIXED@pending — restart policies everywhere; CC/Console healthz now probe the DB (503 when degraded); service_healthy deps; two stale runtime tests updated |
 | QA-011 | Deploy | MAJOR | No .dockerignore: 374MB contexts; host node_modules overwrite image installs (darwin-on-linux breakage) | FIXED@pending — root .dockerignore (contexts ~374MB -> small; node_modules overwrite eliminated) |
 | QA-012 | Deploy | MAJOR | Agent identity/baselines unpersisted in compose (re-enrolls each restart) | FIXED@pending — named volumes for agent + network-agent /var/lib/harkeniq |
 | QA-013 | Deploy | MAJOR | Compose omits Console↔CC linkage env (tenant id, console URL/API key) — marketplace sync + usage reporting silently disabled | FIXED@pending — CC tenant/console/keycloak env linkage restored in compose |
-| QA-014 | Docs | BLOCKER | No README/quickstart/DEMO runbook/seed data (README = 22 bytes UTF-16) | OPEN |
+| QA-014 | Docs | BLOCKER | No README/quickstart/DEMO runbook/seed data (README = 22 bytes UTF-16) | FIXED@2054b57+ — README, DEMO.md runbook, seed-demo.sh; ALL runbook steps executed live this session (inject path corrected to /test/inject-fault) |
 | QA-015 | Security | MAJOR | Checked-in creds: Keycloak admin/admin (temporary:false), postgres harkeniq/harkeniq, SM token dev-token-sm | OPEN |
 | QA-016 | Agent | MAJOR | Peer HMAC secret defaults ""; empty accepted → forgeable heartbeats | OPEN |
 | QA-017 | Agent | MAJOR | Agent silently downgrades to plaintext when tls:true but tls_ca empty | OPEN |
@@ -39,13 +39,16 @@ this campaign's live testing.
 | QA-026 | Services | MAJOR | Structured JSON logging + request-id middleware imported only by tests; all services use basicConfig text | OPEN |
 | QA-027 | Demo/fixtures | MAJOR | Fixtures diverge from doc 09/11: 4 fans vs 8, 1 disk vs 4 (drive_1..3 routes 404), CPU2 sensor absent | OPEN |
 | QA-028 | Demo | MAJOR | Doc 09 scenes missing: cross-subsystem correlation, thermal scene inert (Exhaust +2°C vs 75°C threshold), summary dashboard is text blob, `--scenario` absent, PSU action masked by undocumented fan-seize | OPEN |
-| QA-029 | Console UI | MAJOR | SPA splits /api across two backends (CC 8090 + Console 8100) with no reverse proxy — half the screens 404 in every shipped config; L3/L4 boundary blurred | OPEN |
+| QA-029 | Console UI | MAJOR | SPA splits /api across two backends (CC 8090 + Console 8100) with no reverse proxy — half the screens 404 in every shipped config; L3/L4 boundary blurred | FIXED@pending — Console proxies 10 CC prefixes w/ bearer forwarding (verified live: /api/fleet/ + /api/fleet/summary through Console origin); two live sub-bugs fixed: PEP-563 string annotation made `request` a query param; collection-root 307 loop between origins |
 | QA-030 | CI | MAJOR | CI never builds containers or UI; coverage gate not enforced; no compose-boot gate | OPEN |
 | QA-031 | Agent | MINOR | Playbook executions in-memory only (crash loses resume state) | OPEN |
 | QA-032 | Agent | MINOR | ECC counters baselined as raw values not rates (doc 13 §5.6) | OPEN |
 | QA-033 | SM/CC | MAJOR | Knowledge distribution: proto field `learned_patterns_json` doesn't exist; distributor/feedback outside every loop; SM PushPolicy is log-and-ack stub | OPEN |
 | QA-034 | Agent | MAJOR | Credential rotation stub (`return True` x4); credential validation (R-CV1-5) absent | OPEN |
 
+| QA-036 | Console UI/CC | MAJOR | SPA called /api/groups + /api/autonomy (bare) which exist nowhere; CC lacked group detail + member add/remove routes the UI always called | FIXED@pending — 13 SPA call sites rewritten to /api/policies/...; CC gained GET /groups/{id}, POST/DELETE members (audited, 3 tests) |
+| QA-037 | SM/CC | BLOCKER | RegisterSite chicken-and-egg: SM token interceptor required the site token on the very RPC that ISSUES it — CC could never register a site; also CC 409'd forever on half-registrations; found LIVE (fleet poll UNAUTHENTICATED) | FIXED@pending — interceptor exempts /harkeniq.v1.SiteManagerService/RegisterSite (fingerprint is the bootstrap credential, HARKEN_SM_LICENSE_FINGERPRINT enforced when set); CC heals token-less sites; 3 over-the-wire tests (direct-call suites could never catch an interceptor bug) |
+| QA-038 | Tests | MINOR | test_directives bound the real 50051 (unrunnable beside a dev stack) | FIXED@pending — grpc_port=0 |
 | QA-035 | Console | MAJOR | `/api/internal` endpoints have NO auth (docstring: "No auth (internal network)") despite R5-2 ledger claiming a CC->Console credential pair | OPEN |
 
 (Statuses updated in place as the campaign proceeds; new live findings appended.)
@@ -56,3 +59,4 @@ this campaign's live testing.
 |---|---|---|
 | 2026-08-25 | Baseline | Full suite 2157 collected / 2155 pass, 2 expected skips; e2e 17/17; `harken demo` exit 0 |
 | 2026-08-25 | Boot+Auth | FIRST fully healthy fresh boot: 7/7 services healthy; agent registered+OBSERVING at SM; CC+Console in SECURE mode accept a real Keycloak token (password grant, platform admin), reject absent/garbage tokens with 401 |
+| 2026-08-25 | Demo flow | FULL RUNBOOK EXECUTED LIVE: seed (tenant+site, token healed) -> CC fleet shows agent w/ device_class -> Console proxy serves CC data -> fault injected -> agent CRITICAL verdict -> SM incident (confidence 1.0) -> COLLECT_DIAGNOSTICS proposed -> approved via API |

@@ -43,6 +43,10 @@ class SMConfig:
     grpc_host: str = "0.0.0.0"
     grpc_port: int = 50051
     site_token: str = ""
+    # QA-037: expected license fingerprint for the RegisterSite bootstrap
+    # (the one RPC that runs before CC holds the site token). Empty = any
+    # non-empty fingerprint accepted (lab).
+    license_fingerprint: str = ""
     tls_cert: str = ""
     tls_key: str = ""
     insecure: bool = False  # plaintext gRPC; unit tests / lab only
@@ -94,6 +98,7 @@ _ENV_MAP = {
     "HARKEN_SM_GRPC_HOST": "grpc_host",
     "HARKEN_SM_GRPC_PORT": "grpc_port",
     "HARKEN_SM_SITE_TOKEN": "site_token",
+    "HARKEN_SM_LICENSE_FINGERPRINT": "license_fingerprint",
     "HARKEN_SM_TLS_CERT": "tls_cert",
     "HARKEN_SM_TLS_KEY": "tls_key",
     "HARKEN_SM_INSECURE": "insecure",

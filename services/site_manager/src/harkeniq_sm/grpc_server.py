@@ -258,6 +258,19 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 accepted=False,
                 reason="license_key_fingerprint is required",
             )
+        # QA-037: this is the bootstrap RPC (exempt from the token
+        # interceptor); the fingerprint is its credential. When the SM is
+        # deployed with an expected fingerprint, it must match.
+        expected = getattr(self.config, "license_fingerprint", "")
+        if expected and request.license_key_fingerprint != expected:
+            logger.warning(
+                "RegisterSite rejected: fingerprint mismatch from cc=%s",
+                request.cc_endpoint,
+            )
+            return harkeniq_pb2.SiteRegistrationAck(
+                accepted=False,
+                reason="license fingerprint mismatch",
+            )
         logger.info(
             "Site registration from CC: tenant=%s site=%s name=%s cc=%s",
             request.tenant_id, request.site_id, request.site_name,
