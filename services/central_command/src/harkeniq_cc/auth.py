@@ -1,4 +1,14 @@
-"""Keycloak JWT validation and FastAPI auth dependencies."""
+"""Keycloak JWT validation and FastAPI auth dependencies (QA-005: real).
+
+Secure mode validates RS256 tokens against the configured realm's JWKS via
+``harkeniq.security.oidc`` (the pre-QA build raised HTTP 501 here, and
+``configure_auth`` was never called by anything). Insecure mode keeps the
+lab context — the only bypass, and it must be set explicitly.
+
+CC is single-tenant (one CC per tenant, spec §3): it accepts tokens from
+exactly one realm — the platform realm for vendor operators, or the
+tenant's own realm — set by ``HARKEN_CC_KEYCLOAK_REALM``.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +18,26 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
+from harkeniq.security.oidc import (
+    KeycloakTokenValidator,
+    TokenValidationError,
+    pick_role,
+)
+
 logger = logging.getLogger("harkeniq.cc.auth")
+
+#: Roles CC recognizes, highest privilege first (spec §4 subset relevant
+#: to L3 surfaces).
+_RANKED_ROLES = [
+    "platform_super_admin",
+    "tenant_owner",
+    "site_admin",
+    "operator",
+    "auditor",
+    "viewer",
+]
+#: Roles allowed to mutate (approve/deny, policies); everything else views.
+_ADMIN_ROLES = {"platform_super_admin", "tenant_owner", "site_admin"}
 
 
 @dataclass
@@ -21,40 +50,32 @@ class UserContext:
     is_platform_user: bool = False
 
 
-class KeycloakAuth:
-    """Validate JWTs against a Keycloak realm's JWKS endpoint."""
-
-    def __init__(self, keycloak_url: str, realm: str, client_id: str) -> None:
-        self.keycloak_url = keycloak_url.rstrip("/")
-        self.realm = realm
-        self.client_id = client_id
-        self._jwks_cache: Optional[dict] = None
-
-    async def verify_token(self, token: str) -> dict:
-        """Validate JWT against Keycloak JWKS endpoint, cache JWKS.
-
-        Returns the decoded token claims. Full implementation pending
-        Keycloak integration in R2b Phase 2.
-        """
-        # TODO: fetch JWKS from
-        # {keycloak_url}/realms/{realm}/protocol/openid-connect/certs
-        # and validate using python-jose. Stub raises until Keycloak is wired.
-        raise NotImplementedError(
-            "Keycloak JWT validation not yet implemented; use insecure mode for lab"
-        )
-
-
-# Module-level auth instance; set by app startup.
-_auth: Optional[KeycloakAuth] = None
+# Module-level auth state; set by configure_auth at app startup.
+_validator: Optional[KeycloakTokenValidator] = None
 _insecure: bool = False
+_realm: str = ""
 
 
-def configure_auth(keycloak_url: str, realm: str, client_id: str, insecure: bool = False) -> None:
+def configure_auth(
+    keycloak_url: str,
+    realm: str,
+    client_id: str,
+    insecure: bool = False,
+    keycloak_public_url: str = "",
+) -> None:
     """Called once at app startup to configure auth."""
-    global _auth, _insecure  # noqa: PLW0603
+    global _validator, _insecure, _realm  # noqa: PLW0603
     _insecure = insecure
-    if not insecure:
-        _auth = KeycloakAuth(keycloak_url, realm, client_id)
+    _realm = realm
+    if insecure:
+        _validator = None
+        return
+    _validator = KeycloakTokenValidator(
+        internal_base_url=keycloak_url,
+        public_base_url=keycloak_public_url or keycloak_url,
+        client_id=client_id,
+        realm_allowed=lambda r: r == realm,
+    )
 
 
 async def get_current_user(request: Request) -> UserContext:
@@ -74,24 +95,25 @@ async def get_current_user(request: Request) -> UserContext:
         raise HTTPException(status_code=401, detail="missing Bearer token")
 
     token = auth_header[7:]
-    if _auth is None:
+    if _validator is None:
+        # configure_auth was never called — fail closed, loudly.
         raise HTTPException(status_code=500, detail="auth not configured")
 
     try:
-        claims = await _auth.verify_token(token)
-    except NotImplementedError:
-        raise HTTPException(
-            status_code=501, detail="Keycloak auth not yet implemented"
-        )
+        validated = await _validator.validate(token)
+    except TokenValidationError as e:
+        logger.info("token rejected: %s", e)
+        raise HTTPException(status_code=401, detail="invalid token")
     except Exception:
-        logger.exception("JWT validation failed")
+        logger.exception("token validation errored")
         raise HTTPException(status_code=401, detail="invalid token")
 
+    role = pick_role(validated.roles, _RANKED_ROLES, default="viewer")
     return UserContext(
-        user_id=claims.get("sub", ""),
-        email=claims.get("email", ""),
-        tenant_id=claims.get("tenant_id", ""),
-        role=claims.get("realm_access", {}).get("roles", ["viewer"])[0],
-        permissions=claims.get("permissions", []),
-        is_platform_user=claims.get("is_platform_user", False),
+        user_id=validated.subject,
+        email=validated.email,
+        tenant_id=request.app.state.cc.config.tenant_id,
+        role=role,
+        permissions=["*"] if role in _ADMIN_ROLES else ["view"],
+        is_platform_user=role == "platform_super_admin",
     )

@@ -1,4 +1,4 @@
-# HarkenIQ Full-Stack Development Deployment (R4-0)
+# HarkenIQ Full-Stack Deployment
 #
 # Starts all four layers: Agent + Site Manager + Central Command + Console
 # plus backing services (PostgreSQL/TimescaleDB, Keycloak).
@@ -8,20 +8,25 @@
 #   docker compose logs -f
 #   docker compose down -v   # remove volumes too
 #
-# Prerequisites:
-#   scripts/gen_dev_certs.sh   # generates TLS certs for SM gRPC
+# QA'd 2026-08-25 (r7-demo-hardening): schema migrations run in the CC and
+# Console entrypoints; the agent is part of the default stack; every
+# long-running service restarts and has a real healthcheck; postgres is not
+# published to the host (uncomment its ports block for psql debugging).
 
 services:
   # -- Backing Services ---------------------------------------------------
 
   postgres:
     image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: harkeniq
       POSTGRES_PASSWORD: harkeniq
       POSTGRES_DB: harkeniq
-    ports:
-      - "5432:5432"
+    # QA-004: not published to the host — any machine with a local postgres
+    # (very common) failed to boot the stack on the 5432 collision.
+    # ports:
+    #   - "15432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -33,6 +38,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
+    restart: unless-stopped
     command: start-dev --import-realm
     environment:
       KC_DB: postgres
@@ -41,10 +47,21 @@ services:
       KC_DB_PASSWORD: harkeniq
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      # Stable issuer: tokens minted for the browser (localhost:8180) must
+      # carry the same iss the backends validate (QA-005).
+      KC_HOSTNAME: http://localhost:8180
     ports:
       - "8180:8080"
     volumes:
       - ../r2b/keycloak-realm-platform.json:/opt/keycloak/data/import/harkeniq-realm.json:ro
+    healthcheck:
+      # Health lives on the management port (9000) when KC_HEALTH_ENABLED;
+      # the image has no curl, bash /dev/tcp works.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.0\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,6 +78,7 @@ services:
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server
     profiles: ["airgap-llm"]
+    restart: unless-stopped
     command: >
       -m /models/model.gguf --host 0.0.0.0 --port 8080
       --ctx-size 4096 --threads 4
@@ -80,6 +98,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/site_manager/Dockerfile
+    restart: unless-stopped
     environment:
       HARKEN_SM_SITE_NAME: site-1
       HARKEN_SM_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_sm
@@ -100,6 +119,11 @@ services:
     ports:
       - "8080:8080"
       - "50051:50051"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8080/healthz', timeout=4); sys.exit(0 if r.status==200 else 1)\""]
+      interval: 10s
+      timeout: 6s
+      retries: 12
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,18 +134,34 @@ services:
     build:
       context: ../..
       dockerfile: deploy/r2b/Dockerfile.cc
+    restart: unless-stopped
     environment:
       HARKEN_CC_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_cc
       HARKEN_CC_HTTP_PORT: "8090"
-      HARKEN_CC_INSECURE: "true"
+      HARKEN_CC_INSECURE: "false"
       HARKEN_CC_SITE_POLL_INTERVAL_S: "30"
+      # QA-013: Console linkage (marketplace sync + usage reporting were
+      # silently disabled without these).
+      HARKEN_CC_TENANT_ID: tenant-demo
+      HARKEN_CC_CONSOLE_URL: http://console:8100
+      HARKEN_CC_CONSOLE_API_KEY: demo-console-cc-key
+      HARKEN_CC_KEYCLOAK_URL: http://keycloak:8080
+      HARKEN_CC_KEYCLOAK_REALM: harkeniq-platform
+      # The SPA is one OIDC client; CC validates the same tokens (QA-005).
+      HARKEN_CC_KEYCLOAK_CLIENT_ID: harkeniq-console
+      HARKEN_CC_KEYCLOAK_PUBLIC_URL: http://localhost:8180
     ports:
       - "8090:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8090/healthz', timeout=4); sys.exit(0 if r.status==200 else 1)\""]
+      interval: 10s
+      timeout: 6s
+      retries: 12
     depends_on:
       postgres:
         condition: service_healthy
       site-manager:
-        condition: service_started
+        condition: service_healthy
 
   # -- Console (L4) -------------------------------------------------------
 
@@ -129,21 +169,29 @@ services:
     build:
       context: ../..
       dockerfile: deploy/r2b/Dockerfile.console
+    restart: unless-stopped
     environment:
       HARKEN_CONSOLE_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_console
       HARKEN_CONSOLE_HTTP_PORT: "8100"
       HARKEN_CONSOLE_KEYCLOAK_URL: http://keycloak:8080
+      # Browser-facing issuer base (tokens carry this iss — QA-005):
+      HARKEN_CONSOLE_KEYCLOAK_PUBLIC_URL: http://localhost:8180
       HARKEN_CONSOLE_KEYCLOAK_ADMIN_USER: admin
       HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD: admin
       HARKEN_CONSOLE_PLATFORM_REALM: harkeniq-platform
-      HARKEN_CONSOLE_INSECURE: "true"
+      HARKEN_CONSOLE_INSECURE: "false"
     ports:
       - "8100:8100"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8100/healthz', timeout=4); sys.exit(0 if r.status==200 else 1)\""]
+      interval: 10s
+      timeout: 6s
+      retries: 12
     depends_on:
       postgres:
         condition: service_healthy
       keycloak:
-        condition: service_started
+        condition: service_healthy
 
   # -- Mock Simulator (test device) ----------------------------------------
 
@@ -151,30 +199,45 @@ services:
     build:
       context: ../..
       dockerfile: deploy/full-stack/Dockerfile.simulator
+    restart: unless-stopped
     ports:
       - "9000:9000"
+    healthcheck:
+      # Redfish serves TLS with a self-signed cert; a TCP connect proves
+      # the listener is up without fighting the certificate.
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('localhost', 9000), timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   # -- Agent (L1) ----------------------------------------------------------
-  # Uncomment to run an agent connected to the mock simulator and SM.
-  # For development, running the agent on the host is usually easier.
-  #
-  # agent:
-  #   build:
-  #     context: ../..
-  #     dockerfile: deploy/full-stack/Dockerfile.agent
-  #   environment:
-  #     HARKENIQ_BMC_HOST: http://mock-simulator:9000
-  #     # HARKENIQ_BMC_PROTOCOL: ipmi   # R4-1: redfish (default) | ipmi (RMCP+ UDP 623)
-  #     HARKENIQ_BMC_USERNAME: admin
-  #     HARKENIQ_BMC_PASSWORD: password
-  #     HARKENIQ_SITE_MANAGER_HOST: site-manager
-  #     HARKENIQ_SITE_MANAGER_PORT: "50051"
-  #     HARKENIQ_SITE_MANAGER_TOKEN: dev-token-sm
-  #   depends_on:
-  #     site-manager:
-  #       condition: service_started
-  #     mock-simulator:
-  #       condition: service_started
+  # QA-003: part of the default stack (a platform demo with no agent shows
+  # an empty fleet). Identity + baselines persist across restarts on a
+  # named volume (QA-012).
+
+  agent:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.agent
+    restart: unless-stopped
+    environment:
+      HARKENIQ_BMC_HOST: https://mock-simulator:9000
+      HARKENIQ_BMC_USERNAME: admin
+      HARKENIQ_BMC_PASSWORD: password
+      HARKENIQ_SITE_MANAGER_HOST: site-manager
+      HARKENIQ_SITE_MANAGER_PORT: "50051"
+      HARKENIQ_SITE_MANAGER_TOKEN: dev-token-sm
+      # SM runs HARKEN_SM_INSECURE in this stack; without this the agent's
+      # config validation exits 3 requiring a tls_ca (QA-003).
+      HARKENIQ_SITE_MANAGER_TLS: "false"
+      HARKENIQ_POLLING_SENSOR_INTERVAL: "15"
+    volumes:
+      - agentdata:/var/lib/harkeniq
+    depends_on:
+      site-manager:
+        condition: service_healthy
+      mock-simulator:
+        condition: service_healthy
 
   # ---------------------------------------------------------------------
   # R6-P8: network simulation profile.
@@ -190,25 +253,41 @@ services:
       context: ../..
       dockerfile: deploy/full-stack/Dockerfile.agent
     profiles: ["network-sim"]
+    restart: unless-stopped
     command: ["harken", "mock", "switch", "--ports", "8",
               "--port", "50051", "--host", "0.0.0.0", "--writable"]
     ports:
-      - "50051:50051"
+      # QA-004: host 50051 belongs to the SM; the sim publishes on 50052.
+      - "50052:50051"
 
   network-agent:
     build:
       context: ../..
       dockerfile: deploy/full-stack/Dockerfile.agent
     profiles: ["network-sim"]
+    restart: unless-stopped
     depends_on:
-      - switch-sim
+      switch-sim:
+        condition: service_started
+      site-manager:
+        condition: service_healthy
     environment:
       HARKENIQ_BMC_HOST: switch-sim
       HARKENIQ_BMC_PORT: "50051"
       HARKENIQ_BMC_PROTOCOL: gnmi
       HARKENIQ_BMC_PLAINTEXT: "true"
+      # QA (audit F6): report to the SM — previously this agent polled the
+      # switch and dropped every verdict on the floor.
+      HARKENIQ_SITE_MANAGER_HOST: site-manager
+      HARKENIQ_SITE_MANAGER_PORT: "50051"
+      HARKENIQ_SITE_MANAGER_TOKEN: dev-token-sm
+      HARKENIQ_SITE_MANAGER_TLS: "false"
       # D12: network devices run the standard profile (100MB hard).
       HARKENIQ_RESOURCES_PROFILE: standard
+    volumes:
+      - networkagentdata:/var/lib/harkeniq
 
 volumes:
   pgdata:
+  agentdata:
+  networkagentdata:

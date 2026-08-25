@@ -112,8 +112,9 @@ class TestGetCurrentUser:
             resp = await client.get(
                 "/me", headers={"Authorization": "Bearer bad-token"},
             )
-            # Until JWT validation is implemented, secure mode returns 501
-            assert resp.status_code == 501
+            # QA-005: real validation — a malformed token is rejected 401,
+            # never the old 501 stub.
+            assert resp.status_code == 401
 
     async def test_non_bearer_header_returns_401(self, secure_app):
         from httpx import ASGITransport
@@ -133,10 +134,13 @@ class TestGetCurrentUser:
             transport=ASGITransport(app=secure_app),
             base_url="http://test",
         ) as client:
-            # With a bearer token, we should get 501 (not 401)
-            # because the token was extracted but JWT validation is stubbed
+            # QA-005: the Bearer prefix is stripped and the token reaches
+            # real validation, which rejects this well-formed-but-unsigned
+            # token with 401 (not the missing-header 401 path — that is
+            # covered by test_non_bearer_header_returns_401).
             resp = await client.get(
                 "/me",
                 headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.test.sig"},
             )
-            assert resp.status_code == 501
+            assert resp.status_code == 401
+            assert resp.json()["detail"] == "invalid token"

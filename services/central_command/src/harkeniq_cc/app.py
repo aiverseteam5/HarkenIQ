@@ -24,6 +24,18 @@ def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Central Command", version="0.1.0")
     app.state.cc = state
 
+    # QA-005: configure_auth existed since R2b and was called by nothing —
+    # secure mode could only ever answer "auth not configured".
+    from harkeniq_cc.auth import configure_auth
+
+    configure_auth(
+        keycloak_url=state.config.keycloak_url,
+        realm=state.config.keycloak_realm or "harkeniq-platform",
+        client_id=state.config.keycloak_client_id,
+        insecure=state.config.insecure,
+        keycloak_public_url=getattr(state.config, "keycloak_public_url", ""),
+    )
+
     app.include_router(fleet_api.router)
     app.include_router(approvals_api.router)
     app.include_router(audit_api.router)
@@ -35,8 +47,29 @@ def create_app(state) -> FastAPI:
     app.include_router(warranty_api.router)
     app.include_router(predictive_api.router)
 
+    # QA-010: a hardcoded ok reported healthy while the database had no
+    # schema. Real probe via the R4-0 HealthChecker (same pattern as SM).
+    from harkeniq.metrics import HealthChecker
+
+    checker = HealthChecker("central-command")
+
+    async def _db_probe() -> bool:
+        from sqlalchemy import text
+
+        async with state.sessionmaker() as session:
+            await session.execute(text("SELECT 1 FROM cc_sites LIMIT 1"))
+        return True
+
+    checker.add_probe("database", _db_probe)
+
     @app.get("/healthz")
-    async def healthz() -> dict:
-        return {"status": "ok", "tenant": state.config.tenant_id}
+    async def healthz():
+        from fastapi.responses import JSONResponse
+
+        status = await checker.check()
+        payload = status.to_dict()
+        payload["tenant"] = state.config.tenant_id
+        payload["status"] = "ok" if status.healthy else "degraded"
+        return JSONResponse(payload, status_code=200 if status.healthy else 503)
 
     return app

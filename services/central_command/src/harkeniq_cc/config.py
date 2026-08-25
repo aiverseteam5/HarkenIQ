@@ -23,6 +23,8 @@ class CCConfig:
     http_host: str = "0.0.0.0"
     http_port: int = 8090
     keycloak_url: str = "http://localhost:8180"
+    # Browser-facing issuer base (QA-005); empty = same as keycloak_url.
+    keycloak_public_url: str = ""
     keycloak_realm: str = ""
     keycloak_client_id: str = "harkeniq-cc"
     console_url: str = ""
@@ -55,6 +57,7 @@ _ENV_MAP = {
     "HARKEN_CC_HTTP_HOST": "http_host",
     "HARKEN_CC_HTTP_PORT": "http_port",
     "HARKEN_CC_KEYCLOAK_URL": "keycloak_url",
+    "HARKEN_CC_KEYCLOAK_PUBLIC_URL": "keycloak_public_url",
     "HARKEN_CC_KEYCLOAK_REALM": "keycloak_realm",
     "HARKEN_CC_KEYCLOAK_CLIENT_ID": "keycloak_client_id",
     "HARKEN_CC_CONSOLE_URL": "console_url",

@@ -49,9 +49,30 @@ def create_app(state) -> FastAPI:
     app.include_router(marketplace_api.router)
     app.include_router(marketplace_api.admin_router)
 
+    # QA-010: a hardcoded ok reported healthy while the database had no
+    # schema. Real probe via the R4-0 HealthChecker (same pattern as SM).
+    from harkeniq.metrics import HealthChecker
+
+    checker = HealthChecker("console")
+
+    async def _db_probe() -> bool:
+        from sqlalchemy import text
+
+        async with state.sessionmaker() as session:
+            await session.execute(text("SELECT 1 FROM tenants LIMIT 1"))
+        return True
+
+    checker.add_probe("database", _db_probe)
+
     @app.get("/healthz")
-    async def healthz() -> dict:
-        return {"status": "ok", "service": "console"}
+    async def healthz():
+        from fastapi.responses import JSONResponse
+
+        status = await checker.check()
+        payload = status.to_dict()
+        payload["service"] = "console"
+        payload["status"] = "ok" if status.healthy else "degraded"
+        return JSONResponse(payload, status_code=200 if status.healthy else 503)
 
     # Dashboard build (ui/dist) — mounted last so API routes win.
     if state.config.ui_dist:
