@@ -41,6 +41,13 @@ DEFAULTS: dict[str, Any] = {
         "log_interval": 300,
         "inventory_interval": 300,
     },
+    # QA-025 / A2.5 / D12: agent resource profile. The env override
+    # HARKENIQ_RESOURCES_PROFILE was silently discarded before this
+    # section existed — the compose advertised a knob that did nothing.
+    "resources": {
+        "profile": "standard",  # constrained | standard | performance
+        "check_interval": 30,
+    },
     "heartbeat": {
         "port": 5150,
         "interval": 10,

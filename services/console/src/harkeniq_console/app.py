@@ -32,6 +32,12 @@ from harkeniq_console.api import webhooks as webhooks_api
 def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Console", version="0.1.0")
     app.state.console = state
+
+    # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
+    # partner incident can be traced across service logs.
+    from harkeniq.logging_config import request_id_middleware
+
+    app.add_middleware(request_id_middleware(app))
     app.include_router(tenants_api.router)
     app.include_router(users_api.router)
     app.include_router(users_api.roles_router)

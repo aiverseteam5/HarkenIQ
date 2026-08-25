@@ -139,6 +139,13 @@ class Agent:
         self.peer_protocol: Optional[PeerProtocol] = None
         self.partition_fence: Optional[PartitionFence] = None
 
+        # QA-025 / A2.5 / D12: resource monitor, profile from config
+        # (HARKENIQ_RESOURCES_PROFILE finally does something).
+        from harkeniq.autonomy.resources import ResourceMonitor
+
+        profile = (config.get("resources") or {}).get("profile", "standard")
+        self.resource_monitor: Optional[ResourceMonitor] = ResourceMonitor(profile)
+
         # R4-2 P13: config compliance state
         self.config_policies: dict[str, Any] = {}
         self._last_drift_findings: list[Any] = []
@@ -362,6 +369,8 @@ class Agent:
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._poll_loop(), name="poller")
+                if self.resource_monitor is not None:
+                    tg.create_task(self._resource_loop(), name="resources")
                 if peers_configured:
                     tg.create_task(self._heartbeat_send_loop(), name="heartbeat")
                     tg.create_task(self._liveness_loop(), name="liveness")
@@ -422,7 +431,42 @@ class Agent:
                         "Sensor poll failed (%d consecutive): %s",
                         self._poll_failures, e,
                     )
-            if await self._pause(interval):
+            # QA-025 / A2.5: the resource monitor's degradation ladder
+            # stretches the poll cadence under pressure (THROTTLED 2x,
+            # DEGRADED 3x, OBSERVE_ONLY 4x); NORMAL is 1x.
+            multiplier = (
+                self.resource_monitor.poll_interval_multiplier
+                if self.resource_monitor is not None else 1.0
+            )
+            if await self._pause(interval * multiplier):
+                break
+
+    async def _resource_loop(self) -> None:
+        """A2.5 inner enforcement layer (QA-025: existed since R3a, wired
+        now): sample RSS/CPU, walk the degradation ladder, surface level
+        changes in the log. The outer layer stays systemd/container caps."""
+        monitor = self.resource_monitor
+        check_interval = (self.config.get("resources") or {}).get(
+            "check_interval", 30
+        )
+        last_level = None
+        while not self._shutdown.is_set():
+            try:
+                snapshot = monitor.measure()
+                level = monitor.evaluate(snapshot)
+                if level != last_level:
+                    logger.warning(
+                        "Resource level %s (rss=%.1fMB cpu=%.1f%%, profile=%s)",
+                        level.name, snapshot.rss_mb, snapshot.cpu_pct,
+                        monitor.profile.name,
+                    ) if last_level is not None else logger.info(
+                        "Resource monitor active: profile=%s rss=%.1fMB",
+                        monitor.profile.name, snapshot.rss_mb,
+                    )
+                    last_level = level
+            except Exception as e:  # noqa: BLE001 — monitoring must not kill the agent
+                logger.warning("Resource sampling failed: %s", e)
+            if await self._pause(check_interval):
                 break
 
     # -- firmware inventory (R4-2 P14, R-AGENT-17) ---------------------------

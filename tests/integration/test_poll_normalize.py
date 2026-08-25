@@ -55,9 +55,10 @@ class TestDellHealthy:
         assert device.health_rollup.fan == "OK"
         assert device.health_rollup.psu == "OK"
         assert device.health_rollup.thermal == "OK"
-        assert len(device.fans) == 4
+        # QA-027: fixtures grew to the doc 09/11 baseline (8 fans, 4 disks).
+        assert len(device.fans) == 8
         assert len(device.psus) == 2
-        assert len(device.thermals) == 3
+        assert len(device.thermals) == 4  # QA-027: CPU2 Temp added
         assert device.power_metrics is not None
         assert device.power_metrics.system_power_watts == 186
 

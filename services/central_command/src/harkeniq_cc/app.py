@@ -24,6 +24,12 @@ def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Central Command", version="0.1.0")
     app.state.cc = state
 
+    # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
+    # partner incident can be traced across service logs.
+    from harkeniq.logging_config import request_id_middleware
+
+    app.add_middleware(request_id_middleware(app))
+
     # QA-005: configure_auth existed since R2b and was called by nothing —
     # secure mode could only ever answer "auth not configured".
     from harkeniq_cc.auth import configure_auth

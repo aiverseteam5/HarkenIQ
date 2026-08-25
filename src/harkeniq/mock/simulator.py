@@ -460,12 +460,19 @@ class MockSimulator:
 
         Model is included because Dell normalization uses it as the
         human-readable drive name, and skill action targets carry the
-        normalized name.
+        normalized name. Identical drives share a Model (QA-027 grew the
+        bay to 4), so: exact Id/Name wins, and Model falls back to the
+        LOWEST bay in sorted order — deterministic, never glob-order.
         """
-        for key, data in self._state.items():
-            if not key.startswith("drive_"):
-                continue
-            if drive_id in (data.get("Id"), data.get("Name"), data.get("Model")):
+        drives = sorted(
+            (key, data) for key, data in self._state.items()
+            if key.startswith("drive_")
+        )
+        for _key, data in drives:
+            if drive_id in (data.get("Id"), data.get("Name")):
+                return data
+        for _key, data in drives:
+            if drive_id == data.get("Model"):
                 return data
         return None
 

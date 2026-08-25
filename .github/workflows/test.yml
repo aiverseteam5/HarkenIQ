@@ -12,4 +12,31 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      - run: pip install -e services/site_manager -e services/central_command -e services/console
       - run: pytest --cov=harkeniq --cov-report=xml tests/
+
+  # QA-030: the UIs are part of the product; CI must build them.
+  ui-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Console UI
+        run: cd console-ui && npm ci && npm run build
+      - name: SM dashboard
+        run: cd services/site_manager/ui && npm ci && npm run build
+
+  # QA-030: the compose exit gate — boots the REAL stack and drives the
+  # amendment-§8 scenario (register -> poll -> fault -> incident ->
+  # propose -> approve -> audit verify). This is the gate whose absence
+  # let releases ship green while the platform could not start.
+  compose-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/e2e-compose-gate.sh
+      - name: Logs on failure
+        if: failure()
+        run: cd deploy/full-stack && docker compose logs --tail 100

@@ -11,9 +11,15 @@ from harkeniq_cc.runtime import run
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    # QA-026: structured JSON logging (R4-0 P3, finally wired). Set
+    # HARKEN_LOG_PLAIN=1 for human-readable text during local debugging.
+    import os
+
+    from harkeniq.logging_config import configure_logging
+
+    configure_logging(
+        service="central-command",
+        json_output=not os.environ.get("HARKEN_LOG_PLAIN"),
     )
     config = load_cc_config()
     errors = config.validate()

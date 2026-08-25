@@ -66,7 +66,7 @@ audit trail, and a denial is FINAL — the platform never nags."
 Verify the audit chain live:
 
 ```bash
-curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/audit/verify
+curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/audit/verify
 ```
 
 ## 5. Console (L4 — the business layer)
@@ -103,3 +103,8 @@ real SONiC."
 ```bash
 docker compose down -v && docker compose up -d && ../../scripts/seed-demo.sh
 ```
+
+After a fresh reset, give the agent ~2 minutes before injecting faults:
+baselines must re-learn (5 polls at the demo stack's compressed learning
+window) before actions are proposed — the A2.3 confidence gate refuses to
+act on a baseline it hasn't earned, which is itself a talking point.

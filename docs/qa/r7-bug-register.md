@@ -35,12 +35,12 @@ this campaign's live testing.
 | QA-022 | CC | MAJOR | Stop switch = in-process dict; never persisted, never reaches SM/lease | OPEN |
 | QA-023 | Agent | MAJOR | RedfishProtocol.execute_action self-grants full ActionType allow-list (bypasses R-X6 for any direct caller) | OPEN |
 | QA-024 | Agent | MAJOR | OS signals package (~900 lines) + log-poll loop unwired; SEL/IML never reaches a verdict; log_cursors dead | OPEN |
-| QA-025 | Agent | MAJOR | resources monitor unwired; `HARKENIQ_RESOURCES_PROFILE` env silently discarded (no `resources` config section) — D12 unenforced | OPEN |
-| QA-026 | Services | MAJOR | Structured JSON logging + request-id middleware imported only by tests; all services use basicConfig text | OPEN |
-| QA-027 | Demo/fixtures | MAJOR | Fixtures diverge from doc 09/11: 4 fans vs 8, 1 disk vs 4 (drive_1..3 routes 404), CPU2 sensor absent | OPEN |
+| QA-025 | Agent | MAJOR | resources monitor unwired; `HARKENIQ_RESOURCES_PROFILE` env silently discarded (no `resources` config section) — D12 unenforced | FIXED@pending — `resources` config section exists (HARKENIQ_RESOURCES_PROFILE finally works), ResourceMonitor instantiated + _resource_loop wired (degradation ladder stretches poll cadence); 3 wiring tests |
+| QA-026 | Services | MAJOR | Structured JSON logging + request-id middleware imported only by tests; all services use basicConfig text | FIXED@pending — configure_logging (JSON + HARKEN_LOG_PLAIN escape) in all three service mains; X-Request-Id middleware mounted in all three apps |
+| QA-027 | Demo/fixtures | MAJOR | Fixtures diverge from doc 09/11: 4 fans vs 8, 1 disk vs 4 (drive_1..3 routes 404), CPU2 sensor absent | FIXED@pending — dell_r750 fixtures at doc 09/11 baseline: 8 fans (9200-10400), 4 drives (life 96/92/85 + original), CPU2 Temp 52C; _find_drive made deterministic (Id/Name first, Model falls back to lowest bay) |
 | QA-028 | Demo | MAJOR | Doc 09 scenes missing: cross-subsystem correlation, thermal scene inert (Exhaust +2°C vs 75°C threshold), summary dashboard is text blob, `--scenario` absent, PSU action masked by undocumented fan-seize | OPEN |
 | QA-029 | Console UI | MAJOR | SPA splits /api across two backends (CC 8090 + Console 8100) with no reverse proxy — half the screens 404 in every shipped config; L3/L4 boundary blurred | FIXED@pending — Console proxies 10 CC prefixes w/ bearer forwarding (verified live: /api/fleet/ + /api/fleet/summary through Console origin); two live sub-bugs fixed: PEP-563 string annotation made `request` a query param; collection-root 307 loop between origins |
-| QA-030 | CI | MAJOR | CI never builds containers or UI; coverage gate not enforced; no compose-boot gate | OPEN |
+| QA-030 | CI | MAJOR | CI never builds containers or UI; coverage gate not enforced; no compose-boot gate | FIXED@pending — CI: ui-build job (both UIs) + compose-gate job running scripts/e2e-compose-gate.sh (the amendment-§8 scenario against the real booted stack); gate validated locally |
 | QA-031 | Agent | MINOR | Playbook executions in-memory only (crash loses resume state) | OPEN |
 | QA-032 | Agent | MINOR | ECC counters baselined as raw values not rates (doc 13 §5.6) | OPEN |
 | QA-033 | SM/CC | MAJOR | Knowledge distribution: proto field `learned_patterns_json` doesn't exist; distributor/feedback outside every loop; SM PushPolicy is log-and-ack stub | OPEN |
@@ -50,6 +50,8 @@ this campaign's live testing.
 | QA-037 | SM/CC | BLOCKER | RegisterSite chicken-and-egg: SM token interceptor required the site token on the very RPC that ISSUES it — CC could never register a site; also CC 409'd forever on half-registrations; found LIVE (fleet poll UNAUTHENTICATED) | FIXED@pending — interceptor exempts /harkeniq.v1.SiteManagerService/RegisterSite (fingerprint is the bootstrap credential, HARKEN_SM_LICENSE_FINGERPRINT enforced when set); CC heals token-less sites; 3 over-the-wire tests (direct-call suites could never catch an interceptor bug) |
 | QA-038 | Tests | MINOR | test_directives bound the real 50051 (unrunnable beside a dev stack) | FIXED@pending — grpc_port=0 |
 | QA-035 | Console | MAJOR | `/api/internal` endpoints have NO auth (docstring: "No auth (internal network)") despite R5-2 ledger claiming a CC->Console credential pair | FIXED@pending — /api/internal enforces the CC<->Console bearer key (constant-time; secure+unconfigured fails closed 503; 5 tests); compose wires matching keys |
+
+| QA-039 | Demo | MAJOR | Fresh stack proposes NO actions for 15 min (min_samples=60 x 15s polls — A2.3 gate working as designed, wrong demo default); found live by the compose gate | FIXED@pending — demo stack sets HARKENIQ_BASELINE_MIN_SAMPLES=5 (~75s to confidence 1.0); DEMO.md reset section documents the wait as an A2.3 talking point |
 
 (Statuses updated in place as the campaign proceeds; new live findings appended.)
 

@@ -59,9 +59,9 @@ class TestRedfishEndpoints:
             async with session.get(f"{sim.url}/redfish/v1/Chassis/System.Embedded.1/Thermal", ssl=ssl_ctx) as resp:
                 assert resp.status == 200
                 data = await resp.json()
-                assert len(data["Fans"]) == 4
+                assert len(data["Fans"]) == 8  # QA-027: doc 09/11 baseline
                 assert data["Fans"][0]["Reading"] == 9800
-                assert len(data["Temperatures"]) == 3
+                assert len(data["Temperatures"]) == 4  # QA-027: CPU2 Temp added
                 assert data["Temperatures"][0]["ReadingCelsius"] == 22
 
     async def test_power(self, sim, ssl_ctx):

@@ -9,9 +9,18 @@
       "FanName": "System Board Fan1A",
       "Reading": 9800,
       "ReadingUnits": "RPM",
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "LowerThresholdCritical": 480,
-      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
     },
     {
       "MemberId": "1",
@@ -19,9 +28,18 @@
       "FanName": "System Board Fan1B",
       "Reading": 10200,
       "ReadingUnits": "RPM",
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "LowerThresholdCritical": 480,
-      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
     },
     {
       "MemberId": "2",
@@ -29,9 +47,18 @@
       "FanName": "System Board Fan2A",
       "Reading": 9600,
       "ReadingUnits": "RPM",
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "LowerThresholdCritical": 480,
-      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
     },
     {
       "MemberId": "3",
@@ -39,9 +66,94 @@
       "FanName": "System Board Fan2B",
       "Reading": 10400,
       "ReadingUnits": "RPM",
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "LowerThresholdCritical": 480,
-      "Oem": {"Dell": {"DellFan": {"FanPWM": 29}}}
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
+    },
+    {
+      "MemberId": "4",
+      "Name": "System Board Fan3A",
+      "FanName": "System Board Fan3A",
+      "Reading": 9440,
+      "ReadingUnits": "RPM",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "LowerThresholdCritical": 480,
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
+    },
+    {
+      "MemberId": "5",
+      "Name": "System Board Fan3B",
+      "FanName": "System Board Fan3B",
+      "Reading": 9360,
+      "ReadingUnits": "RPM",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "LowerThresholdCritical": 480,
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
+    },
+    {
+      "MemberId": "6",
+      "Name": "System Board Fan4A",
+      "FanName": "System Board Fan4A",
+      "Reading": 10400,
+      "ReadingUnits": "RPM",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "LowerThresholdCritical": 480,
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
+    },
+    {
+      "MemberId": "7",
+      "Name": "System Board Fan4B",
+      "FanName": "System Board Fan4B",
+      "Reading": 9200,
+      "ReadingUnits": "RPM",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "LowerThresholdCritical": 480,
+      "Oem": {
+        "Dell": {
+          "DellFan": {
+            "FanPWM": 29
+          }
+        }
+      }
     }
   ],
   "Temperatures": [
@@ -49,7 +161,10 @@
       "MemberId": "0",
       "Name": "System Board Inlet Temp",
       "ReadingCelsius": 22,
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "UpperThresholdNonCritical": 42,
       "UpperThresholdCritical": 47,
       "LowerThresholdNonCritical": 3,
@@ -60,7 +175,22 @@
       "MemberId": "1",
       "Name": "CPU1 Temp",
       "ReadingCelsius": 54,
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
+      "UpperThresholdNonCritical": 90,
+      "UpperThresholdCritical": 98,
+      "PhysicalContext": "CPU"
+    },
+    {
+      "MemberId": "3",
+      "Name": "CPU2 Temp",
+      "ReadingCelsius": 52,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "UpperThresholdNonCritical": 90,
       "UpperThresholdCritical": 98,
       "PhysicalContext": "CPU"
@@ -69,7 +199,10 @@
       "MemberId": "2",
       "Name": "System Board Exhaust Temp",
       "ReadingCelsius": 38,
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "UpperThresholdNonCritical": 75,
       "UpperThresholdCritical": 80,
       "PhysicalContext": "Exhaust"
@@ -80,7 +213,10 @@
       "MemberId": "0",
       "Name": "SystemBoard Fan Redundancy",
       "Mode": "N+1",
-      "Status": {"State": "Enabled", "Health": "OK"},
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      },
       "MinNumNeeded": 4,
       "MaxNumSupported": 8
     }

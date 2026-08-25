@@ -237,6 +237,11 @@ services:
       # config validation exits 3 requiring a tls_ca (QA-003).
       HARKENIQ_SITE_MANAGER_TLS: "false"
       HARKENIQ_POLLING_SENSOR_INTERVAL: "15"
+      # Demo-stack learning window (QA-039): default min_samples=60
+      # means NO actions are proposed for 15 minutes after a fresh
+      # boot (A2.3 confidence gate, working as designed). The demo
+      # stack reaches full confidence after 5 polls (~75s) instead.
+      HARKENIQ_BASELINE_MIN_SAMPLES: "5"
     volumes:
       - agentdata:/var/lib/harkeniq
     depends_on:

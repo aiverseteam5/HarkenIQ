@@ -68,7 +68,7 @@ class TestGet:
 
     async def test_get_thermal(self, client):
         data = await client.get("/redfish/v1/Chassis/System.Embedded.1/Thermal")
-        assert len(data["Fans"]) == 4
+        assert len(data["Fans"]) == 8  # QA-027: doc 09/11 baseline
         assert data["Fans"][0]["Reading"] == 9800
 
     async def test_get_power(self, client):
