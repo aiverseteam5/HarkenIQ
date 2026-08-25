@@ -87,7 +87,7 @@ class TestSkillsValidate:
     def test_bundled_skills_valid_exit_0(self):
         result = CliRunner().invoke(main, ["skills", "validate", "--dir", "skills"])
         assert result.exit_code == 0, result.output
-        assert "All 5 skill files valid" in result.output
+        assert "All 6 skill files valid" in result.output
 
     def test_invalid_skill_exit_4(self, tmp_path):
         (tmp_path / "good.yaml").write_text(VALID_SKILL)

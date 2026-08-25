@@ -310,14 +310,15 @@ class TestFileLoading:
             load_skills(tmp_path)
 
     def test_load_default_skills(self):
-        """The 5 bundled skills in skills/ must all load (Doc 07 §7)."""
+        """The 6 bundled skills in skills/ must all load (Doc 07 §7; R6
+        added interface-health)."""
         skills = load_skills("skills")
         assert set(skills) == {
             "fan-health", "disk-health", "memory-health",
-            "psu-health", "thermal-health",
+            "psu-health", "thermal-health", "interface-health",
         }
         targets = {s.target for s in skills.values()}
-        assert targets == {"fan", "disk", "memory", "psu", "thermal"}
+        assert targets == {"fan", "disk", "memory", "psu", "thermal", "interface"}
         for skill in skills.values():
             assert skill.rules
             assert skill.default_verdict == VerdictSeverity.HEALTHY
