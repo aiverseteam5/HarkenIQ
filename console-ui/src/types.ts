@@ -194,6 +194,8 @@ export interface FleetDevice {
   agent_id: string;
   vendor: string;
   model: string;
+  /** R6: "server" | "switch"; absent from pre-R6 backends. */
+  device_class?: string;
   service_tag: string;
   health: "ok" | "warning" | "critical" | "unknown";
   tier: "observe" | "approve" | "autonomy";

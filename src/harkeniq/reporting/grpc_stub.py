@@ -115,6 +115,7 @@ class SiteManagerReporter:
         peers: Optional[list[str]] = None,
         public_key_pem: Optional[bytes] = None,
         firmware: Optional[list[dict]] = None,
+        device_class: str = "",
     ) -> Optional["harkeniq_pb2.RegistrationAck"]:
         """Register this agent with the Site Manager (best-effort).
 
@@ -133,6 +134,7 @@ class SiteManagerReporter:
             peers=list(peers or []),
             public_key_pem=public_key_pem or b"",
             firmware_json=json.dumps(firmware) if firmware else "",
+            device_class=device_class,
         )
         return await self._call("RegisterAgent", request, want_response=True)
 

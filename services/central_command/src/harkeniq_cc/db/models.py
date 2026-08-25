@@ -62,6 +62,8 @@ class CCFleetCache(Base):
     agent_name: Mapped[str] = mapped_column(String(255), default="")
     vendor: Mapped[str] = mapped_column(String(64), default="")
     model: Mapped[str] = mapped_column(String(255), default="")
+    # R6: "server" | "switch"
+    device_class: Mapped[str] = mapped_column(String(32), default="server")
     observation: Mapped[str] = mapped_column(String(32), default="")
     health: Mapped[str] = mapped_column(String(32), default="")
     subsystems: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)

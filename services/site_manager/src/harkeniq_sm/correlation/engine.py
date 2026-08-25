@@ -68,6 +68,9 @@ class CorrelationEngine:
                 await rules.network_ambiguity(
                     session, self.config, site.id, self.incidents, now
                 )
+                await rules.tor_connectivity(
+                    session, self.config, site.id, self.incidents, now
+                )
                 await self.incidents.resolve_recovered_children(session)
                 await self.incidents.resolve_recovered_ambiguities(session)
                 await self.incidents.auto_resolve_parents(session)

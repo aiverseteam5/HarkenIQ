@@ -65,6 +65,7 @@ class IngestService:
         bmc_location_json: str = "",
         peers: Optional[list[str]] = None,
         firmware_json: str = "",
+        device_class: str = "",
     ) -> str:
         """Upsert the device row; returns the site name (RegistrationAck)."""
         bmc_location = None
@@ -94,6 +95,7 @@ class IngestService:
                 peers=peers,
                 rack_suggestion=rack_hint(agent_name),
                 firmware=firmware,
+                device_class=device_class,
             )
             await session.commit()
         return self.config.site_name

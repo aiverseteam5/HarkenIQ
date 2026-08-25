@@ -301,6 +301,11 @@ export default function FleetOverview() {
       { key: "name", header: "Name", sortKey: "name", render: (r) => r.name || r.service_tag || "--" },
       { key: "vendor", header: "Vendor", sortKey: "vendor" },
       { key: "model", header: "Model" },
+      {
+        key: "device_class",
+        header: "Class",
+        render: (r) => (r.device_class === "switch" ? "Switch" : "Server"),
+      },
       { key: "site_name", header: "Site", sortKey: "site_name" },
       {
         key: "health",

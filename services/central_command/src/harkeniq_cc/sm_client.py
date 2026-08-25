@@ -129,6 +129,7 @@ class SMClient:
                     "agent_name": d.agent_name,
                     "vendor": d.vendor,
                     "model": d.model,
+                    "device_class": d.device_class or "server",
                     "observation": d.observation,
                     "health": d.health,
                     "subsystems": subsystems,

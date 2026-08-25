@@ -108,6 +108,7 @@ class FleetCacheRepo:
         subsystems: Optional[dict] = None,
         service_tag: str = "",
         firmware: Optional[list] = None,
+        device_class: str = "",
     ) -> CCFleetCache:
         row = (
             await self.session.execute(
@@ -123,6 +124,8 @@ class FleetCacheRepo:
         row.agent_name = agent_name or row.agent_name
         row.vendor = vendor or row.vendor
         row.model = model or row.model
+        if device_class:
+            row.device_class = device_class
         row.observation = observation or row.observation
         row.health = health or row.health
         if subsystems is not None:

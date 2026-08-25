@@ -54,6 +54,7 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
             bmc_location_json=request.bmc_location_json,
             peers=list(request.peers),
             firmware_json=request.firmware_json,
+            device_class=request.device_class,
         )
 
         # R3a: if agent sent a public key, register identity and issue cert
@@ -314,6 +315,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                         inventory_json=json.dumps(
                             {"firmware": device.firmware}
                         ) if device.firmware else "",
+                        device_class=device.device_class or "server",
                     )
                 )
 

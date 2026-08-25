@@ -109,6 +109,7 @@ message AgentRegistration {
   bytes public_key_pem = 8;       // R3a: agent's Ed25519 public key
   string resource_profile = 9;    // R3a: "constrained" | "standard" | "performance"
   string firmware_json = 10;      // R4-2: firmware inventory [{component,name,version}]
+  string device_class = 11;       // R6: "server" (default when absent) | "switch"
 }
 
 message RegistrationAck {
@@ -216,6 +217,7 @@ message FleetDevice {
   int64 last_seen_unix = 8;
   string service_tag = 9;       // R4-2: warranty lookup key
   string inventory_json = 10;   // R4-2: {"firmware": [{component,name,version}]}
+  string device_class = 11;     // R6: "server" (default when absent) | "switch"
 }
 
 message FleetIncident {

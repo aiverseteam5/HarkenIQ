@@ -270,6 +270,9 @@ class Agent:
                     if self.agent_identity else b""
                 ),
                 firmware=self.firmware_inventory,
+                device_class=getattr(
+                    self.device_identity, "device_class", "server"
+                ),
             )
             if reg_ack is None:
                 logger.warning("Site Manager registration failed; continuing standalone")

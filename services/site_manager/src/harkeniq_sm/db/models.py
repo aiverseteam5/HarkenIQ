@@ -70,6 +70,8 @@ class Device(Base):
     vendor: Mapped[str] = mapped_column(String(64), default="")
     model: Mapped[str] = mapped_column(String(255), default="")
     service_tag: Mapped[str] = mapped_column(String(255), default="")
+    # R6: "server" | "switch" (registration default keeps pre-R6 rows server)
+    device_class: Mapped[str] = mapped_column(String(32), default="server")
     bmc_location: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     # R4-2 P14: firmware inventory [{component, name, version}] (R-AGENT-17)
     firmware: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)

@@ -26,6 +26,9 @@ class CorrelationThresholds:
     rack_thermal_window_s: float = 300.0
     batch_component_min_devices: int = 3
     batch_component_window_s: float = 86400.0
+    # R6-P7: A2.6 Connectivity row (network segment / TOR, 3 devices, 15s)
+    tor_connectivity_min_devices: int = 3
+    tor_connectivity_window_s: float = 15.0
     ambiguity_peer_fresh_s: float = 120.0
     sweeper_interval_s: float = 10.0
     inferred_domain_confidence: float = 0.6

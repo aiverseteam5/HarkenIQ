@@ -21,6 +21,7 @@ def _device_dict(dev) -> dict:
         "agent_name": dev.agent_name,
         "vendor": dev.vendor,
         "model": dev.model,
+        "device_class": dev.device_class or "server",
         "observation": dev.observation,
         "health": dev.health,
         "subsystems": dev.subsystems,

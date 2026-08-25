@@ -81,6 +81,7 @@ class DeviceRepo:
         peers: Optional[list[str]] = None,
         rack_suggestion: Optional[str] = None,
         firmware: Optional[list[dict]] = None,
+        device_class: str = "",
     ) -> Device:
         device = await self.get_by_agent_id(agent_id)
         if device is None:
@@ -90,6 +91,9 @@ class DeviceRepo:
         device.vendor = vendor or device.vendor
         device.model = model or device.model
         device.service_tag = service_tag or device.service_tag
+        # R6: absent field (pre-R6 agent) leaves the default "server".
+        if device_class:
+            device.device_class = device_class
         if bmc_location:
             device.bmc_location = bmc_location
         if peers is not None:

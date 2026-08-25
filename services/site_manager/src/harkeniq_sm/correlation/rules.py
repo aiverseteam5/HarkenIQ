@@ -7,7 +7,7 @@ already-open parent regardless of the original onset window.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -254,4 +254,90 @@ async def network_ambiguity(
                 correlation_meta={"votes": votes, "assessment": assessment},
             )
         )
+    return created
+
+
+async def tor_connectivity(
+    session, config: SMConfig, site_id: str, incidents_svc: IncidentService,
+    now: Optional[datetime] = None,
+) -> list:
+    """A2.6 Connectivity row, fully live in R6-P7 (network domains + switches).
+
+    In a network-kind fault domain: >= tor_connectivity_min_devices members
+    leave the "observed" state with last-seen times inside the window ->
+    ONE parent incident for the domain. When a switch member of the domain
+    carries a non-OK interface subsystem, the parent names it as the
+    suspected shared cause and the switch's interface incident attaches as
+    a child — the multi-device comparison lives here at the SM, per the §1
+    correlation boundary.
+    """
+    created = []
+    devices = {
+        d.id: d for d in await DeviceRepo(session).list_for_site(site_id)
+    }
+    statuses = {s.device_id: s for s in await StatusRepo(session).list_all()}
+    interface_states = {
+        s.device_id: s
+        for s in await SubsystemStateRepo(session).non_ok(subsystem="interface")
+    }
+    incident_repo = IncidentRepo(session)
+    domain_repo = DomainRepo(session)
+    now_dt = now or datetime.now(timezone.utc)
+
+    for domain in await domain_repo.list_for_site(site_id):
+        if domain.kind != "network":
+            continue
+        members = await domain_repo.members(domain.id)
+        lost = []
+        for member_id in members:
+            status = statuses.get(member_id)
+            if status is None:
+                continue  # never reported; coverage map handles it
+            state = observation_state(status.last_heartbeat_at, config, now_dt)
+            if state != "observed":
+                lost.append((member_id, status.last_heartbeat_at))
+        switch_faults = [
+            m for m in members
+            if m in interface_states
+            and m in devices
+            and devices[m].device_class == "switch"
+        ]
+        parent = await incident_repo.open_parent(
+            "tor_connectivity", domain_id=domain.id
+        )
+        if parent is None:
+            if len(lost) < config.correlation.tor_connectivity_min_devices:
+                continue
+            last_seen = [hb for _, hb in lost if hb is not None]
+            if last_seen:
+                spread = (max(last_seen) - min(last_seen)).total_seconds()
+                if spread > config.correlation.tor_connectivity_window_s:
+                    continue  # losses not simultaneous — not one shared cause
+            suspect = devices.get(switch_faults[0]) if switch_faults else None
+            title = (
+                f"connectivity loss in {domain.name} ({len(lost)} devices"
+                + (f"; suspected switch {suspect.agent_name or suspect.agent_id}"
+                   if suspect else "")
+                + ")"
+            )
+            attrs = incidents_svc.parent_attrs_for_domain(domain)
+            parent = await incident_repo.create(
+                site_id=site_id,
+                kind="tor_connectivity",
+                domain_id=domain.id,
+                subsystem="interface",
+                title=title,
+                correlation_meta={
+                    "domain": domain.name,
+                    "domain_status": domain.status,
+                    "lost_devices": [m for m, _ in lost],
+                    "suspected_switch": suspect.agent_id if suspect else None,
+                },
+                **attrs,
+            )
+            created.append(parent)
+        for switch_id in switch_faults:
+            await _attach(
+                session, incidents_svc, site_id, parent, switch_id, "interface"
+            )
     return created
