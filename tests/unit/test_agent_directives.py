@@ -299,7 +299,11 @@ class TestEndToEndCampaign:
         )
         from harkeniq_sm.ingest import IngestService
 
-        engine = make_engine("sqlite+aiosqlite:///:memory:")
+        # Temp FILE, not :memory: — the in-memory StaticPool shares ONE
+        # connection, and the live agent's concurrent ingest sessions can
+        # roll back the orchestrator's in-flight approve/advance writes
+        # (the same hazard runtime.make_state documents and avoids).
+        engine = make_engine(f"sqlite+aiosqlite:///{tmp_path}/campaign.db")
         await create_all(engine)
         db = make_sessionmaker(engine)
         sm_config = SMConfig(insecure=True, site_name="site-1",
