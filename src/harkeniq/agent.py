@@ -933,13 +933,17 @@ class Agent:
                 f"poll_and_evaluate requires OBSERVING state, "
                 f"currently {self.state_machine.current_state.value}"
             )
+        # Two clocks (QA-008): `ts` (wall) drives checkpoint cadence below;
+        # the EVALUATION timestamp defaults inside the engine so an
+        # injected clock (the demo's narrative clock) is honored. An
+        # explicit `timestamp` argument still wins for both.
         ts = timestamp if timestamp is not None else time.time()
 
         device = await self.protocol.poll_sensors()
         self._last_device = device
         self.state_machine.transition(AgentState.EVALUATING, "sensor poll complete")
 
-        verdicts = await self.skill_engine.evaluate(device, ts)
+        verdicts = await self.skill_engine.evaluate(device, timestamp)
         self._last_verdicts = verdicts
         self.state_machine.transition(AgentState.DECIDING, "verdicts produced")
 

@@ -71,7 +71,7 @@ def demo_config(sim_url: str, speed: float, checkpoint_path: str) -> dict:
         "baseline": {"min_samples": 5, "window_samples": 1440,
                      "critical_pause_samples": 3},
         "trending": {"min_samples": 5, "slope_threshold": 0.05,
-                     "r_squared_min": 0.3, "max_projection_days": 3650},
+                     "r_squared_min": 0.3, "max_projection_days": 90},
         "heartbeat": {"port": 0, "interval": interval, "timeout_multiplier": 3,
                       "secret": "demo-site-secret"},
         "peers": [{"host": "127.0.0.3", "port": 5150},
@@ -80,17 +80,24 @@ def demo_config(sim_url: str, speed: float, checkpoint_path: str) -> dict:
     }
 
 
-def preseed_baselines(agent: Agent, device, samples: int = SEED_SAMPLES) -> int:
+def preseed_baselines(
+    agent: Agent,
+    device,
+    samples: int = SEED_SAMPLES,
+    interval_s: Optional[float] = None,
+    now: Optional[float] = None,
+) -> int:
     """Fast-forward the 24h learning window (Doc 09 §3).
 
     Seeds every trended sensor with ``samples`` synthetic historical
     readings around its current healthy value (fixed RNG, ±5% gaussian
-    band) so all baselines start at confidence 1.0.
+    band) so all baselines start at confidence 1.0. ``interval_s``/``now``
+    let the caller seed on the narrative clock (QA-008).
     """
     rng = random.Random(SEED_RNG)
     trending = agent.skill_engine.trending
-    interval = trending.expected_interval
-    now = time.time()
+    interval = interval_s if interval_s is not None else trending.expected_interval
+    now = time.time() if now is None else now
     seeded = 0
     for skill in agent.skill_engine._skills.values():
         if not skill.trending:
@@ -192,9 +199,11 @@ class DemoRunner:
         asyncio.get_running_loop().create_task(self._fan_decline_task())
 
     async def _fan_decline_task(self) -> None:
+        # Doc 09 §4: -200 RPM per interval (one narrative hour) — with the
+        # narrative clock this reads as ~-200 RPM/hr, threshold ~46h out.
         rpm = 9800
         while rpm > 5600 and not self.agent._shutdown.is_set():
-            rpm -= 350
+            rpm -= 200
             await self.sim.inject_fault("fan", "Fan1A", {"speed_rpm": rpm})
             await asyncio.sleep(self.interval)
 
@@ -336,9 +345,27 @@ class DemoRunner:
             self.agent = Agent(cfg)
             await self.agent.start()
 
+            # QA-008 narrative clock: one wall poll interval = one narrative
+            # HOUR. Trending slopes are per-hour, so evaluating compressed
+            # samples on the wall clock printed -5,402,706 RPM/hr and
+            # "0 hours" projections; on the narrative clock the fan story
+            # reads as doc 09 §3 wrote it: ~-200 RPM/hr, threshold in ~46h.
+            wall_start = time.time()
+            wall_interval = self.interval
+
+            def narrative_now() -> float:
+                elapsed_polls = (time.time() - wall_start) / wall_interval
+                return wall_start + elapsed_polls * 3600.0
+
+            self.agent.skill_engine._time_fn = narrative_now
+            self.agent.skill_engine.trending.expected_interval = 3600.0
+
             device = await self.agent.poller.poll_sensors()
             self.agent._last_device = device
-            seeded = preseed_baselines(self.agent, device)
+            seeded = preseed_baselines(
+                self.agent, device,
+                interval_s=3600.0, now=wall_start,
+            )
 
             if self.tui:
                 from harkeniq.reporting.console import ConsoleUI
