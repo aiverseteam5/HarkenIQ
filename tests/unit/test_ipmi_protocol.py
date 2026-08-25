@@ -103,8 +103,10 @@ class TestFactory:
         assert p._port == 623
 
     def test_unknown_still_raises(self):
+        # "gnmi" was the unknown-protocol example until R6-P3 made it real;
+        # snmp remains genuinely unsupported.
         with pytest.raises(ValueError):
-            create_device_protocol("gnmi", host="x")
+            create_device_protocol("snmp", host="x")
 
 
 class TestConnection:
