@@ -113,3 +113,25 @@ Uptime Institute 2025 (n=800+): operators accept AI analysing sensors and reject
 
 - `docs/design/`, `docs/requirements/`, `docs/research/` untracked. Everything from this session is uncommitted.
 - gstack 1.60.1.0 available; running 1.58.5.0.
+
+---
+
+## Post-R6
+
+**N1. Server-side NIC interface collection — two-sided switch↔server correlation.**
+*(added 2026-08-25, from R6 /plan-eng-review outside-voice T6)*
+- **What:** servers populate the R6 `interfaces` collection too — NIC error
+  counters via OS signals (ethtool/sysfs) and/or Redfish NetworkAdapters —
+  so the two-device correlation probe works on switch↔server links.
+- **Why:** R6 v1 is probe-blind on switch↔server links (the majority of real
+  links) because only switches carry interface data. Two-sided evidence on
+  those links is the doc 02 G2 wedge (path inference + on-box physical
+  evidence) applied to the most common link type.
+- **Pros:** closes the biggest correlation blind spot; reuses the R6
+  NormalizedInterface model and probe both-sides logic unchanged.
+- **Cons:** touches OS-signal collectors and the server agent path; its own
+  testing surface; belongs after R6 proves the port model.
+- **Context:** NormalizedInterface (R6-P1, `protocols/model.py`) is device-
+  class-agnostic by design; CorrelationProbe (R3b-2) already handles
+  both-sides evidence. Start at the OS-signal layer (R3b device mapper).
+- **Depends on:** R6-P1 shipped.
