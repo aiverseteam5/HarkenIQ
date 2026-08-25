@@ -12,13 +12,7 @@ RUN pip install --no-cache-dir -e .
 
 EXPOSE 9000
 
-CMD ["python", "-c", "\
-import asyncio;\
-from harkeniq.mock.simulator import MockSimulator;\
-async def main():\n\
-    sim = MockSimulator(device='dell-r750', port=9000, no_auth=True);\n\
-    await sim.start();\n\
-    print('Mock simulator running on port 9000');\n\
-    await asyncio.Event().wait();\n\
-asyncio.run(main())\
-"]
+# R6-P0 fix: the previous inline-python CMD was a SyntaxError (escaped
+# newlines don't survive the JSON-array form) — the container exited on
+# start. The CLI has a proper entry point; use it.
+CMD ["harken", "mock", "start", "--device", "dell-r750", "--port", "9000", "--host", "0.0.0.0", "--no-auth"]

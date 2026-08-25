@@ -1,0 +1,23 @@
+# HarkenIQ agent container (R6-P0 origin; grows into the N0 SONiC app image).
+#
+# Config comes from HARKENIQ_<SECTION>_<KEY> env vars (config.py precedence:
+# CLI > env > file > defaults), e.g. HARKENIQ_BMC_HOST, HARKENIQ_BMC_PROTOCOL.
+# Resource enforcement is layered per A2.5: run with container limits matching
+# the selected profile (outer layer); the agent self-monitors (inner layer).
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml .
+COPY src/ src/
+RUN pip install --no-cache-dir .
+
+# Built-in skills at the config-default path.
+COPY skills/ /etc/harkeniq/skills/
+
+# Checkpoint lives on a volume so identity/baselines survive restarts.
+VOLUME /var/lib/harkeniq
+ENV HARKENIQ_CHECKPOINT_PATH=/var/lib/harkeniq/checkpoint.db
+
+CMD ["harken", "agent", "start", "--foreground"]

@@ -441,17 +441,19 @@ def mock():
 @mock.command(name="start")
 @click.option("--device", default="dell-r750", help="Device profile")
 @click.option("--port", default=8443, type=int, help="HTTPS port")
+@click.option("--host", default="127.0.0.1",
+              help="Bind address (0.0.0.0 for container use)")
 @click.option("--no-auth", is_flag=True, help="Disable session authentication")
-def mock_start(device, port, no_auth):
+def mock_start(device, port, host, no_auth):
     """Start the Redfish mock simulator (runs until Ctrl+C)."""
     import asyncio
 
     async def _run():
         from harkeniq.mock.simulator import MockSimulator
 
-        sim = MockSimulator(device=device, port=port, no_auth=no_auth)
+        sim = MockSimulator(device=device, port=port, host=host, no_auth=no_auth)
         await sim.start()
-        click.echo(f"Mock {device} listening on https://127.0.0.1:{sim.port} "
+        click.echo(f"Mock {device} listening on https://{host}:{sim.port} "
                    f"(auth {'disabled' if no_auth else 'admin:password'})")
         try:
             await asyncio.Event().wait()

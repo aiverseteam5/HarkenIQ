@@ -346,8 +346,14 @@ decay classified as hardware degradation with congestion exonerated (R-M21
 smallest-set logic on ports); **congestion pattern classified load-correlated
 with NO action proposed** (the negative branch is first-class).
 
-**R6-P5 — NETCONFProtocol (CONDITIONAL on the P0 go/no-go per T8; behind
-CompositeProtocol per decision 8 if it proceeds; simulator-gated per D7).**
+**R6-P5 — NETCONFProtocol: DROPPED from R6 (P0 go/no-go, decided by Vinod
+2026-08-25, D13).** Evidence in `docs/designs/r6-p0-spike-report.md` §(c):
+NETCONF does not exist on community SONiC; gNMI Set is the anchor's only
+write path. NETCONF defers wholesale to the §5 real-device gate and lands
+later behind the CompositeProtocol seam (decision 8) without redesign. R6
+action transport = gNMI Set with **mandatory read-back verification** (a
+SetResponse is never proof — the spike showed accepted-but-not-persisted).
+The phase text below is retained for that future slice:
 `protocols/netconf.py` via **ncclient** (get / get-config / edit-config,
 candidate+commit where advertised); NETCONF endpoint added to the P2 simulator;
 CONFIG_RESTORE parity for network devices. Every test marked with the
