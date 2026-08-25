@@ -251,6 +251,14 @@ def validate_config(config: Mapping) -> list[str]:
     peers = config.get("peers", [])
     if not isinstance(peers, list):
         errors.append(f"peers must be a list, got {type(peers).__name__}")
+    elif peers and not config.get("heartbeat", {}).get("secret"):
+        # QA-016 / R-X15: an empty HMAC secret keys the MAC with b"" —
+        # any host on the peer subnet could forge heartbeats and health
+        # summaries. Fail closed at startup, never silently unsigned.
+        errors.append(
+            "heartbeat.secret is required when peers are configured "
+            "(unsigned peer heartbeats are forgeable, R-X15)"
+        )
     else:
         for i, peer in enumerate(peers):
             if not isinstance(peer, dict) or not peer.get("host"):

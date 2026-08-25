@@ -63,7 +63,8 @@ async def sm_server():
 
 
 def make_reporter(port, token="", host="127.0.0.1", **sm_extra):
-    sm = {"site_manager": {"host": host, "port": port, "token": token, **sm_extra}}
+    sm = {"site_manager": {"host": host, "port": port, "token": token,
+                       "tls": False, **sm_extra}}
     return SiteManagerReporter(
         {**sm, "agent": {"id": "agent-aaaa", "name": "rack-12-server-04"}},
         request_timeout=5.0,
@@ -236,10 +237,11 @@ class TestTLS:
         finally:
             await server.stop(grace=None)
 
-    async def test_missing_ca_falls_back_insecure(self, sm_server):
-        # tls requested but no CA provided -> insecure channel (bare R1 configs)
+    async def test_missing_ca_fails_closed(self, sm_server):
+        # QA-017: tls requested but no CA used to SILENTLY downgrade to
+        # plaintext; now it refuses at construction.
+        import pytest as _pytest
+
         service, port = sm_server
-        reporter = make_reporter(port, tls=True)
-        assert reporter.tls is False
-        assert await reporter.send_heartbeat("OBSERVING", {}) is not None
-        await reporter.close()
+        with _pytest.raises(ValueError, match="tls_ca"):
+            make_reporter(port, tls=True)
