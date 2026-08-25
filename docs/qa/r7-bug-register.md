@@ -33,7 +33,7 @@ this campaign's live testing.
 | QA-020 | Agent | MAJOR | Autonomy chain unwired: preconditions/lease-gate/budget/blast-radius/verification never called by Agent or executor; four R3a actions have no Redfish executor branch | OPEN |
 | QA-021 | SM | MAJOR | SuppressionEngine + SMAutonomyEnforcer never instantiated; leases carry defaults (unlimited budget, stop_switch=False) | OPEN |
 | QA-022 | CC | MAJOR | Stop switch = in-process dict; never persisted, never reaches SM/lease | OPEN |
-| QA-023 | Agent | MAJOR | RedfishProtocol.execute_action self-grants full ActionType allow-list (bypasses R-X6 for any direct caller) | OPEN |
+| QA-023 | Agent | MAJOR | RedfishProtocol.execute_action self-grants full ActionType allow-list (bypasses R-X6 for any direct caller) | FIXED@pending — protocol takes `allow_list` at construction (default = R1 set, never full ActionType); agent passes its configured actions.allow_list; 7 tests (refusal, factory passthrough, agent wiring) |
 | QA-024 | Agent | MAJOR | OS signals package (~900 lines) + log-poll loop unwired; SEL/IML never reaches a verdict; log_cursors dead | OPEN |
 | QA-025 | Agent | MAJOR | resources monitor unwired; `HARKENIQ_RESOURCES_PROFILE` env silently discarded (no `resources` config section) — D12 unenforced | FIXED@pending — `resources` config section exists (HARKENIQ_RESOURCES_PROFILE finally works), ResourceMonitor instantiated + _resource_loop wired (degradation ladder stretches poll cadence); 3 wiring tests |
 | QA-026 | Services | MAJOR | Structured JSON logging + request-id middleware imported only by tests; all services use basicConfig text | FIXED@pending — configure_logging (JSON + HARKEN_LOG_PLAIN escape) in all three service mains; X-Request-Id middleware mounted in all three apps |

@@ -60,6 +60,83 @@ class TestRedfishProtocol:
         await proto.disconnect()  # should not raise
 
 
+class TestRedfishAllowList:
+    """QA-023: the protocol-level executor must not self-grant every
+    ActionType — direct callers get the R1 default set (R-X6)."""
+
+    def _connected(self, allow_list=None):
+        proto = RedfishDeviceProtocol(
+            host="http://localhost:9000", allow_list=allow_list
+        )
+        # Refused actions never touch the client; a bare object suffices.
+        proto._client = object()
+        proto._identity = object()
+        proto._vendor = "dell"
+        return proto
+
+    async def test_default_refuses_beyond_r1_set(self):
+        proto = self._connected()
+        result = await proto.execute_action("SEL_CLEAR", {})
+        assert result["success"] is False
+        assert "not in allow list" in result["error"]
+
+    async def test_default_refuses_power_cycle(self):
+        proto = self._connected()
+        result = await proto.execute_action("POWER_CYCLE", {})
+        assert result["success"] is False
+        assert "not in allow list" in result["error"]
+
+    async def test_configured_allow_list_honored(self):
+        proto = self._connected(allow_list=["SEL_CLEAR"])
+        result = await proto.execute_action("IDENTIFY_LED", {})
+        assert result["success"] is False
+        assert "not in allow list" in result["error"]
+
+    async def test_factory_passes_allow_list_through(self):
+        proto = create_device_protocol(
+            "redfish", "http://localhost:9000", allow_list=["IDENTIFY_LED"]
+        )
+        assert proto._allow_list == ["IDENTIFY_LED"]
+
+
+class TestAgentPassesAllowList:
+    """QA-023 wiring: the agent hands its configured actions.allow_list
+    to the Redfish protocol at construction."""
+
+    async def test_configured_list_reaches_protocol(self, monkeypatch):
+        import harkeniq.agent as agent_mod
+        captured: dict = {}
+
+        def fake_create(protocol_name, host, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop-after-capture")
+
+        monkeypatch.setattr(agent_mod, "create_device_protocol", fake_create)
+        agent = agent_mod.Agent({
+            "bmc": {"host": "https://bmc", "username": "u", "password": "p"},
+            "actions": {"allow_list": ["IDENTIFY_LED", "SEL_CLEAR"]},
+        })
+        with pytest.raises(RuntimeError, match="stop-after-capture"):
+            await agent.start()
+        assert captured["allow_list"] == ["IDENTIFY_LED", "SEL_CLEAR"]
+
+    async def test_unconfigured_agent_passes_no_list(self, monkeypatch):
+        import harkeniq.agent as agent_mod
+        captured: dict = {}
+
+        def fake_create(protocol_name, host, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop-after-capture")
+
+        monkeypatch.setattr(agent_mod, "create_device_protocol", fake_create)
+        agent = agent_mod.Agent({
+            "bmc": {"host": "https://bmc", "username": "u", "password": "p"},
+        })
+        with pytest.raises(RuntimeError, match="stop-after-capture"):
+            await agent.start()
+        assert "allow_list" not in captured
+
+
 class TestProtocolError:
     def test_is_harkeniq_error(self):
         from harkeniq.errors import HarkenIQError

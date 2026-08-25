@@ -178,6 +178,11 @@ class Agent:
         proto_kwargs: dict[str, Any] = {}
         if protocol_name == "redfish":
             proto_kwargs["verify_ssl"] = bmc.get("verify_ssl", False)
+            # QA-023: the protocol's internal executor must enforce the
+            # agent's configured allow list, not the full ActionType surface.
+            actions_cfg = self.config.get("actions") or {}
+            if actions_cfg.get("allow_list") is not None:
+                proto_kwargs["allow_list"] = list(actions_cfg["allow_list"])
         elif protocol_name == "ipmi":
             # bmc.port defaults to 443 (Redfish); treat that as unset for IPMI.
             port = bmc.get("port")
