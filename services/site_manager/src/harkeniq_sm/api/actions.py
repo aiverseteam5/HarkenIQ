@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from harkeniq_sm.api.deps import require_site_token
 from harkeniq_sm.approvals import ApprovalError
@@ -15,7 +15,17 @@ router = APIRouter(
 
 
 class Decision(BaseModel):
-    actor: str = "operator"
+    """SM-local decision (QA-006).
+
+    The SM's HTTP auth is a shared site token, so this actor is ASSERTED,
+    not verified — it is recorded as ``sm-local:<actor>`` so the audit
+    trail never mistakes it for an authenticated identity. The verified
+    path is Central Command's /api/approvals (JWT-attributed, routed via
+    RouteApproval). A default identity is refused: the operator must type
+    who they are.
+    """
+
+    actor: str = Field(min_length=1)
 
 
 def _action_dict(row, agent_id: str | None) -> dict:
@@ -62,7 +72,9 @@ async def list_actions(request: Request) -> list[dict]:
 async def approve(action_id: str, decision: Decision, request: Request) -> dict:
     state = request.app.state.sm
     try:
-        row = await state.approvals.approve(action_id, actor=decision.actor)
+        row = await state.approvals.approve(
+            action_id, actor=f"sm-local:{decision.actor}"
+        )
     except ApprovalError as error:
         _raise(error)
     async with state.sessionmaker() as session:
@@ -73,7 +85,9 @@ async def approve(action_id: str, decision: Decision, request: Request) -> dict:
 async def deny(action_id: str, decision: Decision, request: Request) -> dict:
     state = request.app.state.sm
     try:
-        row = await state.approvals.deny(action_id, actor=decision.actor)
+        row = await state.approvals.deny(
+            action_id, actor=f"sm-local:{decision.actor}"
+        )
     except ApprovalError as error:
         _raise(error)
     async with state.sessionmaker() as session:

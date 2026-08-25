@@ -148,7 +148,8 @@ class TestActionsApi:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "approved"
-        assert body["decided_by"] == "op@site"
+        # QA-006: SM-local identities are asserted, and recorded as such.
+        assert body["decided_by"] == "sm-local:op@site"
 
     async def test_deny(self, state, client):
         await state.approvals.report_action(_report())
@@ -171,3 +172,18 @@ class TestActionsApi:
         )
         assert resp.status_code == 409
         assert "denied" in resp.json()["detail"]
+
+
+class TestActorRequired:
+    async def test_empty_actor_rejected(self, state, client):
+        """QA-006: no default identity — an empty actor is a 422."""
+        await state.approvals.report_action(_report())
+        action = (await client.get("/api/actions")).json()[0]
+        resp = await client.post(
+            f"/api/actions/{action['id']}/approve", json={"actor": ""}
+        )
+        assert resp.status_code == 422
+        resp = await client.post(
+            f"/api/actions/{action['id']}/approve", json={}
+        )
+        assert resp.status_code == 422

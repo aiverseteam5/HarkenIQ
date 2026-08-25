@@ -45,8 +45,11 @@ function TokenGate({ onSubmit }: { onSubmit: (token: string) => void }) {
 export default function App() {
   const [page, setPage] = useState<Page>("Overview");
   const [hasToken, setHasToken] = useState(getToken() !== "");
+  // QA-006: no default identity — the operator must type who they are.
+  // This is an ASSERTED name (shared-token dashboard); the server records
+  // it as sm-local:<name>. Verified approvals go through the Console.
   const [actor, setActor] = useState(
-    sessionStorage.getItem("sm_actor") ?? "operator",
+    sessionStorage.getItem("sm_actor") ?? "",
   );
 
   if (!hasToken) {

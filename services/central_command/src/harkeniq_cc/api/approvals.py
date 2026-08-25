@@ -63,8 +63,10 @@ async def _route_decision(
             detail=f"action already decided: {route.decision}",
         )
 
-    # Update the local record
-    await repo.update_decision(route, decision, user.user_id)
+    # QA-006: attribution uses the authenticated identity, preferring
+    # the human-readable email from the validated JWT.
+    decided_by = user.email or user.user_id
+    await repo.update_decision(route, decision, decided_by)
 
     # Route to the SM via gRPC
     delivery = {"accepted": False, "delivered": False, "reason": "not attempted"}
@@ -75,7 +77,7 @@ async def _route_decision(
             token=site.sm_token or "",
             action_id=action_id,
             decision=decision,
-            decided_by=user.user_id,
+            decided_by=decided_by,
             tenant_id=user.tenant_id,
         )
         if delivery.get("delivered"):
@@ -85,7 +87,7 @@ async def _route_decision(
         delivery = {"accepted": False, "delivered": False, "reason": str(exc)}
 
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=decided_by,
         action=f"action.{decision}",
         subject=action_id,
         tenant_id=user.tenant_id,
@@ -101,7 +103,7 @@ async def _route_decision(
     return {
         "action_id": action_id,
         "decision": decision,
-        "decided_by": user.user_id,
+        "decided_by": decided_by,
         "delivery": delivery,
         "route": _route_dict(route),
     }
@@ -189,7 +191,7 @@ async def batch_decide(
     return {
         "processed": len(results),
         "results": results,
-        "decided_by": user.user_id,
+        "decided_by": user.email or user.user_id,
     }
 
 
