@@ -26,6 +26,7 @@ from harkeniq_cc.db.models import (
     CCOutcomeHistory,
     CCSite,
     CCSkillDelivery,
+    CCStopSwitch,
     CCUsageSnapshot,
     CCWarranty,
     utcnow,
@@ -722,6 +723,35 @@ class AutonomyBudgetRepo:
     async def delete(self, budget: CCAutonomyBudget) -> None:
         await self.session.delete(budget)
         await self.session.flush()
+
+
+class StopSwitchRepo:
+    """QA-022: persisted stop-switch state, one row per tenant."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, tenant_id: str) -> Optional[CCStopSwitch]:
+        return (
+            await self.session.execute(
+                select(CCStopSwitch).where(CCStopSwitch.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+
+    async def is_active(self, tenant_id: str) -> bool:
+        row = await self.get(tenant_id)
+        return bool(row.active) if row is not None else False
+
+    async def set(self, tenant_id: str, active: bool, changed_by: str) -> CCStopSwitch:
+        row = await self.get(tenant_id)
+        if row is None:
+            row = CCStopSwitch(tenant_id=tenant_id)
+            self.session.add(row)
+        row.active = active
+        row.changed_by = changed_by
+        row.updated_at = utcnow()
+        await self.session.flush()
+        return row
 
 
 class OutcomeHistoryRepo:

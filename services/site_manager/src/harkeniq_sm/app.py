@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from harkeniq_sm.api import actions as actions_api
 from harkeniq_sm.api import audit as audit_api
+from harkeniq_sm.api import autonomy as autonomy_api
 from harkeniq_sm.api import devices as devices_api
 from harkeniq_sm.api import firmware_campaigns as firmware_campaigns_api
 from harkeniq_sm.api import domains as domains_api
@@ -39,6 +40,7 @@ def create_app(state) -> FastAPI:
     app.include_router(incidents_api.router)
     app.include_router(actions_api.router)
     app.include_router(audit_api.router)
+    app.include_router(autonomy_api.router)
     app.include_router(firmware_campaigns_api.router)
     app.include_router(skills_api.router)
 

@@ -49,6 +49,10 @@ class AppState:
     # R5: directed-directive service + firmware updater over it
     directives: object = None
     firmware_updater: object = None
+    # QA-021 (R7-P3): autonomy enforcement wired into the runtime
+    identity: object = None      # AgentIdentityService — signs leases
+    autonomy: object = None      # SMAutonomyEnforcer — budgets + stop switch
+    suppression: object = None   # SuppressionEngine — A2.6
     started: asyncio.Event = field(default_factory=asyncio.Event)
     # Set when an in-memory sqlite DSN was remapped to a temp file;
     # removed on shutdown.
@@ -78,7 +82,23 @@ async def make_state(config: SMConfig) -> AppState:
         await create_all(state.engine)
     state.sessionmaker = make_sessionmaker(state.engine)
     state.ingest = IngestService(state.sessionmaker, config)
-    state.correlation = CorrelationEngine(state.sessionmaker, config)
+
+    # QA-021: instantiate the autonomy chain that R3a built but never
+    # constructed. Leases are now signed with a persisted SM keypair and
+    # carry real budgets, stop-switch state, and suppression domains.
+    from harkeniq_sm.agent_identity import (
+        AgentIdentityService, load_or_generate_sm_keypair,
+    )
+    from harkeniq_sm.autonomy import SMAutonomyEnforcer
+    from harkeniq_sm.suppression import SuppressionEngine
+    sm_key = await load_or_generate_sm_keypair(state.sessionmaker)
+    state.identity = AgentIdentityService(state.sessionmaker, sm_key)
+    state.autonomy = SMAutonomyEnforcer()
+    state.suppression = SuppressionEngine()
+
+    state.correlation = CorrelationEngine(
+        state.sessionmaker, config, suppression=state.suppression
+    )
     state.ingest.on_onset = state.correlation.on_onset
 
     # R3b-1 C1: reasoning pipeline with optional LLM enrichment
@@ -140,11 +160,15 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
 
     servicer = AgentServiceServicer(
         state.ingest, approvals=state.approvals,
+        identity_service=getattr(state, "identity", None),
         directives=getattr(state, "directives", None),
+        autonomy=getattr(state, "autonomy", None),
+        suppression=getattr(state, "suppression", None),
     )
     sm_servicer = SiteManagerServiceServicer(
         state.sessionmaker, state.approvals, config,
         directives=getattr(state, "directives", None),
+        autonomy=getattr(state, "autonomy", None),
     )
     grpc_server, grpc_port = build_server(config, servicer, sm_servicer=sm_servicer)
     state.grpc_port = grpc_port

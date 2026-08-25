@@ -37,12 +37,14 @@ logger = logging.getLogger("harkeniq.sm.grpc")
 class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
     def __init__(
         self, ingest: IngestService, approvals=None, identity_service=None,
-        directives=None,
+        directives=None, autonomy=None, suppression=None,
     ) -> None:
         self.ingest = ingest
         self.approvals = approvals  # attached by the approvals phase
         self.identity_service = identity_service  # R3a: AgentIdentityService
         self.directives = directives  # R5: DirectiveService
+        self.autonomy = autonomy  # QA-021: SMAutonomyEnforcer
+        self.suppression = suppression  # QA-021: SuppressionEngine
 
     async def RegisterAgent(self, request, context):
         site_name = await self.ingest.register(
@@ -102,14 +104,42 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
             peer_status=dict(request.peer_status),
         )
 
-        # R3a: issue signed authorization lease if identity service is active
+        # R3a: issue signed authorization lease if identity service is active.
+        # QA-021: the lease carries the enforcer's real budgets, stop-switch
+        # state, and the suppression engine's active domains — no more
+        # unlimited-budget defaults.
         lease_bytes = b""
         lease_expiry_unix = 0
         if self.identity_service and accepted:
             try:
+                kwargs: dict = {}
+                if self.autonomy is not None:
+                    from harkeniq.actions.executor import DEFAULT_ALLOW_LIST
+
+                    policy_actions = self.autonomy.policy_actions()
+                    classes = sorted(set(DEFAULT_ALLOW_LIST) | set(policy_actions))
+                    budgets = {a: -1 for a in classes}
+                    budgets.update(
+                        self.autonomy.get_budget_for_agent(request.agent_id)
+                    )
+                    rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+                    ceiling = max(
+                        ["low", *policy_actions.values()],
+                        key=lambda r: rank.get(r, 1),
+                    )
+                    kwargs = {
+                        "action_classes": classes,
+                        "budget_remaining": budgets,
+                        "risk_ceiling": ceiling,
+                        "stop_switch": self.autonomy.stop_switch_active,
+                    }
+                if self.suppression is not None:
+                    kwargs["suppression_domains"] = (
+                        self.suppression.get_suppressed_domains()
+                    )
                 lease_bytes, lease_expiry_unix = (
                     await self.identity_service.issue_lease(
-                        agent_id=request.agent_id,
+                        agent_id=request.agent_id, **kwargs,
                     )
                 )
             except Exception as e:
@@ -135,6 +165,9 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
         if self.approvals is None:
             return harkeniq_pb2.ActionAck(accepted=False)
         accepted = await self.approvals.report_action(request)
+        # QA-021: completed executions draw down the site budget window
+        if accepted and self.autonomy is not None and request.status == "COMPLETED":
+            self.autonomy.record_execution(request.type)
         return harkeniq_pb2.ActionAck(accepted=accepted)
 
     async def PollActionDecisions(self, request, context):
@@ -208,11 +241,13 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         approvals: ApprovalService,
         config: SMConfig,
         directives=None,
+        autonomy=None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.approvals = approvals
         self.config = config
         self.directives = directives  # R5-2: skill installs from CC
+        self.autonomy = autonomy  # QA-021/022: SMAutonomyEnforcer
 
     async def InstallSkill(self, request, context):
         """R5-2: CC pushes a marketplace skill; queue directives for
@@ -462,13 +497,55 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         )
 
     async def PushPolicy(self, request, context):
+        """QA-021/022: apply CC autonomy policy for real (was log-and-ack).
+
+        ``autonomy_budgets_json`` carries either a bare policy list or
+        ``{"stop_switch": bool, "stop_switch_by": str, "policies": [...]}``
+        where each policy is {action_type, max_per_window, window_seconds,
+        risk_level}. Stop-switch transitions are audit-chained.
+        """
         logger.info(
             "PushPolicy from CC: tenant=%s site=%s policies=%d bytes budgets=%d bytes",
             request.tenant_id, request.site_id,
             len(request.approval_policies_json),
             len(request.autonomy_budgets_json),
         )
-        # R3: store and enforce; for now, log and acknowledge.
+        if self.autonomy is None:
+            return harkeniq_pb2.PolicyAck(
+                accepted=False, reason="autonomy enforcer not configured"
+            )
+        if not request.autonomy_budgets_json:
+            return harkeniq_pb2.PolicyAck(accepted=True)
+        try:
+            payload = json.loads(request.autonomy_budgets_json)
+        except json.JSONDecodeError as e:
+            return harkeniq_pb2.PolicyAck(
+                accepted=False, reason=f"invalid autonomy_budgets_json: {e}"
+            )
+        policies = payload if isinstance(payload, list) else payload.get("policies", [])
+        policies = [p for p in policies if isinstance(p, dict) and p.get("action_type")]
+        if policies:
+            self.autonomy.update_policy(policies)
+        if isinstance(payload, dict) and "stop_switch" in payload:
+            desired = bool(payload["stop_switch"])
+            by = str(
+                payload.get("stop_switch_by") or f"cc:{request.tenant_id}"
+            )
+            if desired != self.autonomy.stop_switch_active:
+                if desired:
+                    self.autonomy.activate_stop_switch(by)
+                else:
+                    self.autonomy.deactivate_stop_switch(by)
+                async with self.sessionmaker() as session:
+                    from harkeniq_sm.db.repos import AuditRepo
+                    await AuditRepo(session).append(
+                        actor=by,
+                        action="stop_switch.activate" if desired
+                        else "stop_switch.deactivate",
+                        subject=f"site:{request.site_id or self.config.site_name}",
+                        detail={"source": "cc.push_policy"},
+                    )
+                    await session.commit()
         return harkeniq_pb2.PolicyAck(accepted=True)
 
 

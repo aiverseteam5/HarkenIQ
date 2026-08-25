@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     ApprovalGroupRepo,
     ApprovalPolicyRepo,
     AuditRepo,
     AutonomyBudgetRepo,
+    StopSwitchRepo,
 )
 
 router = APIRouter(prefix="/api/policies", tags=["policies"])
@@ -462,6 +463,7 @@ async def create_autonomy_budget(
     body: BudgetCreateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Create or update an autonomy budget (upserts on tenant_id + device_type)."""
     budget = await AutonomyBudgetRepo(session).upsert(
@@ -480,6 +482,9 @@ async def create_autonomy_budget(
         detail={"device_type": body.device_type, "level": body.level},
     )
     await session.commit()
+    # QA-022: budgets shape leases; propagate to SMs now
+    from harkeniq_cc.policy_push import push_policy_to_all_sites
+    await push_policy_to_all_sites(state.config, state.sessionmaker)
     return {"budget": _budget_dict(budget)}
 
 
@@ -491,6 +496,7 @@ async def delete_autonomy_budget(
     budget_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Delete an autonomy budget."""
     repo = AutonomyBudgetRepo(session)
@@ -505,16 +511,42 @@ async def delete_autonomy_budget(
         tenant_id=user.tenant_id,
     )
     await session.commit()
+    # QA-022: budgets shape leases; propagate to SMs now
+    from harkeniq_cc.policy_push import push_policy_to_all_sites
+    await push_policy_to_all_sites(state.config, state.sessionmaker)
     return {"deleted": True, "budget_id": budget_id}
 
 
 # ---------------------------------------------------------------------------
 # R3a: Stop Switch (A2.2)
 # ---------------------------------------------------------------------------
+# QA-022: persisted per-tenant (cc_stop_switch) and pushed to every SM
+# immediately on a flip, then re-converged by the fleet-poll cycle.
 
-# In-memory stop switch state (persisted via audit log for recovery).
-# In production this would be in the database; for R3a this is sufficient.
-_stop_switch_state: dict[str, bool] = {}  # tenant_id -> active
+
+async def _flip_stop_switch(active: bool, user, session, state) -> dict:
+    await StopSwitchRepo(session).set(
+        user.tenant_id, active, changed_by=user.user_id
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="stop_switch.activate" if active else "stop_switch.deactivate",
+        subject=user.tenant_id,
+        tenant_id=user.tenant_id,
+        detail={"changed_by": user.user_id},
+    )
+    await session.commit()
+    # Propagate now — agents drop to observe-only on the next lease
+    # renewal, not the next poll tick. Push failures are logged, never
+    # surfaced: the persisted row re-converges via the fleet poller.
+    from harkeniq_cc.policy_push import push_policy_to_all_sites
+
+    pushed = await push_policy_to_all_sites(state.config, state.sessionmaker)
+    return {
+        "stop_switch": active,
+        "tenant_id": user.tenant_id,
+        "sites_pushed": pushed,
+    }
 
 
 @router.post(
@@ -524,6 +556,7 @@ _stop_switch_state: dict[str, bool] = {}  # tenant_id -> active
 async def activate_stop_switch(
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Activate the fleet-wide stop switch: deny all autonomous actions.
 
@@ -531,16 +564,7 @@ async def activate_stop_switch(
     observe-only once their current lease expires.  SM propagates the
     stop switch state via the next lease renewal.
     """
-    _stop_switch_state[user.tenant_id] = True
-    await AuditRepo(session).append(
-        actor=user.user_id,
-        action="stop_switch.activate",
-        subject=user.tenant_id,
-        tenant_id=user.tenant_id,
-        detail={"activated_by": user.user_id},
-    )
-    await session.commit()
-    return {"stop_switch": True, "tenant_id": user.tenant_id}
+    return await _flip_stop_switch(True, user, session, state)
 
 
 @router.post(
@@ -550,28 +574,17 @@ async def activate_stop_switch(
 async def deactivate_stop_switch(
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Deactivate the stop switch: resume normal autonomous operation."""
-    _stop_switch_state[user.tenant_id] = False
-    await AuditRepo(session).append(
-        actor=user.user_id,
-        action="stop_switch.deactivate",
-        subject=user.tenant_id,
-        tenant_id=user.tenant_id,
-        detail={"deactivated_by": user.user_id},
-    )
-    await session.commit()
-    return {"stop_switch": False, "tenant_id": user.tenant_id}
+    return await _flip_stop_switch(False, user, session, state)
 
 
 @router.get("/stop-switch")
 async def get_stop_switch_state(
     user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Get current stop switch state for this tenant."""
-    return {"stop_switch": _stop_switch_state.get(user.tenant_id, False)}
-
-
-def is_stop_switch_active(tenant_id: str) -> bool:
-    """Check stop switch state (used by lease issuance)."""
-    return _stop_switch_state.get(tenant_id, False)
+    active = await StopSwitchRepo(session).is_active(user.tenant_id)
+    return {"stop_switch": active}

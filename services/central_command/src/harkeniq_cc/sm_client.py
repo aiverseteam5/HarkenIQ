@@ -267,3 +267,31 @@ class SMClient:
                 "queued": ack.queued,
                 "reason": ack.reason,
             }
+
+    async def push_policy(
+        self,
+        sm_endpoint: str,
+        token: Optional[str],
+        tenant_id: str,
+        site_id: str,
+        autonomy_budgets_json: str = "",
+        approval_policies_json: str = "",
+    ) -> dict:
+        """QA-022: push autonomy budgets + stop switch to a Site Manager.
+
+        ``autonomy_budgets_json`` shape is defined in
+        harkeniq_cc.policy_push (stop_switch + policies list); the SM
+        applies it to its SMAutonomyEnforcer, and leases carry it.
+        """
+        async with self._channel(sm_endpoint) as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            ack = await stub.PushPolicy(
+                harkeniq_pb2.PolicyUpdate(
+                    tenant_id=tenant_id,
+                    site_id=site_id,
+                    approval_policies_json=approval_policies_json,
+                    autonomy_budgets_json=autonomy_budgets_json,
+                ),
+                metadata=_metadata(token),
+            )
+            return {"accepted": ack.accepted, "reason": ack.reason}

@@ -76,7 +76,12 @@ class MockSimulator:
         self._site: Optional[web.TCPSite] = None
         self._port: int = 0
         self._state: dict[str, Any] = {}
-        self._action_state: dict[str, Any] = {"led": {}, "diagnostics": [], "fan_reset": []}
+        self._action_state: dict[str, Any] = {
+            "led": {}, "diagnostics": [], "fan_reset": [],
+            # QA-020: R3a action surfaces
+            "log_clear": [], "bmc_reset": [], "power_cycle": [],
+            "power_cap_watts": None,
+        }
         self._bmc_attributes: dict[str, Any] = dict(_DEFAULT_DELL_ATTRIBUTES)
         # R4-3 P19: blue-green firmware banks + async update tasks
         self._firmware_banks: dict[str, dict[str, Any]] = {}
@@ -152,7 +157,11 @@ class MockSimulator:
     def _load_fixtures(self):
         """Load all JSON fixture files into mutable in-memory state."""
         self._state = {}
-        self._action_state = {"led": {}, "diagnostics": [], "fan_reset": []}
+        self._action_state = {
+            "led": {}, "diagnostics": [], "fan_reset": [],
+            "log_clear": [], "bmc_reset": [], "power_cycle": [],
+            "power_cap_watts": None,
+        }
         self._bmc_attributes = dict(_DEFAULT_DELL_ATTRIBUTES)
         self._firmware_banks = {}
         self._update_tasks = {}
@@ -328,6 +337,24 @@ class MockSimulator:
             f"/redfish/v1/Managers/{mid}/Oem/Dell/DellAttributes/{mid}",
             self._handle_dell_attributes_get,
         )
+        # QA-020: R3a action endpoints (SEL clear, BMC reset, power
+        # cycle, power cap) — the executor finally has these branches.
+        r.add_post(
+            f"/redfish/v1/Managers/{mid}/LogServices/Sel"
+            "/Actions/LogService.ClearLog",
+            self._handle_log_clear("sel_entries"),
+        )
+        r.add_post(
+            f"/redfish/v1/Managers/{mid}/Actions/Manager.Reset",
+            self._handle_manager_reset,
+        )
+        r.add_post(
+            f"/redfish/v1/Systems/{sid}/Actions/ComputerSystem.Reset",
+            self._handle_system_reset,
+        )
+        r.add_patch(
+            f"/redfish/v1/Chassis/{sid}/Power", self._handle_power_patch
+        )
 
         # Individual DIMMs and MemoryMetrics
         for bank in ("A", "B"):
@@ -365,6 +392,22 @@ class MockSimulator:
         r.add_patch("/redfish/v1/Chassis/1/Drives/{drive_id}", self._handle_chassis_drive_patch)
         r.add_get("/redfish/v1/Managers/1/ActiveHealthSystem", self._handle_hpe_ahs)
         r.add_patch("/redfish/v1/Chassis/1/Thermal", self._handle_hpe_thermal_patch)
+        # QA-020: R3a action endpoints (IML clear, BMC reset, power
+        # cycle, power cap)
+        r.add_post(
+            "/redfish/v1/Systems/1/LogServices/IML"
+            "/Actions/LogService.ClearLog",
+            self._handle_log_clear("iml_entries"),
+        )
+        r.add_post(
+            "/redfish/v1/Managers/1/Actions/Manager.Reset",
+            self._handle_manager_reset,
+        )
+        r.add_post(
+            "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset",
+            self._handle_system_reset,
+        )
+        r.add_patch("/redfish/v1/Chassis/1/Power", self._handle_power_patch)
 
         # Individual DIMMs and MemoryMetrics (HPE: proc{n}dimm{m})
         for proc in (1, 2):
@@ -537,6 +580,54 @@ class MockSimulator:
         body = await request.json()
         self._action_state["fan_reset"].append({"vendor": "hpe", "body": body})
         return web.json_response(self._state.get("thermal", {}))
+
+    def _handle_log_clear(self, fixture_name: str):
+        """QA-020: atomic SEL/IML clear (LogService.ClearLog)."""
+        async def handler(request: web.Request) -> web.Response:
+            if not self._check_auth(request):
+                return web.json_response({"error": {"message": "No valid session"}}, status=401)
+            fixture = self._state.get(fixture_name)
+            if isinstance(fixture, dict):
+                fixture["Members"] = []
+                fixture["Members@odata.count"] = 0
+            self._action_state["log_clear"].append(fixture_name)
+            return web.json_response({}, status=200)
+        return handler
+
+    async def _handle_manager_reset(self, request: web.Request) -> web.Response:
+        """QA-020: BMC reset (Manager.Reset)."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        self._action_state["bmc_reset"].append(body.get("ResetType", ""))
+        return web.json_response({}, status=200)
+
+    async def _handle_system_reset(self, request: web.Request) -> web.Response:
+        """QA-020: host power cycle (ComputerSystem.Reset)."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        self._action_state["power_cycle"].append(body.get("ResetType", ""))
+        return web.json_response({}, status=200)
+
+    async def _handle_power_patch(self, request: web.Request) -> web.Response:
+        """QA-020: power cap write; persists so read-back verification works."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        controls = body.get("PowerControl") or []
+        limit = ((controls[0].get("PowerLimit") or {}) if controls else {}).get(
+            "LimitInWatts"
+        )
+        power = self._state.get("power")
+        if limit is not None and isinstance(power, dict):
+            existing = power.get("PowerControl") or [{}]
+            if not existing:
+                existing = [{}]
+            existing[0].setdefault("PowerLimit", {})["LimitInWatts"] = limit
+            power["PowerControl"] = existing
+            self._action_state["power_cap_watts"] = limit
+        return web.json_response(self._state.get("power", {}))
 
     async def _handle_action_state(self, request: web.Request) -> web.Response:
         """Return applied action state for test assertions."""

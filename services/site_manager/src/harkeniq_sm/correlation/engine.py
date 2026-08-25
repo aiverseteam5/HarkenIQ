@@ -14,17 +14,29 @@ from typing import Optional
 
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.correlation import rules
-from harkeniq_sm.db.repos import DeviceRepo, SiteRepo
+from harkeniq_sm.db.repos import DeviceRepo, DomainRepo, SiteRepo, SubsystemStateRepo
 from harkeniq_sm.incidents import IncidentService
 
 logger = logging.getLogger("harkeniq.sm.correlation")
 
+# QA-021: agent subsystem -> suppression event family (A2.6 policy keys)
+_EVENT_FAMILY = {
+    "psu": "power",
+    "power": "power",
+    "thermal": "thermal",
+    "fan": "thermal",
+    "network": "connectivity",
+    "interface": "connectivity",
+}
+
 
 class CorrelationEngine:
-    def __init__(self, sessionmaker, config: SMConfig) -> None:
+    def __init__(self, sessionmaker, config: SMConfig, suppression=None) -> None:
         self.sessionmaker = sessionmaker
         self.config = config
         self.incidents = IncidentService(config)
+        # QA-021: SuppressionEngine (A2.6), attached by the runtime
+        self.suppression = suppression
         self._lock = asyncio.Lock()
 
     async def on_onset(
@@ -52,6 +64,9 @@ class CorrelationEngine:
                     session, self.config, site.id, self.incidents,
                     datetime.now(timezone.utc),
                 )
+                await self._evaluate_suppression(
+                    session, device_id, subsystem, severity
+                )
                 await session.commit()
 
     async def sweep(self, now: Optional[datetime] = None) -> None:
@@ -74,7 +89,52 @@ class CorrelationEngine:
                 await self.incidents.resolve_recovered_children(session)
                 await self.incidents.resolve_recovered_ambiguities(session)
                 await self.incidents.auto_resolve_parents(session)
+                await self._suppression_recovery(session)
                 await session.commit()
+
+    # -- QA-021: correlated-conclusion suppression (A2.6) -------------------
+
+    async def _evaluate_suppression(
+        self, session, device_id: str, subsystem: str, severity: str
+    ) -> None:
+        """Feed a verdict onset into the SuppressionEngine for every fault
+        domain the device belongs to (Path 1 / Path 2 / hair-trigger)."""
+        if self.suppression is None or severity not in ("WARNING", "CRITICAL"):
+            return
+        import time as _time
+
+        from harkeniq_sm.suppression import CorrelationEvent
+
+        family = _EVENT_FAMILY.get(subsystem, "component")
+        domains = await DomainRepo(session).domains_for_device(device_id)
+        for domain in domains:
+            self.suppression.evaluate(
+                CorrelationEvent(
+                    device_id=device_id,
+                    domain_id=domain.id,
+                    domain_kind=domain.kind,
+                    event_family=family,
+                    severity=severity,
+                    timestamp=_time.time(),
+                )
+            )
+
+    async def _suppression_recovery(self, session) -> None:
+        """Periodic auto-recovery check for suppressed domains: all member
+        devices back to OK starts the stability clock (10 min)."""
+        if self.suppression is None:
+            return
+        suppressed = self.suppression.get_suppressed_domains()
+        if not suppressed:
+            return
+        non_ok_devices = {
+            s.device_id for s in await SubsystemStateRepo(session).non_ok()
+        }
+        domain_repo = DomainRepo(session)
+        for domain_id in suppressed:
+            members = await domain_repo.members(domain_id)
+            all_healthy = not any(m in non_ok_devices for m in members)
+            self.suppression.check_auto_recovery(domain_id, all_healthy)
 
     async def run(self) -> None:
         """Sweeper loop; cancelled with the runtime TaskGroup."""

@@ -118,6 +118,14 @@ class ActionExecutor:
                 await self._firmware_update(action)
             elif action.type == ActionType.FIRMWARE_ROLLBACK:
                 await self._firmware_rollback(action)
+            elif action.type == ActionType.SEL_CLEAR:
+                await self._sel_clear()
+            elif action.type == ActionType.BMC_RESET:
+                await self._bmc_reset()
+            elif action.type == ActionType.POWER_CYCLE:
+                await self._power_cycle(action)
+            elif action.type == ActionType.POWER_CAP_ADJUST:
+                await self._power_cap_adjust(action)
             else:  # pragma: no cover - allow list guards this
                 raise ActionError(f"Unknown action type: {action.type}")
         except (RedfishError, ActionError) as e:
@@ -267,6 +275,60 @@ class ActionExecutor:
             if self.task_poll_interval > 0:
                 await asyncio.sleep(self.task_poll_interval)
         raise ActionError(f"Firmware task did not finish: {task_uri}")
+
+    # -- R3a actions (QA-020: these four had no Redfish branch until R7) ----
+
+    async def _sel_clear(self) -> None:
+        """Clear the hardware event log: Dell SEL / HPE IML (atomic)."""
+        if self.vendor == "dell":
+            path = (
+                f"/redfish/v1/Managers/{self.manager_id}/LogServices/Sel"
+                "/Actions/LogService.ClearLog"
+            )
+        else:
+            path = (
+                f"/redfish/v1/Systems/{self.chassis_id}/LogServices/IML"
+                "/Actions/LogService.ClearLog"
+            )
+        await self.client.post(path, {})
+
+    async def _bmc_reset(self) -> None:
+        """Graceful BMC restart; the host OS is untouched."""
+        await self.client.post(
+            f"/redfish/v1/Managers/{self.manager_id}/Actions/Manager.Reset",
+            {"ResetType": "GracefulRestart"},
+        )
+
+    async def _power_cycle(self, action: Action) -> None:
+        """Host power cycle (A2.1 preconditions gate this upstream)."""
+        reset_type = action.params.get("reset_type", "ForceRestart")
+        await self.client.post(
+            f"/redfish/v1/Systems/{self.chassis_id}"
+            "/Actions/ComputerSystem.Reset",
+            {"ResetType": reset_type},
+        )
+
+    async def _power_cap_adjust(self, action: Action) -> None:
+        """Set the chassis power cap and read back the applied value."""
+        raw = action.params.get("target_watts", "")
+        try:
+            target = int(raw)
+        except (TypeError, ValueError):
+            raise ActionError(
+                "POWER_CAP_ADJUST requires an integer 'target_watts' param"
+            )
+        path = f"/redfish/v1/Chassis/{self.chassis_id}/Power"
+        await self.client.patch(
+            path, {"PowerControl": [{"PowerLimit": {"LimitInWatts": target}}]}
+        )
+        data = await self.client.get(path)
+        control = (data.get("PowerControl") or [{}])[0]
+        applied = (control.get("PowerLimit") or {}).get("LimitInWatts")
+        if applied != target:
+            raise ActionError(
+                f"POWER_CAP_ADJUST verification failed: cap is {applied!r}, "
+                f"expected {target}"
+            )
 
     async def _fan_reset(self) -> None:
         if self.vendor == "dell":

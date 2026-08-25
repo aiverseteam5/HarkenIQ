@@ -61,6 +61,29 @@ async def fleet_poll_loop(state) -> None:
 
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
+
+                        # QA-022: re-converge autonomy policy + stop
+                        # switch each cycle (SM state is in-process; an
+                        # SM restart or missed immediate push heals here).
+                        try:
+                            from harkeniq_cc.policy_push import (
+                                build_autonomy_payload,
+                            )
+                            payload = await build_autonomy_payload(
+                                session, state.config.tenant_id
+                            )
+                            await client.push_policy(
+                                site.sm_endpoint,
+                                site.sm_token,
+                                state.config.tenant_id,
+                                site.id,
+                                autonomy_budgets_json=payload,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Policy push failed for %s: %s",
+                                site.site_name, exc,
+                            )
                         logger.debug(
                             "Fleet poll OK for %s: %d devices, %d outcomes",
                             site.site_name,

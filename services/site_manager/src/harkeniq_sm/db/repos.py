@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional, Sequence
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_sm.db.models import (
@@ -42,9 +43,20 @@ class SiteRepo:
             await self.session.execute(select(Site).where(Site.name == name))
         ).scalar_one_or_none()
         if site is None:
-            site = Site(name=name)
-            self.session.add(site)
-            await self.session.flush()
+            try:
+                # Savepoint: a lost insert race must not roll back the
+                # caller's other uncommitted work.
+                async with self.session.begin_nested():
+                    site = Site(name=name)
+                    self.session.add(site)
+            except IntegrityError:
+                # Concurrent session won the race (sites.name is unique);
+                # adopt the winner.
+                site = (
+                    await self.session.execute(
+                        select(Site).where(Site.name == name)
+                    )
+                ).scalar_one()
         return site
 
 

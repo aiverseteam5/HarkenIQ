@@ -204,6 +204,16 @@ class ActionRow(Base):
     __table_args__ = (UniqueConstraint("device_id", "agent_action_id"),)
 
 
+class SMSettingRow(Base):
+    """Key-value settings store (QA-021: SM identity keypair persistence)."""
+
+    __tablename__ = "sm_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AgentIdentityRow(Base):
     """R3a: per-agent Ed25519 public key + SM-issued certificate (A2.4)."""
 

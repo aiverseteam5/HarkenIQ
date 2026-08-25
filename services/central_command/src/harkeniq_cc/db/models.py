@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -179,6 +180,21 @@ class CCApprovalPolicy(Base):
     status: Mapped[str] = mapped_column(String(32), default="active")
     created_by: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCStopSwitch(Base):
+    """QA-022: persisted fleet-wide stop switch (was an in-process dict).
+
+    One row per tenant; survives CC restarts and is pushed to every SM
+    via PushPolicy so leases carry it (R-C5).
+    """
+
+    __tablename__ = "cc_stop_switch"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    changed_by: Mapped[str] = mapped_column(String(255), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -19,13 +19,22 @@ from typing import Any, Optional
 
 from harkeniq.actions.executor import ActionExecutor
 from harkeniq.actions.queue import ActionQueue
+from harkeniq.autonomy.blast_radius import BlastRadiusLimiter
+from harkeniq.autonomy.budget import AgentBudgetEnforcer
 from harkeniq.autonomy.claim import Claim, ClaimAck
 from harkeniq.autonomy.identity import AgentIdentity
 from harkeniq.autonomy.lease import AuthorizationLease, InvalidLease
 from harkeniq.autonomy.partition_fence import PartitionFence
 from harkeniq.autonomy.peer_keyring import PeerKeyRing
 from harkeniq.autonomy.peer_protocol import PeerProtocol
+from harkeniq.autonomy.preconditions import ACTION_RISK, check_preconditions
 from harkeniq.autonomy.tier import TierLevel, calculate_tier
+from harkeniq.autonomy.verification import (
+    VERIFICATION_CHECKS,
+    VERIFICATION_WINDOWS,
+    OutcomeStatus,
+    evaluate_verification,
+)
 from harkeniq.errors import ConfigError, HarkenIQError, HeartbeatError
 from harkeniq.heartbeat.protocol import (
     MSG_CLAIM,
@@ -134,6 +143,12 @@ class Agent:
         self.current_tier: TierLevel = TierLevel.T2
         self._sm_connected: bool = False
         self._sm_last_contact: float = 0.0
+        # QA-020: the R3a enforcement chain, finally instantiated. The
+        # budget enforcer mirrors the lease (updated every heartbeat ack);
+        # the blast-radius limiter rate-limits disruptive actions locally.
+        self.budget: AgentBudgetEnforcer = AgentBudgetEnforcer()
+        self.blast_radius: BlastRadiusLimiter = BlastRadiusLimiter()
+        self._verification_tasks: set[asyncio.Task] = set()
         # R3b-2: mesh protocol components
         self.peer_keyring: PeerKeyRing = PeerKeyRing()
         self.peer_protocol: Optional[PeerProtocol] = None
@@ -769,6 +784,13 @@ class Agent:
             self.current_lease = AuthorizationLease.parse(
                 bytes(ack.authorization_lease), self.agent_identity
             )
+            # QA-020: mirror the lease into the local budget enforcer
+            # (budget.py documents this call "on every heartbeat ack";
+            # it never happened until now).
+            self.budget.update_from_lease(
+                self.current_lease.budget_remaining,
+                self.current_lease.stop_switch,
+            )
             logger.debug(
                 "Lease renewed: expiry=%s, actions=%s",
                 self.current_lease.lease_expiry,
@@ -942,10 +964,9 @@ class Agent:
             sensor_id=f"directive:{directive.directive_id}",
             skill_name=directive.issued_by or "sm-directive",
         )
-        if action_type == ActionType.CONFIG_RESTORE:
-            await self._execute_config_restore_playbook(action)
-        else:
-            await self.executor.execute(action)
+        # QA-020: SM delivery is not a policy bypass — the same gate
+        # chain (preconditions, stop switch, blast radius) applies here.
+        await self._execute_gated(action)
         outcome = action.outcome
         if outcome is None:
             return False, "no outcome recorded"
@@ -968,6 +989,220 @@ class Agent:
             except HarkenIQError as e:
                 return False, f"installed but reload failed: {e}"
         return accepted, reason
+
+    # -- QA-020: autonomy gate chain (A2.1/A2.2, R7-P2) ----------------------
+    #
+    # preconditions -> lease.allows_action -> stop switch -> blast radius
+    # -> execute -> budget/blast accounting -> deferred verification.
+    #
+    # Hard gates (refuse even a human-approved action — approval does not
+    # make an unsafe action safe): preconditions, stop switch, fully
+    # expired lease, blast-radius rate limit. Authorization-shaped lease
+    # verdicts ("propose", class-membership deny) are satisfied by the
+    # approval the action already carries; they gate autonomous
+    # initiative, which does not exist yet (T3 loop is future work).
+
+    def _authorize_execution(self, action: Action) -> tuple[bool, str]:
+        """Run the gate chain for one approved action. (allowed, reason)."""
+        # Actions outside the configured allow list fall through to the
+        # executor, whose refusal is the canonical R-X6 audit event.
+        if (
+            self.executor is not None
+            and action.type.value not in self.executor.allow_list
+        ):
+            return True, ""
+
+        device_state, agent_state = self._precondition_states(action)
+        pre = check_preconditions(action.type, device_state, agent_state)
+        if not pre.passed:
+            return False, f"preconditions failed: {pre.reason}"
+
+        if (
+            self.current_lease is not None and self.current_lease.stop_switch
+        ) or self.budget.stop_switch_active:
+            return False, "stop switch active"
+
+        if self.current_lease is not None:
+            risk = ACTION_RISK.get(action.type, "low")
+            verdict = self.current_lease.allows_action(
+                action.type.value, risk, self._sm_connected
+            )
+            if verdict == "deny" and self.current_lease.is_fully_expired():
+                return False, "authorization lease fully expired"
+            if verdict != "execute":
+                logger.info(
+                    "Lease gate returned %r for %s; carried approval "
+                    "satisfies it", verdict, action.type.value,
+                )
+
+        if not self.blast_radius.allows(action.type):
+            return False, (
+                f"blast radius: rate limit reached for {action.type.value}"
+            )
+        return True, ""
+
+    def _precondition_states(self, action: Action) -> tuple[dict, dict]:
+        """Assemble the A2.1 precondition inputs from what the agent can
+        honestly observe. Unobservable facts stay at their fail-closed
+        defaults (e.g. SEL fill and OS heartbeat until QA-024 lands)."""
+        health = self.health_summary() if self._last_verdicts else {}
+        actions_cfg = self.config.get("actions") or {}
+        if health:
+            overall = (
+                "ok" if all(v == "OK" for v in health.values()) else "degraded"
+            )
+        else:
+            # No verdicts yet (e.g. a directive before the first skill
+            # cycle): fall back to the device's own health rollup.
+            rollup = getattr(self._last_device, "health_rollup", None)
+            raw = (getattr(rollup, "overall", "") or "").upper()
+            overall = {"OK": "ok", "": "unknown", "UNKNOWN": "unknown"}.get(
+                raw, "degraded"
+            )
+        device_state: dict[str, Any] = {
+            "thermal_event_active": health.get("thermal") in ("WARNING", "CRITICAL"),
+            "power_event_active": health.get("psu") in ("WARNING", "CRITICAL"),
+            "overall_health": overall,
+            "firmware_update_in_progress": False,
+        }
+        cap_policy = actions_cfg.get("power_cap_policy") or {}
+        if cap_policy:
+            device_state["power_cap_policy_min_watts"] = cap_policy.get("min_watts", 0)
+            device_state["power_cap_policy_max_watts"] = cap_policy.get("max_watts", 0)
+        target_watts = action.params.get("target_watts")
+        if target_watts is not None:
+            try:
+                device_state["power_cap_target_watts"] = int(target_watts)
+            except (TypeError, ValueError):
+                pass
+
+        alive_peers = 0
+        if self.tracker is not None:
+            alive_peers = sum(
+                1 for p in self.tracker.get_peers()
+                if p.status.value == "ALIVE"
+            )
+        agent_state: dict[str, Any] = {
+            "bmc_consecutive_poll_failures": self._poll_failures,
+            "alive_peer_count": alive_peers,
+            # Honest fail-closed defaults: the OS-signals and log-forward
+            # loops are not wired yet (QA-024), so the agent cannot claim
+            # SEL forwarding or OS-heartbeat absence.
+            "sel_events_forwarded": False,
+            "os_heartbeat_absent_seconds": 0,
+        }
+        return device_state, agent_state
+
+    async def _refuse_action(self, action: Action, reason: str) -> None:
+        """Gate refusal: terminal FAILED outcome + audit, never executed."""
+        from harkeniq.models import ActionOutcome
+
+        target = action.params.get("target", "") or action.sensor_id
+        action.status = ActionStatus.FAILED
+        outcome = ActionOutcome(
+            action_id=action.id,
+            type=action.type,
+            target=target,
+            success=False,
+            error_message=f"refused by autonomy gate: {reason}",
+            duration_ms=0.0,
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        action.completed_at = outcome.timestamp
+        action.outcome = outcome
+        logger.warning(
+            "Action %s (%s) refused by autonomy gate: %s",
+            action.id, action.type.value, reason,
+        )
+        if self.checkpoint:
+            await self.checkpoint.save_audit_entry(
+                action=action.type.value,
+                target=target,
+                outcome="refused",
+                evidence_json=json.dumps({"reason": reason, "gate": "autonomy"}),
+            )
+
+    async def _execute_gated(self, action: Action) -> None:
+        """Gate chain -> execute -> accounting -> deferred verification."""
+        if self._last_device is None:
+            # Preconditions need device state; a directive can arrive
+            # before the first skill cycle. Best effort, fail-closed.
+            try:
+                self._last_device = await self.protocol.poll_sensors()
+            except Exception as e:
+                logger.warning("Pre-gate sensor poll failed: %s", e)
+        allowed, reason = self._authorize_execution(action)
+        if not allowed:
+            await self._refuse_action(action, reason)
+            return
+        if action.type == ActionType.CONFIG_RESTORE:
+            # R4-2 P13: config writes run through the playbook pipeline
+            # (precondition/verify/rollback machinery).
+            await self._execute_config_restore_playbook(action)
+        else:
+            await self.executor.execute(action)
+        if action.outcome is not None and action.outcome.success:
+            self.budget.consume(action.type)
+            self.blast_radius.record(action.type)
+            self._schedule_verification(action)
+
+    def _schedule_verification(self, action: Action) -> None:
+        """R3a outcome verification, deferred by the action's window."""
+        window = VERIFICATION_WINDOWS.get(action.type)
+        if window is None:
+            return
+        actions_cfg = self.config.get("actions") or {}
+        scale = float(actions_cfg.get("verification_window_scale", 1.0))
+        task = asyncio.create_task(self._verify_action(action, window * scale))
+        self._verification_tasks.add(task)
+        task.add_done_callback(self._verification_tasks.discard)
+
+    async def _verify_action(self, action: Action, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            post_state = await self._collect_post_state()
+            checks = VERIFICATION_CHECKS.get(action.type, [])
+            if checks and not all(c.field_path in post_state for c in checks):
+                # Cannot honestly observe every check input -> UNKNOWN,
+                # never a fabricated FAILURE (R7-P2: UNKNOWN producible).
+                status = OutcomeStatus.UNKNOWN
+            else:
+                status = evaluate_verification(action.type, post_state)
+            logger.info(
+                "Verification for %s (%s): %s",
+                action.id, action.type.value, status.value,
+            )
+            if self.checkpoint:
+                await self.checkpoint.save_audit_entry(
+                    action=action.type.value,
+                    target=action.params.get("target", "") or action.sensor_id,
+                    outcome=f"verified:{status.value}",
+                    evidence_json=json.dumps({"post_state": post_state}),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # verification must never crash the agent
+            logger.warning(
+                "Verification failed for %s: %s", action.id, e,
+            )
+
+    async def _collect_post_state(self) -> dict[str, Any]:
+        """Post-action device state for verification — only fields the
+        agent can actually observe; absent fields yield UNKNOWN."""
+        post: dict[str, Any] = {}
+        try:
+            device = await self.protocol.poll_sensors()
+            post["bmc_responsive"] = True
+            fans = getattr(device, "fans", None) or []
+            if fans:
+                post["fan_rpm_healthy"] = all(
+                    (getattr(f, "health", "") or "OK").upper() == "OK"
+                    for f in fans
+                )
+        except Exception:
+            post["bmc_responsive"] = False
+        post["agent_registered"] = self._sm_connected
+        return post
 
     # -- main cycle ----------------------------------------------------------
 
@@ -1013,12 +1248,8 @@ class Agent:
                     AgentState.ACTING, f"executing {len(approved)} approved action(s)"
                 )
                 for action in approved:
-                    if action.type == ActionType.CONFIG_RESTORE:
-                        # R4-2 P13: config writes run through the playbook
-                        # pipeline (precondition/verify/rollback machinery).
-                        await self._execute_config_restore_playbook(action)
-                    else:
-                        await self.executor.execute(action)
+                    # QA-020: every execution runs the autonomy gate chain
+                    await self._execute_gated(action)
                 self.state_machine.transition(AgentState.REPORTING, "actions executed")
             else:
                 self.state_machine.transition(
