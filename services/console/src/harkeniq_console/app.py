@@ -137,6 +137,42 @@ def create_app(state) -> FastAPI:
                 methods=methods, include_in_schema=False,
             )
 
+    # QA ISSUE-006: every tenant-scoped SPA page hardcodes tenantId
+    # "current", an alias the backend never implemented — Audit Logs,
+    # Billing, Usage, Reports, Support, and API Keys all 404'd (and
+    # usage/estimate 500'd) since R2b. Resolve "current" to the caller's
+    # tenant claim when present, else to the sole tenant when exactly one
+    # exists (the demo and the sovereign single-tenant shape). Ambiguous
+    # multi-tenant platform users keep an honest 404; tenant_scope still
+    # authorizes downstream either way.
+    @app.middleware("http")
+    async def resolve_current_tenant(request: Request, call_next):
+        path = request.scope.get("path", "")
+        marker = "/api/tenants/current"
+        if path == marker or path.startswith(marker + "/"):
+            resolved = ""
+            claim = getattr(
+                getattr(request.state, "user", None), "tenant_id", ""
+            )
+            if claim:
+                resolved = claim
+            else:
+                from sqlalchemy import select
+
+                from harkeniq_console.db.models import Tenant
+
+                async with state.sessionmaker() as session:
+                    ids = (
+                        await session.execute(select(Tenant.id).limit(2))
+                    ).scalars().all()
+                if len(ids) == 1:
+                    resolved = ids[0]
+            if resolved:
+                new_path = path.replace(marker, f"/api/tenants/{resolved}", 1)
+                request.scope["path"] = new_path
+                request.scope["raw_path"] = new_path.encode()
+        return await call_next(request)
+
     # Dashboard build (ui/dist) — mounted last so API routes win.
     if state.config.ui_dist:
         dist = Path(state.config.ui_dist)
