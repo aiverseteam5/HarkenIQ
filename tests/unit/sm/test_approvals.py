@@ -87,6 +87,48 @@ class TestReportAction:
         assert row.status == "completed"
         assert row.outcome == {"success": True}
 
+    # Regression: ISSUE-005 / QA-043 — sm_action_outcomes had NO writer:
+    # terminal ReportActions stored outcome JSON on the action row only, so
+    # GetFleetSnapshot always served zero outcomes and the whole R-C1
+    # learning intake starved (found live by /qa on 2026-08-26).
+    async def test_terminal_status_persists_knowledge_outcome(self, db, service):
+        from sqlalchemy import select
+
+        from harkeniq_sm.db.models import ActionOutcomeRow
+
+        await service.report_action(report())
+        await service.approve((await _row(db)).id, actor="op")
+        await service.report_action(
+            report(status="COMPLETED", outcome_json=json.dumps({"success": True}))
+        )
+        # Idempotent: a retried terminal report must not double-write.
+        await service.report_action(
+            report(status="COMPLETED", outcome_json=json.dumps({"success": True}))
+        )
+        async with db() as session:
+            rows = (await session.execute(select(ActionOutcomeRow))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].action_type == "FAN_RESET"
+        assert rows[0].outcome == "SUCCESS"
+        assert rows[0].reported_to_cc is False
+        assert rows[0].post_state == {"success": True}
+
+    async def test_failed_status_persists_failure_outcome(self, db, service):
+        await service.report_action(report(action_id="act-9"))
+        await service.report_action(
+            report(
+                action_id="act-9", status="FAILED",
+                outcome_json=json.dumps({"success": False, "error_message": "boom"}),
+            )
+        )
+        from sqlalchemy import select
+
+        from harkeniq_sm.db.models import ActionOutcomeRow
+        async with db() as session:
+            rows = (await session.execute(select(ActionOutcomeRow))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].outcome == "FAILURE"
+
 
 class TestDecisionFlow:
     async def test_approve_then_poll_delivers_once(self, db, service):
