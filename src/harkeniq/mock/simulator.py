@@ -87,6 +87,16 @@ class MockSimulator:
         self._firmware_banks: dict[str, dict[str, Any]] = {}
         self._update_tasks: dict[str, dict[str, Any]] = {}
         self._fail_next_firmware_update = False
+        # QA-034: AccountService store; slot "1" is the configured admin.
+        self._accounts: dict[str, dict[str, Any]] = {
+            "1": {
+                "UserName": self.username,
+                "Password": self.password,
+                "RoleId": "Administrator",
+                "Enabled": True,
+            },
+        }
+        self._next_account_id = 2
         self._sessions: dict[str, dict] = {}
         self._gradual_tasks: list = []
         self._fixtures_path = FIXTURES_DIR / device.replace("-", "_")
@@ -285,6 +295,14 @@ class MockSimulator:
             self._handle_firmware_rollback,
         )
 
+        # QA-034: AccountService (vendor-neutral) for credential rotation
+        r.add_get("/redfish/v1/AccountService", self._handle_account_service)
+        r.add_get("/redfish/v1/AccountService/Accounts", self._handle_accounts_list)
+        r.add_post("/redfish/v1/AccountService/Accounts", self._handle_account_create)
+        r.add_get("/redfish/v1/AccountService/Accounts/{account_id}", self._handle_account_get)
+        r.add_patch("/redfish/v1/AccountService/Accounts/{account_id}", self._handle_account_patch)
+        r.add_delete("/redfish/v1/AccountService/Accounts/{account_id}", self._handle_account_delete)
+
         # Session management
         r.add_post("/redfish/v1/SessionService/Sessions", self._handle_create_session)
         r.add_delete("/redfish/v1/SessionService/Sessions/{session_id}", self._handle_delete_session)
@@ -470,7 +488,15 @@ class MockSimulator:
 
         username = body.get("UserName", "")
         password = body.get("Password", "")
-        if username != self.username or password != self.password:
+        # QA-034: any enabled account may authenticate (rotation verify
+        # opens a session as the freshly created account).
+        match = next(
+            (a for a in self._accounts.values()
+             if a["UserName"] == username and a["Password"] == password
+             and a["Enabled"]),
+            None,
+        )
+        if match is None:
             return web.json_response(
                 {"error": {"message": "Invalid credentials", "code": "Base.1.0.InvalidCredentials"}},
                 status=401,
@@ -493,6 +519,114 @@ class MockSimulator:
         for k in to_remove:
             del self._sessions[k]
         return web.Response(status=200)
+
+    # ------------------------------------------------------------------
+    # AccountService (QA-034: credential rotation surface)
+    # ------------------------------------------------------------------
+
+    @property
+    def accounts(self) -> dict[str, dict[str, Any]]:
+        """Account store snapshot for test assertions (passwords included)."""
+        return {aid: dict(a) for aid, a in self._accounts.items()}
+
+    def _account_response(self, aid: str) -> dict[str, Any]:
+        # Password is write-only per Redfish; never echoed.
+        acct = self._accounts[aid]
+        return {
+            "@odata.id": f"/redfish/v1/AccountService/Accounts/{aid}",
+            "Id": aid,
+            "UserName": acct["UserName"],
+            "RoleId": acct["RoleId"],
+            "Enabled": acct["Enabled"],
+        }
+
+    def _auth_error(self) -> web.Response:
+        return web.json_response(
+            {"error": {"message": "No valid session", "code": "Base.1.0.NoValidSession"}},
+            status=401,
+        )
+
+    async def _handle_account_service(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        return web.json_response({
+            "@odata.id": "/redfish/v1/AccountService",
+            "Accounts": {"@odata.id": "/redfish/v1/AccountService/Accounts"},
+        })
+
+    async def _handle_accounts_list(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        return web.json_response({
+            "@odata.id": "/redfish/v1/AccountService/Accounts",
+            "Members": [
+                {"@odata.id": f"/redfish/v1/AccountService/Accounts/{aid}"}
+                for aid in sorted(self._accounts)
+            ],
+            "Members@odata.count": len(self._accounts),
+        })
+
+    async def _handle_account_create(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        username = body.get("UserName", "")
+        password = body.get("Password", "")
+        if not username or not password:
+            return web.json_response(
+                {"error": {"message": "UserName and Password required"}}, status=400,
+            )
+        if any(a["UserName"] == username for a in self._accounts.values()):
+            return web.json_response(
+                {"error": {"message": f"Account {username} already exists"}}, status=400,
+            )
+        aid = str(self._next_account_id)
+        self._next_account_id += 1
+        self._accounts[aid] = {
+            "UserName": username,
+            "Password": password,
+            "RoleId": body.get("RoleId", "ReadOnly"),
+            "Enabled": bool(body.get("Enabled", True)),
+        }
+        return web.json_response(self._account_response(aid), status=201)
+
+    async def _handle_account_get(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        aid = request.match_info["account_id"]
+        if aid not in self._accounts:
+            return web.json_response({"error": {"message": "Account not found"}}, status=404)
+        return web.json_response(self._account_response(aid))
+
+    async def _handle_account_patch(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        aid = request.match_info["account_id"]
+        if aid not in self._accounts:
+            return web.json_response({"error": {"message": "Account not found"}}, status=404)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        acct = self._accounts[aid]
+        for key in ("UserName", "Password", "RoleId"):
+            if key in body:
+                acct[key] = body[key]
+        if "Enabled" in body:
+            acct["Enabled"] = bool(body["Enabled"])
+        return web.json_response(self._account_response(aid))
+
+    async def _handle_account_delete(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        aid = request.match_info["account_id"]
+        if aid not in self._accounts:
+            return web.json_response({"error": {"message": "Account not found"}}, status=404)
+        del self._accounts[aid]
+        return web.Response(status=204)
 
     # ------------------------------------------------------------------
     # Action endpoints (Doc 06 §11A.4)

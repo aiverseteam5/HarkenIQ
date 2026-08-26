@@ -136,6 +136,10 @@ class RedfishClient:
         """Execute POST request."""
         return await self._request("POST", path, json_body=body)
 
+    async def delete(self, path: str) -> dict[str, Any]:
+        """Execute DELETE request (QA-034: account removal)."""
+        return await self._request("DELETE", path)
+
     # ------------------------------------------------------------------
     # Internal request handling with retry
     # ------------------------------------------------------------------
@@ -187,8 +191,13 @@ class RedfishClient:
                         text = await resp.text()
                         raise RedfishResponseError(self.host, path, resp.status, text)
 
-                    # Success
-                    return await resp.json()
+                    # Success (DELETE and some actions return no JSON body)
+                    if resp.status == 204:
+                        return {}
+                    try:
+                        return await resp.json()
+                    except (aiohttp.ContentTypeError, ValueError):
+                        return {}
 
             except aiohttp.ClientConnectorError as e:
                 last_error = RedfishConnectionError(self.host, self.port, e)

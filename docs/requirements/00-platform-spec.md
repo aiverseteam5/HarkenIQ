@@ -323,7 +323,7 @@ here) no later than the start of their owning slice.
 | OQ-13 | Two-device correlation probe: R3 or R4? | TODOS M10 | R3b-2 — **answered, A3.2**: implemented as CorrelationProbe (both-sides error counters, 4-way fault location) |
 | OQ-14 | Credential model: SM credential broker vs local encrypted config; rotation (doc 03) | Platform-Design; TODOS C1–C16 | R3b-3 — **answered, A4.1**: CredentialProvider interface (Local+Vault+Mock), blue-green rotation |
 | OQ-15 | Application-layer symptom source for cross-layer correlation (Prometheus scrape? logs?) | Platform-Design | R3a (basic: syslog/dmesg hardware-to-OS mapping) / R3b (full: process→service mapping) |
-| OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | R4-1 (IPMI — **answered**) / R6 (network — **answered 2026-08-25**: gNMI on SONiC, full loop shipped; vendor NOS breadth is follow-on; partner-site gates in A9 design doc §5) |
+| OQ-16 | Non-Redfish device coverage (Cisco NX gRPC, OneFS REST, SNMP/IPMI fallback) | Platform-Design; telemetry matrix | **CLOSED, A10.2** — R4-1 (IPMI) + R6 (network: gNMI on SONiC, full loop shipped; NETCONF dropped per D13 — absent on community SONiC, partner-site gate). Vendor NOS breadth (Arista/Cisco) is follow-on scope, not part of this OQ |
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
@@ -745,3 +745,38 @@ amendment record.
    simulator with fault injection, N0 packaging, port baselines + probe
    integration, SM/CC network surfaces. Exit gate per design doc
    `docs/designs/network-intelligence-milestone.md` §4.
+
+### A10 — 2026-08-26 — R7 Demo Hardening campaign + autonomy semantics (decided: Vinod)
+
+1. **R7 "Demo Hardening" is a slice** (proposed in
+   `docs/designs/production-demo-readiness.md` §7, executed 2026-08-25/26).
+   Scope: boot truth (compose gate), demo truth, wiring what was built
+   (autonomy chain, OS signals), auth reality, and campaign fixes QA-001
+   through QA-041 (`docs/qa/r7-bug-register.md` is the record). The exit
+   gate is `scripts/e2e-compose-gate.sh`: boots the real stack, drives the
+   ten-step scenario, asserts the persisted agent identity chain, and fails
+   on any ERROR-level service log.
+2. **A9 point 2 amended per D13 (R6-P0 finding):** NETCONF is absent on
+   community SONiC, so NETCONFProtocol was dropped from R6 deliverables
+   entirely — not simulator-validated. It returns only if a partner-site
+   NETCONF device materializes (design doc §5 gate). gNMI carries both
+   telemetry and config ops on the SONiC anchor. OQ-16 network half stands
+   answered on this narrowed basis.
+3. **Approval-vs-lease semantics ratified** (implemented in R7 QA-020):
+   stop switch, failed preconditions, fully-expired lease, and blast-radius
+   limits refuse even human-approved actions — approval does not make
+   unsafe safe. Lease class-membership and budget "propose" verdicts ARE
+   satisfied by a carried human approval while no T3 autonomous loop exists;
+   revisit when T3 lands.
+4. **CC budget→action-class mapping ratified** (documented in
+   `harkeniq_cc/policy_push.py`): only `device_type="*"` budget rows map to
+   lease grants; autonomy levels 0/1 grant nothing; level 2 grants
+   SEL_CLEAR + BMC_RESET (low risk); level 3 adds POWER_CYCLE,
+   POWER_CAP_ADJUST, CONFIG_RESTORE (medium). High-risk actions
+   (FIRMWARE_*, INTERFACE_*) are NEVER budget-granted — they keep their
+   dedicated per-action approval paths regardless of autonomy level.
+5. **R3b-3 rotation claim made real (QA-034):** the blue-green credential
+   rotation's four Redfish AccountService calls are implemented (create via
+   POST with 405 fixed-slot fallback, verify by fresh session as the new
+   account, disable via PATCH, rollback delete) and proven against the
+   simulator's AccountService. OQ-14's rotation answer needs no de-claim.

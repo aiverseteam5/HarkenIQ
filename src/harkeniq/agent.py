@@ -182,6 +182,7 @@ class Agent:
         self._last_verdicts: list[Verdict] = []
         self._last_checkpoint_at: float = 0.0
         self._running = False
+        self._sm_registered = False  # QA-041: _report_loop retries until True
         self._shutdown = asyncio.Event()
         self._hb_transport: Optional[asyncio.DatagramTransport] = None
         self._hb_seq = 0
@@ -320,64 +321,77 @@ class Agent:
                 self.reporter.agent_id = self.agent_id
 
         # Best-effort Site Manager registration (R2a + R3a identity):
-        # standalone Observe mode has no Site Manager at all.
+        # standalone Observe mode has no Site Manager at all. QA-041: a
+        # startup failure is retried by _report_loop until it succeeds.
         if self.reporter and self.reporter.enabled:
-            peers = [
-                f"{p.get('host', '')}:{p.get('port', 5150)}"
-                for p in (self.config.get("peers") or [])
-                if isinstance(p, dict) and p.get("host")
-            ]
-            reg_ack = await self.reporter.register_agent(
-                vendor=self.device_identity.vendor,
-                model=self.device_identity.model,
-                service_tag=self.device_identity.service_tag,
-                peers=peers,
-                public_key_pem=(
-                    self.agent_identity.public_key_pem
-                    if self.agent_identity else b""
-                ),
-                firmware=self.firmware_inventory,
-                device_class=getattr(
-                    self.device_identity, "device_class", "server"
-                ),
-            )
-            if reg_ack is None:
+            if not await self._register_with_sm():
                 logger.warning("Site Manager registration failed; continuing standalone")
-            elif reg_ack.sm_public_key_pem and self.agent_identity:
-                # R3a: pin SM public key and store certificate
-                self.agent_identity.set_sm_public_key(bytes(reg_ack.sm_public_key_pem))
-                self.agent_identity.sm_certificate = bytes(reg_ack.agent_certificate)
-                if self.checkpoint:
-                    self.agent_identity.save(
-                        self.checkpoint.conn, self._checkpoint_path or ""
-                    )
-                logger.info("SM identity bootstrapped for agent %s", self.agent_id)
-
-                # R3b-2: load peer public keys from SM-signed bundle
-                if reg_ack.peer_keys and reg_ack.peer_keys_signature:
-                    try:
-                        from cryptography.hazmat.primitives import serialization as _ser
-                        sm_pub = _ser.load_pem_public_key(
-                            bytes(reg_ack.sm_public_key_pem)
-                        )
-                        peer_keys = {
-                            k: bytes(v) for k, v in reg_ack.peer_keys.items()
-                        }
-                        loaded = self.peer_keyring.load_from_bundle(
-                            peer_keys,
-                            bytes(reg_ack.peer_keys_signature),
-                            sm_pub,
-                            exclude_self=self.agent_id,
-                        )
-                        logger.info("Loaded %d peer keys from SM", loaded)
-                    except Exception as e:
-                        logger.warning("Peer key loading failed: %s", e)
 
         self.state_machine.transition(
             AgentState.OBSERVING,
             f"Startup complete: {self.device_identity.model}, {len(skills)} skills loaded",
         )
         self._running = True
+
+    async def _register_with_sm(self) -> bool:
+        """Register with the Site Manager; returns True on success.
+
+        Sets ``_sm_registered`` so _report_loop stops retrying (QA-041:
+        registration used to be fire-once — a transient SM/DB hiccup at
+        boot left the agent lease-less until restart).
+        """
+        peers = [
+            f"{p.get('host', '')}:{p.get('port', 5150)}"
+            for p in (self.config.get("peers") or [])
+            if isinstance(p, dict) and p.get("host")
+        ]
+        reg_ack = await self.reporter.register_agent(
+            vendor=self.device_identity.vendor,
+            model=self.device_identity.model,
+            service_tag=self.device_identity.service_tag,
+            peers=peers,
+            public_key_pem=(
+                self.agent_identity.public_key_pem
+                if self.agent_identity else b""
+            ),
+            firmware=self.firmware_inventory,
+            device_class=getattr(
+                self.device_identity, "device_class", "server"
+            ),
+        )
+        if reg_ack is None:
+            return False
+        self._sm_registered = True
+        if reg_ack.sm_public_key_pem and self.agent_identity:
+            # R3a: pin SM public key and store certificate
+            self.agent_identity.set_sm_public_key(bytes(reg_ack.sm_public_key_pem))
+            self.agent_identity.sm_certificate = bytes(reg_ack.agent_certificate)
+            if self.checkpoint:
+                self.agent_identity.save(
+                    self.checkpoint.conn, self._checkpoint_path or ""
+                )
+            logger.info("SM identity bootstrapped for agent %s", self.agent_id)
+
+            # R3b-2: load peer public keys from SM-signed bundle
+            if reg_ack.peer_keys and reg_ack.peer_keys_signature:
+                try:
+                    from cryptography.hazmat.primitives import serialization as _ser
+                    sm_pub = _ser.load_pem_public_key(
+                        bytes(reg_ack.sm_public_key_pem)
+                    )
+                    peer_keys = {
+                        k: bytes(v) for k, v in reg_ack.peer_keys.items()
+                    }
+                    loaded = self.peer_keyring.load_from_bundle(
+                        peer_keys,
+                        bytes(reg_ack.peer_keys_signature),
+                        sm_pub,
+                        exclude_self=self.agent_id,
+                    )
+                    logger.info("Loaded %d peer keys from SM", loaded)
+                except Exception as e:
+                    logger.warning("Peer key loading failed: %s", e)
+        return True
 
     async def stop(self) -> None:
         """Graceful shutdown: final checkpoint, close connections."""
@@ -1000,6 +1014,11 @@ class Agent:
         interval = sm.get("heartbeat_interval", DEFAULT_REPORT_INTERVAL)
         poll_interval = sm.get("action_poll_interval", 5)
         while not self._shutdown.is_set():
+            # QA-041: keep retrying registration until it lands — the
+            # reporter's own backoff paces the attempts.
+            if not self._sm_registered:
+                if await self._register_with_sm():
+                    logger.info("Site Manager registration recovered")
             hb_ack = await self.reporter.send_heartbeat(
                 self.state_machine.current_state.value,
                 self.health_summary(),

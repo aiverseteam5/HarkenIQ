@@ -21,9 +21,15 @@ import string
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
+
+from harkeniq.errors import RedfishError, RedfishResponseError
 
 logger = logging.getLogger("harkeniq.security.rotation")
+
+# Vendor-neutral DMTF path; iDRAC9+ and iLO5+ both serve it. Older iDRACs
+# with fixed account slots reject POST with 405 — handled by slot fallback.
+ACCOUNTS_PATH = "/redfish/v1/AccountService/Accounts"
 
 
 class RotationStatus(Enum):
@@ -75,10 +81,14 @@ class CredentialRotator:
         credential_provider=None,
         redfish_client=None,
         vendor: str = "",
+        verify_client_factory: Optional[Callable[[], object]] = None,
     ) -> None:
         self._cred_provider = credential_provider
         self._client = redfish_client
         self._vendor = vendor
+        # Verification needs a SECOND session authenticated as the new
+        # account (the existing client's session proves nothing about it).
+        self._verify_client_factory = verify_client_factory
         self._events: list[RotationEvent] = []
 
     async def rotate(
@@ -139,34 +149,123 @@ class CredentialRotator:
         self._events.append(event)
         return event
 
+    async def _find_account_uri(self, username: str) -> Optional[str]:
+        """Resolve an account's resource URI by UserName."""
+        collection = await self._client.get(ACCOUNTS_PATH)
+        for member in collection.get("Members", []):
+            uri = member.get("@odata.id", "")
+            if not uri:
+                continue
+            try:
+                account = await self._client.get(uri)
+            except RedfishResponseError:
+                continue
+            if account.get("UserName") == username:
+                return uri
+        return None
+
     async def _create_account(
         self, device_id: str, username: str, password: str,
     ) -> bool:
         """Create a new BMC account via Redfish AccountService."""
         if self._client is None:
             return True  # mock mode
-        # Real Redfish: POST /redfish/v1/AccountService/Accounts/
-        return True
+        body = {
+            "UserName": username,
+            "Password": password,
+            "RoleId": "Administrator",
+            "Enabled": True,
+        }
+        try:
+            await self._client.post(ACCOUNTS_PATH, body)
+            return True
+        except RedfishResponseError as e:
+            if e.status_code != 405:
+                logger.error("Account create failed on %s: %s", device_id, e)
+                return False
+        # 405: fixed-slot BMC (older iDRAC) — claim the first empty slot.
+        empty_uri = await self._find_account_uri("")
+        if empty_uri is None:
+            logger.error("No empty account slot on %s", device_id)
+            return False
+        try:
+            await self._client.patch(empty_uri, body)
+            return True
+        except RedfishError as e:
+            logger.error("Account slot claim failed on %s: %s", device_id, e)
+            return False
 
     async def _verify_account(
         self, device_id: str, username: str, password: str,
     ) -> bool:
-        """Verify a new account can authenticate to the BMC."""
+        """Verify a new account can authenticate to the BMC.
+
+        Opens a FRESH Redfish session as the new account; session creation
+        succeeding is the proof (the rotator's own session is the old one).
+        """
         if self._client is None:
             return True  # mock mode
-        return True
+        if self._verify_client_factory is not None:
+            client = self._verify_client_factory()
+        else:
+            from harkeniq.redfish.client import RedfishClient
+
+            client = RedfishClient(
+                host=self._client.host,
+                port=self._client.port,
+                verify_ssl=self._client.verify_ssl,
+            )
+        try:
+            await client.connect(username, password)
+            return True
+        except (RedfishError, OSError) as e:
+            logger.warning(
+                "New account %s failed verification on %s: %s",
+                username, device_id, e,
+            )
+            return False
+        finally:
+            try:
+                await client.delete_session()
+                await client.close()
+            except Exception:  # noqa: BLE001 — cleanup must not mask verdict
+                pass
 
     async def _disable_account(self, device_id: str, username: str) -> bool:
         """Disable an account on the BMC."""
         if self._client is None:
             return True
+        uri = await self._find_account_uri(username)
+        if uri is None:
+            logger.warning("Account %s not found on %s", username, device_id)
+            return False
+        await self._client.patch(uri, {"Enabled": False})
         return True
 
     async def _delete_account(self, device_id: str, username: str) -> bool:
-        """Delete an account from the BMC."""
+        """Delete an account from the BMC (rollback path — best-effort:
+        a failure here must not turn ROLLED_BACK into FAILED)."""
         if self._client is None:
             return True
-        return True
+        try:
+            uri = await self._find_account_uri(username)
+            if uri is None:
+                return False
+            try:
+                await self._client.delete(uri)
+            except RedfishResponseError as e:
+                if e.status_code != 405:
+                    raise
+                # Fixed-slot BMC: clearing the slot is the delete.
+                await self._client.patch(
+                    uri, {"Enabled": False, "UserName": ""}
+                )
+            return True
+        except RedfishError as e:
+            logger.error(
+                "Rollback delete of %s on %s failed: %s", username, device_id, e
+            )
+            return False
 
     @property
     def rotation_history(self) -> list[RotationEvent]:
