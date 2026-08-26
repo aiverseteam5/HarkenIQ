@@ -144,6 +144,28 @@ def create_app(state) -> FastAPI:
         dist = Path(__file__).resolve().parents[2] / "ui" / "dist"
     if dist.is_dir():
         from fastapi.staticfiles import StaticFiles
-        app.mount("/", StaticFiles(directory=dist, html=True), name="ui")
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        class SPAStaticFiles(StaticFiles):
+            """Serve index.html for client-side routes (QA ISSUE-001).
+
+            Plain StaticFiles(html=True) resolves index.html only at "/",
+            so the OIDC redirect to /callback — and any refresh on a SPA
+            route — returned the API's JSON 404 and login dead-ended.
+            API routes still win: this mount is last.
+            """
+
+            async def get_response(self, path, scope):
+                try:
+                    response = await super().get_response(path, scope)
+                except StarletteHTTPException as e:
+                    if e.status_code == 404 and not path.startswith("api/"):
+                        return await super().get_response("index.html", scope)
+                    raise
+                if response.status_code == 404 and not path.startswith("api/"):
+                    return await super().get_response("index.html", scope)
+                return response
+
+        app.mount("/", SPAStaticFiles(directory=dist, html=True), name="ui")
 
     return app
