@@ -14,11 +14,19 @@ import type { PaginatedResponse, FleetDevice } from "../types";
 
 /* ── Extended types ───────────────────────────────── */
 
+// Matches GET /api/fleet/summary (QA ISSUE-003/004: the UI previously
+// read healthy_pct/open_incidents/sites, which the API never sent —
+// cards rendered "undefined %" and "--").
 interface FleetSummary {
   total_nodes: number;
-  healthy_pct: number;
-  open_incidents: number;
-  sites: number;
+  by_health: Record<string, number>;
+  incidents_open: number;
+  sites_count: number;
+}
+
+function healthyPct(s: FleetSummary): number {
+  if (!s.total_nodes) return 100;
+  return Math.round(((s.by_health?.ok ?? 0) / s.total_nodes) * 100);
 }
 
 interface WarrantyInfo {
@@ -118,7 +126,7 @@ const detailValue: CSSProperties = {
 
 /* ── Helpers ──────────────────────────────────────── */
 
-function formatDate(iso: string): string {
+function formatDate(iso: string | undefined): string {
   if (!iso) return "--";
   return new Date(iso).toLocaleString("en-US", {
     month: "short",
@@ -334,7 +342,7 @@ export default function FleetOverview() {
         key: "last_seen_at",
         header: "Last Seen",
         sortKey: "last_seen_at",
-        render: (r) => formatDate(r.last_seen_at),
+        render: (r) => formatDate(r.last_seen_at ?? r.snapshot_at),
       },
     ],
     [],
@@ -369,18 +377,18 @@ export default function FleetOverview() {
         />
         <MetricCard
           title="Healthy"
-          value={summary ? `${summary.healthy_pct}` : "--"}
+          value={summary ? `${healthyPct(summary)}` : "--"}
           unit="%"
-          trend={summary && summary.healthy_pct >= 95 ? "up" : summary && summary.healthy_pct < 80 ? "down" : "flat"}
+          trend={summary && healthyPct(summary) >= 95 ? "up" : summary && healthyPct(summary) < 80 ? "down" : "flat"}
         />
         <MetricCard
           title="Open Incidents"
-          value={summary?.open_incidents ?? "--"}
-          trend={summary && summary.open_incidents > 0 ? "down" : "flat"}
+          value={summary?.incidents_open ?? "--"}
+          trend={summary && summary.incidents_open > 0 ? "down" : "flat"}
         />
         <MetricCard
           title="Sites"
-          value={summary?.sites ?? "--"}
+          value={summary?.sites_count ?? "--"}
         />
       </div>
 
@@ -463,7 +471,7 @@ export default function FleetOverview() {
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Last Seen</span>
-              <span style={detailValue}>{formatDate(selectedDevice.last_seen_at)}</span>
+              <span style={detailValue}>{formatDate(selectedDevice.last_seen_at ?? selectedDevice.snapshot_at)}</span>
             </div>
 
             <div style={sectionTitle}>Warranty & Lifecycle</div>

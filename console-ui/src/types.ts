@@ -200,6 +200,8 @@ export interface FleetDevice {
   health: "ok" | "warning" | "critical" | "unknown";
   tier: "observe" | "approve" | "autonomy";
   last_seen_at: string;
+  /** Fleet-cache refresh time — what /api/fleet actually sends (QA ISSUE-004). */
+  snapshot_at?: string;
 }
 
 /** Fleet-level incident. */
