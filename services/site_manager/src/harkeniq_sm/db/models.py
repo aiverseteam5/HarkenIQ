@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -239,8 +240,10 @@ class AgentIdentityRow(Base):
     __tablename__ = "agent_identities"
 
     agent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    public_key_pem: Mapped[bytes] = mapped_column(Text)
-    certificate: Mapped[bytes | None] = mapped_column(Text, nullable=True)
+    # LargeBinary, not Text: certificate is canonical JSON + a raw Ed25519
+    # signature (not valid UTF-8), and asyncpg refuses bytes into VARCHAR.
+    public_key_pem: Mapped[bytes] = mapped_column(LargeBinary)
+    certificate: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

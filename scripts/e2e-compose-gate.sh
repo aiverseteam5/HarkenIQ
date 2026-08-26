@@ -80,4 +80,20 @@ echo "$RESULT" | grep -q '"sm-local:ci-gate"'
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 
+step "Autonomy identity chain live (QA-040: agent identity + certificate persisted)"
+# The observe->approve path works even when RegisterAgent crashes server-side,
+# so assert the persisted row directly — a green gate must mean leases can flow.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT count(*) FROM agent_identities WHERE certificate IS NOT NULL" \
+  | grep -qv '^0$'
+
+step "No ERROR-level logs in any service (crashed handlers must not pass silently)"
+for svc in site-manager central-command console; do
+  if docker compose logs --no-log-prefix "$svc" 2>&1 \
+      | grep -E '"level": *"(ERROR|CRITICAL)"' ; then
+    echo "ERROR-level log lines in $svc (above)" >&2
+    exit 1
+  fi
+done
+
 step "GATE GREEN"

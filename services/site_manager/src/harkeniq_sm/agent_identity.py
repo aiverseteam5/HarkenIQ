@@ -201,6 +201,8 @@ class AgentIdentityService:
             pem = result.scalar_one_or_none()
             if pem is None:
                 return False
+        if isinstance(pem, str):  # legacy pre-0005 sqlite rows
+            pem = pem.encode("utf-8")
 
         try:
             public_key = serialization.load_pem_public_key(pem)
