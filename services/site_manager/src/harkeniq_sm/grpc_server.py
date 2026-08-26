@@ -447,12 +447,45 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             except Exception as e:
                 logger.debug("Outcome reporting skipped: %s", e)
 
+            # QA-033 feedback half: unreported candidate skills ride up
+            # to CC for the R-C1 learning loop (same once-only pattern).
+            candidate_skills = []
+            try:
+                import json as _json
+
+                from harkeniq_sm.db.models import CandidateSkillRow
+                unreported_cands = (
+                    await session.execute(
+                        select(CandidateSkillRow).where(
+                            CandidateSkillRow.reported_to_cc == False  # noqa: E712
+                        ).limit(20)
+                    )
+                ).scalars().all()
+                for cand in unreported_cands:
+                    candidate_skills.append(
+                        harkeniq_pb2.CandidateSkill(
+                            skill_id=cand.skill_id,
+                            yaml_text=cand.yaml_text,
+                            source_device=cand.source_device,
+                            source_component=cand.source_component,
+                            validation_state=cand.validation_state,
+                            generated_at_unix=_ts(cand.generated_at),
+                            warnings_json=_json.dumps(cand.warnings or []),
+                            dry_run_matches=cand.dry_run_matches,
+                        )
+                    )
+                    cand.reported_to_cc = True
+                await session.commit()
+            except Exception as e:
+                logger.debug("Candidate skill reporting skipped: %s", e)
+
         return harkeniq_pb2.FleetSnapshot(
             devices=fleet_devices,
             incidents=fleet_incidents,
             pending_actions=fleet_actions,
             snapshot_at_unix=int(time.time()),
             outcomes=fleet_outcomes,
+            candidate_skills=candidate_skills,
         )
 
     async def RouteApproval(self, request, context):

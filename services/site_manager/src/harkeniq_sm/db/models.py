@@ -248,6 +248,32 @@ class AgentIdentityRow(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CandidateSkillRow(Base):
+    """QA-033 feedback half: LLM-generated candidate skills (R3b-1 C2).
+
+    Written by the ingest enrichment path when the LLM diagnoses a
+    WARNING/CRITICAL verdict; validated (static + dry-run) before the row
+    exists. Rides FleetSnapshot.candidate_skills up to CC once
+    (reported_to_cc flag, same pattern as ActionOutcomeRow).
+    """
+
+    __tablename__ = "sm_candidate_skills"
+
+    skill_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    yaml_text: Mapped[str] = mapped_column(Text)
+    source_device: Mapped[str] = mapped_column(String(64), default="")
+    source_component: Mapped[str] = mapped_column(String(128), default="")
+    validation_state: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    warnings: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    dry_run_matches: Mapped[int] = mapped_column(Integer, default=0)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reported_to_cc: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        Index("ix_candidate_skills_source", "source_device", "source_component"),
+    )
+
+
 class ActionOutcomeRow(Base):
     """R3b-1 C8: persisted action outcomes for knowledge base."""
 

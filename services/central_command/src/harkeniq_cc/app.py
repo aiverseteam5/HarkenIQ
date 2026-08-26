@@ -13,6 +13,7 @@ from harkeniq_cc.api import approvals as approvals_api
 from harkeniq_cc.api import audit as audit_api
 from harkeniq_cc.api import firmware as firmware_api
 from harkeniq_cc.api import fleet as fleet_api
+from harkeniq_cc.api import learning as learning_api
 from harkeniq_cc.api import outcomes as outcomes_api
 from harkeniq_cc.api import policies as policies_api
 from harkeniq_cc.api import predictive as predictive_api
@@ -52,6 +53,7 @@ def create_app(state) -> FastAPI:
     app.include_router(firmware_api.router)
     app.include_router(warranty_api.router)
     app.include_router(predictive_api.router)
+    app.include_router(learning_api.router)
 
     # QA-010: a hardcoded ok reported healthy while the database had no
     # schema. Real probe via the R4-0 HealthChecker (same pattern as SM).

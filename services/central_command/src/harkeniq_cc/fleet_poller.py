@@ -59,6 +59,15 @@ async def fleet_poll_loop(state) -> None:
                         if outcomes:
                             await _ingest_outcomes(session, site.id, outcomes)
 
+                        # QA-033: ingest SM-generated candidate skills for
+                        # the R-C1 learning loop
+                        candidates = snapshot.get("candidate_skills", [])
+                        if candidates:
+                            await _ingest_candidates(
+                                session, state.config.tenant_id,
+                                site.id, candidates,
+                            )
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
 
@@ -120,3 +129,19 @@ async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
         )
         session.add(row)
     logger.info("Ingested %d outcomes from site %s", len(outcomes), site_id)
+
+
+async def _ingest_candidates(
+    session, tenant_id: str, site_id: str, candidates: list[dict],
+) -> None:
+    """Store SM candidate skills in cc_candidate_skills (QA-033)."""
+    from harkeniq_cc.db.repos import CandidateSkillRepo
+
+    repo = CandidateSkillRepo(session)
+    for cand in candidates:
+        if not cand.get("skill_id"):
+            continue
+        await repo.upsert(tenant_id, site_id, cand)
+    logger.info(
+        "Ingested %d candidate skills from site %s", len(candidates), site_id
+    )

@@ -174,11 +174,40 @@ class SMClient:
                     "status": act.status,
                     "proposed_at_unix": act.proposed_at_unix,
                 })
+            # QA-042: outcomes were never dictified here, so CC's fleet
+            # learning intake (_ingest_outcomes) ran on an empty feed since
+            # R3b-3 — snapshot.get("outcomes", []) always returned [].
+            outcomes = []
+            for oc in snap.outcomes:
+                outcomes.append({
+                    "action_id": oc.action_id,
+                    "action_type": oc.action_type,
+                    "device_agent_id": oc.device_agent_id,
+                    "outcome": oc.outcome,
+                    "fault_resolved": oc.fault_resolved,
+                    "vendor": oc.vendor,
+                    "model": oc.model,
+                    "recorded_at_unix": oc.recorded_at_unix,
+                })
+            candidate_skills = []
+            for cand in snap.candidate_skills:
+                candidate_skills.append({
+                    "skill_id": cand.skill_id,
+                    "yaml_text": cand.yaml_text,
+                    "source_device": cand.source_device,
+                    "source_component": cand.source_component,
+                    "validation_state": cand.validation_state,
+                    "generated_at_unix": cand.generated_at_unix,
+                    "warnings_json": cand.warnings_json,
+                    "dry_run_matches": cand.dry_run_matches,
+                })
             return {
                 "devices": devices,
                 "incidents": incidents,
                 "pending_actions": pending_actions,
                 "snapshot_at_unix": snap.snapshot_at_unix,
+                "outcomes": outcomes,
+                "candidate_skills": candidate_skills,
             }
 
     async def route_approval(

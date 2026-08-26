@@ -18,6 +18,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -324,6 +325,38 @@ class CCFleetPattern(Base):
     __table_args__ = (
         Index("ix_fleet_patterns_type_status", "pattern_type", "status"),
         Index("ix_fleet_patterns_tenant", "tenant_id"),
+    )
+
+
+class CCCandidateSkill(Base):
+    """SM-generated candidate skills for the R-C1 learning loop (QA-033).
+
+    Ingested from FleetSnapshot.candidate_skills by the fleet poller.
+    status: received → cycle_linked (matched to a fleet pattern's learning
+    cycle) → promoted (LearningFeedbackTracker promotion criteria met;
+    still requires the marketplace human review path to reach agents —
+    auto-promotion is a recommendation, never a distribution).
+    """
+
+    __tablename__ = "cc_candidate_skills"
+
+    skill_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # R5-2 (A8): tenant-scoped like cc_fleet_patterns
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True, default="")
+    site_id: Mapped[str] = mapped_column(String(32), default="")
+    yaml_text: Mapped[str] = mapped_column(Text)
+    source_device: Mapped[str] = mapped_column(String(64), default="")
+    source_component: Mapped[str] = mapped_column(String(128), default="")
+    validation_state: Mapped[str] = mapped_column(String(16), default="draft")
+    warnings: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    dry_run_matches: Mapped[int] = mapped_column(default=0)
+    status: Mapped[str] = mapped_column(String(32), default="received")
+    cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_candidate_skills_tenant_status", "tenant_id", "status"),
     )
 
 

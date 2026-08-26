@@ -148,6 +148,10 @@ async def make_state(config: SMConfig) -> AppState:
         )
         pipeline.add_provider(LLMReasoner(llm))
         logger.info("LLM reasoning enabled (model=%s)", config.llm_model)
+        # QA-033 feedback half: candidate skill generation off the same
+        # provider — the R3b-1 C2 generator finally has a caller.
+        from harkeniq_sm.skill_generator import SkillGenerator
+        state.ingest.skill_generator = SkillGenerator(llm)
     state.ingest.reasoning_pipeline = pipeline
     state.inference = InferenceJob(state.sessionmaker, config)
     state.approvals = ApprovalService(state.sessionmaker, config)
