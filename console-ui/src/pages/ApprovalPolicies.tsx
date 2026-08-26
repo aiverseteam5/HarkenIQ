@@ -9,7 +9,6 @@ import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson, postJson, patchJson, deleteJson } from "../api";
-import type { PaginatedResponse } from "../types";
 
 /* ── Types ────────────────────────────────────────── */
 
@@ -344,9 +343,10 @@ export default function ApprovalPolicies() {
       const params = new URLSearchParams();
       params.set("page", String(polPage));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<Policy>>(`/api/policies?${params.toString()}`);
-      setPolicies(res.items);
-      setPolTotal(res.total);
+      // QA ISSUE-008: CC returns {policies,...}, not {items,...}
+      const res = await getJson<{ policies: Policy[]; total: number }>(`/api/policies?${params.toString()}`);
+      setPolicies(res.policies ?? []);
+      setPolTotal(res.total ?? 0);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load policies", "error");
     } finally {
@@ -466,9 +466,9 @@ export default function ApprovalPolicies() {
       const params = new URLSearchParams();
       params.set("page", String(grpPage));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<ApprovalGroup>>(`/api/policies/groups?${params.toString()}`);
-      setGroups(res.items);
-      setGrpTotal(res.total);
+      const res = await getJson<{ groups: ApprovalGroup[]; total: number }>(`/api/policies/groups?${params.toString()}`);
+      setGroups(res.groups ?? []);
+      setGrpTotal(res.total ?? 0);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load groups", "error");
     } finally {
@@ -610,9 +610,9 @@ export default function ApprovalPolicies() {
       const params = new URLSearchParams();
       params.set("page", String(budPage));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<AutonomyBudget>>(`/api/policies/autonomy?${params.toString()}`);
-      setBudgets(res.items);
-      setBudTotal(res.total);
+      const res = await getJson<{ budgets: AutonomyBudget[]; total: number }>(`/api/policies/autonomy?${params.toString()}`);
+      setBudgets(res.budgets ?? []);
+      setBudTotal(res.total ?? 0);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load budgets", "error");
     } finally {
