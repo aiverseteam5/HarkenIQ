@@ -137,6 +137,33 @@ def create_app(state) -> FastAPI:
                 methods=methods, include_in_schema=False,
             )
 
+    # QA ISSUE-007: the SPA mount at "/" pre-empts Starlette's
+    # trailing-slash redirect, so every collection-root API route
+    # (registered at ".../"; 12 of them — audit, invoices, payments,
+    # users, tenants, api keys, ...) 404'd when the UI called it without
+    # the slash. Register a no-slash alias for each. No router-level
+    # dependencies exist (verified), so re-adding from the endpoint
+    # signature preserves auth/session dependencies.
+    from fastapi.routing import APIRoute
+
+    def _api_routes(routes):
+        for route in routes:
+            inner = getattr(route, "original_router", None)
+            if inner is not None:  # lazily included router (FastAPI >= 0.12x)
+                yield from _api_routes(inner.routes)
+            elif isinstance(route, APIRoute):
+                yield route
+
+    for route in list(_api_routes(app.router.routes)):
+        if route.path.endswith("/") and len(route.path) > 1:
+            app.add_api_route(
+                route.path.rstrip("/"),
+                route.endpoint,
+                methods=sorted(route.methods or []),
+                include_in_schema=False,
+                name=f"{route.name}_noslash",
+            )
+
     # QA ISSUE-006: every tenant-scoped SPA page hardcodes tenantId
     # "current", an alias the backend never implemented — Audit Logs,
     # Billing, Usage, Reports, Support, and API Keys all 404'd (and

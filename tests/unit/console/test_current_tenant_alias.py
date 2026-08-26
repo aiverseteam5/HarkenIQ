@@ -44,6 +44,15 @@ async def test_current_resolves_to_sole_tenant():
         assert resp.status_code == 200
         assert "items" in resp.json()
 
+        # ISSUE-007: the exact shape the SPA sends — collection root,
+        # NO trailing slash, no redirect available (SPA mount pre-empts
+        # it in production). Must answer directly.
+        resp = await httpx.AsyncClient(
+            transport=client._transport, base_url="http://test",
+            follow_redirects=False,
+        ).get("/api/tenants/current/audit")
+        assert resp.status_code == 200
+
         # The 500 path: usage/estimate on the resolved tenant answers.
         resp = await client.get("/api/tenants/current/usage/estimate")
         assert resp.status_code == 200
