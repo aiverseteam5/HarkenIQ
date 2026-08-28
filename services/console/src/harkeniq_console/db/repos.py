@@ -7,7 +7,7 @@ request) so multi-table updates remain atomic.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import func, or_, select
@@ -1030,19 +1030,88 @@ class SupportAccessLogRepo:
         await self.session.flush()
         return row
 
+    async def get_by_id(self, entry_id: str) -> Optional[SupportAccessLog]:
+        return await self.session.get(SupportAccessLog, entry_id)
+
     async def get_active(self, tenant_id: str) -> Optional[SupportAccessLog]:
         now = utcnow()
         return (
             await self.session.execute(
                 select(SupportAccessLog).where(
                     SupportAccessLog.tenant_id == tenant_id,
+                    # Approval is the gate. Without this clause a merely
+                    # REQUESTED row would satisfy tenant_scope and asking
+                    # for access would be the same as being granted it.
+                    SupportAccessLog.status == "approved",
+                    SupportAccessLog.expires_at.is_not(None),
                     SupportAccessLog.expires_at > now,
                     SupportAccessLog.revoked_at.is_(None),
                 )
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
+
+    async def get_pending(self, tenant_id: str) -> Optional[SupportAccessLog]:
+        """An outstanding request, so asking twice does not queue twice."""
+        return (
+            await self.session.execute(
+                select(SupportAccessLog).where(
+                    SupportAccessLog.tenant_id == tenant_id,
+                    SupportAccessLog.status == "requested",
+                )
+            )
+        ).scalars().first()
+
+    async def list_pending(self) -> Sequence[SupportAccessLog]:
+        """The approver's queue, across every tenant."""
+        return (
+            await self.session.execute(
+                select(SupportAccessLog)
+                .where(SupportAccessLog.status == "requested")
+                .order_by(SupportAccessLog.requested_at.asc())
+            )
+        ).scalars().all()
+
+    async def request(
+        self, *, tenant_id: str, requested_by: str, reason: str = "",
+    ) -> SupportAccessLog:
+        """Raise a request. It grants nothing until someone approves it."""
+        row = SupportAccessLog(
+            tenant_id=tenant_id,
+            status="requested",
+            requested_by=requested_by,
+            reason=reason or None,
+            # No clock until approval — expires_at is set when granted.
+            enabled_by="",
+            expires_at=None,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def approve(
+        self, entry: SupportAccessLog, approved_by: str, ttl_hours: int = 24,
+    ) -> SupportAccessLog:
+        now = utcnow()
+        entry.status = "approved"
+        entry.approved_by = approved_by
+        entry.approved_at = now
+        entry.enabled_by = approved_by
+        entry.enabled_at = now
+        # The clock starts at approval, not at request: a request that sat
+        # in the queue overnight must not arrive already half spent.
+        entry.expires_at = now + timedelta(hours=ttl_hours)
+        await self.session.flush()
+        return entry
+
+    async def deny(self, entry: SupportAccessLog, denied_by: str) -> SupportAccessLog:
+        entry.status = "denied"
+        entry.denied_by = denied_by
+        entry.denied_at = utcnow()
+        await self.session.flush()
+        return entry
 
     async def revoke(self, entry: SupportAccessLog, revoked_by: str) -> SupportAccessLog:
+        entry.status = "revoked"
         entry.revoked_at = utcnow()
         entry.revoked_by = revoked_by
         await self.session.flush()

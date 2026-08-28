@@ -298,7 +298,7 @@ class TestR2bExitGate:
         tenant = setup["tenant"]
         now = utcnow()
         entry = await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="support1",
+            tenant_id=tenant.id, enabled_by="support1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         active = await SupportAccessLogRepo(session).get_active(tenant.id)

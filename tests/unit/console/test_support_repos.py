@@ -248,7 +248,7 @@ class TestSupportAccessLogRepo:
     async def test_create(self, session, tenant):
         now = utcnow()
         entry = await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="support1",
+            tenant_id=tenant.id, enabled_by="support1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         assert entry.id
@@ -257,7 +257,7 @@ class TestSupportAccessLogRepo:
     async def test_get_active(self, session, tenant):
         now = utcnow()
         await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         active = await SupportAccessLogRepo(session).get_active(tenant.id)
@@ -266,7 +266,7 @@ class TestSupportAccessLogRepo:
     async def test_get_active_expired(self, session, tenant):
         now = utcnow()
         await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now - timedelta(hours=25),
             expires_at=now - timedelta(hours=1),
         )
@@ -276,7 +276,7 @@ class TestSupportAccessLogRepo:
     async def test_get_active_revoked(self, session, tenant):
         now = utcnow()
         entry = await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         await SupportAccessLogRepo(session).revoke(entry, "s1")
@@ -287,7 +287,7 @@ class TestSupportAccessLogRepo:
         now = utcnow()
         repo = SupportAccessLogRepo(session)
         entry = await repo.create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         revoked = await repo.revoke(entry, "s2")
@@ -297,8 +297,8 @@ class TestSupportAccessLogRepo:
     async def test_list_by_tenant(self, session, tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        await repo.create(tenant_id=tenant.id, enabled_by="s1", enabled_at=now, expires_at=now + timedelta(hours=24))
-        await repo.create(tenant_id=tenant.id, enabled_by="s2", enabled_at=now - timedelta(days=7), expires_at=now - timedelta(days=6))
+        await repo.create(tenant_id=tenant.id, enabled_by="s1", status="approved", enabled_at=now, expires_at=now + timedelta(hours=24))
+        await repo.create(tenant_id=tenant.id, enabled_by="s2", status="approved", enabled_at=now - timedelta(days=7), expires_at=now - timedelta(days=6))
         entries = await repo.list_by_tenant(tenant.id)
         assert len(entries) == 2
         # most recent first
@@ -307,7 +307,7 @@ class TestSupportAccessLogRepo:
     async def test_tenant_isolation(self, session, tenant, second_tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        await repo.create(tenant_id=tenant.id, enabled_by="s1", enabled_at=now, expires_at=now + timedelta(hours=24))
+        await repo.create(tenant_id=tenant.id, enabled_by="s1", status="approved", enabled_at=now, expires_at=now + timedelta(hours=24))
         entries = await repo.list_by_tenant(second_tenant.id)
         assert len(entries) == 0
 

@@ -20,7 +20,19 @@ branch_labels = None
 depends_on = None
 
 
+def _has_table(name: str) -> bool:
+    return name in sa.inspect(op.get_bind()).get_table_names()
+
+
 def upgrade() -> None:
+    # 0001 is `Base.metadata.create_all()` against LIVE metadata, so a fresh
+    # database already has every table the models currently declare —
+    # including this one — while a database stamped at 0001 before this
+    # commit does not. Until 0001 is frozen to an explicit table list, every
+    # migration after it has to be idempotent or fresh installs break.
+    if _has_table("tenant_services"):
+        return
+
     op.create_table(
         "tenant_services",
         sa.Column("id", sa.String(32), primary_key=True),
@@ -49,6 +61,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _has_table("tenant_services"):
+        return
     op.drop_index("uq_tenant_services_active", table_name="tenant_services")
     op.drop_index("ix_tenant_services_tenant", table_name="tenant_services")
     op.drop_table("tenant_services")

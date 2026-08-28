@@ -127,7 +127,7 @@ class TestSupportMode:
         now = utcnow()
         repo = SupportAccessLogRepo(session)
         entry = await repo.create(
-            tenant_id=tenant.id, enabled_by="support1",
+            tenant_id=tenant.id, enabled_by="support1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         active = await repo.get_active(tenant.id)
@@ -138,7 +138,7 @@ class TestSupportMode:
         now = utcnow()
         repo = SupportAccessLogRepo(session)
         await repo.create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now - timedelta(hours=25),
             expires_at=now - timedelta(hours=1),
         )
@@ -149,7 +149,7 @@ class TestSupportMode:
         now = utcnow()
         repo = SupportAccessLogRepo(session)
         entry = await repo.create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         await repo.revoke(entry, "s2")
@@ -159,7 +159,7 @@ class TestSupportMode:
     async def test_audit_logged_on_enable(self, session, tenant):
         now = utcnow()
         await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         await AuditRepo(session).append(

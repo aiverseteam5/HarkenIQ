@@ -26,6 +26,17 @@ from harkeniq_console.db.models import Tenant
 from harkeniq_console.runtime import AppState
 
 
+def _support_user(tenant_id: str):
+    """Switch the client back to platform_support after an approver acts."""
+    async def _fake() -> UserContext:
+        return UserContext(
+            user_id="kc-sub-1", email="platform_support@example.com",
+            tenant_id=None, role="platform_support", permissions=[],
+            is_platform_user=True,
+        )
+    return _fake
+
+
 async def _client_as(role: str, *, platform: bool = False):
     """Client authenticated as *role* against a tenant that exists."""
     engine = make_engine("sqlite+aiosqlite:///:memory:")
@@ -153,7 +164,51 @@ class TestPlatformElevation:
             await client.aclose()
             await engine.dispose()
 
-    async def test_grant_admits_then_revocation_refuses_again(self):
+    async def test_request_alone_grants_nothing(self):
+        """Asking is not being granted. The whole approval flow rests here."""
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            requested = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "ticket 123"},
+            )
+            assert requested.status_code == 200
+            assert requested.json()["status"] == "requested"
+
+            resp = await client.get(f"/api/tenants/{tenant_id}/tickets/")
+            assert resp.status_code == 403, (
+                f"a pending request admitted support: {resp.status_code}"
+            )
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_support_cannot_approve_its_own_request(self):
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            requested = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "ticket 123"},
+            )
+            rid = requested.json()["access"]["id"]
+
+            resp = await client.post(
+                f"/api/admin/support-access/requests/{rid}/approve",
+            )
+            assert resp.status_code == 403
+            assert (
+                await client.get("/api/admin/support-access/requests/pending")
+            ).status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_approval_admits_then_revocation_refuses_again(self):
+        """The full chain: request → approve → admitted → revoke → refused."""
         client, engine, tenant_id = await _client_as(
             "platform_support", platform=True,
         )
@@ -162,12 +217,34 @@ class TestPlatformElevation:
                 await client.get(f"/api/tenants/{tenant_id}/tickets/")
             ).status_code == 403
 
-            enabled = await client.post(
-                f"/api/admin/support-access/{tenant_id}/enable",
+            requested = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "ticket 123"},
             )
-            assert enabled.status_code == 200
-            assert enabled.json()["status"] == "enabled"
+            rid = requested.json()["access"]["id"]
 
+            # Approver is a different person with a different role.
+            app = client._transport.app  # type: ignore[attr-defined]
+
+            async def _admin() -> UserContext:
+                return UserContext(
+                    user_id="kc-admin", email="admin@example.com",
+                    tenant_id=None, role="platform_super_admin",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _admin
+            pending = await client.get("/api/admin/support-access/requests/pending")
+            assert pending.status_code == 200
+            assert [r["id"] for r in pending.json()["items"]] == [rid]
+
+            approved = await client.post(
+                f"/api/admin/support-access/requests/{rid}/approve",
+            )
+            assert approved.status_code == 200
+            assert approved.json()["access"]["approved_by"] == "kc-admin"
+
+            app.dependency_overrides[get_current_user] = _support_user(tenant_id)
             assert (
                 await client.get(f"/api/tenants/{tenant_id}/tickets/")
             ).status_code == 200
@@ -177,6 +254,40 @@ class TestPlatformElevation:
             )
             assert revoked.status_code == 200
 
+            assert (
+                await client.get(f"/api/tenants/{tenant_id}/tickets/")
+            ).status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_denied_request_admits_nobody(self):
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            requested = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "nope"},
+            )
+            rid = requested.json()["access"]["id"]
+
+            app = client._transport.app  # type: ignore[attr-defined]
+
+            async def _admin() -> UserContext:
+                return UserContext(
+                    user_id="kc-admin", email="admin@example.com",
+                    tenant_id=None, role="platform_super_admin",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _admin
+            denied = await client.post(
+                f"/api/admin/support-access/requests/{rid}/deny",
+            )
+            assert denied.status_code == 200
+
+            app.dependency_overrides[get_current_user] = _support_user(tenant_id)
             assert (
                 await client.get(f"/api/tenants/{tenant_id}/tickets/")
             ).status_code == 403
@@ -194,7 +305,26 @@ class TestPlatformElevation:
             "platform_support", platform=True,
         )
         try:
-            await client.post(f"/api/admin/support-access/{tenant_id}/enable")
+            requested = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "ticket 123"},
+            )
+            rid = requested.json()["access"]["id"]
+            app = client._transport.app  # type: ignore[attr-defined]
+
+            async def _admin() -> UserContext:
+                return UserContext(
+                    user_id="kc-admin", email="admin@example.com",
+                    tenant_id=None, role="platform_super_admin",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _admin
+            await client.post(
+                f"/api/admin/support-access/requests/{rid}/approve",
+            )
+            app.dependency_overrides[get_current_user] = _support_user(tenant_id)
+
             # platform_support holds support.view and audit.view ...
             assert (
                 await client.get(f"/api/tenants/{tenant_id}/tickets/")
