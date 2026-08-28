@@ -1,5 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
@@ -105,7 +105,7 @@ export default function BillingDashboard() {
   const [paying, setPaying] = useState<string | null>(null);
 
   // Use tenant_id from a reasonable default -- in production this comes from auth context
-  const tenantId = "current";
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -305,7 +305,7 @@ export default function BillingDashboard() {
           pageSize={PAGE_SIZE}
           total={invoiceTotal}
           onPageChange={setInvoicePage}
-          onRowClick={(inv) => navigate(`/invoices/${inv.id}`)}
+          onRowClick={(inv) => navigate(`/t/${tenantId}/invoices/${inv.id}`)}
           striped
         />
       )}

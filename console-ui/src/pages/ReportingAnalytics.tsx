@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
@@ -106,7 +107,7 @@ export default function ReportingAnalytics() {
   const [devices, setDevices] = useState<DeviceHealthRow[]>([]);
   const [trends, setTrends] = useState<MonthTrend[]>([]);
 
-  const tenantId = "current";
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const fetchAll = useCallback(async () => {
     setLoading(true);

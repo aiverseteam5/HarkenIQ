@@ -16,6 +16,20 @@ from harkeniq_console.db.repos import (
 )
 
 
+
+async def _mk_access(session, **kw):
+    """Raw row constructor for legacy-shaped fixtures.
+
+    SupportAccessLogRepo.create() was removed (review: it predated the
+    request->approve state model and mixed the two lifecycles); tests that
+    need historical/approved rows build them directly instead.
+    """
+    from harkeniq_console.db.models import SupportAccessLog
+    row = SupportAccessLog(**kw)
+    session.add(row)
+    await session.flush()
+    return row
+
 def utcnow():
     return datetime.now(timezone.utc)
 
@@ -126,8 +140,8 @@ class TestSupportMode:
     async def test_enable_24h_access(self, session, tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        entry = await repo.create(
-            tenant_id=tenant.id, enabled_by="support1",
+        entry = await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="support1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         active = await repo.get_active(tenant.id)
@@ -137,8 +151,8 @@ class TestSupportMode:
     async def test_auto_expire(self, session, tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        await repo.create(
-            tenant_id=tenant.id, enabled_by="s1",
+        await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now - timedelta(hours=25),
             expires_at=now - timedelta(hours=1),
         )
@@ -148,8 +162,8 @@ class TestSupportMode:
     async def test_manual_revoke(self, session, tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        entry = await repo.create(
-            tenant_id=tenant.id, enabled_by="s1",
+        entry = await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         await repo.revoke(entry, "s2")
@@ -158,8 +172,8 @@ class TestSupportMode:
 
     async def test_audit_logged_on_enable(self, session, tenant):
         now = utcnow()
-        await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+        await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         await AuditRepo(session).append(

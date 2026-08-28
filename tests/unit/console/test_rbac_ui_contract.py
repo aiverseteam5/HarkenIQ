@@ -216,25 +216,23 @@ class TestTenantSelector:
             await client.aclose()
             await engine.dispose()
 
-    async def test_header_selects_a_tenant_the_alias_could_not_resolve(self):
-        # Two tenants and a platform caller: "current" is ambiguous and used
-        # to 404. The explicit header disambiguates it.
+    async def test_platform_caller_is_not_placed_in_a_tenant(self):
+        """/api/me/tenants lists; it does not select.
+
+        The header-and-alias mechanism this used to test is gone: tenant
+        context is a path segment, so listing the tenants a caller may act
+        as cannot, by itself, put them inside one.
+        """
         client, engine, _sm, ids = await _app_as(
             "platform_super_admin", platform=True, tenants=2
         )
         try:
-            # Refused explicitly. This used to return 200 with an empty
-            # list, which reads as "no audit entries" rather than "no
-            # tenant selected".
-            ambiguous = await client.get("/api/tenants/current/audit")
-            assert ambiguous.status_code == 400
-            assert "select a tenant" in ambiguous.json()["detail"]
-
-            chosen = await client.get(
-                "/api/tenants/current/audit",
-                headers={"x-harken-tenant": ids[1]},
-            )
-            assert chosen.status_code == 200
+            body = (await client.get("/api/me/tenants")).json()
+            assert {t["id"] for t in body["tenants"]} == set(ids)
+            # Naming a tenant explicitly is the only way in.
+            assert (
+                await client.get(f"/api/tenants/{ids[1]}/audit/")
+            ).status_code == 200
         finally:
             await client.aclose()
             await engine.dispose()

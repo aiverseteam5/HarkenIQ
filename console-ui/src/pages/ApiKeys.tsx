@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
@@ -57,7 +58,7 @@ export default function ApiKeys() {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [revokeConfirm, setRevokeConfirm] = useState<string | null>(null);
 
-  const tenantId = "current";
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const fetchKeys = useCallback(async () => {
     setLoading(true);

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from functools import wraps
 from typing import Callable
 
 from fastapi import Depends, HTTPException, Request
 
 from harkeniq_console.auth import UserContext, get_current_user
+from harkeniq_console.db.models import Tenant
 from harkeniq_console.db.repos import SupportAccessLogRepo
 from harkeniq_console.permissions import has_permission
 
@@ -38,6 +38,28 @@ def require_role(*roles: str) -> Callable:
 def require_permission(permission: str) -> Callable:
     """Dependency that checks the authenticated user has *permission*."""
     async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
+        if not has_permission(user.role, permission, user.permissions):
+            raise HTTPException(status_code=403, detail=f"missing permission: {permission}")
+        return user
+    return _check
+
+
+def require_platform_permission(permission: str) -> Callable:
+    """A platform-plane guard: platform realm AND the permission.
+
+    Review finding (4 independent passes): guarding a platform endpoint with
+    ``require_permission`` alone leaks it to customers, because the atomic
+    permissions are shared vocabulary — ``tenant.view`` is held by
+    ``tenant_owner`` (and sits inside the custom-role ceiling), so a bare
+    permission check let any tenant owner read the vendor's tenant registry
+    and every tenant's Central Command endpoint. Platform-plane routes ask
+    two questions: is this vendor staff, and does their role grant it.
+    """
+    async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
+        if not user.is_platform_user:
+            raise HTTPException(
+                status_code=403, detail="platform credentials required"
+            )
         if not has_permission(user.role, permission, user.permissions):
             raise HTTPException(status_code=403, detail=f"missing permission: {permission}")
         return user
@@ -75,18 +97,35 @@ async def tenant_scope(
     the break-glass, and gating it on the grant mechanism would mean a
     failure of that mechanism locks everyone out mid-incident.
     """
-    if user.is_platform_user:
-        if user.role == "platform_super_admin":
-            return user
-        active = await SupportAccessLogRepo(session).get_active(tenant_id)
+    # Membership is checked BEFORE existence, deliberately. A tenant user
+    # naming someone else's tenant must get the same answer whether or not
+    # that tenant is real — otherwise 403-vs-404 tells them which ids
+    # exist. Ids are long random hex so enumeration is impractical either
+    # way, but the cheap ordering is the one that leaks nothing.
+    if not user.is_platform_user and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="tenant scope mismatch")
+
+    # A tenant id that does not exist must 404, not sail through to a route
+    # that filters on it and returns an empty list. "No audit entries" and
+    # "no such tenant" look identical to a reader, and the second one is
+    # usually a typo or a stale link. The old `current` alias middleware
+    # refused this centrally; with the alias gone the check belongs here,
+    # where every tenant-scoped route already passes.
+    if await session.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    if user.is_platform_user and user.role != "platform_super_admin":
+        # The grant admits its REQUESTER, not all of support: one approval
+        # must not open the tenant to every platform_support engineer
+        # (red-team finding; per-person elevation is the model).
+        active = await SupportAccessLogRepo(session).get_active(
+            tenant_id, user_id=user.user_id,
+        )
         if active is None:
             raise HTTPException(
                 status_code=403,
                 detail="support access not enabled for this tenant",
             )
-        return user
-    if user.tenant_id != tenant_id:
-        raise HTTPException(status_code=403, detail="tenant scope mismatch")
     return user
 
 

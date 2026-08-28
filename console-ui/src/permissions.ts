@@ -16,7 +16,13 @@ import type { AuthUser } from "./useAuth";
 
 export interface AccessRule {
   perm?: string;
+  /** super admin only (role check, no bundle can satisfy it) */
   platformOnly?: boolean;
+  /** any PLATFORM user holding `perm` — mirrors the server's
+   *  require_platform_permission: tenant.view is shared vocabulary
+   *  (tenant_owner holds it), so a bare perm check leaked the registry
+   *  page to customers [review CRITICAL]. */
+  platform?: boolean;
 }
 
 export const ROUTE_ACCESS: Record<string, AccessRule> = {
@@ -31,10 +37,10 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
 
   // Operations
   "/policies": { perm: "site.manage" },
-  // tenants.py is entirely require_super_admin, so platform_support cannot
-  // actually read the registry despite holding tenant.view. Mirrored here
-  // rather than papered over — see the note in the PR.
-  "/tenants": { platformOnly: true },
+  // Listing tenants is `tenant.view` held by PLATFORM staff. Entering one
+  // is a separate act, gated server-side by tenant_scope plus a
+  // support-access grant, so a visible registry is not a reachable tenant.
+  "/tenants": { perm: "tenant.view", platform: true },
   "/users": { perm: "user.view" },
   "/licenses": { perm: "license.view" },
   "/support": { perm: "support.view" },
@@ -74,14 +80,55 @@ export function canAccess(user: AuthUser | null, rule?: AccessRule): boolean {
   if (rule.platformOnly) {
     return user.is_platform_user && user.role === "platform_super_admin";
   }
+  if (rule.platform && !user.is_platform_user) return false;
   return rule.perm ? can(user, rule.perm) : true;
+}
+
+/** Strip the tenant-plane prefix, so `/t/acme/audit` is ruled on as
+ *  `/audit`. One ROUTE_ACCESS map serves both planes; the tenant id in the
+ *  path says WHICH tenant, never WHAT the caller may do there. */
+export function stripTenantPrefix(pathname: string): string {
+  const m = /^\/t\/[^/]+(\/.*)?$/.exec(pathname);
+  if (!m) return pathname;
+  return m[1] ?? "/dashboard";
+}
+
+/** Is this path inside a tenant context, and which tenant? */
+export function tenantFromPath(pathname: string): string | null {
+  const m = /^\/t\/([^/]+)(?:\/|$)/.exec(pathname);
+  return m ? m[1] : null;
+}
+
+/**
+ * Where a bare or unmatched path should send this user.
+ *
+ * Pure so it can be tested: the naive version prefixed whatever it was
+ * given, so an unknown path that ALREADY carried a tenant segment became
+ * `/t/x/t/x/...` and redirected forever. A path that is already scoped has
+ * a good tenant and a bad page, so the answer is that tenant's dashboard —
+ * never another prefix.
+ */
+export function redirectTargetFor(
+  user: { is_platform_user: boolean; tenant_id: string } | null,
+  pathname: string,
+): string | null {
+  if (!user) return null;
+  // Platform users are never placed in a tenant automatically; they choose
+  // one from the registry.
+  if (user.is_platform_user || !user.tenant_id) return "/tenants";
+  if (tenantFromPath(pathname) !== null) {
+    return `/t/${user.tenant_id}/dashboard`;
+  }
+  const path = pathname === "/" ? "/dashboard" : pathname;
+  return `/t/${user.tenant_id}${path}`;
 }
 
 /** Rule for a route key, longest-prefix first so /admin/features does not
  *  match /admin. */
 export function ruleFor(pathname: string): AccessRule | undefined {
+  const path = stripTenantPrefix(pathname);
   const key = Object.keys(ROUTE_ACCESS)
     .sort((a, b) => b.length - a.length)
-    .find((k) => pathname === k || pathname.startsWith(`${k}/`));
+    .find((k) => path === k || path.startsWith(`${k}/`));
   return key ? ROUTE_ACCESS[key] : undefined;
 }

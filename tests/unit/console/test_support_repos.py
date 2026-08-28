@@ -17,6 +17,20 @@ from harkeniq_console.db.repos import (
 )
 
 
+
+async def _mk_access(session, **kw):
+    """Raw row constructor for legacy-shaped fixtures.
+
+    SupportAccessLogRepo.create() was removed (review: it predated the
+    request->approve state model and mixed the two lifecycles); tests that
+    need historical/approved rows build them directly instead.
+    """
+    from harkeniq_console.db.models import SupportAccessLog
+    row = SupportAccessLog(**kw)
+    session.add(row)
+    await session.flush()
+    return row
+
 def utcnow():
     return datetime.now(timezone.utc)
 
@@ -247,8 +261,8 @@ class TestTicketStateChangeRepo:
 class TestSupportAccessLogRepo:
     async def test_create(self, session, tenant):
         now = utcnow()
-        entry = await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="support1",
+        entry = await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="support1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         assert entry.id
@@ -256,8 +270,8 @@ class TestSupportAccessLogRepo:
 
     async def test_get_active(self, session, tenant):
         now = utcnow()
-        await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+        await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         active = await SupportAccessLogRepo(session).get_active(tenant.id)
@@ -265,8 +279,8 @@ class TestSupportAccessLogRepo:
 
     async def test_get_active_expired(self, session, tenant):
         now = utcnow()
-        await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+        await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now - timedelta(hours=25),
             expires_at=now - timedelta(hours=1),
         )
@@ -275,8 +289,8 @@ class TestSupportAccessLogRepo:
 
     async def test_get_active_revoked(self, session, tenant):
         now = utcnow()
-        entry = await SupportAccessLogRepo(session).create(
-            tenant_id=tenant.id, enabled_by="s1",
+        entry = await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         await SupportAccessLogRepo(session).revoke(entry, "s1")
@@ -286,8 +300,8 @@ class TestSupportAccessLogRepo:
     async def test_revoke(self, session, tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        entry = await repo.create(
-            tenant_id=tenant.id, enabled_by="s1",
+        entry = await _mk_access(session, 
+            tenant_id=tenant.id, enabled_by="s1", status="approved",
             enabled_at=now, expires_at=now + timedelta(hours=24),
         )
         revoked = await repo.revoke(entry, "s2")
@@ -297,8 +311,8 @@ class TestSupportAccessLogRepo:
     async def test_list_by_tenant(self, session, tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        await repo.create(tenant_id=tenant.id, enabled_by="s1", enabled_at=now, expires_at=now + timedelta(hours=24))
-        await repo.create(tenant_id=tenant.id, enabled_by="s2", enabled_at=now - timedelta(days=7), expires_at=now - timedelta(days=6))
+        await _mk_access(session, tenant_id=tenant.id, enabled_by="s1", status="approved", enabled_at=now, expires_at=now + timedelta(hours=24))
+        await _mk_access(session, tenant_id=tenant.id, enabled_by="s2", status="approved", enabled_at=now - timedelta(days=7), expires_at=now - timedelta(days=6))
         entries = await repo.list_by_tenant(tenant.id)
         assert len(entries) == 2
         # most recent first
@@ -307,7 +321,7 @@ class TestSupportAccessLogRepo:
     async def test_tenant_isolation(self, session, tenant, second_tenant):
         now = utcnow()
         repo = SupportAccessLogRepo(session)
-        await repo.create(tenant_id=tenant.id, enabled_by="s1", enabled_at=now, expires_at=now + timedelta(hours=24))
+        await _mk_access(session, tenant_id=tenant.id, enabled_by="s1", status="approved", enabled_at=now, expires_at=now + timedelta(hours=24))
         entries = await repo.list_by_tenant(second_tenant.id)
         assert len(entries) == 0
 

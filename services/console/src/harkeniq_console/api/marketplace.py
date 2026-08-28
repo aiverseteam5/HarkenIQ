@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
+
+from pydantic import BaseModel
 
 from harkeniq_console.api.deps import get_session, require_permission
 from harkeniq_console.auth import UserContext
@@ -144,9 +147,17 @@ async def get_skill(
                        or user.is_platform_user)
 
 
+class InstallBody(BaseModel):
+    # Optional: the tenant this install is FOR. Required for platform
+    # users on the tenant plane; a tenant user may omit it (their own) or
+    # name their own tenant only.
+    tenant_id: Optional[str] = None
+
+
 @router.post("/skills/{entry_id}/install")
 async def install_skill(
     entry_id: str,
+    body: Optional[InstallBody] = None,
     user: UserContext = Depends(require_permission("skill.install")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -158,10 +169,20 @@ async def install_skill(
     if entry is None or not entry.published:
         raise HTTPException(status_code=404, detail="skill not available")
     await repo.record_install(entry)
-    # R5-2: install event -- CC pulls these to deliver to the tenant's sites
-    if user.tenant_id:
+    # R5-2: install event -- CC pulls these to deliver to the tenant's sites.
+    # Review finding: for a platform user (tenant_id None) this silently
+    # recorded NOTHING — 200 returned, no delivery ever happened. The
+    # tenant-plane page now names the tenant explicitly (decided by Vinod
+    # 2026-08-28); a tenant user may only name their own, and a platform
+    # user is subject to the same tenant_scope gate (break-glass or an
+    # approved support grant) that let them into the tenant's console.
+    effective_tenant = body.tenant_id if body and body.tenant_id else user.tenant_id
+    if body and body.tenant_id:
+        from harkeniq_console.api.deps import tenant_scope
+        await tenant_scope(body.tenant_id, user, session)
+    if effective_tenant:
         await MarketplaceInstallRepo(session).record(
-            tenant_id=user.tenant_id, skill_entry_id=entry.id,
+            tenant_id=effective_tenant, skill_entry_id=entry.id,
             installed_by=user.email,
         )
     await AuditRepo(session).append(

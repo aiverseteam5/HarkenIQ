@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
@@ -74,6 +75,7 @@ function pct(rate: number | null): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function SkillMarketplace() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const { toasts, toast, dismiss } = useToast();
   const [loading, setLoading] = useState(true);
   const [published, setPublished] = useState<MarketplaceSkill[]>([]);
@@ -127,8 +129,14 @@ export default function SkillMarketplace() {
   };
 
   const install = async (id: string) => {
+    // Tenant plane: name the tenant the install is FOR. Without it a
+    // platform user's install returned 200 and recorded nothing, so CC
+    // never delivered the skill [review CRITICAL, api-contract pass].
     try {
-      await postJson(`/api/marketplace/skills/${id}/install`, {});
+      await postJson(
+        `/api/marketplace/skills/${id}/install`,
+        tenantId ? { tenant_id: tenantId } : {},
+      );
       toast("Skill installed — distribute via your Site Manager", "success");
       await fetchAll();
     } catch (err) {

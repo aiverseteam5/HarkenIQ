@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
@@ -9,7 +10,7 @@ import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { getJson } from "../api";
 
-/* ── Types (CC /api/outcomes) ─────────────────────── */
+/* ── Types (CC /api/t/{tenantId}/outcomes) ─────────────────────── */
 
 interface OutcomeMetric {
   action_type: string;
@@ -100,6 +101,7 @@ function groupLabel(m: OutcomeMetric): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function VendorReliability() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const { toasts, toast, dismiss } = useToast();
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<OutcomeMetric[]>([]);
@@ -109,8 +111,8 @@ export default function VendorReliability() {
     setLoading(true);
     try {
       const [metricsRes, patternsRes] = await Promise.allSettled([
-        getJson<{ metrics: OutcomeMetric[]; total_outcomes: number }>("/api/outcomes/metrics"),
-        getJson<{ patterns: FleetPattern[] }>("/api/outcomes/patterns"),
+        getJson<{ metrics: OutcomeMetric[]; total_outcomes: number }>(`/api/t/${tenantId}/outcomes/metrics`),
+        getJson<{ patterns: FleetPattern[] }>(`/api/t/${tenantId}/outcomes/patterns`),
       ]);
       if (metricsRes.status === "fulfilled") setMetrics(metricsRes.value.metrics);
       if (patternsRes.status === "fulfilled") setPatterns(patternsRes.value.patterns);

@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
@@ -103,7 +104,7 @@ export default function SupportTicketing() {
   const [creating, setCreating] = useState(false);
   const [closeConfirm, setCloseConfirm] = useState<string | null>(null);
 
-  const tenantId = "current";
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const filterDefs = useMemo<FilterDef[]>(() => [
     { key: "status", label: "Status", type: "select", options: [

@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
@@ -10,7 +11,6 @@ import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson, postJson, getAccessToken } from "../api";
-import { useAuth } from "../useAuth";
 import type { PaginatedResponse } from "../types";
 
 /* ── Types ──────────────────────────────────────── */
@@ -40,12 +40,6 @@ interface ValidateResult {
     expires_at: string;
   };
   errors?: string[];
-}
-
-interface TenantOption {
-  id: string;
-  name: string;
-  slug: string;
 }
 
 /* ── Constants ──────────────────────────────────── */
@@ -200,15 +194,16 @@ function truncate(s: string, len: number): string {
 
 export default function LicenseManagement() {
   const { toasts, toast, dismiss } = useToast();
-  const { user } = useAuth();
-  const isPlatformAdmin = user?.is_platform_user ?? false;
 
   /* ── Tabs ────────────────────────────────────── */
   const [activeTab, setActiveTab] = useState<"licenses" | "validate">("licenses");
 
   /* ── Tenant context ──────────────────────────── */
-  const [tenantId, setTenantId] = useState(user?.tenant_id ?? "");
-  const [tenants, setTenants] = useState<TenantOption[]>([]);
+  // This page used to carry its OWN tenant picker that auto-selected the
+  // first tenant — a third answer to "which tenant?", disagreeing with
+  // both the global selector and the pages that used the "current" alias.
+  // The route is now the single answer.
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   /* ── Licenses list state ─────────────────────── */
   const [licenses, setLicenses] = useState<LicenseRecord[]>([]);
@@ -239,22 +234,6 @@ export default function LicenseManagement() {
   const [licenseKey, setLicenseKey] = useState("");
   const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
   const [validateLoading, setValidateLoading] = useState(false);
-
-  /* ── Fetch tenants for super admin ───────────── */
-  useEffect(() => {
-    if (!isPlatformAdmin) return;
-    getJson<PaginatedResponse<TenantOption>>("/api/admin/tenants?page=1&page_size=200")
-      .then((res) => {
-        setTenants(res.items);
-        if (!tenantId && res.items.length > 0) {
-          setTenantId(res.items[0].id);
-        }
-      })
-      .catch(() => {
-        /* ignore - tenant selector just won't populate */
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlatformAdmin]);
 
   /* ── Fetch licenses ──────────────────────────── */
   const fetchLicenses = useCallback(async () => {
@@ -487,28 +466,6 @@ export default function LicenseManagement() {
           </button>
         }
       />
-
-      {/* Super admin: tenant selector */}
-      {isPlatformAdmin && tenants.length > 0 && (
-        <div style={{ marginBottom: "1rem" }}>
-          <select
-            className="select"
-            value={tenantId}
-            onChange={(e) => {
-              setTenantId(e.target.value);
-              setPage(1);
-            }}
-            aria-label="Select tenant"
-            style={{ minWidth: 280 }}
-          >
-            {tenants.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.slug})
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
 
       {/* Tabs */}
       <div style={tabBar}>
