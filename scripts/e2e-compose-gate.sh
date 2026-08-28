@@ -55,7 +55,11 @@ step "Console proxy serves CC data for the tenant (SPA path)"
 # the tenant_services placement registry. A tenant with no placement is
 # refused with 503 rather than handed a shared Central Command, so this
 # step also proves seed-demo.sh registered one.
-source "$(dirname "$0")/lib/tenant-lookup.sh"
+# Resolve from the REPO ROOT, not $0: this script cds into
+# deploy/full-stack before this line, so a $0-relative path breaks
+# (gate-caught: "No such file or directory" under set -e).
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/.." && pwd)")"
+source "$_REPO_ROOT/scripts/lib/tenant-lookup.sh"
 TENANT_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN")
 [ -n "$TENANT_ID" ] || { echo "demo tenant not found" >&2; exit 1; }
 curl -sfL -H "Authorization: Bearer $TOKEN" \
