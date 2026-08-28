@@ -97,12 +97,20 @@ real SONiC."
 - Every store carries a SHA-256 hash-chained audit (step 4's verify).
 - The tenant plane is authorized by permission, not membership: a `viewer`
   calling `POST /api/tenants/{id}/api-keys/` directly gets 403, not a key.
-- Platform staff do not get customer tenants for free. `platform_support`
-  is refused the tenant plane until someone grants time-bound access
-  (`POST /api/admin/support-access/{tenant_id}/enable`, 24h, revocable,
-  audited at both ends) — and the grant admits it, it does not make it
-  root: still no `user.manage`, so still no minting API keys.
-  `platform_super_admin` keeps an unconditional break-glass on purpose.
+- Platform staff do not get customer tenants for free, and cannot let
+  themselves in. `platform_support` *requests* access
+  (`POST /api/admin/support-access/{tenant_id}/request`); only a
+  `platform_super_admin` can approve it, for 24h, revocable, audited at
+  every step. A grant admits support, it does not make it root: still no
+  `user.manage`, so still no minting API keys. `platform_super_admin`
+  keeps an unconditional break-glass on purpose — gating that on the grant
+  mechanism would lock everyone out if the mechanism itself failed.
+- Tenant context is in the URL (`/t/{tenant}/...`), not a header or browser
+  storage, and a platform admin is never placed in a tenant automatically:
+  they pick one from the registry, and the pick is an explicit act.
+  Each tenant's Central Command is resolved from a service-placement
+  registry, fail-closed — an unregistered tenant is refused, never handed
+  another tenant's stack.
 - The demo stack still runs lab defaults (admin/admin, dev-token-sm) —
   say so if asked; production hardening is config, not code.
 
