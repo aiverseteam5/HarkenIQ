@@ -50,8 +50,29 @@ TOKEN=$(curl -sf -X POST \
 wait_for "CC fleet has the device" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:8090/api/fleet/ | grep -q agent_id"
 
-step "Console proxy serves CC data (SPA path)"
-curl -sfL -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/fleet/summary | grep -q total_nodes
+step "Console proxy serves CC data for the tenant (SPA path)"
+# The proxy is tenant-scoped now: /api/t/{tenant}/fleet/... resolved through
+# the tenant_services placement registry. A tenant with no placement is
+# refused with 503 rather than handed a shared Central Command, so this
+# step also proves seed-demo.sh registered one.
+TENANT_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/admin/tenants/?search=tenant-demo" \
+  | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+match = [t for t in items if t.get('slug') == 'tenant-demo']
+print(match[0]['id'] if match else '')
+")
+[ -n "$TENANT_ID" ] || { echo "demo tenant not found" >&2; exit 1; }
+curl -sfL -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/$TENANT_ID/fleet/summary" | grep -q total_nodes
+
+step "Placement is fail-closed: an unregistered tenant is refused, not defaulted"
+UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/does-not-exist/fleet/summary")
+# 404 (no such tenant) or 503 (no placement) are both refusals; 200 would
+# mean a tenant with no stack of its own was served someone else's.
+[ "$UNREG" != "200" ] || { echo "unregistered tenant got 200" >&2; exit 1; }
 
 step "Auth is real: no token / garbage token are rejected"
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/fleet/)" = "401" ]
