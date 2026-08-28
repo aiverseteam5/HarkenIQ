@@ -59,12 +59,11 @@ export default function TenantSelector() {
         if (cancelled) return;
         setTenants(res.tenants ?? []);
         setSelectable(res.selectable ?? false);
-        // Default a platform admin into the first tenant so the aliased
-        // pages resolve instead of 404ing on an ambiguous "current".
-        if (res.selectable && !getActiveTenant() && res.tenants?.length) {
-          setActiveTenant(res.tenants[0].id);
-          setActive(res.tenants[0].id);
-        }
+        // Deliberately no default. Auto-selecting the first tenant put a
+        // platform admin inside a customer's tenant on login, with no
+        // action and no intent — the opposite of explicit elevation. An
+        // unresolved "current" is answered by a clean 400 from the
+        // middleware, so the cost of choosing is one click, not a crash.
       } catch {
         /* selector is a convenience; never block the shell on it */
       }
@@ -91,6 +90,7 @@ export default function TenantSelector() {
           window.location.reload();
         }}
       >
+        <option value="">Select a tenant…</option>
         {tenants.map((t) => (
           <option key={t.id} value={t.id}>
             {t.name}
