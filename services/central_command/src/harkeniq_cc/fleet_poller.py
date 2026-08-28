@@ -23,7 +23,7 @@ async def fleet_poll_loop(state) -> None:
     Failures are logged per-site and do not abort the cycle.
     """
     interval = state.config.site_poll_interval_s
-    client = SMClient()
+    client = SMClient(state.config.sm_tls_ca)
     logger.info("Fleet poller started (interval=%.0fs)", interval)
     while True:
         await asyncio.sleep(interval)
@@ -59,8 +59,40 @@ async def fleet_poll_loop(state) -> None:
                         if outcomes:
                             await _ingest_outcomes(session, site.id, outcomes)
 
+                        # QA-033: ingest SM-generated candidate skills for
+                        # the R-C1 learning loop
+                        candidates = snapshot.get("candidate_skills", [])
+                        if candidates:
+                            await _ingest_candidates(
+                                session, state.config.tenant_id,
+                                site.id, candidates,
+                            )
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
+
+                        # QA-022: re-converge autonomy policy + stop
+                        # switch each cycle (SM state is in-process; an
+                        # SM restart or missed immediate push heals here).
+                        try:
+                            from harkeniq_cc.policy_push import (
+                                build_autonomy_payload,
+                            )
+                            payload = await build_autonomy_payload(
+                                session, state.config.tenant_id
+                            )
+                            await client.push_policy(
+                                site.sm_endpoint,
+                                site.sm_token,
+                                state.config.tenant_id,
+                                site.id,
+                                autonomy_budgets_json=payload,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Policy push failed for %s: %s",
+                                site.site_name, exc,
+                            )
                         logger.debug(
                             "Fleet poll OK for %s: %d devices, %d outcomes",
                             site.site_name,
@@ -97,3 +129,19 @@ async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
         )
         session.add(row)
     logger.info("Ingested %d outcomes from site %s", len(outcomes), site_id)
+
+
+async def _ingest_candidates(
+    session, tenant_id: str, site_id: str, candidates: list[dict],
+) -> None:
+    """Store SM candidate skills in cc_candidate_skills (QA-033)."""
+    from harkeniq_cc.db.repos import CandidateSkillRepo
+
+    repo = CandidateSkillRepo(session)
+    for cand in candidates:
+        if not cand.get("skill_id"):
+            continue
+        await repo.upsert(tenant_id, site_id, cand)
+    logger.info(
+        "Ingested %d candidate skills from site %s", len(candidates), site_id
+    )

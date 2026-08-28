@@ -20,10 +20,22 @@ class ConsoleConfig:
     http_host: str = "0.0.0.0"
     http_port: int = 8100
     keycloak_url: str = "http://localhost:8180"
+    # Browser-facing issuer base (QA-005): in compose the browser reaches
+    # Keycloak at localhost:8180 while services fetch JWKS via
+    # keycloak:8080 — tokens carry the PUBLIC issuer. Empty = same as
+    # keycloak_url (single-host deployments).
+    keycloak_public_url: str = ""
     keycloak_admin_user: str = "admin"
     keycloak_admin_password: str = ""
     platform_realm: str = "harkeniq-platform"
     platform_client_id: str = "harkeniq-console"
+    # QA-029: Central Command base URL. The SPA calls L3 surfaces (fleet,
+    # approvals, policies, ...) against its own origin; the Console proxies
+    # those prefixes to CC. Empty = proxy disabled (screens 404 as before).
+    cc_url: str = ""
+    # QA-035: shared CC<->Console credential; CC sends it as a bearer on
+    # /api/internal calls (its HARKEN_CC_CONSOLE_API_KEY must match).
+    internal_api_key: str = ""
     license_signing_key_path: str = ""
     license_verify_key_path: str = ""
     razorpay_key_id: str = ""
@@ -51,10 +63,13 @@ _ENV_MAP = {
     "HARKEN_CONSOLE_HTTP_HOST": "http_host",
     "HARKEN_CONSOLE_HTTP_PORT": "http_port",
     "HARKEN_CONSOLE_KEYCLOAK_URL": "keycloak_url",
+    "HARKEN_CONSOLE_KEYCLOAK_PUBLIC_URL": "keycloak_public_url",
     "HARKEN_CONSOLE_KEYCLOAK_ADMIN_USER": "keycloak_admin_user",
     "HARKEN_CONSOLE_KEYCLOAK_ADMIN_PASSWORD": "keycloak_admin_password",
     "HARKEN_CONSOLE_PLATFORM_REALM": "platform_realm",
     "HARKEN_CONSOLE_PLATFORM_CLIENT_ID": "platform_client_id",
+    "HARKEN_CONSOLE_CC_URL": "cc_url",
+    "HARKEN_CONSOLE_INTERNAL_API_KEY": "internal_api_key",
     "HARKEN_CONSOLE_LICENSE_SIGNING_KEY_PATH": "license_signing_key_path",
     "HARKEN_CONSOLE_LICENSE_VERIFY_KEY_PATH": "license_verify_key_path",
     "HARKEN_CONSOLE_RAZORPAY_KEY_ID": "razorpay_key_id",

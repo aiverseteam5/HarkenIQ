@@ -51,12 +51,19 @@ export default function Approvals({
           <div>
             <button
               className="action approve"
+              disabled={!actor.trim()}
+              title={
+                actor.trim()
+                  ? `Recorded as sm-local:${actor}`
+                  : "Enter your name in the header first (QA-006)"
+              }
               onClick={() => void decide(a.id, "approve")}
             >
-              Approve as {actor}
+              {actor.trim() ? `Approve as ${actor}` : "Enter name to approve"}
             </button>
             <button
               className="action deny"
+              disabled={!actor.trim()}
               onClick={() => void decide(a.id, "deny")}
             >
               Deny

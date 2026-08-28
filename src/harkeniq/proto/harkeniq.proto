@@ -252,12 +252,26 @@ message FleetOutcome {
   int64 recorded_at_unix = 8;
 }
 
+// QA-033 feedback half: SM-generated candidate skills ride the snapshot
+// up to CC (CC pulls; no new trust direction) for the R-C1 learning loop.
+message CandidateSkill {
+  string skill_id = 1;
+  string yaml_text = 2;
+  string source_device = 3;
+  string source_component = 4;
+  string validation_state = 5;    // DRAFT, TESTED
+  int64 generated_at_unix = 6;
+  string warnings_json = 7;       // validation warnings, JSON array
+  int32 dry_run_matches = 8;
+}
+
 message FleetSnapshot {
   repeated FleetDevice devices = 1;
   repeated FleetIncident incidents = 2;
   repeated FleetAction pending_actions = 3;
   int64 snapshot_at_unix = 4;
   repeated FleetOutcome outcomes = 5;  // R3b-3: action outcomes for CC learning
+  repeated CandidateSkill candidate_skills = 6;  // QA-033: R-C1 skill upflow
 }
 
 message ApprovalRouteRequest {
@@ -292,6 +306,10 @@ message PolicyUpdate {
   string site_id = 2;
   string approval_policies_json = 3;
   string autonomy_budgets_json = 4;
+  // QA-033 (R-C1): fleet patterns learned at CC, distributed to
+  // scope-matched sites. JSON list of {pattern_id, pattern_type,
+  // description, affected_scope, confidence, evidence, detected_at}.
+  string learned_patterns_json = 5;
 }
 
 message PolicyAck {

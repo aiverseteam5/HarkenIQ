@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from harkeniq_sm.db.models import AgentIdentityRow
 
@@ -201,6 +201,8 @@ class AgentIdentityService:
             pem = result.scalar_one_or_none()
             if pem is None:
                 return False
+        if isinstance(pem, str):  # legacy pre-0005 sqlite rows
+            pem = pem.encode("utf-8")
 
         try:
             public_key = serialization.load_pem_public_key(pem)
@@ -232,25 +234,29 @@ class AgentIdentityService:
 # ---------------------------------------------------------------------------
 
 
-def load_or_generate_sm_keypair(sessionmaker_sync) -> Ed25519PrivateKey:
+async def load_or_generate_sm_keypair(sessionmaker) -> Ed25519PrivateKey:
     """Load SM Ed25519 keypair from DB, or generate and store one.
 
-    Uses the platform_settings pattern (key-value table) from the existing
-    SM config. Called once at SM startup.
+    QA-021: the original implementation ran sqlite-only SQL against the
+    AGENT's ``agent_meta`` table and was never called. This version uses
+    the SM's own ``sm_settings`` KV table via the ORM (portable to
+    Postgres) and the async sessionmaker the SM runtime actually has.
     """
-    # Use sync session for startup initialization
-    with sessionmaker_sync() as session:
-        # Try to load existing keypair
-        result = session.execute(
-            text("SELECT value FROM agent_meta WHERE key = 'sm_private_key_pem'")
-        )
-        row = result.fetchone()
+    from harkeniq_sm.db.models import SMSettingRow
+
+    async with sessionmaker() as session:
+        row = (
+            await session.execute(
+                select(SMSettingRow).where(
+                    SMSettingRow.key == "sm_private_key_pem"
+                )
+            )
+        ).scalar_one_or_none()
         if row is not None:
-            private_pem = row[0].encode() if isinstance(row[0], str) else row[0]
+            private_pem = row.value.encode()
             logger.info("Loaded SM identity keypair from database")
             return serialization.load_pem_private_key(private_pem, password=None)
 
-        # Generate new keypair
         private_key = Ed25519PrivateKey.generate()
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -261,21 +267,8 @@ def load_or_generate_sm_keypair(sessionmaker_sync) -> Ed25519PrivateKey:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        session.execute(
-            text(
-                "INSERT OR REPLACE INTO agent_meta (key, value, updated_at) "
-                "VALUES (:k, :v, :t)"
-            ),
-            {"k": "sm_private_key_pem", "v": private_pem.decode(), "t": now},
-        )
-        session.execute(
-            text(
-                "INSERT OR REPLACE INTO agent_meta (key, value, updated_at) "
-                "VALUES (:k, :v, :t)"
-            ),
-            {"k": "sm_public_key_pem", "v": public_pem.decode(), "t": now},
-        )
-        session.commit()
+        session.add(SMSettingRow(key="sm_private_key_pem", value=private_pem.decode()))
+        session.add(SMSettingRow(key="sm_public_key_pem", value=public_pem.decode()))
+        await session.commit()
         logger.info("Generated new SM identity keypair")
         return private_key

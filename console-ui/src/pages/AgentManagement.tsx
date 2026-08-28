@@ -10,7 +10,6 @@ import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
-import type { PaginatedResponse } from "../types";
 
 /* ── Types ────────────────────────────────────────── */
 
@@ -159,11 +158,13 @@ export default function AgentManagement() {
       if (filters.search) params.set("search", filters.search);
       params.set("page", String(page));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<Agent>>(
+      // QA ISSUE-008: CC returns {agents,...}, not {items,...} — the
+      // undefined read white-screened the page.
+      const res = await getJson<{ agents: Agent[]; total: number }>(
         `/api/agents?${params.toString()}`,
       );
-      setAgents(res.items);
-      setTotal(res.total);
+      setAgents(res.agents ?? []);
+      setTotal(res.total ?? 0);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load agents", "error");
     } finally {

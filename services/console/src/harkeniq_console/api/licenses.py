@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +61,7 @@ def _license_dict(lic) -> dict:
 async def issue_license(
     tenant_id: str,
     body: IssueLicenseBody,
+    request: Request,
     user: UserContext = Depends(tenant_scope),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -78,16 +79,41 @@ async def issue_license(
     if not tenant:
         raise HTTPException(status_code=404, detail="tenant not found")
 
-    settings = SettingsRepo(session)
-    keypair_setting = await settings.get("license_signing_keypair")
-    if keypair_setting and keypair_setting.value:
-        private_key_pem = keypair_setting.value["private_key"].encode()
+    # QA-019: a configured key file wins — the signing key belongs in a
+    # secret store/file, not the application database. The DB-stored
+    # keypair remains the LAB fallback (insecure mode only); secure mode
+    # without a key file refuses to mint licenses rather than silently
+    # generating the crown jewels into Postgres.
+    config = request.app.state.console.config
+    key_path = config.license_signing_key_path
+    if key_path:
+        from pathlib import Path
+
+        try:
+            private_key_pem = Path(key_path).read_bytes()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"license signing key unreadable: {exc}",
+            )
+    elif config.insecure:
+        settings = SettingsRepo(session)
+        keypair_setting = await settings.get("license_signing_keypair")
+        if keypair_setting and keypair_setting.value:
+            private_key_pem = keypair_setting.value["private_key"].encode()
+        else:
+            private_key_pem, public_key_pem = generate_keypair()
+            await settings.set(
+                "license_signing_keypair",
+                {"private_key": private_key_pem.decode(),
+                 "public_key": public_key_pem.decode()},
+                updated_by=user.email,
+            )
     else:
-        private_key_pem, public_key_pem = generate_keypair()
-        await settings.set(
-            "license_signing_keypair",
-            {"private_key": private_key_pem.decode(), "public_key": public_key_pem.decode()},
-            updated_by=user.email,
+        raise HTTPException(
+            status_code=503,
+            detail="license_signing_key_path is not configured "
+                   "(refusing to auto-generate a signing key in secure mode)",
         )
 
     payload = build_license_payload(

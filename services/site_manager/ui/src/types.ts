@@ -16,6 +16,17 @@ export interface Device extends CoverageEntry {
   first_seen_at: string;
 }
 
+/** LLM Explain enrichment stored on an incident (QA-009). */
+export interface IncidentExplanation {
+  provider: string;
+  summary: string;
+  confidence: number;
+  evidence_cited: string[];
+  reasoning_steps: string[];
+  suggested_action: string;
+  similar_past_incidents: string[];
+}
+
 export interface Incident {
   id: string;
   kind: string;
@@ -28,6 +39,7 @@ export interface Incident {
   inferred: boolean;
   title: string;
   correlation_meta: Record<string, unknown> | null;
+  explanation: IncidentExplanation | null;
   opened_at: string;
   resolved_at: string | null;
   children: Incident[];

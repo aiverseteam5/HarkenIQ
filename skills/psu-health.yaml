@@ -15,6 +15,10 @@ rules:
   - condition: "state == 'Absent'"
     verdict: CRITICAL
     message: "PSU {name} has been removed"
+    action:
+      type: COLLECT_DIAGNOSTICS
+      params:
+        reason: "PSU {name} removed — redundancy at risk"
 
   - condition: "redundancy_health != 'OK'"
     verdict: WARNING

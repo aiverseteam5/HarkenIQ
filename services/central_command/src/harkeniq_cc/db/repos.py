@@ -20,12 +20,14 @@ from harkeniq_cc.db.models import (
     CCApprovalRoute,
     CCAuditLog,
     CCAutonomyBudget,
+    CCCandidateSkill,
     CCCveEntry,
     CCFleetCache,
     CCFleetPattern,
     CCOutcomeHistory,
     CCSite,
     CCSkillDelivery,
+    CCStopSwitch,
     CCUsageSnapshot,
     CCWarranty,
     utcnow,
@@ -662,6 +664,13 @@ class ApprovalGroupRepo:
         await self.session.flush()
         return row
 
+    async def get_member(self, member_id: str) -> Optional[CCApprovalGroupMember]:
+        return await self.session.get(CCApprovalGroupMember, member_id)
+
+    async def remove_member(self, member: CCApprovalGroupMember) -> None:
+        await self.session.delete(member)
+        await self.session.flush()
+
 
 class AutonomyBudgetRepo:
     def __init__(self, session: AsyncSession) -> None:
@@ -715,6 +724,35 @@ class AutonomyBudgetRepo:
     async def delete(self, budget: CCAutonomyBudget) -> None:
         await self.session.delete(budget)
         await self.session.flush()
+
+
+class StopSwitchRepo:
+    """QA-022: persisted stop-switch state, one row per tenant."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, tenant_id: str) -> Optional[CCStopSwitch]:
+        return (
+            await self.session.execute(
+                select(CCStopSwitch).where(CCStopSwitch.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+
+    async def is_active(self, tenant_id: str) -> bool:
+        row = await self.get(tenant_id)
+        return bool(row.active) if row is not None else False
+
+    async def set(self, tenant_id: str, active: bool, changed_by: str) -> CCStopSwitch:
+        row = await self.get(tenant_id)
+        if row is None:
+            row = CCStopSwitch(tenant_id=tenant_id)
+            self.session.add(row)
+        row.active = active
+        row.changed_by = changed_by
+        row.updated_at = utcnow()
+        await self.session.flush()
+        return row
 
 
 class OutcomeHistoryRepo:
@@ -846,6 +884,82 @@ class FleetPatternRepo:
             return None
         row.status = "resolved"
         row.resolved_at = utcnow()
+        await self.session.flush()
+        return row
+
+
+class CandidateSkillRepo:
+    """SM-generated candidate skills for the R-C1 loop (QA-033)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, tenant_id: str, site_id: str, cand: dict,
+    ) -> CCCandidateSkill:
+        """Ingest one FleetSnapshot candidate dict; idempotent on skill_id."""
+        import json as _json
+        from datetime import timezone
+
+        row = await self.session.get(
+            CCCandidateSkill, (cand.get("skill_id", ""), tenant_id)
+        )
+        if row is None:
+            row = CCCandidateSkill(
+                skill_id=cand.get("skill_id", ""), tenant_id=tenant_id
+            )
+            self.session.add(row)
+        row.site_id = site_id
+        row.yaml_text = cand.get("yaml_text", "")
+        row.source_device = cand.get("source_device", "")
+        row.source_component = cand.get("source_component", "")
+        row.validation_state = cand.get("validation_state", "draft")
+        try:
+            row.warnings = _json.loads(cand.get("warnings_json") or "[]") or None
+        except ValueError:
+            row.warnings = None
+        row.dry_run_matches = cand.get("dry_run_matches", 0)
+        if cand.get("generated_at_unix"):
+            row.generated_at = datetime.fromtimestamp(
+                cand["generated_at_unix"], tz=timezone.utc
+            )
+        await self.session.flush()
+        return row
+
+    async def list_candidates(
+        self,
+        tenant_id: str,
+        status: Optional[str] = None,
+        limit: int = 200,
+    ) -> Sequence[CCCandidateSkill]:
+        stmt = (
+            select(CCCandidateSkill)
+            .where(CCCandidateSkill.tenant_id == tenant_id)
+            .order_by(CCCandidateSkill.received_at.desc())
+            .limit(limit)
+        )
+        if status:
+            stmt = stmt.where(CCCandidateSkill.status == status)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def link_cycle(
+        self, tenant_id: str, skill_id: str, cycle_id: str,
+    ) -> Optional[CCCandidateSkill]:
+        row = await self.session.get(CCCandidateSkill, (skill_id, tenant_id))
+        if row is None:
+            return None
+        row.cycle_id = cycle_id
+        row.status = "cycle_linked"
+        await self.session.flush()
+        return row
+
+    async def mark_promoted(
+        self, tenant_id: str, skill_id: str,
+    ) -> Optional[CCCandidateSkill]:
+        row = await self.session.get(CCCandidateSkill, (skill_id, tenant_id))
+        if row is None:
+            return None
+        row.status = "promoted"
         await self.session.flush()
         return row
 

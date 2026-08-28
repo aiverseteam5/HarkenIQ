@@ -75,7 +75,11 @@ async def estimate_usage(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(tenant_scope),
 ) -> dict:
-    return await _metering.estimate_upcoming_trueup(session, tenant_id)
+    try:
+        return await _metering.estimate_upcoming_trueup(session, tenant_id)
+    except ValueError:
+        # QA ISSUE-006: unknown tenant crashed with a 500
+        raise HTTPException(404, "tenant not found")
 
 
 @router.post("/usage/upload")

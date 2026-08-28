@@ -1,0 +1,15 @@
+# QA-011: every Dockerfile builds with context ../.. — without this file the
+# build context was 374MB and host node_modules OVERWROTE the image's fresh
+# npm ci (darwin binaries in linux images when built on a Mac).
+.git/
+.venv/
+**/node_modules/
+**/__pycache__/
+**/dist/
+**/*.egg-info/
+.pytest_cache/
+htmlcov/
+deploy/*/certs/
+docs/
+tests/
+*.log

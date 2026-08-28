@@ -22,7 +22,7 @@ async def usage_report_loop(state) -> None:
     optionally forwards it to the Console's internal usage-events endpoint.
     """
     interval = state.config.usage_report_interval_s
-    client = SMClient()
+    client = SMClient(state.config.sm_tls_ca)
     logger.info("Usage reporter started (interval=%.0fs)", interval)
     while True:
         await asyncio.sleep(interval)

@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -204,16 +205,73 @@ class ActionRow(Base):
     __table_args__ = (UniqueConstraint("device_id", "agent_action_id"),)
 
 
+class SMFleetPatternRow(Base):
+    """QA-033 (R-C1): fleet patterns pushed from CC via PushPolicy.
+
+    Upserted by pattern_id so re-pushes are idempotent; consumed by the
+    reasoning enrichment path as fleet evidence.
+    """
+
+    __tablename__ = "sm_fleet_patterns"
+
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pattern_type: Mapped[str] = mapped_column(String(64), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    affected_scope: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    detected_at: Mapped[str] = mapped_column(String(64), default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SMSettingRow(Base):
+    """Key-value settings store (QA-021: SM identity keypair persistence)."""
+
+    __tablename__ = "sm_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AgentIdentityRow(Base):
     """R3a: per-agent Ed25519 public key + SM-issued certificate (A2.4)."""
 
     __tablename__ = "agent_identities"
 
     agent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    public_key_pem: Mapped[bytes] = mapped_column(Text)
-    certificate: Mapped[bytes | None] = mapped_column(Text, nullable=True)
+    # LargeBinary, not Text: certificate is canonical JSON + a raw Ed25519
+    # signature (not valid UTF-8), and asyncpg refuses bytes into VARCHAR.
+    public_key_pem: Mapped[bytes] = mapped_column(LargeBinary)
+    certificate: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CandidateSkillRow(Base):
+    """QA-033 feedback half: LLM-generated candidate skills (R3b-1 C2).
+
+    Written by the ingest enrichment path when the LLM diagnoses a
+    WARNING/CRITICAL verdict; validated (static + dry-run) before the row
+    exists. Rides FleetSnapshot.candidate_skills up to CC once
+    (reported_to_cc flag, same pattern as ActionOutcomeRow).
+    """
+
+    __tablename__ = "sm_candidate_skills"
+
+    skill_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    yaml_text: Mapped[str] = mapped_column(Text)
+    source_device: Mapped[str] = mapped_column(String(64), default="")
+    source_component: Mapped[str] = mapped_column(String(128), default="")
+    validation_state: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    warnings: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    dry_run_matches: Mapped[int] = mapped_column(Integer, default=0)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reported_to_cc: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        Index("ix_candidate_skills_source", "source_device", "source_component"),
+    )
 
 
 class ActionOutcomeRow(Base):

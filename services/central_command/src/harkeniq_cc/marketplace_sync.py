@@ -40,7 +40,9 @@ class MarketplaceSync:
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
         self._state = state
-        self._sm_client = sm_client or SMClient()
+        self._sm_client = sm_client or SMClient(
+            getattr(state.config, "sm_tls_ca", "")
+        )
         self._transport = transport
 
     async def _fetch_installs(self) -> list[dict]:

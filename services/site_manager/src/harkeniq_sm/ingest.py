@@ -48,6 +48,13 @@ class IngestService:
         self.on_onset: Optional[OnsetHook] = None
         # R3b-1 C1: reasoning pipeline for LLM enrichment (set by runtime)
         self.reasoning_pipeline = None
+        # QA-033: CC-pushed fleet patterns, mirrored in memory for the
+        # (sync-shaped) enrichment path. Loaded from sm_fleet_patterns at
+        # startup; updated live by PushPolicy.
+        self.fleet_patterns: dict[str, dict] = {}
+        # QA-033 feedback half: candidate skill generation (set by runtime
+        # when the LLM is enabled). None = generation off.
+        self.skill_generator = None
 
     async def _site(self, session) -> str:
         if self._site_id is None:
@@ -188,15 +195,140 @@ class IngestService:
                 severity=severity,
                 evidence=[{"skill": skill_name, "data": evidence}] if evidence else [],
             )
+            # QA-033: fleet knowledge from CC informs the explanation
+            context.evidence.extend(
+                await self._matching_fleet_patterns(agent_id)
+            )
             # Check for LLMReasoner in the pipeline and call async directly
             for provider in self.reasoning_pipeline._providers:
                 if isinstance(provider, LLMReasoner):
                     result = await provider.analyze_async(context)
                     if result and result.provider == "llm":
                         await self._store_explanation(agent_id, sensor_id, result)
+                        # QA-033 feedback half: an LLM diagnosis is the
+                        # candidate-skill trigger (R3b-1 C2, R-C1).
+                        await self._generate_candidate_skill(
+                            agent_id, sensor_id, severity, result, context,
+                        )
                     break
         except Exception as e:
             logger.warning("LLM enrichment failed for %s/%s: %s", agent_id, sensor_id, e)
+
+    async def _generate_candidate_skill(
+        self, agent_id: str, sensor_id: str, severity: str, result, context,
+    ) -> None:
+        """Generate, validate, and persist a candidate skill (QA-033).
+
+        Best-effort. Dedup: one un-reported candidate per (device,
+        component) — a flapping verdict must not spam the CC queue.
+        validate_and_promote runs static analysis plus a dry-run against
+        the evidence state that triggered generation; failures are logged
+        and the candidate is dropped.
+        """
+        if self.skill_generator is None:
+            return
+        try:
+            from sqlalchemy import select
+
+            from harkeniq_sm.db.models import CandidateSkillRow
+            from harkeniq_sm.skill_validation import SkillValidator
+
+            async with self.sessionmaker() as session:
+                existing = (
+                    await session.execute(
+                        select(CandidateSkillRow).where(
+                            CandidateSkillRow.source_device == agent_id,
+                            CandidateSkillRow.source_component == sensor_id,
+                            CandidateSkillRow.reported_to_cc == False,  # noqa: E712
+                        )
+                    )
+                ).scalars().first()
+                if existing is not None:
+                    return
+
+            candidate = await self.skill_generator.generate(
+                device_id=agent_id,
+                component=sensor_id,
+                severity=severity,
+                root_cause=result.diagnosis,
+                suggested_action=result.suggested_action or "",
+                evidence=context.evidence,
+            )
+            if candidate is None:
+                return
+
+            # Dry-run against the evidence states that triggered this —
+            # the only ground truth available at generation time.
+            historical = [
+                e["data"] for e in context.evidence
+                if isinstance(e, dict) and isinstance(e.get("data"), dict)
+            ]
+            validation, package = SkillValidator().validate_and_promote(
+                candidate.yaml_text, candidate.package,
+                historical_states=historical or None,
+            )
+            if not validation.passed:
+                logger.info(
+                    "Candidate skill for %s/%s failed %s: %s",
+                    agent_id, sensor_id, validation.stage, validation.errors,
+                )
+                return
+
+            async with self.sessionmaker() as session:
+                session.add(CandidateSkillRow(
+                    skill_id=candidate.skill_id,
+                    yaml_text=candidate.yaml_text,
+                    source_device=agent_id,
+                    source_component=sensor_id,
+                    validation_state=package.validation_state.value,
+                    warnings=validation.warnings or None,
+                    dry_run_matches=validation.dry_run_matches,
+                ))
+                await session.commit()
+            logger.info(
+                "Candidate skill %s generated for %s/%s (state=%s)",
+                candidate.skill_id, agent_id, sensor_id,
+                package.validation_state.value,
+            )
+        except Exception as e:
+            logger.warning(
+                "Candidate skill generation failed for %s/%s: %s",
+                agent_id, sensor_id, e,
+            )
+
+    async def _matching_fleet_patterns(self, agent_id: str) -> list[dict]:
+        """Fleet patterns whose scope matches this device (QA-033).
+
+        Empty vendor/model in affected_scope is a wildcard. Best-effort:
+        any failure returns no extra evidence, never blocks enrichment.
+        """
+        if not self.fleet_patterns:
+            return []
+        try:
+            from harkeniq_sm.db.repos import DeviceRepo
+            async with self.sessionmaker() as session:
+                device = await DeviceRepo(session).get_by_agent_id(agent_id)
+            if device is None:
+                return []
+            matches = []
+            for pattern in self.fleet_patterns.values():
+                scope = pattern.get("affected_scope") or {}
+                vendor = scope.get("vendor", "")
+                model = scope.get("model", "")
+                if vendor and vendor != device.vendor:
+                    continue
+                if model and model != device.model:
+                    continue
+                matches.append({"fleet_pattern": {
+                    "pattern_id": pattern.get("pattern_id", ""),
+                    "pattern_type": pattern.get("pattern_type", ""),
+                    "description": pattern.get("description", ""),
+                    "confidence": pattern.get("confidence", 0.0),
+                }})
+            return matches
+        except Exception as e:
+            logger.debug("Fleet pattern matching failed: %s", e)
+            return []
 
     async def _store_explanation(self, agent_id: str, sensor_id: str, result) -> None:
         """Store the LLM explanation on the open incident for this device+subsystem."""

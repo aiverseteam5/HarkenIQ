@@ -55,6 +55,10 @@ class TrendingEngine:
         self.expected_interval: float = config.get("polling", {}).get("sensor_interval", 60)
 
         self._baselines: dict[str, Baseline] = {}
+        # QA-032 (Doc 13 §5.6): last raw (ts, value) per counter-type
+        # sensor for rate conversion. Not checkpointed: after a restart
+        # the first sample re-primes and rate tracking resumes.
+        self._counter_prev: dict[str, tuple[float, float]] = {}
         # Fixed x-axis epoch per sensor (unix ts of first sample). Using a
         # fixed epoch keeps the incremental regression sums valid across
         # ring-buffer evictions (shifting x would invalidate them).
@@ -76,14 +80,47 @@ class TrendingEngine:
             return 1.0
         return min(1.0, baseline.sample_count / self.min_samples)
 
+    def counter_to_rate(
+        self, sensor_id: str, value: float, timestamp: float
+    ) -> Optional[float]:
+        """Convert a monotonic counter sample to a rate (Doc 13 §5.6).
+
+        Returns the delta per hour since the previous sample, or None when
+        no rate is computable yet (first sample, counter reset, or zero
+        elapsed time). A reset (current < previous) is logged and restarts
+        rate tracking from the new value.
+        """
+        prev = self._counter_prev.get(sensor_id)
+        self._counter_prev[sensor_id] = (timestamp, value)
+        if prev is None:
+            return None
+        prev_ts, prev_val = prev
+        if value < prev_val:
+            logger.warning(
+                "ECC counter reset detected for %s (%.0f -> %.0f); "
+                "restarting rate tracking", sensor_id, prev_val, value,
+            )
+            return None
+        hours = (timestamp - prev_ts) / 3600.0
+        if hours <= 0:
+            return None
+        return (value - prev_val) / hours
+
     def update_baseline(
         self,
         sensor_id: str,
         value: float,
         timestamp: float,
         current_health: str,
+        degradation_direction: Optional[str] = None,
     ) -> Baseline:
-        """Add a new sample to the sensor's baseline (Doc 13 §2.5)."""
+        """Add a new sample to the sensor's baseline (Doc 13 §2.5).
+
+        ``degradation_direction`` ("rising"/"declining", from the skill's
+        trending rule) enables the Doc 13 §5.2 amendment: a >5σ jump
+        TOWARD failure is degradation to alert on, never a discontinuity
+        to silently re-learn.
+        """
         baseline = self._baselines.get(sensor_id)
         if baseline is None:
             baseline = self._new_baseline(sensor_id, timestamp)
@@ -101,17 +138,32 @@ class TrendingEngine:
         # Sudden discontinuity (Doc 13 §5.2): > 5 sigma jump resets the
         # baseline. Only applies once the baseline is trusted — during
         # learning the running stddev is too unstable to gate on.
+        # R7 amendment (QA-028/R7-P1): a jump in the sensor's degradation
+        # direction is kept — resetting would blind the threshold and
+        # deviation rules exactly when the fault accelerates.
         if (
             baseline.sample_count >= self.min_samples
             and baseline.stddev > 0
             and abs(value - baseline.mean) > 5 * baseline.stddev
         ):
-            z = abs(value - baseline.mean) / baseline.stddev
-            logger.warning(
-                "Baseline reset for %s: value %s deviates %.1f sigma from mean %.1f",
-                sensor_id, value, z, baseline.mean,
+            toward_failure = (
+                degradation_direction == "rising" and value > baseline.mean
+            ) or (
+                degradation_direction == "declining" and value < baseline.mean
             )
-            baseline = self._new_baseline(sensor_id, timestamp)
+            z = abs(value - baseline.mean) / baseline.stddev
+            if toward_failure:
+                logger.warning(
+                    "%s jumped %.1f sigma TOWARD failure (%.1f -> %s); "
+                    "keeping baseline so rules can alert (Doc 13 §5.2 "
+                    "amendment)", sensor_id, z, baseline.mean, value,
+                )
+            else:
+                logger.warning(
+                    "Baseline reset for %s: value %s deviates %.1f sigma "
+                    "from mean %.1f", sensor_id, value, z, baseline.mean,
+                )
+                baseline = self._new_baseline(sensor_id, timestamp)
 
         # Time gap (Doc 13 §5.4): start a new regression segment
         if baseline.ring_buffer:
@@ -206,9 +258,14 @@ class TrendingEngine:
             if r_squared <= self.r_squared_min:
                 continue
 
-            current = context.get(rule.field)
-            if current is None:
+            if rule.counter:
+                # The baseline holds rates, not raw counts (Doc 13 §5.6);
+                # the context still carries the raw counter value.
                 current = baseline.ring_buffer[-1][1]
+            else:
+                current = context.get(rule.field)
+                if current is None:
+                    current = baseline.ring_buffer[-1][1]
 
             threshold_name, threshold_value, tth = self._project(
                 rule, context, float(current), slope
@@ -220,6 +277,7 @@ class TrendingEngine:
             message = rule.message_template.format_map(_SafeDict(
                 dict(context),
                 rate=round(slope, 1),
+                current_rate=round(float(current), 1),
                 threshold=threshold_value,
                 time_to_threshold=_humanize_hours(tth_hours),
             ))

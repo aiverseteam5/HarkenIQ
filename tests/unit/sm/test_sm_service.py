@@ -6,6 +6,7 @@ and PushPolicy RPCs against an in-memory DB with seeded test data.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -29,7 +30,10 @@ async def sm_env(db):
     """Set up a servicer with seeded devices, incidents, and actions."""
     config = _config()
     approvals = ApprovalService(db, config)
-    servicer = SiteManagerServiceServicer(db, approvals, config)
+    from harkeniq_sm.autonomy import SMAutonomyEnforcer
+    servicer = SiteManagerServiceServicer(
+        db, approvals, config, autonomy=SMAutonomyEnforcer()
+    )
 
     async with db() as session:
         site = Site(name="site-1")
@@ -268,3 +272,113 @@ class TestPushPolicy:
         )
         ack = await servicer.PushPolicy(request, None)
         assert ack.accepted is True
+
+    async def test_policies_applied_to_enforcer(self, sm_env):
+        """QA-021: PushPolicy stores + enforces (was log-and-ack)."""
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            autonomy_budgets_json=(
+                '{"policies": [{"action_type": "POWER_CYCLE",'
+                ' "max_per_window": 2, "window_seconds": 3600,'
+                ' "risk_level": "high"}]}'
+            ),
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        assert servicer.autonomy.policy_actions() == {"POWER_CYCLE": "high"}
+        assert servicer.autonomy.get_budget_for_agent("a1") == {"POWER_CYCLE": 2}
+
+    async def test_stop_switch_threaded_and_audited(self, sm_env, db):
+        """QA-022: CC stop switch reaches the SM enforcer + audit chain."""
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            autonomy_budgets_json='{"stop_switch": true, "stop_switch_by": "cc:admin@x"}',
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        assert servicer.autonomy.stop_switch_active is True
+
+        from sqlalchemy import select
+        from harkeniq_sm.db.models import AuditLogRow
+        async with db() as session:
+            rows = (await session.execute(
+                select(AuditLogRow).where(
+                    AuditLogRow.action == "stop_switch.activate"
+                )
+            )).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].actor == "cc:admin@x"
+
+        # Deactivation flows the same way
+        request.autonomy_budgets_json = '{"stop_switch": false}'
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        assert servicer.autonomy.stop_switch_active is False
+
+    async def test_learned_patterns_stored_and_mirrored(self, sm_env, db):
+        """QA-033: pushed fleet patterns land in sm_fleet_patterns AND in
+        the ingest mirror the enrichment path reads."""
+        from harkeniq_sm.db.repos import SMFleetPatternRepo
+        from harkeniq_sm.ingest import IngestService
+
+        servicer = sm_env["servicer"]
+        servicer.ingest = IngestService(db, _config())
+        pattern = {
+            "pattern_id": "pat-9", "pattern_type": "batch_failure",
+            "description": "Dell R750 PSU batch failing",
+            "affected_scope": {"vendor": "Dell", "model": "R750"},
+            "confidence": 0.9, "evidence": {"failures": 7},
+            "detected_at": 1700000000.0,
+        }
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            learned_patterns_json=json.dumps([pattern]),
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        async with db() as session:
+            rows = await SMFleetPatternRepo(session).list_all()
+        assert len(rows) == 1
+        assert rows[0].pattern_id == "pat-9"
+        assert rows[0].affected_scope["vendor"] == "Dell"
+        assert servicer.ingest.fleet_patterns["pat-9"]["confidence"] == 0.9
+
+        # Re-push is an idempotent upsert, never a duplicate
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True
+        async with db() as session:
+            assert len(await SMFleetPatternRepo(session).list_all()) == 1
+
+    async def test_invalid_patterns_json_rejected(self, sm_env):
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            learned_patterns_json="{broken",
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is False
+        assert "learned_patterns_json" in ack.reason
+
+    async def test_invalid_json_rejected(self, sm_env):
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            autonomy_budgets_json='{not json',
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is False
+        assert "invalid" in ack.reason
+
+    async def test_no_enforcer_refused(self, db):
+        config = _config()
+        servicer = SiteManagerServiceServicer(
+            db, ApprovalService(db, config), config,
+        )
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="s1",
+            autonomy_budgets_json='{"stop_switch": true}',
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is False

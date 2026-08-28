@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from harkeniq_sm.api import actions as actions_api
 from harkeniq_sm.api import audit as audit_api
+from harkeniq_sm.api import autonomy as autonomy_api
 from harkeniq_sm.api import devices as devices_api
 from harkeniq_sm.api import firmware_campaigns as firmware_campaigns_api
 from harkeniq_sm.api import domains as domains_api
@@ -27,12 +28,19 @@ from harkeniq_sm.db.repos import DeviceRepo, SiteRepo, StatusRepo
 def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Site Manager", version="0.1.0")
     app.state.sm = state
+
+    # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
+    # partner incident can be traced across service logs.
+    from harkeniq.logging_config import request_id_middleware
+
+    app.add_middleware(request_id_middleware(app))
     app.include_router(site_api.router)
     app.include_router(domains_api.router)
     app.include_router(devices_api.router)
     app.include_router(incidents_api.router)
     app.include_router(actions_api.router)
     app.include_router(audit_api.router)
+    app.include_router(autonomy_api.router)
     app.include_router(firmware_campaigns_api.router)
     app.include_router(skills_api.router)
 

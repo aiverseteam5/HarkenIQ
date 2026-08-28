@@ -106,8 +106,44 @@ class ApprovalService:
                     request.agent_id, "action.status", row.id,
                     {"status": agent_status},
                 )
+            # QA-043: terminal statuses persist the knowledge-base outcome
+            # (R3b-1 C8). ActionOutcomeRow had one reader (GetFleetSnapshot
+            # → CC learning) and NO writer — the whole R-C1 loop starved.
+            if agent_status in ("COMPLETED", "FAILED"):
+                await self._record_outcome(
+                    session, device.id, request, agent_status, outcome,
+                )
             await session.commit()
         return True
+
+    @staticmethod
+    async def _record_outcome(
+        session, device_id: str, request, agent_status: str, outcome,
+    ) -> None:
+        """Write sm_action_outcomes once per terminal action (QA-043)."""
+        from sqlalchemy import select
+
+        from harkeniq_sm.db.models import ActionOutcomeRow
+
+        existing = (
+            await session.execute(
+                select(ActionOutcomeRow).where(
+                    ActionOutcomeRow.device_id == device_id,
+                    ActionOutcomeRow.action_id == request.action_id,
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            return  # idempotent retry of a terminal report
+        success = bool((outcome or {}).get("success", agent_status == "COMPLETED"))
+        session.add(ActionOutcomeRow(
+            action_id=request.action_id,
+            action_type=request.type,
+            device_id=device_id,
+            outcome="SUCCESS" if success else "FAILURE",
+            fault_resolved=(outcome or {}).get("fault_resolved"),
+            post_state=outcome if isinstance(outcome, dict) else None,
+        ))
 
     @staticmethod
     def _initial_status(agent_status: str) -> str:

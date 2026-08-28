@@ -13,6 +13,7 @@ Built-in playbooks from the spec:
 
 from __future__ import annotations
 
+import dataclasses
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -121,6 +122,31 @@ class PlaybookExecution:
             playbook_id=playbook.playbook_id,
             playbook_name=playbook.name,
             device_id=device_id,
+        )
+
+    # QA-031: checkpoint serialization (crash-safe resume state)
+
+    def to_dict(self) -> dict:
+        data = dataclasses.asdict(self)
+        data["status"] = self.status.value
+        return data
+
+    @staticmethod
+    def from_dict(data: dict) -> PlaybookExecution:
+        outcomes = [
+            StepOutcome(**outcome) for outcome in data.get("step_outcomes", [])
+        ]
+        return PlaybookExecution(
+            execution_id=data["execution_id"],
+            playbook_id=data["playbook_id"],
+            playbook_name=data.get("playbook_name", ""),
+            device_id=data.get("device_id", ""),
+            current_step_index=data.get("current_step_index", 0),
+            step_outcomes=outcomes,
+            status=PlaybookStatus(data["status"]),
+            started_at=data.get("started_at", 0.0),
+            completed_at=data.get("completed_at"),
+            error_message=data.get("error_message", ""),
         )
 
 

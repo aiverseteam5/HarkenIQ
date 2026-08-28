@@ -1,18 +1,44 @@
 """Internal service-to-service endpoints.
 
-Called by Central Command to report usage snapshots. No auth (internal network).
+Called by Central Command (usage snapshots, marketplace install pulls).
+QA-035: authenticated by the shared CC<->Console API key — CC has sent
+``Authorization: Bearer <console_api_key>`` since R5-2; the Console never
+checked it until now. Secure mode with no key configured fails CLOSED.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import hmac
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_console.api.deps import get_session
 from harkeniq_console.billing.metering import MeteringService
 
-router = APIRouter(prefix="/api/internal", tags=["internal"])
+
+async def require_internal_key(request: Request) -> None:
+    """QA-035: the CC<->Console credential pair, actually enforced."""
+    config = request.app.state.console.config
+    if config.insecure:
+        return
+    expected = getattr(config, "internal_api_key", "")
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="internal API key not configured (fail closed)",
+        )
+    provided = request.headers.get("authorization", "")
+    if not hmac.compare_digest(provided, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="invalid internal key")
+
+
+router = APIRouter(
+    prefix="/api/internal",
+    tags=["internal"],
+    dependencies=[Depends(require_internal_key)],
+)
 
 _metering = MeteringService()
 

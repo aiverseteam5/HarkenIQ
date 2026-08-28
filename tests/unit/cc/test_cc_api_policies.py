@@ -247,3 +247,51 @@ class TestAutonomyBudgets:
     async def test_delete_nonexistent_budget(self, client):
         r = await client.delete("/api/policies/autonomy/nonexistent")
         assert r.status_code == 404
+
+
+class TestGroupMembers:
+    """QA-036: group detail + membership routes the Console UI always called."""
+
+    async def _first_group_id(self, client) -> str:
+        listing = (await client.get("/api/policies/groups")).json()
+        return listing["groups"][0]["id"]
+
+    async def test_detail_add_and_remove_member(self, client):
+        group_id = await self._first_group_id(client)
+
+        added = await client.post(
+            f"/api/policies/groups/{group_id}/members",
+            json={"email": "op@harkeniq.com", "role": "approver"},
+        )
+        assert added.status_code == 200
+        member = added.json()["member"]
+        assert member["email"] == "op@harkeniq.com"
+
+        detail = (await client.get(f"/api/policies/groups/{group_id}")).json()
+        assert detail["members_count"] == 1
+        assert detail["members"][0]["email"] == "op@harkeniq.com"
+
+        removed = await client.delete(
+            f"/api/policies/groups/{group_id}/members/{member['id']}"
+        )
+        assert removed.status_code == 200
+        detail = (await client.get(f"/api/policies/groups/{group_id}")).json()
+        assert detail["members_count"] == 0
+
+    async def test_list_carries_members_count(self, client):
+        group_id = await self._first_group_id(client)
+        await client.post(
+            f"/api/policies/groups/{group_id}/members",
+            json={"email": "a@x.com"},
+        )
+        listing = (await client.get("/api/policies/groups")).json()
+        row = next(g for g in listing["groups"] if g["id"] == group_id)
+        assert row["members_count"] == 1
+
+    async def test_member_routes_404_on_foreign_group(self, client):
+        resp = await client.post(
+            "/api/policies/groups/nonexistent/members", json={"email": "a@x.com"}
+        )
+        assert resp.status_code == 404
+        resp = await client.get("/api/policies/groups/nonexistent")
+        assert resp.status_code == 404

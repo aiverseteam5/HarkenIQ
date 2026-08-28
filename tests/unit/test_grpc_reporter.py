@@ -42,7 +42,7 @@ async def sm_server():
 def make_reporter(port, host="127.0.0.1", timeout=5.0):
     return SiteManagerReporter(
         {
-            "site_manager": {"host": host, "port": port},
+            "site_manager": {"host": host, "port": port, "tls": False},
             "agent": {"id": "agent-aaaa", "name": "rack-12-server-04"},
         },
         request_timeout=timeout,

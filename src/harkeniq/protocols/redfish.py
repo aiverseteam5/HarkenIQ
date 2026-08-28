@@ -31,10 +31,16 @@ class RedfishDeviceProtocol:
         self,
         host: str,
         verify_ssl: bool = False,
+        allow_list: Optional[list[str]] = None,
         **kwargs,
     ) -> None:
         self._host = host
         self._verify_ssl = verify_ssl
+        # QA-023: the protocol previously granted itself EVERY ActionType
+        # ("unrestricted by design") — any direct caller bypassed R-X6.
+        # Default = the R1 locally-authorized set; the agent passes its
+        # configured list.
+        self._allow_list = allow_list
         self._client: Optional[RedfishClient] = None
         self._poller: Any = None
         self._identity: Any = None
@@ -162,8 +168,11 @@ class RedfishDeviceProtocol:
     async def execute_action(self, action_type: str, params: dict) -> dict:
         """Execute a Redfish action via the vendor-aware ActionExecutor.
 
-        Policy (allow list, audit) is enforced by the agent-level executor;
-        this protocol-level dispatch is unrestricted by design.
+        The internal executor enforces the allow list this protocol was
+        constructed with (QA-023): the agent passes its configured list;
+        direct callers get the R1 default set, never the full ActionType
+        surface. Audit of approved actions remains the agent-level
+        executor's responsibility.
         """
         if self._client is None:
             raise ProtocolError("Not connected")
@@ -177,10 +186,14 @@ class RedfishDeviceProtocol:
         except ValueError:
             return {"success": False, "error": f"Unknown action type: {action_type}",
                     "duration_ms": 0.0}
+        from harkeniq.actions.executor import DEFAULT_ALLOW_LIST
+
         executor = ActionExecutor(
             self._client,
             self._vendor,
-            config={"actions": {"allow_list": [t.value for t in ActionType]}},
+            config={"actions": {
+                "allow_list": self._allow_list or list(DEFAULT_ALLOW_LIST),
+            }},
         )
         action = Action(id=f"proto-{uuid.uuid4().hex[:8]}", type=atype,
                         params=dict(params))

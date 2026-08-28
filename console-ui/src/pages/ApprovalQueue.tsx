@@ -9,7 +9,7 @@ import Spinner from "../components/Spinner";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
-import type { PaginatedResponse, ApprovalAction } from "../types";
+import type { ApprovalAction } from "../types";
 
 /* ── Constants ────────────────────────────────────── */
 
@@ -229,10 +229,13 @@ export default function ApprovalQueue() {
       if (pendingFilters.severity) params.set("severity", pendingFilters.severity);
       params.set("page", "1");
       params.set("page_size", "100");
-      const res = await getJson<PaginatedResponse<ApprovalAction>>(
+      // QA ISSUE-008: CC returns {actions,...}, not PaginatedResponse
+      // {items,...} — res.items was undefined and .length crashed the
+      // page to a white screen.
+      const res = await getJson<{ actions: ApprovalAction[]; total: number }>(
         `/api/approvals?${params.toString()}`,
       );
-      setPendingActions(res.items);
+      setPendingActions(res.actions ?? []);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load pending approvals", "error");
     } finally {
@@ -250,11 +253,11 @@ export default function ApprovalQueue() {
       if (historyFilters.date_to) params.set("date_to", historyFilters.date_to);
       params.set("page", String(historyPage));
       params.set("page_size", String(PAGE_SIZE));
-      const res = await getJson<PaginatedResponse<ApprovalAction>>(
+      const res = await getJson<{ actions: ApprovalAction[]; total: number }>(
         `/api/approvals/history?${params.toString()}`,
       );
-      setHistoryActions(res.items);
-      setHistoryTotal(res.total);
+      setHistoryActions(res.actions ?? []);
+      setHistoryTotal(res.total ?? 0);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load approval history", "error");
     } finally {

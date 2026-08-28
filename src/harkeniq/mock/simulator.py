@@ -76,12 +76,27 @@ class MockSimulator:
         self._site: Optional[web.TCPSite] = None
         self._port: int = 0
         self._state: dict[str, Any] = {}
-        self._action_state: dict[str, Any] = {"led": {}, "diagnostics": [], "fan_reset": []}
+        self._action_state: dict[str, Any] = {
+            "led": {}, "diagnostics": [], "fan_reset": [],
+            # QA-020: R3a action surfaces
+            "log_clear": [], "bmc_reset": [], "power_cycle": [],
+            "power_cap_watts": None,
+        }
         self._bmc_attributes: dict[str, Any] = dict(_DEFAULT_DELL_ATTRIBUTES)
         # R4-3 P19: blue-green firmware banks + async update tasks
         self._firmware_banks: dict[str, dict[str, Any]] = {}
         self._update_tasks: dict[str, dict[str, Any]] = {}
         self._fail_next_firmware_update = False
+        # QA-034: AccountService store; slot "1" is the configured admin.
+        self._accounts: dict[str, dict[str, Any]] = {
+            "1": {
+                "UserName": self.username,
+                "Password": self.password,
+                "RoleId": "Administrator",
+                "Enabled": True,
+            },
+        }
+        self._next_account_id = 2
         self._sessions: dict[str, dict] = {}
         self._gradual_tasks: list = []
         self._fixtures_path = FIXTURES_DIR / device.replace("-", "_")
@@ -152,7 +167,11 @@ class MockSimulator:
     def _load_fixtures(self):
         """Load all JSON fixture files into mutable in-memory state."""
         self._state = {}
-        self._action_state = {"led": {}, "diagnostics": [], "fan_reset": []}
+        self._action_state = {
+            "led": {}, "diagnostics": [], "fan_reset": [],
+            "log_clear": [], "bmc_reset": [], "power_cycle": [],
+            "power_cap_watts": None,
+        }
         self._bmc_attributes = dict(_DEFAULT_DELL_ATTRIBUTES)
         self._firmware_banks = {}
         self._update_tasks = {}
@@ -276,6 +295,14 @@ class MockSimulator:
             self._handle_firmware_rollback,
         )
 
+        # QA-034: AccountService (vendor-neutral) for credential rotation
+        r.add_get("/redfish/v1/AccountService", self._handle_account_service)
+        r.add_get("/redfish/v1/AccountService/Accounts", self._handle_accounts_list)
+        r.add_post("/redfish/v1/AccountService/Accounts", self._handle_account_create)
+        r.add_get("/redfish/v1/AccountService/Accounts/{account_id}", self._handle_account_get)
+        r.add_patch("/redfish/v1/AccountService/Accounts/{account_id}", self._handle_account_patch)
+        r.add_delete("/redfish/v1/AccountService/Accounts/{account_id}", self._handle_account_delete)
+
         # Session management
         r.add_post("/redfish/v1/SessionService/Sessions", self._handle_create_session)
         r.add_delete("/redfish/v1/SessionService/Sessions/{session_id}", self._handle_delete_session)
@@ -328,6 +355,24 @@ class MockSimulator:
             f"/redfish/v1/Managers/{mid}/Oem/Dell/DellAttributes/{mid}",
             self._handle_dell_attributes_get,
         )
+        # QA-020: R3a action endpoints (SEL clear, BMC reset, power
+        # cycle, power cap) — the executor finally has these branches.
+        r.add_post(
+            f"/redfish/v1/Managers/{mid}/LogServices/Sel"
+            "/Actions/LogService.ClearLog",
+            self._handle_log_clear("sel_entries"),
+        )
+        r.add_post(
+            f"/redfish/v1/Managers/{mid}/Actions/Manager.Reset",
+            self._handle_manager_reset,
+        )
+        r.add_post(
+            f"/redfish/v1/Systems/{sid}/Actions/ComputerSystem.Reset",
+            self._handle_system_reset,
+        )
+        r.add_patch(
+            f"/redfish/v1/Chassis/{sid}/Power", self._handle_power_patch
+        )
 
         # Individual DIMMs and MemoryMetrics
         for bank in ("A", "B"):
@@ -365,6 +410,22 @@ class MockSimulator:
         r.add_patch("/redfish/v1/Chassis/1/Drives/{drive_id}", self._handle_chassis_drive_patch)
         r.add_get("/redfish/v1/Managers/1/ActiveHealthSystem", self._handle_hpe_ahs)
         r.add_patch("/redfish/v1/Chassis/1/Thermal", self._handle_hpe_thermal_patch)
+        # QA-020: R3a action endpoints (IML clear, BMC reset, power
+        # cycle, power cap)
+        r.add_post(
+            "/redfish/v1/Systems/1/LogServices/IML"
+            "/Actions/LogService.ClearLog",
+            self._handle_log_clear("iml_entries"),
+        )
+        r.add_post(
+            "/redfish/v1/Managers/1/Actions/Manager.Reset",
+            self._handle_manager_reset,
+        )
+        r.add_post(
+            "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset",
+            self._handle_system_reset,
+        )
+        r.add_patch("/redfish/v1/Chassis/1/Power", self._handle_power_patch)
 
         # Individual DIMMs and MemoryMetrics (HPE: proc{n}dimm{m})
         for proc in (1, 2):
@@ -427,7 +488,15 @@ class MockSimulator:
 
         username = body.get("UserName", "")
         password = body.get("Password", "")
-        if username != self.username or password != self.password:
+        # QA-034: any enabled account may authenticate (rotation verify
+        # opens a session as the freshly created account).
+        match = next(
+            (a for a in self._accounts.values()
+             if a["UserName"] == username and a["Password"] == password
+             and a["Enabled"]),
+            None,
+        )
+        if match is None:
             return web.json_response(
                 {"error": {"message": "Invalid credentials", "code": "Base.1.0.InvalidCredentials"}},
                 status=401,
@@ -452,6 +521,114 @@ class MockSimulator:
         return web.Response(status=200)
 
     # ------------------------------------------------------------------
+    # AccountService (QA-034: credential rotation surface)
+    # ------------------------------------------------------------------
+
+    @property
+    def accounts(self) -> dict[str, dict[str, Any]]:
+        """Account store snapshot for test assertions (passwords included)."""
+        return {aid: dict(a) for aid, a in self._accounts.items()}
+
+    def _account_response(self, aid: str) -> dict[str, Any]:
+        # Password is write-only per Redfish; never echoed.
+        acct = self._accounts[aid]
+        return {
+            "@odata.id": f"/redfish/v1/AccountService/Accounts/{aid}",
+            "Id": aid,
+            "UserName": acct["UserName"],
+            "RoleId": acct["RoleId"],
+            "Enabled": acct["Enabled"],
+        }
+
+    def _auth_error(self) -> web.Response:
+        return web.json_response(
+            {"error": {"message": "No valid session", "code": "Base.1.0.NoValidSession"}},
+            status=401,
+        )
+
+    async def _handle_account_service(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        return web.json_response({
+            "@odata.id": "/redfish/v1/AccountService",
+            "Accounts": {"@odata.id": "/redfish/v1/AccountService/Accounts"},
+        })
+
+    async def _handle_accounts_list(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        return web.json_response({
+            "@odata.id": "/redfish/v1/AccountService/Accounts",
+            "Members": [
+                {"@odata.id": f"/redfish/v1/AccountService/Accounts/{aid}"}
+                for aid in sorted(self._accounts)
+            ],
+            "Members@odata.count": len(self._accounts),
+        })
+
+    async def _handle_account_create(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        username = body.get("UserName", "")
+        password = body.get("Password", "")
+        if not username or not password:
+            return web.json_response(
+                {"error": {"message": "UserName and Password required"}}, status=400,
+            )
+        if any(a["UserName"] == username for a in self._accounts.values()):
+            return web.json_response(
+                {"error": {"message": f"Account {username} already exists"}}, status=400,
+            )
+        aid = str(self._next_account_id)
+        self._next_account_id += 1
+        self._accounts[aid] = {
+            "UserName": username,
+            "Password": password,
+            "RoleId": body.get("RoleId", "ReadOnly"),
+            "Enabled": bool(body.get("Enabled", True)),
+        }
+        return web.json_response(self._account_response(aid), status=201)
+
+    async def _handle_account_get(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        aid = request.match_info["account_id"]
+        if aid not in self._accounts:
+            return web.json_response({"error": {"message": "Account not found"}}, status=404)
+        return web.json_response(self._account_response(aid))
+
+    async def _handle_account_patch(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        aid = request.match_info["account_id"]
+        if aid not in self._accounts:
+            return web.json_response({"error": {"message": "Account not found"}}, status=404)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        acct = self._accounts[aid]
+        for key in ("UserName", "Password", "RoleId"):
+            if key in body:
+                acct[key] = body[key]
+        if "Enabled" in body:
+            acct["Enabled"] = bool(body["Enabled"])
+        return web.json_response(self._account_response(aid))
+
+    async def _handle_account_delete(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return self._auth_error()
+        aid = request.match_info["account_id"]
+        if aid not in self._accounts:
+            return web.json_response({"error": {"message": "Account not found"}}, status=404)
+        del self._accounts[aid]
+        return web.Response(status=204)
+
+    # ------------------------------------------------------------------
     # Action endpoints (Doc 06 §11A.4)
     # ------------------------------------------------------------------
 
@@ -460,12 +637,19 @@ class MockSimulator:
 
         Model is included because Dell normalization uses it as the
         human-readable drive name, and skill action targets carry the
-        normalized name.
+        normalized name. Identical drives share a Model (QA-027 grew the
+        bay to 4), so: exact Id/Name wins, and Model falls back to the
+        LOWEST bay in sorted order — deterministic, never glob-order.
         """
-        for key, data in self._state.items():
-            if not key.startswith("drive_"):
-                continue
-            if drive_id in (data.get("Id"), data.get("Name"), data.get("Model")):
+        drives = sorted(
+            (key, data) for key, data in self._state.items()
+            if key.startswith("drive_")
+        )
+        for _key, data in drives:
+            if drive_id in (data.get("Id"), data.get("Name")):
+                return data
+        for _key, data in drives:
+            if drive_id == data.get("Model"):
                 return data
         return None
 
@@ -530,6 +714,54 @@ class MockSimulator:
         body = await request.json()
         self._action_state["fan_reset"].append({"vendor": "hpe", "body": body})
         return web.json_response(self._state.get("thermal", {}))
+
+    def _handle_log_clear(self, fixture_name: str):
+        """QA-020: atomic SEL/IML clear (LogService.ClearLog)."""
+        async def handler(request: web.Request) -> web.Response:
+            if not self._check_auth(request):
+                return web.json_response({"error": {"message": "No valid session"}}, status=401)
+            fixture = self._state.get(fixture_name)
+            if isinstance(fixture, dict):
+                fixture["Members"] = []
+                fixture["Members@odata.count"] = 0
+            self._action_state["log_clear"].append(fixture_name)
+            return web.json_response({}, status=200)
+        return handler
+
+    async def _handle_manager_reset(self, request: web.Request) -> web.Response:
+        """QA-020: BMC reset (Manager.Reset)."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        self._action_state["bmc_reset"].append(body.get("ResetType", ""))
+        return web.json_response({}, status=200)
+
+    async def _handle_system_reset(self, request: web.Request) -> web.Response:
+        """QA-020: host power cycle (ComputerSystem.Reset)."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        self._action_state["power_cycle"].append(body.get("ResetType", ""))
+        return web.json_response({}, status=200)
+
+    async def _handle_power_patch(self, request: web.Request) -> web.Response:
+        """QA-020: power cap write; persists so read-back verification works."""
+        if not self._check_auth(request):
+            return web.json_response({"error": {"message": "No valid session"}}, status=401)
+        body = await request.json()
+        controls = body.get("PowerControl") or []
+        limit = ((controls[0].get("PowerLimit") or {}) if controls else {}).get(
+            "LimitInWatts"
+        )
+        power = self._state.get("power")
+        if limit is not None and isinstance(power, dict):
+            existing = power.get("PowerControl") or [{}]
+            if not existing:
+                existing = [{}]
+            existing[0].setdefault("PowerLimit", {})["LimitInWatts"] = limit
+            power["PowerControl"] = existing
+            self._action_state["power_cap_watts"] = limit
+        return web.json_response(self._state.get("power", {}))
 
     async def _handle_action_state(self, request: web.Request) -> web.Response:
         """Return applied action state for test assertions."""

@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     ApprovalGroupRepo,
     ApprovalPolicyRepo,
     AuditRepo,
     AutonomyBudgetRepo,
+    StopSwitchRepo,
 )
 
 router = APIRouter(prefix="/api/policies", tags=["policies"])
@@ -62,6 +63,11 @@ class GroupUpdateRequest(BaseModel):
     github_team: Optional[str] = None
     required_count: Optional[int] = None
     escalation_chain: Optional[dict] = None
+
+
+class GroupMemberRequest(BaseModel):
+    email: str
+    role: str = "approver"
 
 
 class BudgetCreateRequest(BaseModel):
@@ -248,9 +254,15 @@ async def list_groups(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List approval groups for the tenant."""
-    groups = await ApprovalGroupRepo(session).list_all(user.tenant_id)
+    repo = ApprovalGroupRepo(session)
+    groups = await repo.list_all(user.tenant_id)
+    rows = []
+    for g in groups:
+        entry = _group_dict(g)
+        entry["members_count"] = len(await repo.list_members(g.id))
+        rows.append(entry)
     return {
-        "groups": [_group_dict(g) for g in groups],
+        "groups": rows,
         "total": len(groups),
         "tenant_id": user.tenant_id,
     }
@@ -284,6 +296,87 @@ async def create_group(
     )
     await session.commit()
     return {"group": _group_dict(group)}
+
+
+@router.get(
+    "/groups/{group_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def get_group(
+    group_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Group detail with members (QA-036: the Console detail panel's shape)."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    members = await repo.list_members(group_id)
+    payload = _group_dict(group)
+    payload["members"] = [
+        {"id": m.id, "email": m.user_email, "role": m.role} for m in members
+    ]
+    payload["members_count"] = len(members)
+    return payload
+
+
+@router.post(
+    "/groups/{group_id}/members",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def add_group_member(
+    group_id: str,
+    body: GroupMemberRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Add a member to an approval group (QA-036: route existed only in the UI)."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    member = await repo.add_member(group_id, body.email, body.role)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.member.add",
+        subject=group_id,
+        tenant_id=user.tenant_id,
+        detail={"email": body.email, "role": body.role},
+    )
+    await session.commit()
+    return {"member": {"id": member.id, "email": member.user_email,
+                       "role": member.role}}
+
+
+@router.delete(
+    "/groups/{group_id}/members/{member_id}",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def remove_group_member(
+    group_id: str,
+    member_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove a member from an approval group."""
+    repo = ApprovalGroupRepo(session)
+    group = await repo.get_by_id(group_id)
+    if group is None or group.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="group not found")
+    member = await repo.get_member(member_id)
+    if member is None or member.group_id != group_id:
+        raise HTTPException(status_code=404, detail="member not found")
+    await repo.remove_member(member)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="group.member.remove",
+        subject=group_id,
+        tenant_id=user.tenant_id,
+        detail={"email": member.user_email},
+    )
+    await session.commit()
+    return {"removed": True, "member_id": member_id}
 
 
 @router.patch(
@@ -370,6 +463,7 @@ async def create_autonomy_budget(
     body: BudgetCreateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Create or update an autonomy budget (upserts on tenant_id + device_type)."""
     budget = await AutonomyBudgetRepo(session).upsert(
@@ -388,6 +482,9 @@ async def create_autonomy_budget(
         detail={"device_type": body.device_type, "level": body.level},
     )
     await session.commit()
+    # QA-022: budgets shape leases; propagate to SMs now
+    from harkeniq_cc.policy_push import push_policy_to_all_sites
+    await push_policy_to_all_sites(state.config, state.sessionmaker)
     return {"budget": _budget_dict(budget)}
 
 
@@ -399,6 +496,7 @@ async def delete_autonomy_budget(
     budget_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Delete an autonomy budget."""
     repo = AutonomyBudgetRepo(session)
@@ -413,16 +511,42 @@ async def delete_autonomy_budget(
         tenant_id=user.tenant_id,
     )
     await session.commit()
+    # QA-022: budgets shape leases; propagate to SMs now
+    from harkeniq_cc.policy_push import push_policy_to_all_sites
+    await push_policy_to_all_sites(state.config, state.sessionmaker)
     return {"deleted": True, "budget_id": budget_id}
 
 
 # ---------------------------------------------------------------------------
 # R3a: Stop Switch (A2.2)
 # ---------------------------------------------------------------------------
+# QA-022: persisted per-tenant (cc_stop_switch) and pushed to every SM
+# immediately on a flip, then re-converged by the fleet-poll cycle.
 
-# In-memory stop switch state (persisted via audit log for recovery).
-# In production this would be in the database; for R3a this is sufficient.
-_stop_switch_state: dict[str, bool] = {}  # tenant_id -> active
+
+async def _flip_stop_switch(active: bool, user, session, state) -> dict:
+    await StopSwitchRepo(session).set(
+        user.tenant_id, active, changed_by=user.user_id
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="stop_switch.activate" if active else "stop_switch.deactivate",
+        subject=user.tenant_id,
+        tenant_id=user.tenant_id,
+        detail={"changed_by": user.user_id},
+    )
+    await session.commit()
+    # Propagate now — agents drop to observe-only on the next lease
+    # renewal, not the next poll tick. Push failures are logged, never
+    # surfaced: the persisted row re-converges via the fleet poller.
+    from harkeniq_cc.policy_push import push_policy_to_all_sites
+
+    pushed = await push_policy_to_all_sites(state.config, state.sessionmaker)
+    return {
+        "stop_switch": active,
+        "tenant_id": user.tenant_id,
+        "sites_pushed": pushed,
+    }
 
 
 @router.post(
@@ -432,6 +556,7 @@ _stop_switch_state: dict[str, bool] = {}  # tenant_id -> active
 async def activate_stop_switch(
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Activate the fleet-wide stop switch: deny all autonomous actions.
 
@@ -439,16 +564,7 @@ async def activate_stop_switch(
     observe-only once their current lease expires.  SM propagates the
     stop switch state via the next lease renewal.
     """
-    _stop_switch_state[user.tenant_id] = True
-    await AuditRepo(session).append(
-        actor=user.user_id,
-        action="stop_switch.activate",
-        subject=user.tenant_id,
-        tenant_id=user.tenant_id,
-        detail={"activated_by": user.user_id},
-    )
-    await session.commit()
-    return {"stop_switch": True, "tenant_id": user.tenant_id}
+    return await _flip_stop_switch(True, user, session, state)
 
 
 @router.post(
@@ -458,28 +574,17 @@ async def activate_stop_switch(
 async def deactivate_stop_switch(
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Deactivate the stop switch: resume normal autonomous operation."""
-    _stop_switch_state[user.tenant_id] = False
-    await AuditRepo(session).append(
-        actor=user.user_id,
-        action="stop_switch.deactivate",
-        subject=user.tenant_id,
-        tenant_id=user.tenant_id,
-        detail={"deactivated_by": user.user_id},
-    )
-    await session.commit()
-    return {"stop_switch": False, "tenant_id": user.tenant_id}
+    return await _flip_stop_switch(False, user, session, state)
 
 
 @router.get("/stop-switch")
 async def get_stop_switch_state(
     user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Get current stop switch state for this tenant."""
-    return {"stop_switch": _stop_switch_state.get(user.tenant_id, False)}
-
-
-def is_stop_switch_active(tenant_id: str) -> bool:
-    """Check stop switch state (used by lease issuance)."""
-    return _stop_switch_state.get(tenant_id, False)
+    active = await StopSwitchRepo(session).is_active(user.tenant_id)
+    return {"stop_switch": active}

@@ -62,9 +62,24 @@ def _metadata(token: Optional[str]) -> list[tuple[str, str]]:
 class SMClient:
     """gRPC client for Site Manager RPCs.
 
-    Each method creates an async insecure channel, calls the RPC, and
-    returns a plain dict for easy JSON serialization.
+    Each method opens a channel, calls the RPC, and returns a plain dict.
+    QA-018: TLS when constructed with a CA bundle (``tls_ca`` — typically
+    ``CCConfig.sm_tls_ca``); plaintext only when no CA is configured, which
+    was previously the ONLY mode — site tokens and fleet telemetry crossed
+    the wire in the clear with no way to turn TLS on.
     """
+
+    def __init__(self, tls_ca: str = "") -> None:
+        self.tls_ca = tls_ca
+
+    def _channel(self, sm_endpoint: str):
+        if self.tls_ca:
+            with open(self.tls_ca, "rb") as ca_file:
+                creds = grpc.ssl_channel_credentials(
+                    root_certificates=ca_file.read()
+                )
+            return grpc.aio.secure_channel(sm_endpoint, creds)
+        return grpc.aio.insecure_channel(sm_endpoint)
 
     async def register_site(
         self,
@@ -76,7 +91,7 @@ class SMClient:
         cc_endpoint: str = "",
     ) -> dict:
         """Register this CC tenant with a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.RegisterSite(
                 harkeniq_pb2.SiteRegistration(
@@ -101,7 +116,7 @@ class SMClient:
         site_id: str,
     ) -> dict:
         """Pull the current fleet snapshot from a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             snap = await stub.GetFleetSnapshot(
                 harkeniq_pb2.FleetSnapshotRequest(
@@ -159,11 +174,40 @@ class SMClient:
                     "status": act.status,
                     "proposed_at_unix": act.proposed_at_unix,
                 })
+            # QA-042: outcomes were never dictified here, so CC's fleet
+            # learning intake (_ingest_outcomes) ran on an empty feed since
+            # R3b-3 — snapshot.get("outcomes", []) always returned [].
+            outcomes = []
+            for oc in snap.outcomes:
+                outcomes.append({
+                    "action_id": oc.action_id,
+                    "action_type": oc.action_type,
+                    "device_agent_id": oc.device_agent_id,
+                    "outcome": oc.outcome,
+                    "fault_resolved": oc.fault_resolved,
+                    "vendor": oc.vendor,
+                    "model": oc.model,
+                    "recorded_at_unix": oc.recorded_at_unix,
+                })
+            candidate_skills = []
+            for cand in snap.candidate_skills:
+                candidate_skills.append({
+                    "skill_id": cand.skill_id,
+                    "yaml_text": cand.yaml_text,
+                    "source_device": cand.source_device,
+                    "source_component": cand.source_component,
+                    "validation_state": cand.validation_state,
+                    "generated_at_unix": cand.generated_at_unix,
+                    "warnings_json": cand.warnings_json,
+                    "dry_run_matches": cand.dry_run_matches,
+                })
             return {
                 "devices": devices,
                 "incidents": incidents,
                 "pending_actions": pending_actions,
                 "snapshot_at_unix": snap.snapshot_at_unix,
+                "outcomes": outcomes,
+                "candidate_skills": candidate_skills,
             }
 
     async def route_approval(
@@ -176,7 +220,7 @@ class SMClient:
         tenant_id: str = "",
     ) -> dict:
         """Push an approval decision to a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.RouteApproval(
                 harkeniq_pb2.ApprovalRouteRequest(
@@ -202,7 +246,7 @@ class SMClient:
         date: str,
     ) -> dict:
         """Pull usage data for a given date from a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             snap = await stub.GetUsageSnapshot(
                 harkeniq_pb2.UsageSnapshotRequest(
@@ -232,7 +276,7 @@ class SMClient:
         issued_by: str = "marketplace",
     ) -> dict:
         """R5-2: push a marketplace skill to a Site Manager."""
-        async with grpc.aio.insecure_channel(sm_endpoint) as channel:
+        async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.InstallSkill(
                 harkeniq_pb2.SiteSkillInstall(
@@ -252,3 +296,35 @@ class SMClient:
                 "queued": ack.queued,
                 "reason": ack.reason,
             }
+
+    async def push_policy(
+        self,
+        sm_endpoint: str,
+        token: Optional[str],
+        tenant_id: str,
+        site_id: str,
+        autonomy_budgets_json: str = "",
+        approval_policies_json: str = "",
+        learned_patterns_json: str = "",
+    ) -> dict:
+        """QA-022/033: push autonomy policy + fleet knowledge to an SM.
+
+        ``autonomy_budgets_json`` shape is defined in
+        harkeniq_cc.policy_push (stop_switch + policies list);
+        ``learned_patterns_json`` is a list of fleet-pattern dicts
+        (KnowledgeDistributor.prepare_payload). The SM applies budgets to
+        its enforcer and upserts patterns for reasoning enrichment.
+        """
+        async with self._channel(sm_endpoint) as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            ack = await stub.PushPolicy(
+                harkeniq_pb2.PolicyUpdate(
+                    tenant_id=tenant_id,
+                    site_id=site_id,
+                    approval_policies_json=approval_policies_json,
+                    autonomy_budgets_json=autonomy_budgets_json,
+                    learned_patterns_json=learned_patterns_json,
+                ),
+                metadata=_metadata(token),
+            )
+            return {"accepted": ack.accepted, "reason": ack.reason}

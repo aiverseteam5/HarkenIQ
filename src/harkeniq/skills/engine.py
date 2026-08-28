@@ -184,6 +184,7 @@ class SkillEngine:
         skills: list[SkillDefinition],
         debounce_config: Optional[dict] = None,
         trending_engine: Optional["TrendingEngine"] = None,
+        time_fn=None,
     ) -> None:
         from harkeniq.skills.debounce import Debouncer
         from harkeniq.skills.trending import TrendingEngine
@@ -192,6 +193,11 @@ class SkillEngine:
         self.debouncer = Debouncer(debounce_config)
         self.trending = trending_engine or TrendingEngine()
         self._pending_actions: list["Action"] = []
+        # QA-008: injectable clock. The demo compresses time; trending
+        # slopes are per-hour, so evaluating on the wall clock under
+        # compression produced -5,402,706 RPM/hr headlines. The demo
+        # injects a narrative clock; production uses time.time.
+        self._time_fn = time_fn
 
     async def evaluate(
         self,
@@ -201,7 +207,12 @@ class SkillEngine:
         """Evaluate all skills against all matching sensors on the device."""
         import time as _time
 
-        ts_unix = timestamp if timestamp is not None else _time.time()
+        if timestamp is not None:
+            ts_unix = timestamp
+        elif self._time_fn is not None:
+            ts_unix = self._time_fn()
+        else:
+            ts_unix = _time.time()
         ts_iso = datetime.fromtimestamp(ts_unix, tz=timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
@@ -235,7 +246,19 @@ class SkillEngine:
         # 1. Baseline update (Doc 13 §4.1 step 1)
         value = getattr(sensor, metric_field, None) if metric_field else None
         if value is not None:
-            self.trending.update_baseline(sensor_id, float(value), ts_unix, health)
+            # QA-032 (Doc 13 §5.6): monotonic counters baseline the rate
+            # of change per hour, never the raw count.
+            if skill.trending and skill.trending[0].counter:
+                value = self.trending.counter_to_rate(
+                    sensor_id, float(value), ts_unix
+                )
+            if value is not None:
+                self.trending.update_baseline(
+                    sensor_id, float(value), ts_unix, health,
+                    degradation_direction=(
+                        skill.trending[0].direction if skill.trending else None
+                    ),
+                )
         confidence = self.trending.confidence(sensor_id)
 
         # 2. Skill evaluation with confidence gating (Doc 13 §2.3)
@@ -346,10 +369,11 @@ class SkillEngine:
             deviation = 0.0  # Doc 13 §5.1: constant baseline => zero deviation
         else:
             deviation = (float(value) - baseline.mean) / baseline.stddev
+        # Rounded: these land verbatim in operator-facing rule messages
         return {
-            "baseline_mean": baseline.mean,
-            "baseline_stddev": baseline.stddev,
-            "deviation": deviation,
+            "baseline_mean": round(baseline.mean, 1),
+            "baseline_stddev": round(baseline.stddev, 2),
+            "deviation": round(deviation, 1),
             "baseline_confidence": confidence,
         }
 

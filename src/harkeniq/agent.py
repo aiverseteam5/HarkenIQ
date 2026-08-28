@@ -19,13 +19,22 @@ from typing import Any, Optional
 
 from harkeniq.actions.executor import ActionExecutor
 from harkeniq.actions.queue import ActionQueue
+from harkeniq.autonomy.blast_radius import BlastRadiusLimiter
+from harkeniq.autonomy.budget import AgentBudgetEnforcer
 from harkeniq.autonomy.claim import Claim, ClaimAck
 from harkeniq.autonomy.identity import AgentIdentity
 from harkeniq.autonomy.lease import AuthorizationLease, InvalidLease
 from harkeniq.autonomy.partition_fence import PartitionFence
 from harkeniq.autonomy.peer_keyring import PeerKeyRing
 from harkeniq.autonomy.peer_protocol import PeerProtocol
+from harkeniq.autonomy.preconditions import ACTION_RISK, check_preconditions
 from harkeniq.autonomy.tier import TierLevel, calculate_tier
+from harkeniq.autonomy.verification import (
+    VERIFICATION_CHECKS,
+    VERIFICATION_WINDOWS,
+    OutcomeStatus,
+    evaluate_verification,
+)
 from harkeniq.errors import ConfigError, HarkenIQError, HeartbeatError
 from harkeniq.heartbeat.protocol import (
     MSG_CLAIM,
@@ -43,6 +52,7 @@ from harkeniq.models import (
     ActionStatus,
     ActionType,
     AgentState,
+    Evidence,
     HeartbeatPacket,
     Verdict,
     VerdictSeverity,
@@ -134,10 +144,23 @@ class Agent:
         self.current_tier: TierLevel = TierLevel.T2
         self._sm_connected: bool = False
         self._sm_last_contact: float = 0.0
+        # QA-020: the R3a enforcement chain, finally instantiated. The
+        # budget enforcer mirrors the lease (updated every heartbeat ack);
+        # the blast-radius limiter rate-limits disruptive actions locally.
+        self.budget: AgentBudgetEnforcer = AgentBudgetEnforcer()
+        self.blast_radius: BlastRadiusLimiter = BlastRadiusLimiter()
+        self._verification_tasks: set[asyncio.Task] = set()
         # R3b-2: mesh protocol components
         self.peer_keyring: PeerKeyRing = PeerKeyRing()
         self.peer_protocol: Optional[PeerProtocol] = None
         self.partition_fence: Optional[PartitionFence] = None
+
+        # QA-025 / A2.5 / D12: resource monitor, profile from config
+        # (HARKENIQ_RESOURCES_PROFILE finally does something).
+        from harkeniq.autonomy.resources import ResourceMonitor
+
+        profile = (config.get("resources") or {}).get("profile", "standard")
+        self.resource_monitor: Optional[ResourceMonitor] = ResourceMonitor(profile)
 
         # R4-2 P13: config compliance state
         self.config_policies: dict[str, Any] = {}
@@ -147,11 +170,19 @@ class Agent:
         # R5: directed directives from SM (in-flight dedup + task refs)
         self._directives_in_flight: set[str] = set()
         self._directive_tasks: set[asyncio.Task] = set()
+        # QA-031: checkpoint-recovered playbook executions (id -> state)
+        self.playbook_executions: dict[str, Any] = {}
+        # QA-024 / A2.7: OS signals + BMC log poll (both finally wired)
+        self.os_collector: Any = None
+        self._os_signal_verdicts: dict[str, Verdict] = {}
+        self._log_cursors: dict[str, str] = {}
+        self._sel_events_forwarded = False
 
         self._last_device: Any = None
         self._last_verdicts: list[Verdict] = []
         self._last_checkpoint_at: float = 0.0
         self._running = False
+        self._sm_registered = False  # QA-041: _report_loop retries until True
         self._shutdown = asyncio.Event()
         self._hb_transport: Optional[asyncio.DatagramTransport] = None
         self._hb_seq = 0
@@ -171,6 +202,11 @@ class Agent:
         proto_kwargs: dict[str, Any] = {}
         if protocol_name == "redfish":
             proto_kwargs["verify_ssl"] = bmc.get("verify_ssl", False)
+            # QA-023: the protocol's internal executor must enforce the
+            # agent's configured allow list, not the full ActionType surface.
+            actions_cfg = self.config.get("actions") or {}
+            if actions_cfg.get("allow_list") is not None:
+                proto_kwargs["allow_list"] = list(actions_cfg["allow_list"])
         elif protocol_name == "ipmi":
             # bmc.port defaults to 443 (Redfish); treat that as unset for IPMI.
             port = bmc.get("port")
@@ -212,6 +248,12 @@ class Agent:
             logger.info("Loaded %d config compliance policies",
                         len(self.config_policies))
 
+        # QA-024 / A2.7: OS signal sources, auto-registered only when
+        # their backing exists on this host (quiet in containers).
+        os_cfg = self.config.get("os_signals") or {}
+        if os_cfg.get("enabled", True):
+            self.os_collector = self._build_os_collector()
+
         # Peer tracker + Site Manager reporter + action executor
         self.tracker = PeerTracker(self.config)
         self.reporter = SiteManagerReporter(self.config)
@@ -232,7 +274,28 @@ class Agent:
                             len(state["baselines"]))
             if state["peers"]:
                 self.tracker.restore_peers(state["peers"])
+            # QA-024: SEL/IML cursors survive restarts (log_cursors was a
+            # dead table until R7)
+            self._log_cursors = dict(state.get("log_cursors", {}))
             self.action_queue.restore(await self.checkpoint.load_actions())
+            # QA-031: playbook executions survive restarts. In-flight ones
+            # come back PAUSED (unknowable step outcome), awaiting a
+            # human-driven resume.
+            from harkeniq.models import PlaybookStatus
+            self.playbook_executions = {
+                e.execution_id: e
+                for e in await self.checkpoint.load_playbook_executions()
+            }
+            interrupted = [
+                e.execution_id
+                for e in self.playbook_executions.values()
+                if e.status == PlaybookStatus.PAUSED
+            ]
+            if interrupted:
+                logger.warning(
+                    "Recovered %d paused playbook execution(s) from "
+                    "checkpoint: %s", len(interrupted), interrupted,
+                )
 
         self.skill_engine = SkillEngine(
             list(skills.values()),
@@ -258,64 +321,77 @@ class Agent:
                 self.reporter.agent_id = self.agent_id
 
         # Best-effort Site Manager registration (R2a + R3a identity):
-        # standalone Observe mode has no Site Manager at all.
+        # standalone Observe mode has no Site Manager at all. QA-041: a
+        # startup failure is retried by _report_loop until it succeeds.
         if self.reporter and self.reporter.enabled:
-            peers = [
-                f"{p.get('host', '')}:{p.get('port', 5150)}"
-                for p in (self.config.get("peers") or [])
-                if isinstance(p, dict) and p.get("host")
-            ]
-            reg_ack = await self.reporter.register_agent(
-                vendor=self.device_identity.vendor,
-                model=self.device_identity.model,
-                service_tag=self.device_identity.service_tag,
-                peers=peers,
-                public_key_pem=(
-                    self.agent_identity.public_key_pem
-                    if self.agent_identity else b""
-                ),
-                firmware=self.firmware_inventory,
-                device_class=getattr(
-                    self.device_identity, "device_class", "server"
-                ),
-            )
-            if reg_ack is None:
+            if not await self._register_with_sm():
                 logger.warning("Site Manager registration failed; continuing standalone")
-            elif reg_ack.sm_public_key_pem and self.agent_identity:
-                # R3a: pin SM public key and store certificate
-                self.agent_identity.set_sm_public_key(bytes(reg_ack.sm_public_key_pem))
-                self.agent_identity.sm_certificate = bytes(reg_ack.agent_certificate)
-                if self.checkpoint:
-                    self.agent_identity.save(
-                        self.checkpoint.conn, self._checkpoint_path or ""
-                    )
-                logger.info("SM identity bootstrapped for agent %s", self.agent_id)
-
-                # R3b-2: load peer public keys from SM-signed bundle
-                if reg_ack.peer_keys and reg_ack.peer_keys_signature:
-                    try:
-                        from cryptography.hazmat.primitives import serialization as _ser
-                        sm_pub = _ser.load_pem_public_key(
-                            bytes(reg_ack.sm_public_key_pem)
-                        )
-                        peer_keys = {
-                            k: bytes(v) for k, v in reg_ack.peer_keys.items()
-                        }
-                        loaded = self.peer_keyring.load_from_bundle(
-                            peer_keys,
-                            bytes(reg_ack.peer_keys_signature),
-                            sm_pub,
-                            exclude_self=self.agent_id,
-                        )
-                        logger.info("Loaded %d peer keys from SM", loaded)
-                    except Exception as e:
-                        logger.warning("Peer key loading failed: %s", e)
 
         self.state_machine.transition(
             AgentState.OBSERVING,
             f"Startup complete: {self.device_identity.model}, {len(skills)} skills loaded",
         )
         self._running = True
+
+    async def _register_with_sm(self) -> bool:
+        """Register with the Site Manager; returns True on success.
+
+        Sets ``_sm_registered`` so _report_loop stops retrying (QA-041:
+        registration used to be fire-once — a transient SM/DB hiccup at
+        boot left the agent lease-less until restart).
+        """
+        peers = [
+            f"{p.get('host', '')}:{p.get('port', 5150)}"
+            for p in (self.config.get("peers") or [])
+            if isinstance(p, dict) and p.get("host")
+        ]
+        reg_ack = await self.reporter.register_agent(
+            vendor=self.device_identity.vendor,
+            model=self.device_identity.model,
+            service_tag=self.device_identity.service_tag,
+            peers=peers,
+            public_key_pem=(
+                self.agent_identity.public_key_pem
+                if self.agent_identity else b""
+            ),
+            firmware=self.firmware_inventory,
+            device_class=getattr(
+                self.device_identity, "device_class", "server"
+            ),
+        )
+        if reg_ack is None:
+            return False
+        self._sm_registered = True
+        if reg_ack.sm_public_key_pem and self.agent_identity:
+            # R3a: pin SM public key and store certificate
+            self.agent_identity.set_sm_public_key(bytes(reg_ack.sm_public_key_pem))
+            self.agent_identity.sm_certificate = bytes(reg_ack.agent_certificate)
+            if self.checkpoint:
+                self.agent_identity.save(
+                    self.checkpoint.conn, self._checkpoint_path or ""
+                )
+            logger.info("SM identity bootstrapped for agent %s", self.agent_id)
+
+            # R3b-2: load peer public keys from SM-signed bundle
+            if reg_ack.peer_keys and reg_ack.peer_keys_signature:
+                try:
+                    from cryptography.hazmat.primitives import serialization as _ser
+                    sm_pub = _ser.load_pem_public_key(
+                        bytes(reg_ack.sm_public_key_pem)
+                    )
+                    peer_keys = {
+                        k: bytes(v) for k, v in reg_ack.peer_keys.items()
+                    }
+                    loaded = self.peer_keyring.load_from_bundle(
+                        peer_keys,
+                        bytes(reg_ack.peer_keys_signature),
+                        sm_pub,
+                        exclude_self=self.agent_id,
+                    )
+                    logger.info("Loaded %d peer keys from SM", loaded)
+                except Exception as e:
+                    logger.warning("Peer key loading failed: %s", e)
+        return True
 
     async def stop(self) -> None:
         """Graceful shutdown: final checkpoint, close connections."""
@@ -362,6 +438,8 @@ class Agent:
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._poll_loop(), name="poller")
+                if self.resource_monitor is not None:
+                    tg.create_task(self._resource_loop(), name="resources")
                 if peers_configured:
                     tg.create_task(self._heartbeat_send_loop(), name="heartbeat")
                     tg.create_task(self._liveness_loop(), name="liveness")
@@ -370,6 +448,9 @@ class Agent:
                     tg.create_task(self._inventory_loop(), name="inventory")
                 if compliance_cfg.get("enabled"):
                     tg.create_task(self._compliance_loop(), name="compliance")
+                # QA-024: OS signals + BMC log poll (SEL/IML -> verdicts)
+                if self.os_collector is not None or self.poller is not None:
+                    tg.create_task(self._log_signals_loop(), name="os_signals")
         finally:
             await self._shutdown_sequence(install_signal_handlers, loop)
 
@@ -422,7 +503,42 @@ class Agent:
                         "Sensor poll failed (%d consecutive): %s",
                         self._poll_failures, e,
                     )
-            if await self._pause(interval):
+            # QA-025 / A2.5: the resource monitor's degradation ladder
+            # stretches the poll cadence under pressure (THROTTLED 2x,
+            # DEGRADED 3x, OBSERVE_ONLY 4x); NORMAL is 1x.
+            multiplier = (
+                self.resource_monitor.poll_interval_multiplier
+                if self.resource_monitor is not None else 1.0
+            )
+            if await self._pause(interval * multiplier):
+                break
+
+    async def _resource_loop(self) -> None:
+        """A2.5 inner enforcement layer (QA-025: existed since R3a, wired
+        now): sample RSS/CPU, walk the degradation ladder, surface level
+        changes in the log. The outer layer stays systemd/container caps."""
+        monitor = self.resource_monitor
+        check_interval = (self.config.get("resources") or {}).get(
+            "check_interval", 30
+        )
+        last_level = None
+        while not self._shutdown.is_set():
+            try:
+                snapshot = monitor.measure()
+                level = monitor.evaluate(snapshot)
+                if level != last_level:
+                    logger.warning(
+                        "Resource level %s (rss=%.1fMB cpu=%.1f%%, profile=%s)",
+                        level.name, snapshot.rss_mb, snapshot.cpu_pct,
+                        monitor.profile.name,
+                    ) if last_level is not None else logger.info(
+                        "Resource monitor active: profile=%s rss=%.1fMB",
+                        monitor.profile.name, snapshot.rss_mb,
+                    )
+                    last_level = level
+            except Exception as e:  # noqa: BLE001 — monitoring must not kill the agent
+                logger.warning("Resource sampling failed: %s", e)
+            if await self._pause(check_interval):
                 break
 
     # -- firmware inventory (R4-2 P14, R-AGENT-17) ---------------------------
@@ -554,6 +670,7 @@ class Agent:
                 "verification_wait_scale", 1.0
             ),
             dry_run=compliance_cfg.get("dry_run", True),
+            checkpoint=self.checkpoint,  # QA-031: crash-safe state
         )
         execution = await executor.execute_playbook(playbook, self.agent_id)
 
@@ -720,6 +837,13 @@ class Agent:
             self.current_lease = AuthorizationLease.parse(
                 bytes(ack.authorization_lease), self.agent_identity
             )
+            # QA-020: mirror the lease into the local budget enforcer
+            # (budget.py documents this call "on every heartbeat ack";
+            # it never happened until now).
+            self.budget.update_from_lease(
+                self.current_lease.budget_remaining,
+                self.current_lease.stop_switch,
+            )
             logger.debug(
                 "Lease renewed: expiry=%s, actions=%s",
                 self.current_lease.lease_expiry,
@@ -733,6 +857,156 @@ class Agent:
         if self.tracker:
             self.current_tier = calculate_tier(self.tracker.get_peers())
 
+    # -- QA-024 / A2.7: OS signals + BMC log poll ---------------------------
+
+    def _build_os_collector(self):
+        """Register only the signal sources whose backing exists here."""
+        import shutil as _shutil
+
+        from harkeniq.os_signals.collector import OSSignalCollector
+        from harkeniq.os_signals.dmesg import DmesgSource
+        from harkeniq.os_signals.journal import JournalSource
+        from harkeniq.os_signals.smartctl import SmartctlSource
+        from harkeniq.os_signals.syslog import SyslogSource
+
+        collector = OSSignalCollector()
+        syslog = SyslogSource()
+        if syslog._log_path:
+            collector.register(syslog)
+        if _shutil.which("dmesg"):
+            collector.register(DmesgSource())
+        if _shutil.which("journalctl"):
+            collector.register(JournalSource())
+        if _shutil.which("smartctl"):
+            collector.register(SmartctlSource())
+        if not collector.active_sources:
+            logger.info("No OS signal sources available on this host")
+            return None
+        logger.info(
+            "OS signal sources active: %s", ", ".join(collector.active_sources)
+        )
+        return collector
+
+    async def _log_signals_loop(self) -> None:
+        """Collect OS events and BMC log entries into verdicts (QA-024)."""
+        os_cfg = self.config.get("os_signals") or {}
+        interval = os_cfg.get("interval", 60)
+        log_interval = (self.config.get("polling") or {}).get("log_interval", 300)
+        last_log_poll = 0.0
+        while not self._shutdown.is_set():
+            if await self._pause(interval):
+                break
+            if self.os_collector is not None:
+                try:
+                    events = await asyncio.to_thread(
+                        self.os_collector.collect_all
+                    )
+                    self._ingest_os_events(events)
+                except Exception as e:
+                    logger.warning("OS signal collection failed: %s", e)
+            now = time.time()
+            if self.poller is not None and now - last_log_poll >= log_interval:
+                last_log_poll = now
+                try:
+                    await self._poll_bmc_logs()
+                except Exception as e:
+                    logger.warning("BMC log poll failed: %s", e)
+
+    def _ingest_os_events(self, events: list) -> None:
+        """Map error/warning OS events onto reportable verdicts."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for event in events:
+            if event.severity not in ("error", "warning"):
+                continue
+            # Corroborating-signal posture: OS logs point at hardware but
+            # are not the hardware authority — error caps at WARNING
+            # unless the category is a direct hardware fault channel.
+            severity = (
+                VerdictSeverity.CRITICAL
+                if event.severity == "error"
+                and event.category in ("mce", "nvme", "disk_io")
+                else VerdictSeverity.WARNING
+            )
+            sensor_id = f"os:{event.category}"
+            self._os_signal_verdicts[sensor_id] = Verdict(
+                sensor_id=sensor_id,
+                skill_name=f"os-signals:{event.source.value}",
+                severity=severity,
+                message=event.message[:512],
+                evidence=[Evidence(
+                    sensor_id=sensor_id,
+                    skill_name=f"os-signals:{event.source.value}",
+                    rule_index=-1,
+                    condition=f"os_event:{event.category}",
+                    fields={
+                        "raw": event.raw_line[:512],
+                        "device_path": event.device_path,
+                        "component_hint": event.component_hint,
+                    },
+                    timestamp=now_iso,
+                )],
+                timestamp=now_iso,
+            )
+
+    async def _poll_bmc_logs(self) -> None:
+        """SEL/IML entries -> verdicts, cursored so only NEW entries alert."""
+        entries = await self.poller.poll_logs()
+        if not entries:
+            return
+        cursor = self._log_cursors.get("bmc_sel", "")
+        seen_ids = set(cursor.split(",")) if cursor else set()
+        fresh = [
+            e for e in entries
+            if e.id and e.id not in seen_ids
+            and e.severity.lower() in ("critical", "warning")
+        ]
+        # Cursor = the full current id set (SEL ids restart after a clear,
+        # so a high-water mark would suppress post-clear entries).
+        self._log_cursors["bmc_sel"] = ",".join(
+            e.id for e in entries if e.id
+        )[:4000]
+        if not fresh:
+            return
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        worst = (
+            VerdictSeverity.CRITICAL
+            if any(e.severity.lower() == "critical" for e in fresh)
+            else VerdictSeverity.WARNING
+        )
+        self._os_signal_verdicts["log:sel"] = Verdict(
+            sensor_id="log:sel",
+            skill_name="bmc-log-poll",
+            severity=worst,
+            message=(
+                f"{len(fresh)} new BMC log entr"
+                f"{'y' if len(fresh) == 1 else 'ies'}: "
+                + "; ".join(e.message[:120] for e in fresh[:3])
+            ),
+            evidence=[Evidence(
+                sensor_id="log:sel",
+                skill_name="bmc-log-poll",
+                rule_index=-1,
+                condition="new_log_entries",
+                fields={
+                    "entries": [
+                        {"id": e.id, "severity": e.severity,
+                         "message": e.message[:200], "timestamp": e.timestamp}
+                        for e in fresh[:10]
+                    ],
+                },
+                timestamp=now_iso,
+            )],
+            timestamp=now_iso,
+        )
+        # A2.1: SEL_CLEAR's precondition needs the events to have reached
+        # the SM first; the report loop forwards these verdicts.
+        if self.reporter and self.reporter.enabled:
+            self._sel_events_forwarded = True
+        logger.warning(
+            "BMC log poll: %d new %s entr%s",
+            len(fresh), worst.value, "y" if len(fresh) == 1 else "ies",
+        )
+
     # -- Site Manager report loop (Doc 06 §10) -------------------------------
 
     async def _report_loop(self) -> None:
@@ -740,6 +1014,11 @@ class Agent:
         interval = sm.get("heartbeat_interval", DEFAULT_REPORT_INTERVAL)
         poll_interval = sm.get("action_poll_interval", 5)
         while not self._shutdown.is_set():
+            # QA-041: keep retrying registration until it lands — the
+            # reporter's own backoff paces the attempts.
+            if not self._sm_registered:
+                if await self._register_with_sm():
+                    logger.info("Site Manager registration recovered")
             hb_ack = await self.reporter.send_heartbeat(
                 self.state_machine.current_state.value,
                 self.health_summary(),
@@ -766,7 +1045,11 @@ class Agent:
         }
 
     async def _report_changed_verdicts(self) -> None:
-        for verdict in self._last_verdicts:
+        # QA-024: OS-signal and BMC-log verdicts ride the same channel
+        verdicts = list(self._last_verdicts) + list(
+            self._os_signal_verdicts.values()
+        )
+        for verdict in verdicts:
             if self._reported_severity.get(verdict.sensor_id) == verdict.severity:
                 continue
             if await self.reporter.report_verdict(verdict):
@@ -893,10 +1176,9 @@ class Agent:
             sensor_id=f"directive:{directive.directive_id}",
             skill_name=directive.issued_by or "sm-directive",
         )
-        if action_type == ActionType.CONFIG_RESTORE:
-            await self._execute_config_restore_playbook(action)
-        else:
-            await self.executor.execute(action)
+        # QA-020: SM delivery is not a policy bypass — the same gate
+        # chain (preconditions, stop switch, blast radius) applies here.
+        await self._execute_gated(action)
         outcome = action.outcome
         if outcome is None:
             return False, "no outcome recorded"
@@ -920,6 +1202,220 @@ class Agent:
                 return False, f"installed but reload failed: {e}"
         return accepted, reason
 
+    # -- QA-020: autonomy gate chain (A2.1/A2.2, R7-P2) ----------------------
+    #
+    # preconditions -> lease.allows_action -> stop switch -> blast radius
+    # -> execute -> budget/blast accounting -> deferred verification.
+    #
+    # Hard gates (refuse even a human-approved action — approval does not
+    # make an unsafe action safe): preconditions, stop switch, fully
+    # expired lease, blast-radius rate limit. Authorization-shaped lease
+    # verdicts ("propose", class-membership deny) are satisfied by the
+    # approval the action already carries; they gate autonomous
+    # initiative, which does not exist yet (T3 loop is future work).
+
+    def _authorize_execution(self, action: Action) -> tuple[bool, str]:
+        """Run the gate chain for one approved action. (allowed, reason)."""
+        # Actions outside the configured allow list fall through to the
+        # executor, whose refusal is the canonical R-X6 audit event.
+        if (
+            self.executor is not None
+            and action.type.value not in self.executor.allow_list
+        ):
+            return True, ""
+
+        device_state, agent_state = self._precondition_states(action)
+        pre = check_preconditions(action.type, device_state, agent_state)
+        if not pre.passed:
+            return False, f"preconditions failed: {pre.reason}"
+
+        if (
+            self.current_lease is not None and self.current_lease.stop_switch
+        ) or self.budget.stop_switch_active:
+            return False, "stop switch active"
+
+        if self.current_lease is not None:
+            risk = ACTION_RISK.get(action.type, "low")
+            verdict = self.current_lease.allows_action(
+                action.type.value, risk, self._sm_connected
+            )
+            if verdict == "deny" and self.current_lease.is_fully_expired():
+                return False, "authorization lease fully expired"
+            if verdict != "execute":
+                logger.info(
+                    "Lease gate returned %r for %s; carried approval "
+                    "satisfies it", verdict, action.type.value,
+                )
+
+        if not self.blast_radius.allows(action.type):
+            return False, (
+                f"blast radius: rate limit reached for {action.type.value}"
+            )
+        return True, ""
+
+    def _precondition_states(self, action: Action) -> tuple[dict, dict]:
+        """Assemble the A2.1 precondition inputs from what the agent can
+        honestly observe. Unobservable facts stay at their fail-closed
+        defaults (e.g. SEL fill and OS heartbeat until QA-024 lands)."""
+        health = self.health_summary() if self._last_verdicts else {}
+        actions_cfg = self.config.get("actions") or {}
+        if health:
+            overall = (
+                "ok" if all(v == "OK" for v in health.values()) else "degraded"
+            )
+        else:
+            # No verdicts yet (e.g. a directive before the first skill
+            # cycle): fall back to the device's own health rollup.
+            rollup = getattr(self._last_device, "health_rollup", None)
+            raw = (getattr(rollup, "overall", "") or "").upper()
+            overall = {"OK": "ok", "": "unknown", "UNKNOWN": "unknown"}.get(
+                raw, "degraded"
+            )
+        device_state: dict[str, Any] = {
+            "thermal_event_active": health.get("thermal") in ("WARNING", "CRITICAL"),
+            "power_event_active": health.get("psu") in ("WARNING", "CRITICAL"),
+            "overall_health": overall,
+            "firmware_update_in_progress": False,
+        }
+        cap_policy = actions_cfg.get("power_cap_policy") or {}
+        if cap_policy:
+            device_state["power_cap_policy_min_watts"] = cap_policy.get("min_watts", 0)
+            device_state["power_cap_policy_max_watts"] = cap_policy.get("max_watts", 0)
+        target_watts = action.params.get("target_watts")
+        if target_watts is not None:
+            try:
+                device_state["power_cap_target_watts"] = int(target_watts)
+            except (TypeError, ValueError):
+                pass
+
+        alive_peers = 0
+        if self.tracker is not None:
+            alive_peers = sum(
+                1 for p in self.tracker.get_peers()
+                if p.status.value == "ALIVE"
+            )
+        agent_state: dict[str, Any] = {
+            "bmc_consecutive_poll_failures": self._poll_failures,
+            "alive_peer_count": alive_peers,
+            # QA-024: true once the log loop has forwarded SEL/IML
+            # verdicts to the SM. OS-heartbeat absence still has no
+            # observer — stays fail-closed.
+            "sel_events_forwarded": self._sel_events_forwarded,
+            "os_heartbeat_absent_seconds": 0,
+        }
+        return device_state, agent_state
+
+    async def _refuse_action(self, action: Action, reason: str) -> None:
+        """Gate refusal: terminal FAILED outcome + audit, never executed."""
+        from harkeniq.models import ActionOutcome
+
+        target = action.params.get("target", "") or action.sensor_id
+        action.status = ActionStatus.FAILED
+        outcome = ActionOutcome(
+            action_id=action.id,
+            type=action.type,
+            target=target,
+            success=False,
+            error_message=f"refused by autonomy gate: {reason}",
+            duration_ms=0.0,
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        action.completed_at = outcome.timestamp
+        action.outcome = outcome
+        logger.warning(
+            "Action %s (%s) refused by autonomy gate: %s",
+            action.id, action.type.value, reason,
+        )
+        if self.checkpoint:
+            await self.checkpoint.save_audit_entry(
+                action=action.type.value,
+                target=target,
+                outcome="refused",
+                evidence_json=json.dumps({"reason": reason, "gate": "autonomy"}),
+            )
+
+    async def _execute_gated(self, action: Action) -> None:
+        """Gate chain -> execute -> accounting -> deferred verification."""
+        if self._last_device is None:
+            # Preconditions need device state; a directive can arrive
+            # before the first skill cycle. Best effort, fail-closed.
+            try:
+                self._last_device = await self.protocol.poll_sensors()
+            except Exception as e:
+                logger.warning("Pre-gate sensor poll failed: %s", e)
+        allowed, reason = self._authorize_execution(action)
+        if not allowed:
+            await self._refuse_action(action, reason)
+            return
+        if action.type == ActionType.CONFIG_RESTORE:
+            # R4-2 P13: config writes run through the playbook pipeline
+            # (precondition/verify/rollback machinery).
+            await self._execute_config_restore_playbook(action)
+        else:
+            await self.executor.execute(action)
+        if action.outcome is not None and action.outcome.success:
+            self.budget.consume(action.type)
+            self.blast_radius.record(action.type)
+            self._schedule_verification(action)
+
+    def _schedule_verification(self, action: Action) -> None:
+        """R3a outcome verification, deferred by the action's window."""
+        window = VERIFICATION_WINDOWS.get(action.type)
+        if window is None:
+            return
+        actions_cfg = self.config.get("actions") or {}
+        scale = float(actions_cfg.get("verification_window_scale", 1.0))
+        task = asyncio.create_task(self._verify_action(action, window * scale))
+        self._verification_tasks.add(task)
+        task.add_done_callback(self._verification_tasks.discard)
+
+    async def _verify_action(self, action: Action, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            post_state = await self._collect_post_state()
+            checks = VERIFICATION_CHECKS.get(action.type, [])
+            if checks and not all(c.field_path in post_state for c in checks):
+                # Cannot honestly observe every check input -> UNKNOWN,
+                # never a fabricated FAILURE (R7-P2: UNKNOWN producible).
+                status = OutcomeStatus.UNKNOWN
+            else:
+                status = evaluate_verification(action.type, post_state)
+            logger.info(
+                "Verification for %s (%s): %s",
+                action.id, action.type.value, status.value,
+            )
+            if self.checkpoint:
+                await self.checkpoint.save_audit_entry(
+                    action=action.type.value,
+                    target=action.params.get("target", "") or action.sensor_id,
+                    outcome=f"verified:{status.value}",
+                    evidence_json=json.dumps({"post_state": post_state}),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # verification must never crash the agent
+            logger.warning(
+                "Verification failed for %s: %s", action.id, e,
+            )
+
+    async def _collect_post_state(self) -> dict[str, Any]:
+        """Post-action device state for verification — only fields the
+        agent can actually observe; absent fields yield UNKNOWN."""
+        post: dict[str, Any] = {}
+        try:
+            device = await self.protocol.poll_sensors()
+            post["bmc_responsive"] = True
+            fans = getattr(device, "fans", None) or []
+            if fans:
+                post["fan_rpm_healthy"] = all(
+                    (getattr(f, "health", "") or "OK").upper() == "OK"
+                    for f in fans
+                )
+        except Exception:
+            post["bmc_responsive"] = False
+        post["agent_registered"] = self._sm_connected
+        return post
+
     # -- main cycle ----------------------------------------------------------
 
     async def poll_and_evaluate(self, timestamp: Optional[float] = None) -> list[Verdict]:
@@ -933,13 +1429,17 @@ class Agent:
                 f"poll_and_evaluate requires OBSERVING state, "
                 f"currently {self.state_machine.current_state.value}"
             )
+        # Two clocks (QA-008): `ts` (wall) drives checkpoint cadence below;
+        # the EVALUATION timestamp defaults inside the engine so an
+        # injected clock (the demo's narrative clock) is honored. An
+        # explicit `timestamp` argument still wins for both.
         ts = timestamp if timestamp is not None else time.time()
 
         device = await self.protocol.poll_sensors()
         self._last_device = device
         self.state_machine.transition(AgentState.EVALUATING, "sensor poll complete")
 
-        verdicts = await self.skill_engine.evaluate(device, ts)
+        verdicts = await self.skill_engine.evaluate(device, timestamp)
         self._last_verdicts = verdicts
         self.state_machine.transition(AgentState.DECIDING, "verdicts produced")
 
@@ -960,12 +1460,8 @@ class Agent:
                     AgentState.ACTING, f"executing {len(approved)} approved action(s)"
                 )
                 for action in approved:
-                    if action.type == ActionType.CONFIG_RESTORE:
-                        # R4-2 P13: config writes run through the playbook
-                        # pipeline (precondition/verify/rollback machinery).
-                        await self._execute_config_restore_playbook(action)
-                    else:
-                        await self.executor.execute(action)
+                    # QA-020: every execution runs the autonomy gate chain
+                    await self._execute_gated(action)
                 self.state_machine.transition(AgentState.REPORTING, "actions executed")
             else:
                 self.state_machine.transition(
@@ -1063,7 +1559,7 @@ class Agent:
                 "agent_id": self.agent_id,
                 "state": self.state_machine.current_state.value,
             },
-            log_cursors={},
+            log_cursors=dict(self._log_cursors),
         )
         self._last_checkpoint_at = ts
 

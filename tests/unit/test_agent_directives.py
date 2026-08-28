@@ -108,7 +108,10 @@ def _directive(directive_id: str, **kwargs) -> harkeniq_pb2.Directive:
     return harkeniq_pb2.Directive(directive_id=directive_id, **kwargs)
 
 
-async def _wait_until(predicate, timeout=5.0, message="condition not met"):
+async def _wait_until(predicate, timeout=15.0, message="condition not met"):
+    # 15s: generous only on failure — the passing path returns as soon as
+    # the predicate holds. 5s proved flaky under full-suite load once the
+    # gate chain added a pre-execution sensor poll to directed actions.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -296,7 +299,11 @@ class TestEndToEndCampaign:
         )
         from harkeniq_sm.ingest import IngestService
 
-        engine = make_engine("sqlite+aiosqlite:///:memory:")
+        # Temp FILE, not :memory: — the in-memory StaticPool shares ONE
+        # connection, and the live agent's concurrent ingest sessions can
+        # roll back the orchestrator's in-flight approve/advance writes
+        # (the same hazard runtime.make_state documents and avoids).
+        engine = make_engine(f"sqlite+aiosqlite:///{tmp_path}/campaign.db")
         await create_all(engine)
         db = make_sessionmaker(engine)
         sm_config = SMConfig(insecure=True, site_name="site-1",

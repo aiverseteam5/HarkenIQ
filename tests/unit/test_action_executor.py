@@ -56,6 +56,71 @@ def make_action(action_type=ActionType.IDENTIFY_LED, target=DELL_DRIVE, approve=
     return action
 
 
+class TestR3aActions:
+    """QA-020: the four R3a actions finally have Redfish branches."""
+
+    def _action(self, action_type, params=None):
+        queue = ActionQueue()
+        action = queue.enqueue(
+            action_type, "sensor:x", "test-skill", VerdictSeverity.CRITICAL,
+            params or {},
+        )
+        queue.approve(action.id)
+        return action
+
+    def _executor(self, client, vendor, *types):
+        return ActionExecutor(
+            client, vendor,
+            config={"actions": {"allow_list": [t.value for t in types]}},
+        )
+
+    async def test_dell_sel_clear(self, dell_sim, dell_client):
+        executor = self._executor(dell_client, "dell", ActionType.SEL_CLEAR)
+        outcome = await executor.execute(self._action(ActionType.SEL_CLEAR))
+        assert outcome.success is True
+        assert dell_sim.action_state["log_clear"] == ["sel_entries"]
+
+    async def test_hpe_iml_clear(self, hpe_sim, hpe_client):
+        executor = self._executor(hpe_client, "hpe", ActionType.SEL_CLEAR)
+        outcome = await executor.execute(self._action(ActionType.SEL_CLEAR))
+        assert outcome.success is True
+        assert hpe_sim.action_state["log_clear"] == ["iml_entries"]
+
+    async def test_dell_bmc_reset(self, dell_sim, dell_client):
+        executor = self._executor(dell_client, "dell", ActionType.BMC_RESET)
+        outcome = await executor.execute(self._action(ActionType.BMC_RESET))
+        assert outcome.success is True
+        assert dell_sim.action_state["bmc_reset"] == ["GracefulRestart"]
+
+    async def test_dell_power_cycle(self, dell_sim, dell_client):
+        executor = self._executor(dell_client, "dell", ActionType.POWER_CYCLE)
+        outcome = await executor.execute(self._action(ActionType.POWER_CYCLE))
+        assert outcome.success is True
+        assert dell_sim.action_state["power_cycle"] == ["ForceRestart"]
+
+    async def test_dell_power_cap_adjust_verified(self, dell_sim, dell_client):
+        executor = self._executor(
+            dell_client, "dell", ActionType.POWER_CAP_ADJUST
+        )
+        outcome = await executor.execute(
+            self._action(
+                ActionType.POWER_CAP_ADJUST, {"target_watts": "400"}
+            )
+        )
+        assert outcome.success is True
+        assert dell_sim.action_state["power_cap_watts"] == 400
+
+    async def test_power_cap_requires_target_watts(self, dell_sim, dell_client):
+        executor = self._executor(
+            dell_client, "dell", ActionType.POWER_CAP_ADJUST
+        )
+        outcome = await executor.execute(
+            self._action(ActionType.POWER_CAP_ADJUST)
+        )
+        assert outcome.success is False
+        assert "target_watts" in outcome.error_message
+
+
 class TestIdentifyLed:
     async def test_dell_led_success(self, dell_sim, dell_client):
         executor = ActionExecutor(dell_client, "dell")
@@ -185,4 +250,8 @@ class TestSimulatorReset:
         await executor.execute(make_action(target=DELL_DRIVE))
         assert dell_sim.action_state["led"]
         await dell_sim.reset()
-        assert dell_sim.action_state == {"led": {}, "diagnostics": [], "fan_reset": []}
+        assert dell_sim.action_state == {
+            "led": {}, "diagnostics": [], "fan_reset": [],
+            "log_clear": [], "bmc_reset": [], "power_cycle": [],
+            "power_cap_watts": None,
+        }

@@ -38,8 +38,10 @@ default_verdict: HEALTHY
 
 
 def _config(**overrides):
+    # grpc_port=0: tests must never claim the real SM port (50051) — a
+    # running dev stack made this suite unrunnable (gstack learning).
     defaults = dict(insecure=True, site_name="site-1",
-                    directive_poll_interval_s=0.02)
+                    directive_poll_interval_s=0.02, grpc_port=0)
     defaults.update(overrides)
     return SMConfig(**defaults)
 
@@ -275,3 +277,58 @@ class TestSkillInstallAPI:
             "agent_ids": ["ghost"],
         })
         assert r.status_code == 404
+
+
+class TestRegisterSiteBootstrapOverWire:
+    """QA-037: RegisterSite must work WITHOUT the site token — it is the
+    RPC that hands CC the token. The token interceptor exempted it by
+    method name; these run over a REAL channel because the direct-call
+    suites could never catch an interceptor bug (that is exactly how the
+    chicken-and-egg shipped)."""
+
+    @pytest.fixture
+    async def wired(self, db):
+        from harkeniq_sm.approvals import ApprovalService
+        from harkeniq_sm.grpc_server import SiteManagerServiceServicer
+        from harkeniq_sm.ingest import IngestService
+
+        config = _config(site_token=TOKEN, license_fingerprint="fp-demo")
+        ingest = IngestService(db, config)
+        sm_servicer = SiteManagerServiceServicer(
+            db, ApprovalService(db, config), config
+        )
+        server, port = build_server(
+            config, AgentServiceServicer(ingest), sm_servicer=sm_servicer
+        )
+        await server.start()
+        yield port
+        await server.stop(grace=None)
+
+    async def test_register_site_without_token_returns_token(self, wired):
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{wired}") as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            ack = await stub.RegisterSite(harkeniq_pb2.SiteRegistration(
+                tenant_id="tenant-demo", site_id="s1", site_name="site-1",
+                license_key_fingerprint="fp-demo",
+            ))
+        assert ack.accepted is True
+        assert ack.site_token == TOKEN
+
+    async def test_fingerprint_mismatch_rejected(self, wired):
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{wired}") as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            ack = await stub.RegisterSite(harkeniq_pb2.SiteRegistration(
+                tenant_id="t", site_id="s", site_name="x",
+                license_key_fingerprint="WRONG",
+            ))
+        assert ack.accepted is False
+        assert "mismatch" in ack.reason
+
+    async def test_other_sm_rpcs_still_require_token(self, wired):
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{wired}") as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            with pytest.raises(grpc.aio.AioRpcError) as exc:
+                await stub.GetFleetSnapshot(harkeniq_pb2.FleetSnapshotRequest(
+                    tenant_id="t", site_id="s",
+                ))
+            assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED

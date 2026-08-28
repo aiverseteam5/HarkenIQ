@@ -41,6 +41,20 @@ DEFAULTS: dict[str, Any] = {
         "log_interval": 300,
         "inventory_interval": 300,
     },
+    # QA-025 / A2.5 / D12: agent resource profile. The env override
+    # HARKENIQ_RESOURCES_PROFILE was silently discarded before this
+    # section existed — the compose advertised a knob that did nothing.
+    "resources": {
+        "profile": "standard",  # constrained | standard | performance
+        "check_interval": 30,
+    },
+    # QA-024 / A2.7: OS signal collection (syslog/dmesg/journal/smartctl).
+    # Sources auto-register only when their backing exists on this host,
+    # so containers without host logs stay quiet.
+    "os_signals": {
+        "enabled": True,
+        "interval": 60,
+    },
     "heartbeat": {
         "port": 5150,
         "interval": 10,
@@ -251,6 +265,14 @@ def validate_config(config: Mapping) -> list[str]:
     peers = config.get("peers", [])
     if not isinstance(peers, list):
         errors.append(f"peers must be a list, got {type(peers).__name__}")
+    elif peers and not config.get("heartbeat", {}).get("secret"):
+        # QA-016 / R-X15: an empty HMAC secret keys the MAC with b"" —
+        # any host on the peer subnet could forge heartbeats and health
+        # summaries. Fail closed at startup, never silently unsigned.
+        errors.append(
+            "heartbeat.secret is required when peers are configured "
+            "(unsigned peer heartbeats are forgeable, R-X15)"
+        )
     else:
         for i, peer in enumerate(peers):
             if not isinstance(peer, dict) or not peer.get("host"):

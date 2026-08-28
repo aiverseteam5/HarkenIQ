@@ -76,6 +76,18 @@ class SMAutonomyEnforcer:
                 counter.max_per_window = policy.get("max_per_window", -1)
                 counter.window_seconds = policy.get("window_seconds", 3600)
 
+    def policy_actions(self) -> dict[str, str]:
+        """CC-granted action classes: {action_type: risk_level}.
+
+        Used at lease issuance (QA-021): a CC budget policy for an action
+        type both grants the class and bounds it.
+        """
+        return {
+            action_type: policy.get("risk_level", "low")
+            for action_type, policy in self._policies.items()
+            if action_type and action_type != "*"
+        }
+
     def get_budget_for_agent(self, agent_id: str) -> dict[str, int]:
         """Compute budget remaining for an agent's lease.
 

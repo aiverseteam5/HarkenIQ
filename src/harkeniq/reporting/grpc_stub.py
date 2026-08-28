@@ -48,8 +48,18 @@ class SiteManagerReporter:
         self.token: str = sm.get("token", "")
         # TLS on by default when a CA is provided; bare test configs
         # (no tls/tls_ca keys) keep the R1 insecure-channel behavior.
-        self.tls: bool = bool(sm.get("tls", True)) and bool(sm.get("tls_ca", ""))
+        # QA-017: tls requested without a CA used to silently downgrade to
+        # plaintext. Fail closed — config validation catches the normal
+        # path; this guards direct constructions.
+        tls_requested = bool(sm.get("tls", True))
         self.tls_ca: str = sm.get("tls_ca", "")
+        if sm.get("host") and tls_requested and not self.tls_ca:
+            raise ValueError(
+                "site_manager.tls is true but tls_ca is empty — refusing to "
+                "silently downgrade to plaintext (set tls_ca, or tls: false "
+                "for lab use)"
+            )
+        self.tls: bool = tls_requested and bool(self.tls_ca)
         self.request_timeout = request_timeout
         self.enabled: bool = bool(self.host)
         self.dropped: int = 0

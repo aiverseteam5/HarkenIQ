@@ -242,7 +242,8 @@ class TestR2aExitGate:
             f"/api/actions/{action['id']}/approve", json={"actor": "vinod"}
         )
         assert response.status_code == 200, response.text
-        assert response.json()["decided_by"] == "vinod"
+        # QA-006: SM-local identities are asserted; recorded as such.
+        assert response.json()["decided_by"] == "sm-local:vinod"
 
         async def completed():
             actions = (await client.get("/api/actions")).json()

@@ -23,11 +23,18 @@ class CCConfig:
     http_host: str = "0.0.0.0"
     http_port: int = 8090
     keycloak_url: str = "http://localhost:8180"
+    # Browser-facing issuer base (QA-005); empty = same as keycloak_url.
+    keycloak_public_url: str = ""
     keycloak_realm: str = ""
     keycloak_client_id: str = "harkeniq-cc"
     console_url: str = ""
+    # QA-018: CA bundle for TLS to Site Managers; empty = plaintext (lab).
+    sm_tls_ca: str = ""
     console_api_key: str = ""
     license_key_path: str = ""
+    # QA-019: Console-issued Ed25519 public key that verifies the license
+    # file. Required whenever license_key_path is set (fail-closed).
+    license_verify_key_path: str = ""
     usage_report_interval_s: float = 86400.0
     site_poll_interval_s: float = 300.0
     pattern_detect_interval_s: float = 300.0
@@ -55,11 +62,14 @@ _ENV_MAP = {
     "HARKEN_CC_HTTP_HOST": "http_host",
     "HARKEN_CC_HTTP_PORT": "http_port",
     "HARKEN_CC_KEYCLOAK_URL": "keycloak_url",
+    "HARKEN_CC_KEYCLOAK_PUBLIC_URL": "keycloak_public_url",
     "HARKEN_CC_KEYCLOAK_REALM": "keycloak_realm",
     "HARKEN_CC_KEYCLOAK_CLIENT_ID": "keycloak_client_id",
     "HARKEN_CC_CONSOLE_URL": "console_url",
+    "HARKEN_CC_SM_TLS_CA": "sm_tls_ca",
     "HARKEN_CC_CONSOLE_API_KEY": "console_api_key",
     "HARKEN_CC_LICENSE_KEY_PATH": "license_key_path",
+    "HARKEN_CC_LICENSE_VERIFY_KEY_PATH": "license_verify_key_path",
     "HARKEN_CC_USAGE_REPORT_INTERVAL_S": "usage_report_interval_s",
     "HARKEN_CC_SITE_POLL_INTERVAL_S": "site_poll_interval_s",
     "HARKEN_CC_PATTERN_DETECT_INTERVAL_S": "pattern_detect_interval_s",

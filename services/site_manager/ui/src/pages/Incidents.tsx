@@ -1,7 +1,65 @@
 import { useState } from "react";
 import { getJson } from "../api";
 import { usePoll } from "../usePoll";
-import type { Incident } from "../types";
+import type { Incident, IncidentExplanation } from "../types";
+
+/** QA-009: the LLM explanation is the primary panel of an incident —
+ * before this it was computed, stored, served, and rendered nowhere. */
+function ExplanationPanel({ explanation }: { explanation: IncidentExplanation }) {
+  const [showReasoning, setShowReasoning] = useState(false);
+  return (
+    <div
+      className="card"
+      style={{ marginTop: "0.6rem", borderLeft: "3px solid #7c6cf5" }}
+    >
+      <div>
+        <span className="badge kind">DIAGNOSIS</span>
+        <span className="muted" style={{ marginLeft: "0.5rem" }}>
+          {explanation.provider} · confidence{" "}
+          {(explanation.confidence * 100).toFixed(0)}%
+        </span>
+      </div>
+      <div style={{ marginTop: "0.4rem" }}>{explanation.summary}</div>
+      {explanation.suggested_action && (
+        <div style={{ marginTop: "0.4rem" }}>
+          <strong>Suggested action:</strong> {explanation.suggested_action}
+        </div>
+      )}
+      {(explanation.reasoning_steps.length > 0 ||
+        explanation.evidence_cited.length > 0) && (
+        <button
+          className="action"
+          style={{ marginTop: "0.4rem" }}
+          onClick={() => setShowReasoning(!showReasoning)}
+        >
+          {showReasoning ? "Hide" : "Show"} reasoning
+        </button>
+      )}
+      {showReasoning && (
+        <div style={{ marginTop: "0.4rem" }}>
+          {explanation.reasoning_steps.length > 0 && (
+            <ol className="muted" style={{ margin: 0, paddingLeft: "1.2rem" }}>
+              {explanation.reasoning_steps.map((step, i) => (
+                <li key={i}>{step}</li>
+              ))}
+            </ol>
+          )}
+          {explanation.evidence_cited.length > 0 && (
+            <div className="muted" style={{ marginTop: "0.3rem" }}>
+              Evidence cited: {explanation.evidence_cited.join("; ")}
+            </div>
+          )}
+          {explanation.similar_past_incidents.length > 0 && (
+            <div className="muted" style={{ marginTop: "0.3rem" }}>
+              Similar past incidents:{" "}
+              {explanation.similar_past_incidents.join("; ")}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function IncidentCard({ incident }: { incident: Incident }) {
   const [expanded, setExpanded] = useState(false);
@@ -25,6 +83,9 @@ function IncidentCard({ incident }: { incident: Incident }) {
         {incident.subsystem && <>subsystem: {incident.subsystem} · </>}
         opened {incident.opened_at}
       </div>
+      {incident.explanation && (
+        <ExplanationPanel explanation={incident.explanation} />
+      )}
       <div style={{ marginTop: "0.5rem" }}>
         {incident.children.length > 0 && (
           <button className="action" onClick={() => setExpanded(!expanded)}>
@@ -52,6 +113,9 @@ function IncidentCard({ incident }: { incident: Incident }) {
               <span className="badge resolved">RESOLVED</span>
             )}
             <div className="muted">opened {child.opened_at}</div>
+            {child.explanation && (
+              <ExplanationPanel explanation={child.explanation} />
+            )}
             {child.correlation_meta && (
               <pre className="evidence">
                 {JSON.stringify(child.correlation_meta, null, 2)}

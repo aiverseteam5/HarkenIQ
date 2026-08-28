@@ -49,6 +49,10 @@ class AppState:
     # R5: directed-directive service + firmware updater over it
     directives: object = None
     firmware_updater: object = None
+    # QA-021 (R7-P3): autonomy enforcement wired into the runtime
+    identity: object = None      # AgentIdentityService — signs leases
+    autonomy: object = None      # SMAutonomyEnforcer — budgets + stop switch
+    suppression: object = None   # SuppressionEngine — A2.6
     started: asyncio.Event = field(default_factory=asyncio.Event)
     # Set when an in-memory sqlite DSN was remapped to a temp file;
     # removed on shutdown.
@@ -78,7 +82,37 @@ async def make_state(config: SMConfig) -> AppState:
         await create_all(state.engine)
     state.sessionmaker = make_sessionmaker(state.engine)
     state.ingest = IngestService(state.sessionmaker, config)
-    state.correlation = CorrelationEngine(state.sessionmaker, config)
+
+    # QA-033: reload CC-pushed fleet patterns into the enrichment mirror
+    from harkeniq_sm.db.repos import SMFleetPatternRepo
+    async with state.sessionmaker() as session:
+        for row in await SMFleetPatternRepo(session).list_all():
+            state.ingest.fleet_patterns[row.pattern_id] = {
+                "pattern_id": row.pattern_id,
+                "pattern_type": row.pattern_type,
+                "description": row.description,
+                "affected_scope": row.affected_scope,
+                "confidence": row.confidence,
+                "evidence": row.evidence,
+                "detected_at": row.detected_at,
+            }
+
+    # QA-021: instantiate the autonomy chain that R3a built but never
+    # constructed. Leases are now signed with a persisted SM keypair and
+    # carry real budgets, stop-switch state, and suppression domains.
+    from harkeniq_sm.agent_identity import (
+        AgentIdentityService, load_or_generate_sm_keypair,
+    )
+    from harkeniq_sm.autonomy import SMAutonomyEnforcer
+    from harkeniq_sm.suppression import SuppressionEngine
+    sm_key = await load_or_generate_sm_keypair(state.sessionmaker)
+    state.identity = AgentIdentityService(state.sessionmaker, sm_key)
+    state.autonomy = SMAutonomyEnforcer()
+    state.suppression = SuppressionEngine()
+
+    state.correlation = CorrelationEngine(
+        state.sessionmaker, config, suppression=state.suppression
+    )
     state.ingest.on_onset = state.correlation.on_onset
 
     # R3b-1 C1: reasoning pipeline with optional LLM enrichment
@@ -114,6 +148,10 @@ async def make_state(config: SMConfig) -> AppState:
         )
         pipeline.add_provider(LLMReasoner(llm))
         logger.info("LLM reasoning enabled (model=%s)", config.llm_model)
+        # QA-033 feedback half: candidate skill generation off the same
+        # provider — the R3b-1 C2 generator finally has a caller.
+        from harkeniq_sm.skill_generator import SkillGenerator
+        state.ingest.skill_generator = SkillGenerator(llm)
     state.ingest.reasoning_pipeline = pipeline
     state.inference = InferenceJob(state.sessionmaker, config)
     state.approvals = ApprovalService(state.sessionmaker, config)
@@ -140,11 +178,16 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
 
     servicer = AgentServiceServicer(
         state.ingest, approvals=state.approvals,
+        identity_service=getattr(state, "identity", None),
         directives=getattr(state, "directives", None),
+        autonomy=getattr(state, "autonomy", None),
+        suppression=getattr(state, "suppression", None),
     )
     sm_servicer = SiteManagerServiceServicer(
         state.sessionmaker, state.approvals, config,
         directives=getattr(state, "directives", None),
+        autonomy=getattr(state, "autonomy", None),
+        ingest=state.ingest,
     )
     grpc_server, grpc_port = build_server(config, servicer, sm_servicer=sm_servicer)
     state.grpc_port = grpc_port

@@ -59,7 +59,11 @@ async def test_http_health_endpoint():
             base_url=f"http://127.0.0.1:{state.http_port}"
         ) as client:
             health = await client.get("/healthz")
-            assert health.json() == {"status": "ok", "service": "console"}
+            payload = health.json()
+            # QA-010: healthz now carries a REAL database probe.
+            assert payload["status"] == "ok"
+            assert payload["service"] == "console"
+            assert payload["checks"]["database"] is True
     finally:
         task.cancel()
         try:
