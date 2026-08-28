@@ -171,3 +171,9 @@ deferred remainders. Open questions with architectural weight live in spec
   (`VITE_KEYCLOAK_REALM`); a real multi-tenant deployment needs tenant-slug →
   realm resolution at the login page. (Recorded with A12; owner: next Console
   slice)
+- [ ] **A13 read-gate follow-ups (auditor scope, OQ-24):** (a) role-bundle
+  listing readable to user.view holders; (b) CC approvals-history read gate
+  (today action.approve-only — R-C3 evidence unreadable by the auditor);
+  (c) policy read path (Console + CC both require site.manage; no read-only
+  governance review exists for non-admins). All read-only. (owner: next
+  Console slice)

@@ -167,7 +167,8 @@ are non-editable; custom roles cannot exceed Tenant Owner's ceiling.
 - Permission checks are enforced server-side per request; the UI only reflects them.
 
 **Capability × role matrix (summary — authoritative atomic permission list lives with the
-Console implementation):**
+Console implementation; Auditor's canonical read scope is defined by A13: every atomic
+`*.view` permission plus `audit.export`, and nothing else):**
 
 | Capability | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 |---|---|---|---|---|---|---|---|
@@ -328,7 +329,7 @@ here) no later than the start of their owning slice.
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
 | OQ-23 | Cross-realm auth for platform staff at L3 | 2026-08-28 review (adversarial pass, verified against `harkeniq_cc/auth.py`) | **answered, A12** — vendor staff never touch L3 live by default (spec-literal role 2); a CC-verified signed grant assertion is the only sanctioned future mechanism |
-| OQ-24 | Auditor scope: §4 prose says "read-only everything + export" but the implemented role holds 5 permissions (no ticket/license/user/site reads) — now ENFORCED since the tenant plane is permission-gated. Which is canonical? Same family: CC's site_admin passes audit via its `*` wildcard | 2026-08-28 review | next Console slice — owner: Vinod |
+| OQ-24 | Auditor scope: prose vs implemented 5-permission set | 2026-08-28 review | **answered, A13** — prose is canonical: read-only everything + export; three read-gate follow-ups recorded |
 | OQ-25 | Support-access denial semantics: after a deny, the engineer may simply re-request (currently unpinned by tests in either direction). Does D16 "denied is final" extend to support elevation, or is re-request-with-new-reason the intent? | 2026-08-28 review (testing pass) | next Console slice — owner: Vinod |
 | OQ-26 | Shared Central Command for scale/cost: registration now enforces one-tenant-one-CC (409). If sharing is ever wanted, it requires explicit tenant isolation INSIDE CC — a deliberate architecture decision, never a registration side effect (decided: Vinod, 2026-08-28) | 2026-08-28 review | future — reopen only by amendment |
 
@@ -823,3 +824,38 @@ amendment record.
    Keycloak realm at build time (`VITE_KEYCLOAK_REALM`), so multi-tenant login
    needs realm discovery (tenant slug → realm at the login page). Work item, not
    an open question.
+
+### A13 — 2026-08-28 — OQ-24 answered: auditor scope is read-only everything (decided: Vinod)
+
+1. **The §4 prose is canonical; the matrix was the stale artifact.** The Auditor
+   (tenant-domain role 6) holds **every atomic `*.view` permission plus
+   `audit.export`, and nothing else**: `fleet.view`, `incident.view`,
+   `billing.view`, `audit.view`, `audit.export`, and — added by this amendment —
+   `user.view`, `license.view`, `support.view`, `site.view`. Rationale: an
+   auditor who cannot read users and role bundles cannot perform an access
+   review, and the predictable consequence of a narrow auditor is compliance
+   staff borrowing `tenant_owner` credentials — a strictly worse outcome than
+   any read expansion. Three spec sources already describe the read-everything
+   persona (§4 prose, §5's explicit Owner/Auditor billing reports, doc 03's
+   R-CR3/R-CV4 auditor-report consumers).
+2. **Hard boundaries, unchanged:** no write, administrative, support-elevation,
+   infrastructure-action, or privilege-grant capability of any kind — no
+   `*.manage`, no `action.approve`, no `incident.acknowledge`, no
+   `skill.submit/install`, no API-key or user mutation. The Auditor remains a
+   tenant-domain role: the platform plane stays vendor-only
+   (`require_platform_permission`, A11.4), strict tenant scoping applies to
+   every read (`tenant_scope` + `require_tenant_permission`), and the
+   custom-role ceiling does not move (tenant_owner already holds every added
+   permission). A12's settled boundaries are untouched.
+3. **Three read-gate follow-ups are explicit future work (next Console slice),
+   without which the grant is true in the table but not in practice:**
+   (a) role-bundle *listing* readable to `user.view` holders (today gated
+   `role.manage`, blocking access review of custom bundles); (b) a read path
+   for CC approvals history (today CC gates the GETs on `action.approve`,
+   which its coarse model grants only to wildcard admins — R-C3's evidence is
+   unreadable by its intended reader); (c) a policy-read path (Console page and
+   CC reads both require `site.manage`; read-only governance review is
+   structurally impossible for any non-admin today). Each is read-only and
+   lands by its own reviewed change, not silently.
+4. **Sequencing (decided):** spec first, then the resulting permission matrix
+   presented for review; code changes only after that review.
