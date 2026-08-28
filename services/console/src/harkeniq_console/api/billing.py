@@ -7,7 +7,12 @@ from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_console.api.deps import get_console_state, get_session, tenant_scope
+from harkeniq_console.api.deps import (
+    get_console_state,
+    get_session,
+    require_tenant_permission,
+    tenant_scope,
+)
 from harkeniq_console.auth import UserContext
 from harkeniq_console.billing.engine import BillingEngine
 from harkeniq_console.billing.metering import MeteringService
@@ -40,7 +45,7 @@ def _sub_dict(sub) -> dict:
 async def get_subscription(
     tenant_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     tenant = await TenantRepo(session).get_by_id(tenant_id)
     if tenant is None:
@@ -59,7 +64,7 @@ async def get_usage(
     period_start: date | None = None,
     period_end: date | None = None,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     now = datetime.utcnow()
     if period_start is None:
@@ -73,7 +78,7 @@ async def get_usage(
 async def estimate_usage(
     tenant_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     try:
         return await _metering.estimate_upcoming_trueup(session, tenant_id)
@@ -88,7 +93,7 @@ async def upload_usage(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
     state=Depends(get_console_state),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.manage")),
 ) -> dict:
     report_bytes = await file.read()
     public_key_pem = ""
@@ -115,7 +120,7 @@ async def usage_sites(
     period_start: date | None = None,
     period_end: date | None = None,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     now = datetime.utcnow()
     if period_start is None:
@@ -133,7 +138,7 @@ async def usage_sites(
 async def get_delinquency(
     tenant_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     tenant = await TenantRepo(session).get_by_id(tenant_id)
     if tenant is None:

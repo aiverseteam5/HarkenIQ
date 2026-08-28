@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_console.api.deps import get_session, require_super_admin, tenant_scope, require_role
+from harkeniq_console.api.deps import (
+    get_session,
+    require_role,
+    require_super_admin,
+    require_tenant_permission,
+    tenant_scope,
+)
 from harkeniq_console.auth import UserContext, get_current_user
 from harkeniq_console.db.models import utcnow
 from harkeniq_console.db.repos import (
@@ -107,7 +113,7 @@ async def create_ticket(
     tenant_id: str,
     body: CreateTicketRequest,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("support.create")),
 ) -> dict:
     if body.severity not in _VALID_SEVERITIES:
         raise HTTPException(400, f"severity must be one of {_VALID_SEVERITIES}")
@@ -162,7 +168,7 @@ async def list_tickets(
     page: int = 1,
     page_size: int = 50,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("support.view")),
 ) -> dict:
     items, total = await SupportTicketRepo(session).list_by_tenant(
         tenant_id, status=status, severity=severity, search=search,
@@ -176,7 +182,7 @@ async def get_ticket(
     tenant_id: str,
     ticket_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("support.view")),
 ) -> dict:
     ticket = await SupportTicketRepo(session).get_by_id(ticket_id)
     if ticket is None or ticket.tenant_id != tenant_id:
@@ -210,7 +216,7 @@ async def reply_to_ticket(
     ticket_id: str,
     body: ReplyRequest,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("support.view")),
 ) -> dict:
     ticket = await SupportTicketRepo(session).get_by_id(ticket_id)
     if ticket is None or ticket.tenant_id != tenant_id:
@@ -239,7 +245,7 @@ async def close_ticket(
     tenant_id: str,
     ticket_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("support.view")),
 ) -> dict:
     ticket = await SupportTicketRepo(session).get_by_id(ticket_id)
     if ticket is None or ticket.tenant_id != tenant_id:

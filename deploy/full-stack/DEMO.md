@@ -95,6 +95,14 @@ real SONiC."
 - OIDC RS256 against Keycloak JWKS; no token, no API (try
   `curl http://localhost:8090/api/fleet/` → 401).
 - Every store carries a SHA-256 hash-chained audit (step 4's verify).
+- The tenant plane is authorized by permission, not membership: a `viewer`
+  calling `POST /api/tenants/{id}/api-keys/` directly gets 403, not a key.
+- Platform staff do not get customer tenants for free. `platform_support`
+  is refused the tenant plane until someone grants time-bound access
+  (`POST /api/admin/support-access/{tenant_id}/enable`, 24h, revocable,
+  audited at both ends) — and the grant admits it, it does not make it
+  root: still no `user.manage`, so still no minting API keys.
+  `platform_super_admin` keeps an unconditional break-glass on purpose.
 - The demo stack still runs lab defaults (admin/admin, dev-token-sm) —
   say so if asked; production hardening is config, not code.
 
