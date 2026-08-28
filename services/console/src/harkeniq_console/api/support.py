@@ -434,9 +434,27 @@ async def list_pending_support_access(
     session: AsyncSession = Depends(get_session),
     _user: UserContext = Depends(require_super_admin),
 ) -> dict:
-    """The approver's queue. Only the approver sees it."""
-    rows = await SupportAccessLogRepo(session).list_pending()
-    return {"items": [_access_dict(r) for r in rows]}
+    """The approver's queue. Only the approver sees it.
+
+    A14 (OQ-25): each row carries the engineer's prior denial history for
+    that tenant — a denial never permanently denies the person, but it is
+    never hidden from the person making the next decision.
+    """
+    repo = SupportAccessLogRepo(session)
+    rows = await repo.list_pending()
+    items = []
+    for r in rows:
+        d = _access_dict(r)
+        count, last = await repo.denial_history(r.tenant_id, r.requested_by)
+        d["prior_denials"] = {
+            "count": count,
+            "last_denied_at": (
+                last.denied_at.isoformat() if last and last.denied_at else None
+            ),
+            "last_reason": last.reason if last else None,
+        }
+        items.append(d)
+    return {"items": items}
 
 
 async def _settle_request(

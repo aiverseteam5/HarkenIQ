@@ -22,6 +22,13 @@ interface AccessRequest {
   requested_by: string;
   requested_at: string | null;
   reason: string | null;
+  // A14 (OQ-25): a denial never permanently denies the person, but it is
+  // never hidden from the person making the next decision.
+  prior_denials?: {
+    count: number;
+    last_denied_at: string | null;
+    last_reason: string | null;
+  };
 }
 
 interface TenantRow {
@@ -147,6 +154,21 @@ export default function SupportAccessRequests() {
               key: "reason",
               header: "Reason",
               render: (r) => r.reason || "—",
+            },
+            {
+              key: "prior_denials",
+              header: "Prior denials",
+              render: (r) =>
+                r.prior_denials && r.prior_denials.count > 0 ? (
+                  <span style={{ color: "var(--status-critical)" }}>
+                    {r.prior_denials.count}×
+                    {r.prior_denials.last_reason
+                      ? ` — last: "${r.prior_denials.last_reason}"`
+                      : ""}
+                  </span>
+                ) : (
+                  "—"
+                ),
             },
             {
               key: "actions",
