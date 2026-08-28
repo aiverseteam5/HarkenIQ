@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
@@ -104,7 +105,7 @@ export default function UsageChargeback() {
   const [periodStart, setPeriodStart] = useState(monthStartStr());
   const [periodEnd, setPeriodEnd] = useState(todayStr());
 
-  const tenantId = "current";
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const currency = sub?.currency ?? estimate?.currency ?? "USD";
 
   const filterDefs = useMemo<FilterDef[]>(

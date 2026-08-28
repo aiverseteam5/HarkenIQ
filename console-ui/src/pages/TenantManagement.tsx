@@ -9,6 +9,8 @@ import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../useAuth";
 import { getJson, postJson } from "../api";
 import type { PaginatedResponse, Tenant } from "../types";
 
@@ -196,6 +198,9 @@ function isValidEmail(email: string): boolean {
 
 export default function TenantManagement() {
   const { toasts, toast, dismiss } = useToast();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const [entering, setEntering] = useState<string | null>(null);
 
   /* ── List state ──────────────────────────────── */
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -370,6 +375,48 @@ export default function TenantManagement() {
   }, [selectedTenant, toast, fetchTenants]);
 
   /* ── Table columns ───────────────────────────── */
+  /* ── Entering a tenant ───────────────────────────
+     Listing and entering are different acts. The server decides: a
+     platform_super_admin passes on break-glass, a platform_support caller
+     is refused until a request has been approved. The UI asks first so it
+     can offer the request instead of dropping the user into a tenant that
+     will 403 on every panel. */
+  const enterTenant = useCallback(
+    async (t: Tenant) => {
+      // Break-glass is not gated: probing the status endpoint first meant
+      // a wasted round trip for the demo's main persona — and a FAILING
+      // status endpoint wrongly blocked a super admin's entry (review,
+      // performance pass). The server enforces every request either way.
+      if (user?.role === "platform_super_admin") {
+        navigate(`/t/${t.id}/dashboard`);
+        return;
+      }
+      setEntering(t.id);
+      try {
+        const status = await getJson<{ active: boolean; pending?: boolean }>(
+          `/api/admin/support-access/${t.id}`,
+        );
+        if (status.active) {
+          navigate(`/t/${t.id}/dashboard`);
+          return;
+        }
+        if (status.pending) {
+          toast("Access already requested — waiting on an approver", "info");
+          return;
+        }
+        await postJson(`/api/admin/support-access/${t.id}/request`, {
+          reason: `Console entry to ${t.name}`,
+        });
+        toast("Access requested — a platform admin must approve it", "success");
+      } catch (e) {
+        toast((e as Error).message, "error");
+      } finally {
+        setEntering(null);
+      }
+    },
+    [navigate, toast, user],
+  );
+
   const columns = useMemo<Column<Tenant>[]>(
     () => [
       { key: "name", header: "Name", sortKey: "name" },
@@ -389,8 +436,27 @@ export default function TenantManagement() {
         sortKey: "created_at",
         render: (r) => formatDate(r.created_at),
       },
+      {
+        // Entering a tenant is a separate act from seeing it listed, so it
+        // is a separate control — not a side effect of clicking the row,
+        // which opens the registry detail.
+        key: "enter",
+        header: "",
+        render: (r) => (
+          <button
+            className="btn btn-sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              void enterTenant(r);
+            }}
+            disabled={entering === r.id}
+          >
+            {entering === r.id ? "Checking…" : "Enter"}
+          </button>
+        ),
+      },
     ],
-    [],
+    [enterTenant, entering],
   );
 
   /* ── Filter handlers ─────────────────────────── */

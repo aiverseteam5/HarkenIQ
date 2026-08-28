@@ -108,7 +108,8 @@ export default function InvoiceDetail() {
   const [data, setData] = useState<InvoiceDetailData | null>(null);
   const [paying, setPaying] = useState(false);
 
-  const tenantId = "current";
+  // `id` is the invoice; `tenantId` is the tenant context from the route.
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const fetchInvoice = useCallback(async () => {
     setLoading(true);
@@ -350,7 +351,7 @@ export default function InvoiceDetail() {
       )}
 
       <div style={{ marginTop: "1.5rem" }}>
-        <button className="btn btn-sm" onClick={() => navigate("/billing")}>
+        <button className="btn btn-sm" onClick={() => navigate(`/t/${tenantId}/billing`)}>
           Back to Billing
         </button>
       </div>

@@ -144,6 +144,45 @@ class TestViewerCannotEscalate:
             await engine.dispose()
 
 
+class TestTenantExistence:
+    async def test_unknown_tenant_404s_rather_than_looking_empty(self):
+        """A route that filters on a bogus id returns 200 and an empty list,
+        which reads as "no data" instead of "no such tenant"."""
+        client, engine, _tenant_id = await _client_as("platform_super_admin",
+                                                      platform=True)
+        try:
+            resp = await client.get("/api/tenants/no-such-tenant/audit/")
+            assert resp.status_code == 404
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_a_tenant_user_cannot_probe_which_tenants_exist(self):
+        """403 before 404: otherwise the status code is an existence oracle.
+
+        A tenant user naming a real other tenant and a made-up one must get
+        the same answer.
+        """
+        client, engine, tenant_id = await _client_as("tenant_owner")
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+            # Seed a second, real tenant this caller does not belong to.
+            other = "b" * 32
+            async with app.state.console.sessionmaker() as session:
+                session.add(Tenant(id=other, name="Other", slug="other",
+                                   billing_country="US"))
+                await session.commit()
+
+            real_other = await client.get(f"/api/tenants/{other}/audit/")
+            made_up = await client.get("/api/tenants/no-such-tenant/audit/")
+            assert real_other.status_code == made_up.status_code == 403
+            assert real_other.json() == made_up.json()
+            assert tenant_id != other
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
 class TestPlatformElevation:
     """Crossing the platform/tenant boundary must be explicit and expiring.
 
@@ -538,6 +577,138 @@ class TestGrantsBindToTheirRequester:
             app.dependency_overrides[get_current_user] = _engineer_b
             assert (await client.post(f"{base}/request", json={"reason": "b"})
                     ).json()["status"] == "requested"
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
+class TestRegistryIsPlatformPlane:
+    """[review CRITICAL, 4 passes] tenant.view is shared vocabulary —
+    tenant_owner holds it and it sits inside the custom-role ceiling — so
+    a bare permission guard leaked the vendor registry to customers."""
+
+    async def test_tenant_owner_cannot_read_the_platform_registry(self):
+        client, engine, tenant_id = await _client_as("tenant_owner")
+        try:
+            assert (
+                await client.get("/api/admin/tenants/")
+            ).status_code == 403
+            assert (
+                await client.get(f"/api/admin/tenants/{tenant_id}")
+            ).status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_platform_support_may_list_but_not_manage(self):
+        """The change's stated purpose (spec role 2 reads the registry),
+        finally pinned server-side in both directions."""
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            assert (
+                await client.get("/api/admin/tenants/")
+            ).status_code == 200
+            assert (
+                await client.get(f"/api/admin/tenants/{tenant_id}")
+            ).status_code == 200
+            assert (
+                await client.post(
+                    f"/api/admin/tenants/{tenant_id}/suspend",
+                    json={"reason": "x"},
+                )
+            ).status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
+class TestTenantScopedInstall:
+    """[review CRITICAL, api-contract] platform users' installs recorded
+    nothing — 200 returned, CC never delivered. The tenant-plane page now
+    names the tenant; decided by Vinod 2026-08-28."""
+
+    async def _publish_skill(self, client) -> str:
+        from harkeniq_console.db.models import MarketplaceSkill
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.console.sessionmaker() as session:
+            skill = MarketplaceSkill(
+                skill_name="fan-check", version=1,
+                author_email="t@example.com",
+                yaml_content="name: fan-check",
+                review_status="approved", published=True,
+            )
+            session.add(skill)
+            await session.flush()
+            sid = skill.id
+            await session.commit()
+        return sid
+
+    async def test_platform_install_names_the_tenant_and_records(self):
+        client, engine, tenant_id = await _client_as(
+            "platform_super_admin", platform=True,
+        )
+        try:
+            sid = await self._publish_skill(client)
+            resp = await client.post(
+                f"/api/marketplace/skills/{sid}/install",
+                json={"tenant_id": tenant_id},
+            )
+            assert resp.status_code == 200
+
+            from harkeniq_console.db.models import MarketplaceInstall
+            from sqlalchemy import select
+
+            app = client._transport.app  # type: ignore[attr-defined]
+            async with app.state.console.sessionmaker() as session:
+                rows = (
+                    await session.execute(select(MarketplaceInstall))
+                ).scalars().all()
+            assert [r.tenant_id for r in rows] == [tenant_id], (
+                "install was not recorded for the named tenant"
+            )
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_tenant_user_cannot_install_for_another_tenant(self):
+        client, engine, tenant_id = await _client_as("tenant_owner")
+        try:
+            sid = await self._publish_skill(client)
+            other = "c" * 32
+            app = client._transport.app  # type: ignore[attr-defined]
+            async with app.state.console.sessionmaker() as session:
+                session.add(Tenant(id=other, name="Other", slug="other-t",
+                                   billing_country="US"))
+                await session.commit()
+            resp = await client.post(
+                f"/api/marketplace/skills/{sid}/install",
+                json={"tenant_id": other},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_tenant_user_default_stays_their_own(self):
+        client, engine, tenant_id = await _client_as("tenant_owner")
+        try:
+            sid = await self._publish_skill(client)
+            assert (
+                await client.post(f"/api/marketplace/skills/{sid}/install")
+            ).status_code == 200
+
+            from harkeniq_console.db.models import MarketplaceInstall
+            from sqlalchemy import select
+
+            app = client._transport.app  # type: ignore[attr-defined]
+            async with app.state.console.sessionmaker() as session:
+                rows = (
+                    await session.execute(select(MarketplaceInstall))
+                ).scalars().all()
+            assert [r.tenant_id for r in rows] == [tenant_id]
         finally:
             await client.aclose()
             await engine.dispose()

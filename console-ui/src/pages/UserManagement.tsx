@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { Fragment, type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
@@ -10,7 +11,6 @@ import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson, postJson, patchJson, deleteJson } from "../api";
-import { useAuth } from "../useAuth";
 import type { PaginatedResponse, User } from "../types";
 
 /* ── Types ──────────────────────────────────────── */
@@ -284,8 +284,11 @@ function roleLabel(role: string): string {
 
 export default function UserManagement() {
   const { toasts, toast, dismiss } = useToast();
-  const { user: authUser } = useAuth();
-  const tenantId = authUser?.tenant_id ?? "";
+
+  // Was authUser.tenant_id, which is null for a platform user — so this
+  // page showed nothing at all to platform staff. The route carries the
+  // tenant now, and it is the same answer for everyone.
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   /* ── Tabs ────────────────────────────────────── */
   const [activeTab, setActiveTab] = useState<"users" | "roles" | "matrix">("users");

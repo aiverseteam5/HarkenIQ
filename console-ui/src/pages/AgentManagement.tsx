@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
@@ -94,6 +95,7 @@ function formatDate(iso: string): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function AgentManagement() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const { toasts, toast, dismiss } = useToast();
 
   /* ── List state ────────────────────────────────── */
@@ -161,7 +163,7 @@ export default function AgentManagement() {
       // QA ISSUE-008: CC returns {agents,...}, not {items,...} — the
       // undefined read white-screened the page.
       const res = await getJson<{ agents: Agent[]; total: number }>(
-        `/api/agents?${params.toString()}`,
+        `/api/t/${tenantId}/agents?${params.toString()}`,
       );
       setAgents(res.agents ?? []);
       setTotal(res.total ?? 0);
@@ -189,7 +191,7 @@ export default function AgentManagement() {
       setDetailOpen(true);
       setDetailLoading(true);
       try {
-        const detail = await getJson<Agent>(`/api/agents/${agent.id}`);
+        const detail = await getJson<Agent>(`/api/t/${tenantId}/agents/${agent.id}`);
         setSelectedAgent(detail);
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load agent detail", "error");
@@ -206,7 +208,7 @@ export default function AgentManagement() {
     if (!toggleConfirm) return;
     setToggleLoading(true);
     try {
-      await postJson(`/api/agents/${toggleConfirm.agent.id}/${toggleConfirm.action}`, {});
+      await postJson(`/api/t/${tenantId}/agents/${toggleConfirm.agent.id}/${toggleConfirm.action}`, {});
       toast(
         `Agent ${toggleConfirm.action === "enable" ? "enabled" : "disabled"}`,
         "success",
