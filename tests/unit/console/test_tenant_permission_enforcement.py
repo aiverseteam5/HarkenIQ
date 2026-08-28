@@ -144,6 +144,45 @@ class TestViewerCannotEscalate:
             await engine.dispose()
 
 
+class TestTenantExistence:
+    async def test_unknown_tenant_404s_rather_than_looking_empty(self):
+        """A route that filters on a bogus id returns 200 and an empty list,
+        which reads as "no data" instead of "no such tenant"."""
+        client, engine, _tenant_id = await _client_as("platform_super_admin",
+                                                      platform=True)
+        try:
+            resp = await client.get("/api/tenants/no-such-tenant/audit/")
+            assert resp.status_code == 404
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_a_tenant_user_cannot_probe_which_tenants_exist(self):
+        """403 before 404: otherwise the status code is an existence oracle.
+
+        A tenant user naming a real other tenant and a made-up one must get
+        the same answer.
+        """
+        client, engine, tenant_id = await _client_as("tenant_owner")
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+            # Seed a second, real tenant this caller does not belong to.
+            other = "b" * 32
+            async with app.state.console.sessionmaker() as session:
+                session.add(Tenant(id=other, name="Other", slug="other",
+                                   billing_country="US"))
+                await session.commit()
+
+            real_other = await client.get(f"/api/tenants/{other}/audit/")
+            made_up = await client.get("/api/tenants/no-such-tenant/audit/")
+            assert real_other.status_code == made_up.status_code == 403
+            assert real_other.json() == made_up.json()
+            assert tenant_id != other
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
 class TestPlatformElevation:
     """Crossing the platform/tenant boundary must be explicit and expiring.
 

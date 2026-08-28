@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canAccess,
+  redirectTargetFor,
   ruleFor,
   stripTenantPrefix,
   tenantFromPath,
@@ -79,6 +80,45 @@ describe("ruleFor under a tenant prefix", () => {
   it("admits an owner to audit and api keys", () => {
     expect(canAccess(owner, ruleFor("/t/acme/audit"))).toBe(true);
     expect(canAccess(owner, ruleFor("/t/acme/api-keys"))).toBe(true);
+  });
+});
+
+describe("redirectTargetFor", () => {
+  const platform = { is_platform_user: true, tenant_id: "" };
+  const tenant = { is_platform_user: false, tenant_id: "t1" };
+
+  it("sends a tenant user's bare path into their own tenant", () => {
+    expect(redirectTargetFor(tenant, "/audit")).toBe("/t/t1/audit");
+    expect(redirectTargetFor(tenant, "/")).toBe("/t/t1/dashboard");
+  });
+
+  it("never re-prefixes an already-scoped path", () => {
+    // The naive version produced /t/t1/t/acme/bogus, which fails to match
+    // again and redirects forever.
+    const target = redirectTargetFor(tenant, "/t/acme/bogus");
+    expect(target).toBe("/t/t1/dashboard");
+    expect(target).not.toContain("/t/t1/t/");
+  });
+
+  it("terminates: the target of a redirect is never itself redirected", () => {
+    // Feed each result back in. A fixed point must be reached, or the
+    // browser would loop.
+    let path = "/t/acme/bogus";
+    for (let i = 0; i < 5; i += 1) {
+      const next = redirectTargetFor(tenant, path);
+      if (next === path) break;
+      path = next!;
+    }
+    expect(path).toBe("/t/t1/dashboard");
+  });
+
+  it("never places a platform user in a tenant automatically", () => {
+    expect(redirectTargetFor(platform, "/audit")).toBe("/tenants");
+    expect(redirectTargetFor(platform, "/t/acme/bogus")).toBe("/tenants");
+  });
+
+  it("returns null with no user, so the caller can wait for auth", () => {
+    expect(redirectTargetFor(null, "/audit")).toBeNull();
   });
 });
 

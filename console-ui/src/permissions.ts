@@ -92,6 +92,30 @@ export function tenantFromPath(pathname: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Where a bare or unmatched path should send this user.
+ *
+ * Pure so it can be tested: the naive version prefixed whatever it was
+ * given, so an unknown path that ALREADY carried a tenant segment became
+ * `/t/x/t/x/...` and redirected forever. A path that is already scoped has
+ * a good tenant and a bad page, so the answer is that tenant's dashboard —
+ * never another prefix.
+ */
+export function redirectTargetFor(
+  user: { is_platform_user: boolean; tenant_id: string } | null,
+  pathname: string,
+): string | null {
+  if (!user) return null;
+  // Platform users are never placed in a tenant automatically; they choose
+  // one from the registry.
+  if (user.is_platform_user || !user.tenant_id) return "/tenants";
+  if (tenantFromPath(pathname) !== null) {
+    return `/t/${user.tenant_id}/dashboard`;
+  }
+  const path = pathname === "/" ? "/dashboard" : pathname;
+  return `/t/${user.tenant_id}${path}`;
+}
+
 /** Rule for a route key, longest-prefix first so /admin/features does not
  *  match /admin. */
 export function ruleFor(pathname: string): AccessRule | undefined {

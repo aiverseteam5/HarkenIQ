@@ -351,7 +351,7 @@ export default function InvoiceDetail() {
       )}
 
       <div style={{ marginTop: "1.5rem" }}>
-        <button className="btn btn-sm" onClick={() => navigate("/billing")}>
+        <button className="btn btn-sm" onClick={() => navigate(`/t/${tenantId}/billing`)}>
           Back to Billing
         </button>
       </div>

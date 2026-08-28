@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { redirectTargetFor } from "./permissions";
 import { AuthProvider, useAuth } from "./useAuth";
 import SidebarLayout from "./layouts/SidebarLayout";
 import AuthLayout from "./layouts/AuthLayout";
@@ -66,13 +67,9 @@ function TenantPathRedirect() {
   const { user } = useAuth();
   const location = useLocation();
 
-  if (!user) return null;
-
-  if (!user.is_platform_user && user.tenant_id) {
-    const path = location.pathname === "/" ? "/dashboard" : location.pathname;
-    return <Navigate to={`/t/${user.tenant_id}${path}`} replace />;
-  }
-  return <Navigate to="/tenants" replace />;
+  const target = redirectTargetFor(user, location.pathname);
+  if (!target) return null;
+  return <Navigate to={target} replace />;
 }
 
 function RedirectIfAuth({ children }: { children: React.ReactNode }) {
@@ -156,6 +153,7 @@ function AppRoutes() {
         <Route path="/t/:tenantId/settings" element={<TenantSettings />} />
         <Route path="/t/:tenantId/downloads" element={<Downloads />} />
         <Route path="/t/:tenantId/api-keys" element={<ApiKeys />} />
+        <Route path="/t/:tenantId/marketplace" element={<SkillMarketplace />} />
 
         {/* Bare tenant-plane paths from bookmarks and old links: send a
             tenant user into their own tenant, a platform user to the

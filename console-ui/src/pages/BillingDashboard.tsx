@@ -305,7 +305,7 @@ export default function BillingDashboard() {
           pageSize={PAGE_SIZE}
           total={invoiceTotal}
           onPageChange={setInvoicePage}
-          onRowClick={(inv) => navigate(`/invoices/${inv.id}`)}
+          onRowClick={(inv) => navigate(`/t/${tenantId}/invoices/${inv.id}`)}
           striped
         />
       )}

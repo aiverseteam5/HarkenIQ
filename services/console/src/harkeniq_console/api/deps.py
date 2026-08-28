@@ -76,6 +76,14 @@ async def tenant_scope(
     the break-glass, and gating it on the grant mechanism would mean a
     failure of that mechanism locks everyone out mid-incident.
     """
+    # Membership is checked BEFORE existence, deliberately. A tenant user
+    # naming someone else's tenant must get the same answer whether or not
+    # that tenant is real — otherwise 403-vs-404 tells them which ids
+    # exist. Ids are long random hex so enumeration is impractical either
+    # way, but the cheap ordering is the one that leaks nothing.
+    if not user.is_platform_user and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="tenant scope mismatch")
+
     # A tenant id that does not exist must 404, not sail through to a route
     # that filters on it and returns an empty list. "No audit entries" and
     # "no such tenant" look identical to a reader, and the second one is
@@ -85,18 +93,13 @@ async def tenant_scope(
     if await session.get(Tenant, tenant_id) is None:
         raise HTTPException(status_code=404, detail="tenant not found")
 
-    if user.is_platform_user:
-        if user.role == "platform_super_admin":
-            return user
+    if user.is_platform_user and user.role != "platform_super_admin":
         active = await SupportAccessLogRepo(session).get_active(tenant_id)
         if active is None:
             raise HTTPException(
                 status_code=403,
                 detail="support access not enabled for this tenant",
             )
-        return user
-    if user.tenant_id != tenant_id:
-        raise HTTPException(status_code=403, detail="tenant scope mismatch")
     return user
 
 
