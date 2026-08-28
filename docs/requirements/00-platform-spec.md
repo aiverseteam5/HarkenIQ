@@ -787,6 +787,18 @@ amendment record.
 
 ### A12 — 2026-08-28 — OQ-23 answered: vendor staff at tenant Central Commands (decided: Vinod)
 
+0. **Scope of this answer — the tenant architecture is unchanged.** Choosing the
+   operating default below alters nothing about how HarkenIQ is structured for
+   tenants. Tenant isolation, the tenant-specific CC/SM/agent topology (one CC
+   per tenant, §3; L1–L3 single-tenant), explicit URL-scoped tenant context,
+   permission-based RBAC, the subscription model, and tenant data boundaries
+   (row-scoped Console data, fail-closed service placement) remain core
+   architecture exactly as amended in A11. OQ-23 defines one thing only: the
+   **trust boundary for HarkenIQ platform staff accessing customer
+   infrastructure** — and the answer is that, by default, that boundary is
+   closed. Point 2 ("B") remains the sole sanctioned, controlled live-support
+   extension should a future slice need it.
+
 1. **Operating default (effective now): spec §4 role 2 is literal.** Platform staff
    work vendor-side — tenant registry, health aggregates from phone-home usage
    (R-H4), the support queue, and Console-plane tenant data under an approved,
