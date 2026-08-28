@@ -319,3 +319,190 @@ class TestPlacementApi:
         finally:
             await client.aclose()
             await engine.dispose()
+
+
+class TestPlatformPlaneGating:
+    """Review finding (4 passes): tenant.view is shared vocabulary —
+    tenant_owner holds it — so a bare permission check leaked the registry
+    to customers. Platform-plane reads need platform credentials too."""
+
+    async def test_tenant_owner_cannot_read_placements(self):
+        client, engine, _sm, _state, ids = await _stack()
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+
+            async def _owner() -> UserContext:
+                return UserContext(
+                    user_id="u1", email="o@t0.example", tenant_id=ids[0],
+                    role="tenant_owner", permissions=[], is_platform_user=False,
+                )
+
+            app.dependency_overrides[get_current_user] = _owner
+            resp = await client.get(f"/api/admin/tenant-services/{ids[0]}")
+            assert resp.status_code == 403
+            assert "platform credentials" in resp.json()["detail"]
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_platform_support_reads_but_cannot_write(self):
+        client, engine, _sm, _state, ids = await _stack(role="platform_support")
+        try:
+            assert (
+                await client.get(f"/api/admin/tenant-services/{ids[0]}")
+            ).status_code == 200
+            resp = await client.post(
+                f"/api/admin/tenant-services/{ids[0]}",
+                json={"service_kind": "central_command",
+                      "endpoint_url": "http://x.internal"},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
+class TestOneTenantOneCC:
+    """Decided by Vinod 2026-08-28: one tenant -> one CC is the invariant.
+    CC has no per-tenant filtering, so a shared endpoint silently serves
+    one tenant's data under another tenant's URL."""
+
+    async def test_endpoint_bound_to_another_tenant_is_refused(self):
+        client, engine, _sm, _state, ids = await _stack(tenants=2)
+        try:
+            first = await client.post(
+                f"/api/admin/tenant-services/{ids[0]}",
+                json={"service_kind": "central_command",
+                      "endpoint_url": "http://cc-shared.internal"},
+            )
+            assert first.status_code == 200
+            second = await client.post(
+                f"/api/admin/tenant-services/{ids[1]}",
+                json={"service_kind": "central_command",
+                      "endpoint_url": "http://cc-shared.internal"},
+            )
+            assert second.status_code == 409
+            assert "another tenant" in second.json()["detail"]
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_same_tenant_may_rebind_its_own_endpoint(self):
+        client, engine, _sm, _state, ids = await _stack()
+        try:
+            for _ in range(2):
+                resp = await client.post(
+                    f"/api/admin/tenant-services/{ids[0]}",
+                    json={"service_kind": "central_command",
+                          "endpoint_url": "http://cc-a.internal"},
+                )
+                assert resp.status_code == 200
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
+class TestEndpointValidation:
+    """The proxy forwards the caller's bearer token to this URL — an
+    arbitrary string is an SSRF/exfiltration edge even super-admin-gated."""
+
+    async def test_bad_endpoints_are_refused(self):
+        client, engine, _sm, _state, ids = await _stack()
+        try:
+            for bad in ("ftp://cc.internal", "not-a-url",
+                        "http://user:pw@cc.internal"):
+                resp = await client.post(
+                    f"/api/admin/tenant-services/{ids[0]}",
+                    json={"service_kind": "central_command",
+                          "endpoint_url": bad},
+                )
+                assert resp.status_code == 400, f"{bad} was accepted"
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_unknown_tenant_listing_is_404_not_empty(self):
+        """"No placements" and "no such tenant" must not look identical."""
+        client, engine, _sm, _state, _ids = await _stack()
+        try:
+            resp = await client.get("/api/admin/tenant-services/no-such-tenant")
+            assert resp.status_code == 404
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+
+class TestProxyForwardsFaithfully:
+    """Refusal tests alone can go green while the forwarding silently drops
+    params, bodies, or headers (the proto-to-dict lesson). Pin the hop."""
+
+    async def test_method_params_body_and_headers(self):
+        import httpx as _httpx
+
+        seen = {}
+
+        def _capture(req: _httpx.Request) -> _httpx.Response:
+            seen["method"] = req.method
+            seen["url"] = str(req.url)
+            seen["auth"] = req.headers.get("authorization")
+            seen["cookie"] = req.headers.get("cookie")
+            seen["body"] = req.content
+            return _httpx.Response(200, json={"ok": True})
+
+        client, engine, sm, state, ids = await _stack()
+        try:
+            async with sm() as session:
+                await TenantServiceRepo(session).register(
+                    tenant_id=ids[0], service_kind="central_command",
+                    endpoint_url="http://cc-upstream.internal",
+                )
+                await session.commit()
+
+            # Rebuild the app with the transport seam installed.
+            state.cc_transport = _httpx.MockTransport(_capture)
+            app = create_app(state)
+
+            async def _fake_user() -> UserContext:
+                return UserContext(
+                    user_id="kc-1", email="a@example.com", tenant_id=None,
+                    role="platform_super_admin", permissions=[],
+                    is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _fake_user
+            seamed = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+            )
+            resp = await seamed.post(
+                f"/api/t/{ids[0]}/approvals/abc/approve?force=1",
+                json={"actor": "op"},
+                headers={
+                    "authorization": "Bearer tok-123",
+                    "cookie": "session=nope",
+                },
+            )
+            await seamed.aclose()
+
+            assert resp.status_code == 200
+            assert seen["method"] == "POST"
+            assert seen["url"] == (
+                "http://cc-upstream.internal/api/approvals/abc/approve?force=1"
+            )
+            assert seen["auth"] == "Bearer tok-123"
+            assert seen["cookie"] is None, "cookies must not cross the proxy"
+            assert b'"actor"' in seen["body"]
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_schema_skew_degrades_to_503_not_500(self):
+        """New binary + unmigrated DB must fail closed, not crash open."""
+        client, engine, sm, _state, ids = await _stack()
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("DROP TABLE tenant_services")
+            resp = await client.get(f"/api/t/{ids[0]}/fleet/summary")
+            assert resp.status_code == 503
+        finally:
+            await client.aclose()
+            await engine.dispose()
