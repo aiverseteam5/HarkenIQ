@@ -405,17 +405,53 @@ class TicketStateChange(Base):
 
 
 class SupportAccessLog(Base):
+    """A platform staffer's time-bound access into one customer tenant.
+
+    Support used to grant itself: the enable endpoint accepted
+    platform_support, so the only thing separating a support engineer from
+    a customer's tenant was their own click. Access is now requested and
+    approved by someone else — no internal person places themselves inside
+    a customer tenant.
+
+    ``status`` is what ``SupportAccessLogRepo.get_active`` keys on, so a
+    merely *requested* row grants nothing.
+    """
+
     __tablename__ = "support_access_log"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    # requested -> approved | denied; approved -> revoked, or simply expires.
+    status: Mapped[str] = mapped_column(String(16), default="requested")
+    requested_by: Mapped[str] = mapped_column(String(128), default="")
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    denied_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    denied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # enabled_by/at retain their R2b meaning: who put the grant into force.
     enabled_by: Mapped[str] = mapped_column(String(128))
     enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Only meaningful once approved; a pending request has no clock yet.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    __table_args__ = (Index("ix_support_access_log_tenant_id", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_support_access_log_tenant_id", "tenant_id"),
+        Index("ix_support_access_log_status", "status"),
+        # One pending request per engineer per tenant (red-team finding:
+        # the read-then-insert check alone allowed duplicate queue rows).
+        Index(
+            "uq_support_access_pending",
+            "tenant_id",
+            "requested_by",
+            unique=True,
+            sqlite_where=text("status = 'requested'"),
+            postgresql_where=text("status = 'requested'"),
+        ),
+    )
 
 
 # ── Phase 7: settings + API keys + impersonation ─────────────────────

@@ -99,7 +99,12 @@ async def tenant_scope(
     if user.is_platform_user:
         if user.role == "platform_super_admin":
             return user
-        active = await SupportAccessLogRepo(session).get_active(tenant_id)
+        # The grant admits its REQUESTER, not all of support: one approval
+        # must not open the tenant to every platform_support engineer
+        # (red-team finding; per-person elevation is the model).
+        active = await SupportAccessLogRepo(session).get_active(
+            tenant_id, user_id=user.user_id,
+        )
         if active is None:
             raise HTTPException(
                 status_code=403,

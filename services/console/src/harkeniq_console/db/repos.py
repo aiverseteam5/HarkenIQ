@@ -7,7 +7,7 @@ request) so multi-table updates remain atomic.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import func, or_, select
@@ -1032,29 +1032,139 @@ class TicketStateChangeRepo:
         ).scalars().all()
 
 
+#: One grant duration, one definition — the endpoint docstring, DEMO.md
+#: and the UI derive from expires_at rather than restating "24".
+SUPPORT_ACCESS_TTL_HOURS = 24
+
+
 class SupportAccessLogRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, **kwargs) -> SupportAccessLog:
-        row = SupportAccessLog(**kwargs)
+    async def get_by_id(self, entry_id: str) -> Optional[SupportAccessLog]:
+        return await self.session.get(SupportAccessLog, entry_id)
+
+    async def get_active(
+        self, tenant_id: str, user_id: Optional[str] = None,
+    ) -> Optional[SupportAccessLog]:
+        """The live grant for *tenant_id* — bound to its requester.
+
+        Red-team finding: a tenant-scoped lookup meant ONE approval
+        admitted EVERY platform_support engineer for 24h. A grant is for
+        the person who requested it (Vinod's model: request -> approved ->
+        specific tenant, per person), so callers gating access pass their
+        user_id and only that requester's grant admits them. user_id=None
+        keeps the tenant-wide view for status/duplicate checks.
+        """
+        now = utcnow()
+        stmt = select(SupportAccessLog).where(
+            SupportAccessLog.tenant_id == tenant_id,
+            # Approval is the gate. Without this clause a merely
+            # REQUESTED row would satisfy tenant_scope and asking
+            # for access would be the same as being granted it.
+            SupportAccessLog.status == "approved",
+            SupportAccessLog.expires_at.is_not(None),
+            SupportAccessLog.expires_at > now,
+            SupportAccessLog.revoked_at.is_(None),
+        )
+        if user_id is not None:
+            stmt = stmt.where(SupportAccessLog.requested_by == user_id)
+        stmt = stmt.order_by(SupportAccessLog.approved_at.desc())
+        return (await self.session.execute(stmt)).scalars().first()
+
+    async def get_pending(
+        self, tenant_id: str, requested_by: Optional[str] = None,
+    ) -> Optional[SupportAccessLog]:
+        """An outstanding request, so asking twice does not queue twice.
+
+        Per-requester when *requested_by* is given: each engineer requests
+        for themselves, so engineer A's pending request must not block
+        engineer B's. A partial unique index enforces the invariant the
+        old read-then-insert check only hoped for.
+        """
+        stmt = select(SupportAccessLog).where(
+            SupportAccessLog.tenant_id == tenant_id,
+            SupportAccessLog.status == "requested",
+        )
+        if requested_by is not None:
+            stmt = stmt.where(SupportAccessLog.requested_by == requested_by)
+        stmt = stmt.order_by(SupportAccessLog.requested_at.asc())
+        return (await self.session.execute(stmt)).scalars().first()
+
+    async def list_pending(self) -> Sequence[SupportAccessLog]:
+        """The approver's queue, across every tenant."""
+        return (
+            await self.session.execute(
+                select(SupportAccessLog)
+                .where(SupportAccessLog.status == "requested")
+                .order_by(SupportAccessLog.requested_at.asc())
+            )
+        ).scalars().all()
+
+    async def denial_history(
+        self, tenant_id: str, requested_by: str,
+    ) -> tuple[int, Optional[SupportAccessLog]]:
+        """(count, most recent) of this engineer's denials for this tenant.
+
+        A14 (OQ-25): denial is non-final — re-request is allowed — but the
+        approver must SEE the history at decision time. The audit chain
+        stays the durable record; this is the decision-time read.
+        """
+        rows = (
+            await self.session.execute(
+                select(SupportAccessLog)
+                .where(
+                    SupportAccessLog.tenant_id == tenant_id,
+                    SupportAccessLog.requested_by == requested_by,
+                    SupportAccessLog.status == "denied",
+                )
+                .order_by(SupportAccessLog.denied_at.desc())
+            )
+        ).scalars().all()
+        return len(rows), (rows[0] if rows else None)
+
+    async def request(
+        self, *, tenant_id: str, requested_by: str, reason: str = "",
+    ) -> SupportAccessLog:
+        """Raise a request. It grants nothing until someone approves it."""
+        row = SupportAccessLog(
+            tenant_id=tenant_id,
+            status="requested",
+            requested_by=requested_by,
+            reason=reason or None,
+            # No clock until approval — expires_at is set when granted.
+            enabled_by="",
+            expires_at=None,
+        )
         self.session.add(row)
         await self.session.flush()
         return row
 
-    async def get_active(self, tenant_id: str) -> Optional[SupportAccessLog]:
+    async def approve(
+        self, entry: SupportAccessLog, approved_by: str,
+        ttl_hours: int = SUPPORT_ACCESS_TTL_HOURS,
+    ) -> SupportAccessLog:
         now = utcnow()
-        return (
-            await self.session.execute(
-                select(SupportAccessLog).where(
-                    SupportAccessLog.tenant_id == tenant_id,
-                    SupportAccessLog.expires_at > now,
-                    SupportAccessLog.revoked_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
+        entry.status = "approved"
+        entry.approved_by = approved_by
+        entry.approved_at = now
+        entry.enabled_by = approved_by
+        entry.enabled_at = now
+        # The clock starts at approval, not at request: a request that sat
+        # in the queue overnight must not arrive already half spent.
+        entry.expires_at = now + timedelta(hours=ttl_hours)
+        await self.session.flush()
+        return entry
+
+    async def deny(self, entry: SupportAccessLog, denied_by: str) -> SupportAccessLog:
+        entry.status = "denied"
+        entry.denied_by = denied_by
+        entry.denied_at = utcnow()
+        await self.session.flush()
+        return entry
 
     async def revoke(self, entry: SupportAccessLog, revoked_by: str) -> SupportAccessLog:
+        entry.status = "revoked"
         entry.revoked_at = utcnow()
         entry.revoked_by = revoked_by
         await self.session.flush()
