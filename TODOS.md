@@ -135,3 +135,45 @@ Uptime Institute 2025 (n=800+): operators accept AI analysing sensors and reject
   class-agnostic by design; CorrelationProbe (R3b-2) already handles
   both-sides evidence. Start at the OS-signal layer (R3b device mapper).
 - **Depends on:** R6-P1 shipped.
+
+
+---
+
+## 2026-08-28 review follow-ups (tenant-plane separation, PRs #9–#11)
+
+Recorded per the review close-out (decided: Vinod). Fixes for everything
+objectively broken shipped on the stack; these are the undecided or
+deferred remainders. Open questions with architectural weight live in spec
+§8 (OQ-23..OQ-26); these are the work items.
+
+- [ ] **Revoke UI for active support grants** — approval queue shows only
+  pending requests; cutting a live 24h grant short is curl-only today.
+  Surface active grants + Revoke on the Support Access page. (api-contract
+  pass; owner: next Console slice)
+- [ ] **New-tenant placement onboarding** — a created tenant's
+  infrastructure pages 503 (correctly, fail-closed) until a placement is
+  registered; there is no in-product prompt. Wire a "register Central
+  Command" CTA or a placement step into tenant creation. (adversarial
+  pass; owner: next Console slice)
+- [ ] **Rolling-deploy note for support-access cutover** — an old replica's
+  grants created between migration 0003 and code cutover land as
+  `requested` and die silently at cutover (fails safe). Single-replica
+  Console today; document in the deploy runbook if replicas ever ship.
+  (data-migration pass)
+- [ ] **Proxy streaming** — the CC proxy buffers request+response bodies in
+  full (pre-existing); switch to streaming if large exports/firmware
+  payloads ever transit it. (performance pass)
+- [ ] **Compose-gate tenant-user path** — the gate's scenario runs on a
+  super-admin token whose break-glass bypasses membership + support-access
+  gates; those paths are unit-pinned but not e2e. Needs a seeded
+  tenant-realm user with a password in the demo Keycloak. (red team)
+- [ ] **SPA realm discovery** — the login flow bakes one realm
+  (`VITE_KEYCLOAK_REALM`); a real multi-tenant deployment needs tenant-slug →
+  realm resolution at the login page. (Recorded with A12; owner: next Console
+  slice)
+- [ ] **A13 read-gate follow-ups (auditor scope, OQ-24):** (a) role-bundle
+  listing readable to user.view holders; (b) CC approvals-history read gate
+  (today action.approve-only — R-C3 evidence unreadable by the auditor);
+  (c) policy read path (Console + CC both require site.manage; no read-only
+  governance review exists for non-admins). All read-only. (owner: next
+  Console slice)

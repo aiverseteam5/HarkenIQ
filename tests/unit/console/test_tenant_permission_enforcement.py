@@ -793,3 +793,88 @@ class TestA14DenialSemantics:
         finally:
             await client.aclose()
             await engine.dispose()
+
+
+class TestA13AuditorScope:
+    """A13 (OQ-24, decided by Vinod): the auditor is read-only everything —
+    every atomic *.view plus audit.export, and nothing else. Pinned as an
+    EXACT set so any future widening or narrowing is a deliberate diff."""
+
+    def test_auditor_set_is_exactly_every_view_plus_export(self):
+        from harkeniq_console.permissions import PERMISSIONS, ROLE_PERMISSIONS
+
+        expected = {p for p in PERMISSIONS if p.endswith(".view")}
+        expected -= {"tenant.view"}  # platform-plane read since A11.4
+        expected |= {"audit.export"}
+        assert ROLE_PERMISSIONS["auditor"] == expected
+
+    async def test_auditor_gains_the_four_a13_reads(self):
+        client, engine, tenant_id = await _client_as("auditor")
+        try:
+            # support.view — ticket-trail evidence (UC6)
+            assert (
+                await client.get(f"/api/tenants/{tenant_id}/tickets/")
+            ).status_code == 200
+            # license.view — entitlement compliance (UC5)
+            assert (
+                await client.get(f"/api/tenants/{tenant_id}/licenses/")
+            ).status_code == 200
+            # user.view — access review (UC1)
+            assert (
+                await client.get(f"/api/tenants/{tenant_id}/users/")
+            ).status_code == 200
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_auditor_still_cannot_mutate_anything(self):
+        """The A13 hard boundary: no write, admin, elevation, or action
+        capability of any kind."""
+        client, engine, tenant_id = await _client_as("auditor")
+        try:
+            # no API-key minting (user.manage)
+            assert (
+                await client.post(
+                    f"/api/tenants/{tenant_id}/api-keys/",
+                    json={"name": "nope", "scope": "read"},
+                )
+            ).status_code == 403
+            # no ticket creation (support.create)
+            assert (
+                await client.post(
+                    f"/api/tenants/{tenant_id}/tickets/",
+                    json={"subject": "s", "severity": "S3",
+                          "component": "Other", "body": "b"},
+                )
+            ).status_code == 403
+            # no usage upload (billing.manage)
+            assert (
+                await client.post(
+                    f"/api/tenants/{tenant_id}/usage/upload",
+                    files={"file": ("u.json", b"{}", "application/json")},
+                )
+            ).status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_auditor_has_no_tenant_discovery(self):
+        """No cross-tenant access through the auditor role: the platform
+        registry refuses it, and another tenant's data refuses it."""
+        client, engine, tenant_id = await _client_as("auditor")
+        try:
+            assert (
+                await client.get("/api/admin/tenants/")
+            ).status_code == 403
+            app = client._transport.app  # type: ignore[attr-defined]
+            other = "d" * 32
+            async with app.state.console.sessionmaker() as session:
+                session.add(Tenant(id=other, name="Other2", slug="other-2",
+                                   billing_country="US"))
+                await session.commit()
+            assert (
+                await client.get(f"/api/tenants/{other}/tickets/")
+            ).status_code == 403
+        finally:
+            await client.aclose()
+            await engine.dispose()

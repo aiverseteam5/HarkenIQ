@@ -167,7 +167,8 @@ are non-editable; custom roles cannot exceed Tenant Owner's ceiling.
 - Permission checks are enforced server-side per request; the UI only reflects them.
 
 **Capability × role matrix (summary — authoritative atomic permission list lives with the
-Console implementation):**
+Console implementation; Auditor's canonical read scope is defined by A13: every atomic
+`*.view` permission plus `audit.export`, and nothing else):**
 
 | Capability | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 |---|---|---|---|---|---|---|---|
@@ -327,6 +328,10 @@ here) no later than the start of their owning slice.
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
+| OQ-23 | Cross-realm auth for platform staff at L3 | 2026-08-28 review (adversarial pass, verified against `harkeniq_cc/auth.py`) | **answered, A12** — vendor staff never touch L3 live by default (spec-literal role 2); a CC-verified signed grant assertion is the only sanctioned future mechanism |
+| OQ-24 | Auditor scope: prose vs implemented 5-permission set | 2026-08-28 review | **answered, A13** — prose is canonical: read-only everything + export; three read-gate follow-ups recorded |
+| OQ-25 | Support-access denial semantics vs D16 | 2026-08-28 review (testing pass) | **answered, A14** — denial is non-final; re-request allowed; the approver sees the engineer's denial history at decision time; D16 stays hardware-specific |
+| OQ-26 | Shared Central Command for scale/cost: registration now enforces one-tenant-one-CC (409). If sharing is ever wanted, it requires explicit tenant isolation INSIDE CC — a deliberate architecture decision, never a registration side effect (decided: Vinod, 2026-08-28) | 2026-08-28 review | future — reopen only by amendment |
 
 ---
 
@@ -826,3 +831,97 @@ change control before merge.
    staff at per-tenant CCs (OQ-23), auditor scope (OQ-24), deny-then-re-request
    semantics (OQ-25). These are open questions with owners in §8; no
    implementation may assume their answers.
+### A12 — 2026-08-28 — OQ-23 answered: vendor staff at tenant Central Commands (decided: Vinod)
+
+0. **Scope of this answer — the tenant architecture is unchanged.** Choosing the
+   operating default below alters nothing about how HarkenIQ is structured for
+   tenants. Tenant isolation, the tenant-specific CC/SM/agent topology (one CC
+   per tenant, §3; L1–L3 single-tenant), explicit URL-scoped tenant context,
+   permission-based RBAC, the subscription model, and tenant data boundaries
+   (row-scoped Console data, fail-closed service placement) remain core
+   architecture exactly as amended in A11. OQ-23 defines one thing only: the
+   **trust boundary for HarkenIQ platform staff accessing customer
+   infrastructure** — and the answer is that, by default, that boundary is
+   closed. Point 2 ("B") remains the sole sanctioned, controlled live-support
+   extension should a future slice need it.
+
+1. **Operating default (effective now): spec §4 role 2 is literal.** Platform staff
+   work vendor-side — tenant registry, health aggregates from phone-home usage
+   (R-H4), the support queue, and Console-plane tenant data under an approved,
+   requester-bound support-access grant. Live L3 access for vendor staff does not
+   exist: a tenant's CC validates only its own realm, refuses platform-realm
+   tokens, and that refusal is the intended behavior, not a defect. Deep
+   diagnosis is customer-mediated (customer-granted account in *their* realm,
+   screen-share, on-site). The single-realm demo is the only environment where
+   platform staff see live L3, and it must be presented as such.
+2. **The only sanctioned future mechanism ("B"), built when a real support case
+   demands it and only by its own slice:** a connected tenant's CC may
+   additionally accept the vendor platform realm **iff** the request carries a
+   Console-signed grant assertion — requester-bound, tenant-bound, TTL'd,
+   verified against the vendor Ed25519 trust CC already holds for licensing —
+   mapping platform_support to read-only and logging the engineer in CC's own
+   audit chain. It must be tenant-disableable (config, default off), and is
+   structurally absent in customer-run-Keycloak and sovereign shapes.
+   Token-exchange / Console-as-token-authority designs are rejected: they make
+   vendor staff indistinguishable from tenant users at CC and concentrate
+   every tenant realm's credentials at L4.
+3. **Follow-up recorded, independent of this answer:** the Console SPA bakes one
+   Keycloak realm at build time (`VITE_KEYCLOAK_REALM`), so multi-tenant login
+   needs realm discovery (tenant slug → realm at the login page). Work item, not
+   an open question.
+
+### A13 — 2026-08-28 — OQ-24 answered: auditor scope is read-only everything (decided: Vinod)
+
+1. **The §4 prose is canonical; the matrix was the stale artifact.** The Auditor
+   (tenant-domain role 6) holds **every atomic `*.view` permission plus
+   `audit.export`, and nothing else**: `fleet.view`, `incident.view`,
+   `billing.view`, `audit.view`, `audit.export`, and — added by this amendment —
+   `user.view`, `license.view`, `support.view`, `site.view`. Rationale: an
+   auditor who cannot read users and role bundles cannot perform an access
+   review, and the predictable consequence of a narrow auditor is compliance
+   staff borrowing `tenant_owner` credentials — a strictly worse outcome than
+   any read expansion. Three spec sources already describe the read-everything
+   persona (§4 prose, §5's explicit Owner/Auditor billing reports, doc 03's
+   R-CR3/R-CV4 auditor-report consumers).
+2. **Hard boundaries, unchanged:** no write, administrative, support-elevation,
+   infrastructure-action, or privilege-grant capability of any kind — no
+   `*.manage`, no `action.approve`, no `incident.acknowledge`, no
+   `skill.submit/install`, no API-key or user mutation. The Auditor remains a
+   tenant-domain role: the platform plane stays vendor-only
+   (`require_platform_permission`, A11.4), strict tenant scoping applies to
+   every read (`tenant_scope` + `require_tenant_permission`), and the
+   custom-role ceiling does not move (tenant_owner already holds every added
+   permission). A12's settled boundaries are untouched.
+3. **Three read-gate follow-ups are explicit future work (next Console slice),
+   without which the grant is true in the table but not in practice:**
+   (a) role-bundle *listing* readable to `user.view` holders (today gated
+   `role.manage`, blocking access review of custom bundles); (b) a read path
+   for CC approvals history (today CC gates the GETs on `action.approve`,
+   which its coarse model grants only to wildcard admins — R-C3's evidence is
+   unreadable by its intended reader); (c) a policy-read path (Console page and
+   CC reads both require `site.manage`; read-only governance review is
+   structurally impossible for any non-admin today). Each is read-only and
+   lands by its own reviewed change, not silently.
+4. **Sequencing (decided):** spec first, then the resulting permission matrix
+   presented for review; code changes only after that review.
+
+### A14 — 2026-08-28 — OQ-25 answered: support-access denial is non-final, history visible (decided: Vinod)
+
+1. **A support-access denial does not permanently deny the person.** The same
+   engineer may legitimately request again — context changes between asks
+   ("not for this ticket", "not during the window"). No cooldowns, no
+   permanent locks, no super-admin unlock machinery.
+2. **But the history is never hidden from the next decision.** The approver's
+   pending queue shows, per request, the engineer's prior denial history for
+   that tenant (count, last denial time, last reason) at the point of
+   decision. Read-only enrichment; the audit chain remains the durable record
+   (`support_access.requested/approved/denied`), unchanged.
+3. **D16 stays specific to hardware-action safety.** "Denied actions are
+   final" constrains the MACHINE (the platform never re-proposes a denied
+   action); it is not transplanted onto human support-access requests. What
+   carries over is its spirit: a denial is never silently erased, and repeated
+   asking is visible pressure, not invisible pressure.
+4. **Scope of the sanctioned implementation:** the queue-payload enrichment,
+   its UI display on the approver page, and regression tests pinning both
+   halves (re-request allowed after deny; history present in the queue).
+   Nothing else.

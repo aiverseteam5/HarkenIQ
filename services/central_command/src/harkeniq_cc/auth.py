@@ -38,6 +38,12 @@ _RANKED_ROLES = [
 ]
 #: Roles allowed to mutate (approve/deny, policies); everything else views.
 _ADMIN_ROLES = {"platform_super_admin", "tenant_owner", "site_admin"}
+#: Extra grants for non-admin roles, by role. The auditor's job is the
+#: audit trail (spec §4 role 6); operator/viewer hold plain "view" and are
+#: refused audit reads — review 2026-08-28: CC's audit routes were gated
+#: on authentication alone, so any authenticated viewer could read the
+#: audit log through the Console proxy.
+_EXTRA_PERMISSIONS = {"auditor": ["audit.view"]}
 
 
 @dataclass
@@ -114,6 +120,9 @@ async def get_current_user(request: Request) -> UserContext:
         email=validated.email,
         tenant_id=request.app.state.cc.config.tenant_id,
         role=role,
-        permissions=["*"] if role in _ADMIN_ROLES else ["view"],
+        permissions=(
+            ["*"] if role in _ADMIN_ROLES
+            else ["view", *_EXTRA_PERMISSIONS.get(role, [])]
+        ),
         is_platform_user=role == "platform_super_admin",
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_current_user, get_session
+from harkeniq_cc.api.deps import get_current_user, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo
 
@@ -27,7 +27,7 @@ def _entry_dict(row) -> dict:
     }
 
 
-@router.get("/", dependencies=[Depends(get_current_user)])
+@router.get("/", dependencies=[Depends(require_permission("audit.view"))])
 async def list_audit(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -53,7 +53,7 @@ async def list_audit(
     }
 
 
-@router.get("/verify", dependencies=[Depends(get_current_user)])
+@router.get("/verify", dependencies=[Depends(require_permission("audit.view"))])
 async def verify_audit_chain(
     user: UserContext = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
