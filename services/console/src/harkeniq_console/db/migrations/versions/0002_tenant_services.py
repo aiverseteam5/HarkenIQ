@@ -40,7 +40,7 @@ def upgrade() -> None:
         sa.Column("service_kind", sa.String(32), nullable=False),
         sa.Column("endpoint_url", sa.String(512), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default="active"),
-        sa.Column("registered_by", sa.String(32), nullable=False, server_default=""),
+        sa.Column("registered_by", sa.String(128), nullable=False, server_default=""),
         sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )

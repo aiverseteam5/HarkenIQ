@@ -27,14 +27,14 @@ NEW_COLUMNS = (
     ("status", lambda: sa.Column(
         "status", sa.String(16), nullable=False, server_default="requested")),
     ("requested_by", lambda: sa.Column(
-        "requested_by", sa.String(32), nullable=False, server_default="")),
+        "requested_by", sa.String(128), nullable=False, server_default="")),
     ("requested_at", lambda: sa.Column(
         "requested_at", sa.DateTime(timezone=True), nullable=True)),
     ("reason", lambda: sa.Column("reason", sa.Text(), nullable=True)),
-    ("approved_by", lambda: sa.Column("approved_by", sa.String(32), nullable=True)),
+    ("approved_by", lambda: sa.Column("approved_by", sa.String(128), nullable=True)),
     ("approved_at", lambda: sa.Column(
         "approved_at", sa.DateTime(timezone=True), nullable=True)),
-    ("denied_by", lambda: sa.Column("denied_by", sa.String(32), nullable=True)),
+    ("denied_by", lambda: sa.Column("denied_by", sa.String(128), nullable=True)),
     ("denied_at", lambda: sa.Column(
         "denied_at", sa.DateTime(timezone=True), nullable=True)),
 )
@@ -103,6 +103,14 @@ def upgrade() -> None:
         batch.alter_column(
             "requested_at", existing_type=sa.DateTime(timezone=True),
             nullable=False,
+        )
+        # Identity width (gate-caught): these receive Keycloak subjects
+        # (36 chars); String(128) is the repo's identity precedent.
+        batch.alter_column(
+            "enabled_by", existing_type=sa.String(32), type_=sa.String(128),
+        )
+        batch.alter_column(
+            "revoked_by", existing_type=sa.String(32), type_=sa.String(128),
         )
 
 

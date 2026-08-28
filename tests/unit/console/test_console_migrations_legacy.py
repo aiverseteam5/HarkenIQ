@@ -115,14 +115,20 @@ class TestLegacyUpgradePath:
         _run_alembic(fresh, "head")
         _run_alembic(legacy_db, "head")
 
-        def notnull_map(db):
+        def shape_map(db, table):
             conn = sqlite3.connect(db)
+            # name -> (declared type incl. width, notnull) — widths matter:
+            # the String(32)-vs-Keycloak-subject class shipped because
+            # nothing compared migrated and fresh schemas.
             cols = {
-                r[1]: r[3]
-                for r in conn.execute(
-                    "PRAGMA table_info(support_access_log)")
+                r[1]: (r[2], r[3])
+                for r in conn.execute(f"PRAGMA table_info({table})")
             }
             conn.close()
             return cols
 
-        assert notnull_map(fresh) == notnull_map(legacy_db)
+        for table in ("support_access_log", "tenant_services",
+                      "console_audit_log", "api_keys", "licenses"):
+            assert shape_map(fresh, table) == shape_map(legacy_db, table), (
+                f"migrated and fresh schemas diverge on {table}"
+            )
