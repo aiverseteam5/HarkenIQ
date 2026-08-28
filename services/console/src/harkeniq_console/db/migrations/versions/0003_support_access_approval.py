@@ -88,7 +88,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     present = _existing_columns()
-    op.drop_index("ix_support_access_log_status", table_name="support_access_log")
+    if "status" in present:
+        op.drop_index(
+            "ix_support_access_log_status", table_name="support_access_log",
+        )
     for col in (
         "denied_at", "denied_by", "approved_at", "approved_by",
         "reason", "requested_at", "requested_by", "status",
