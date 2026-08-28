@@ -55,14 +55,8 @@ step "Console proxy serves CC data for the tenant (SPA path)"
 # the tenant_services placement registry. A tenant with no placement is
 # refused with 503 rather than handed a shared Central Command, so this
 # step also proves seed-demo.sh registered one.
-TENANT_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8100/api/admin/tenants/?search=tenant-demo" \
-  | python3 -c "
-import sys, json
-items = json.load(sys.stdin).get('items', [])
-match = [t for t in items if t.get('slug') == 'tenant-demo']
-print(match[0]['id'] if match else '')
-")
+source "$(dirname "$0")/lib/tenant-lookup.sh"
+TENANT_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN")
 [ -n "$TENANT_ID" ] || { echo "demo tenant not found" >&2; exit 1; }
 curl -sfL -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8100/api/t/$TENANT_ID/fleet/summary" | grep -q total_nodes
@@ -70,9 +64,25 @@ curl -sfL -H "Authorization: Bearer $TOKEN" \
 step "Placement is fail-closed: an unregistered tenant is refused, not defaulted"
 UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8100/api/t/does-not-exist/fleet/summary")
-# 404 (no such tenant) or 503 (no placement) are both refusals; 200 would
-# mean a tenant with no stack of its own was served someone else's.
-[ "$UNREG" != "200" ] || { echo "unregistered tenant got 200" >&2; exit 1; }
+# An unknown tenant id 404s in tenant_scope BEFORE placement resolution, so
+# this step alone never reaches the 503 branch (red-team finding). It stays
+# as the unknown-id refusal check; the real fail-closed path is next.
+[ "$UNREG" = "404" ] || { echo "unknown tenant returned $UNREG, want 404" >&2; exit 1; }
+
+step "Fail-closed for a REAL tenant with no placement (the 503 branch itself)"
+DARK_ID=$(curl -sf -X POST "http://localhost:8100/api/admin/tenants/" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "Gate Dark Tenant", "slug": "gate-dark", "billing_country": "US",
+       "currency": "USD", "plan": "observe", "node_commit": 1,
+       "admin_email": "dark@gate.example"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" ) || \
+  DARK_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN" gate-dark)
+DARK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/$DARK_ID/fleet/summary")
+[ "$DARK" = "503" ] || { echo "placement-less tenant returned $DARK, want 503" >&2; exit 1; }
+# Known gate limitation (documented, not hidden): the scenario runs on a
+# platform_super_admin token whose break-glass bypasses membership and the
+# support-access gate; those paths are pinned by the unit suite, not here.
 
 step "Auth is real: no token / garbage token are rejected"
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/fleet/)" = "401" ]

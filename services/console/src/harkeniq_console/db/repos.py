@@ -1444,6 +1444,21 @@ class TenantServiceRepo:
             )
         ).scalars().all()
 
+    async def find_active_by_endpoint(self, endpoint_url: str) -> Optional[TenantService]:
+        """The active placement bound to *endpoint_url*, any tenant, any kind.
+
+        Backs the one-tenant-one-CC invariant: the API refuses to bind an
+        endpoint that is already another tenant's stack.
+        """
+        return (
+            await self.session.execute(
+                select(TenantService).where(
+                    TenantService.endpoint_url == endpoint_url,
+                    TenantService.status == "active",
+                )
+            )
+        ).scalars().first()
+
     async def register(
         self, *, tenant_id: str, service_kind: str, endpoint_url: str,
         registered_by: str = "",
@@ -1456,9 +1471,7 @@ class TenantServiceRepo:
         """
         existing = await self.resolve(tenant_id, service_kind)
         if existing is not None:
-            existing.status = "disabled"
-            existing.updated_at = utcnow()
-            await self.session.flush()
+            await self.disable(existing)
         row = TenantService(
             tenant_id=tenant_id,
             service_kind=service_kind,
@@ -1475,7 +1488,3 @@ class TenantServiceRepo:
         await self.session.flush()
         return row
 
-    async def mark_verified(self, row: TenantService) -> TenantService:
-        row.last_verified_at = utcnow()
-        await self.session.flush()
-        return row
