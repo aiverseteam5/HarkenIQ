@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_console.api.deps import get_session, require_super_admin, tenant_scope, require_permission
+from harkeniq_console.api.deps import (
+    get_session,
+    require_permission,
+    require_super_admin,
+    require_tenant_permission,
+    tenant_scope,
+)
 from harkeniq_console.auth import UserContext, get_current_user
 from harkeniq_console.db.repos import AuditRepo
 
@@ -50,7 +56,7 @@ async def list_audit_logs(
     page: int = 1,
     page_size: int = 50,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("audit.view")),
 ) -> dict:
     df = datetime.combine(date_from, datetime.min.time()) if date_from else None
     dt = datetime.combine(date_to, datetime.max.time()) if date_to else None
@@ -69,7 +75,7 @@ async def export_audit_logs(
     date_from: date | None = None,
     date_to: date | None = None,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("audit.export")),
 ) -> StreamingResponse:
     df = datetime.combine(date_from, datetime.min.time()) if date_from else None
     dt = datetime.combine(date_to, datetime.max.time()) if date_to else None

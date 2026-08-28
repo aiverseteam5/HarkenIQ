@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_console.api.deps import (
     get_session,
     require_super_admin,
+    require_tenant_permission,
     tenant_scope,
 )
 from harkeniq_console.auth import UserContext
@@ -149,7 +150,7 @@ async def list_licenses(
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("license.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from harkeniq_console.db.repos import LicenseRepo
@@ -165,7 +166,7 @@ async def list_licenses(
 @router.get("/{license_id}")
 async def get_license(
     tenant_id: str, license_id: str,
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("license.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from harkeniq_console.db.repos import LicenseRepo
@@ -178,7 +179,7 @@ async def get_license(
 @router.get("/{license_id}/download")
 async def download_license(
     tenant_id: str, license_id: str,
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("license.view")),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     from harkeniq_console.db.repos import LicenseRepo

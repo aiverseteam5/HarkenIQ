@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_console.api.deps import get_session, tenant_scope
+from harkeniq_console.api.deps import (
+    get_session,
+    require_tenant_permission,
+    tenant_scope,
+)
 from harkeniq_console.auth import UserContext
 from harkeniq_console.db.repos import AuditRepo, CustomRoleRepo, TenantRepo, UserRepo
 from harkeniq_console.permissions import PERMISSIONS, ROLE_PERMISSIONS, has_permission
@@ -96,7 +100,7 @@ async def list_users(
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("user.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     items, total = await UserRepo(session).list_by_tenant(
@@ -112,7 +116,7 @@ async def list_users(
 @router.get("/{user_id}")
 async def get_user(
     tenant_id: str, user_id: str,
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("user.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     u = await UserRepo(session).get_by_id(user_id)
@@ -181,7 +185,7 @@ async def disable_user(
 @router.get("/permissions/list")
 async def list_permissions(
     tenant_id: str,
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("user.view")),
 ) -> dict:
     return {
         "permissions": [
@@ -223,7 +227,7 @@ def _role_dict(r) -> dict:
 @roles_router.get("/")
 async def list_roles(
     tenant_id: str,
-    _user: UserContext = Depends(tenant_scope),
+    _user: UserContext = Depends(require_tenant_permission("role.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     items = await CustomRoleRepo(session).list_by_tenant(tenant_id)

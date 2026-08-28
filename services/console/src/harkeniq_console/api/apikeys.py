@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_console.api.deps import get_session, require_super_admin, tenant_scope
+from harkeniq_console.api.deps import (
+    get_session,
+    require_super_admin,
+    require_tenant_permission,
+    tenant_scope,
+)
 from harkeniq_console.auth import UserContext
 from harkeniq_console.db.models import utcnow
 from harkeniq_console.db.repos import (
@@ -75,7 +80,7 @@ async def list_api_keys(
     page: int = 1,
     page_size: int = 50,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("user.manage")),
 ) -> dict:
     items, total = await ApiKeyRepo(session).list_by_tenant(
         tenant_id, status=status, page=page, page_size=page_size,
@@ -88,7 +93,7 @@ async def create_api_key(
     tenant_id: str,
     body: CreateApiKeyRequest,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("user.manage")),
 ) -> dict:
     if body.scope not in _VALID_SCOPES:
         raise HTTPException(400, f"scope must be one of {_VALID_SCOPES}")
@@ -132,7 +137,7 @@ async def revoke_api_key(
     tenant_id: str,
     key_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("user.manage")),
 ) -> dict:
     repo = ApiKeyRepo(session)
     key = await repo.get_by_id(key_id)

@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_console.api.deps import get_session, require_super_admin, tenant_scope
+from harkeniq_console.api.deps import (
+    get_session,
+    require_super_admin,
+    require_tenant_permission,
+    tenant_scope,
+)
 from harkeniq_console.auth import UserContext
 from harkeniq_console.billing.engine import BillingEngine
 from harkeniq_console.db.models import utcnow
@@ -102,7 +107,7 @@ async def list_invoices(
     page: int = 1,
     page_size: int = 50,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     items, total = await InvoiceRepo(session).list_by_tenant(
         tenant_id, status=status, page=page, page_size=page_size,
@@ -115,7 +120,7 @@ async def get_invoice(
     tenant_id: str,
     invoice_id: str,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     inv = await InvoiceRepo(session).get_by_id(invoice_id)
     if inv is None or inv.tenant_id != tenant_id:
@@ -137,7 +142,7 @@ async def pay_invoice(
     invoice_id: str,
     session: AsyncSession = Depends(get_session),
     state=Depends(lambda r: r.app.state.console),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.manage")),
 ) -> dict:
     inv = await InvoiceRepo(session).get_by_id(invoice_id)
     if inv is None or inv.tenant_id != tenant_id:
@@ -204,7 +209,7 @@ async def list_payments(
     page: int = 1,
     page_size: int = 50,
     session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(tenant_scope),
+    user: UserContext = Depends(require_tenant_permission("billing.view")),
 ) -> dict:
     items, total = await PaymentRepo(session).list_by_tenant(
         tenant_id, page=page, page_size=page_size,

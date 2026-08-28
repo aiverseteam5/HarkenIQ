@@ -8,6 +8,7 @@ from typing import Callable
 from fastapi import Depends, HTTPException, Request
 
 from harkeniq_console.auth import UserContext, get_current_user
+from harkeniq_console.db.repos import SupportAccessLogRepo
 from harkeniq_console.permissions import has_permission
 
 
@@ -55,10 +56,62 @@ async def require_super_admin(
 async def tenant_scope(
     tenant_id: str,
     user: UserContext = Depends(get_current_user),
+    session=Depends(get_session),
 ) -> UserContext:
-    """Validate that the user belongs to *tenant_id* or is a platform user."""
+    """Validate that the caller may reach *tenant_id* at all.
+
+    Answers "which tenant?" only. It deliberately does NOT answer "are you
+    allowed?" — compose it with :func:`require_tenant_permission` for that.
+    Routes guarded by this alone are reachable by every role in the tenant.
+
+    Crossing the platform/tenant boundary used to be free: any platform
+    user passed unconditionally, so ``platform_support`` could reach every
+    tenant with no elevation and no approval. ``SupportAccessLog`` already
+    modelled exactly the grant that should govern that — time-bound,
+    revocable, attributable, audited at enable and revoke — but nothing in
+    any authorization path consulted it. It does now.
+
+    ``platform_super_admin`` keeps an unconditional path on purpose: it is
+    the break-glass, and gating it on the grant mechanism would mean a
+    failure of that mechanism locks everyone out mid-incident.
+    """
     if user.is_platform_user:
+        if user.role == "platform_super_admin":
+            return user
+        active = await SupportAccessLogRepo(session).get_active(tenant_id)
+        if active is None:
+            raise HTTPException(
+                status_code=403,
+                detail="support access not enabled for this tenant",
+            )
         return user
     if user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="tenant scope mismatch")
     return user
+
+
+def require_tenant_permission(permission: str) -> Callable:
+    """Tenant membership *and* the permission the route needs.
+
+    ``tenant_scope`` checks membership only, so whether a permission was
+    enforced at all used to depend on the route body remembering to call
+    ``has_permission`` — and five of the seven tenant routers did not. The
+    only thing refusing an unentitled caller was the SPA declining to draw
+    the button, which inverts spec S4 ("enforced server-side, not just
+    hidden in the UI"): a `viewer` could mint tenant API keys, pay an
+    invoice, and export the audit log by calling the endpoint directly.
+
+    Reaching the tenant at all is ``tenant_scope``'s question, and for a
+    platform user it is governed by a support-access grant. This is the
+    separate question of what the caller may do once inside, and it is
+    asked of platform users too: a grant admits ``platform_support``, it
+    does not make it root. ``platform_super_admin`` holds every permission
+    by definition, so its break-glass is unaffected.
+    """
+    async def _check(user: UserContext = Depends(tenant_scope)) -> UserContext:
+        if not has_permission(user.role, permission, user.permissions):
+            raise HTTPException(
+                status_code=403, detail=f"missing permission: {permission}"
+            )
+        return user
+    return _check
