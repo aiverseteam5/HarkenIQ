@@ -441,6 +441,16 @@ class SupportAccessLog(Base):
     __table_args__ = (
         Index("ix_support_access_log_tenant_id", "tenant_id"),
         Index("ix_support_access_log_status", "status"),
+        # One pending request per engineer per tenant (red-team finding:
+        # the read-then-insert check alone allowed duplicate queue rows).
+        Index(
+            "uq_support_access_pending",
+            "tenant_id",
+            "requested_by",
+            unique=True,
+            sqlite_where=text("status = 'requested'"),
+            postgresql_where=text("status = 'requested'"),
+        ),
     )
 
 

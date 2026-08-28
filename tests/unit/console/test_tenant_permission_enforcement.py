@@ -413,3 +413,131 @@ class TestEntitledRolesStillPass:
         finally:
             await client.aclose()
             await engine.dispose()
+
+
+class TestGrantsBindToTheirRequester:
+    """Red-team finding: a tenant-scoped grant admitted EVERY support
+    engineer once ONE was approved. A grant is per person."""
+
+    async def test_engineer_b_is_not_admitted_by_engineer_a_grant(self):
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+
+            # Engineer A requests; the super admin approves it.
+            requested = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "ticket 1"},
+            )
+            rid = requested.json()["access"]["id"]
+
+            async def _admin() -> UserContext:
+                return UserContext(
+                    user_id="kc-admin", email="admin@example.com",
+                    tenant_id=None, role="platform_super_admin",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _admin
+            assert (
+                await client.post(
+                    f"/api/admin/support-access/requests/{rid}/approve",
+                )
+            ).status_code == 200
+
+            # Engineer A (kc-sub-1) is admitted.
+            app.dependency_overrides[get_current_user] = _support_user(tenant_id)
+            assert (
+                await client.get(f"/api/tenants/{tenant_id}/tickets/")
+            ).status_code == 200
+
+            # Engineer B is NOT — the grant is A's, not all of support's.
+            async def _engineer_b() -> UserContext:
+                return UserContext(
+                    user_id="kc-sub-2", email="b@example.com",
+                    tenant_id=None, role="platform_support",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _engineer_b
+            resp = await client.get(f"/api/tenants/{tenant_id}/tickets/")
+            assert resp.status_code == 403, (
+                "engineer B rode engineer A's grant"
+            )
+            # And B's own status view shows no grant and no pending request.
+            status = (
+                await client.get(f"/api/admin/support-access/{tenant_id}")
+            ).json()
+            assert status == {"active": False, "pending": False}
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_status_endpoint_reports_all_three_shapes(self):
+        """no rows -> {active:False,pending:False}; after request ->
+        pending; after approval -> active. The UI's enter flow branches on
+        exactly these (previously untested — testing pass)."""
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+            base = f"/api/admin/support-access/{tenant_id}"
+
+            first = (await client.get(base)).json()
+            assert first == {"active": False, "pending": False}
+
+            rid = (
+                await client.post(f"{base}/request", json={"reason": "t"})
+            ).json()["access"]["id"]
+            second = (await client.get(base)).json()
+            assert second["active"] is False and second["pending"] is True
+            assert second["access"]["id"] == rid
+
+            async def _admin() -> UserContext:
+                return UserContext(
+                    user_id="kc-admin", email="admin@example.com",
+                    tenant_id=None, role="platform_super_admin",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _admin
+            await client.post(f"/api/admin/support-access/requests/{rid}/approve")
+            app.dependency_overrides[get_current_user] = _support_user(tenant_id)
+
+            third = (await client.get(base)).json()
+            assert third["active"] is True
+            assert third["access"]["approved_by"] == "kc-admin"
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_two_engineers_may_request_independently(self):
+        """Per-requester dedupe: A's pending request must not block B's."""
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+            base = f"/api/admin/support-access/{tenant_id}"
+            assert (await client.post(f"{base}/request", json={"reason": "a"})
+                    ).json()["status"] == "requested"
+            # Same engineer again -> deduped.
+            assert (await client.post(f"{base}/request", json={"reason": "a"})
+                    ).json()["status"] == "already_requested"
+
+            async def _engineer_b() -> UserContext:
+                return UserContext(
+                    user_id="kc-sub-2", email="b@example.com",
+                    tenant_id=None, role="platform_support",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _engineer_b
+            assert (await client.post(f"{base}/request", json={"reason": "b"})
+                    ).json()["status"] == "requested"
+        finally:
+            await client.aclose()
+            await engine.dispose()
