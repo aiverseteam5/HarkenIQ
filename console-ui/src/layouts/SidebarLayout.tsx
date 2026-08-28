@@ -152,7 +152,13 @@ export default function SidebarLayout() {
             the user can navigate away, rather than being dropped onto a
             bare 403 with no way back. */}
         <RequirePermission>
-          <Outlet />
+          {/* Keyed by tenant: pages capture tenantId in useCallback
+              closures, and react-router does NOT remount on a param-only
+              change — so switching /t/A -> /t/B kept polling A's data
+              under B's URL [review CRITICAL, api-contract pass]. A key
+              change remounts the whole page tree, resetting every
+              closure and interval. */}
+          <Outlet key={tenantId ?? "platform"} />
         </RequirePermission>
       </main>
       <Toast toasts={toasts} onDismiss={dismiss} />

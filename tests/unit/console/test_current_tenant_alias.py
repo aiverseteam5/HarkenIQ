@@ -59,9 +59,10 @@ async def test_current_is_no_longer_a_tenant():
     client, engine, _ids = await _client(tenants=1)
     try:
         resp = await client.get("/api/tenants/current/audit/")
-        assert resp.status_code != 200, (
-            "the 'current' alias still resolves to a real tenant"
-        )
+        # Pinned to the SPECIFIC refusal: 'current' is an unknown tenant id
+        # and tenant_scope answers 404. A bare '!= 200' also passed on a
+        # 500 crash (testing-pass finding).
+        assert resp.status_code == 404
     finally:
         await client.aclose()
         await engine.dispose()
@@ -75,7 +76,7 @@ async def test_tenant_header_no_longer_selects_anything():
             "/api/tenants/current/audit/",
             headers={"x-harken-tenant": ids[1]},
         )
-        assert resp.status_code != 200
+        assert resp.status_code == 404
     finally:
         await client.aclose()
         await engine.dispose()

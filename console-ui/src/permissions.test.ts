@@ -26,10 +26,16 @@ const viewer: AuthUser = {
   is_platform_user: false,
 };
 
+// The owner fixture carries tenant.view DELIBERATELY — the server's real
+// tenant_owner set includes it, and the review found the /tenants rule
+// leaked the registry page to exactly this role. Omitting it here would
+// sidestep the question the rule must answer (testing-pass finding).
 const owner: AuthUser = {
   ...viewer,
   role: "tenant_owner",
-  permissions: ["fleet.view", "incident.view", "audit.view", "user.manage"],
+  permissions: [
+    "fleet.view", "incident.view", "audit.view", "user.manage", "tenant.view",
+  ],
 };
 
 describe("stripTenantPrefix", () => {
@@ -123,7 +129,7 @@ describe("redirectTargetFor", () => {
 });
 
 describe("the platform plane", () => {
-  it("lets a tenant.view holder see the registry", () => {
+  it("lets PLATFORM tenant.view holders see the registry", () => {
     const support: AuthUser = {
       ...viewer,
       role: "platform_support",
@@ -131,6 +137,12 @@ describe("the platform plane", () => {
       permissions: ["tenant.view", "support.view", "audit.view"],
     };
     expect(canAccess(support, ruleFor("/tenants"))).toBe(true);
+  });
+
+  it("keeps a tenant OWNER out of the registry despite tenant.view", () => {
+    // tenant.view is shared vocabulary; holding it must not open the
+    // vendor registry to a customer role [review CRITICAL].
+    expect(canAccess(owner, ruleFor("/tenants"))).toBe(false);
   });
 
   it("keeps a tenant viewer out of the registry", () => {

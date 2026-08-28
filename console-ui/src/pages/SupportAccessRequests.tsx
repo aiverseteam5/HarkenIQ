@@ -24,10 +24,20 @@ interface AccessRequest {
   reason: string | null;
 }
 
+interface TenantRow {
+  id: string;
+  name: string;
+}
+
 export default function SupportAccessRequests() {
   const { toasts, toast, dismiss } = useToast();
   const [items, setItems] = useState<AccessRequest[]>([]);
+  const [tenantNames, setTenantNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  // A failed fetch must not render as the success-shaped "queue is clear"
+  // — an approver who missed the toast would read a false all-clear on an
+  // access-control page (review, design pass).
+  const [failed, setFailed] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
 
   const fetchPending = useCallback(async () => {
@@ -37,7 +47,21 @@ export default function SupportAccessRequests() {
         "/api/admin/support-access/requests/pending",
       );
       setItems(res.items ?? []);
+      setFailed(false);
+      // Approvers decide who enters WHICH CUSTOMER — a raw hex id is not
+      // an answer. The caller is a super admin, who may read the registry.
+      try {
+        const tenants = await getJson<{ items: TenantRow[] }>(
+          "/api/admin/tenants/?page_size=200",
+        );
+        setTenantNames(
+          Object.fromEntries((tenants.items ?? []).map((t) => [t.id, t.name])),
+        );
+      } catch {
+        /* names are an enhancement; ids still render */
+      }
     } catch (e) {
+      setFailed(true);
       toast((e as Error).message, "error");
     } finally {
       setLoading(false);
@@ -52,13 +76,19 @@ export default function SupportAccessRequests() {
     async (id: string, decision: "approve" | "deny") => {
       setActing(id);
       try {
-        await postJson(
+        const res = await postJson<{ access?: { expires_at?: string } }>(
           `/api/admin/support-access/requests/${id}/${decision}`,
           {},
         );
+        // Duration derives from the server's expires_at rather than
+        // restating the TTL (review: "24" lived in five places).
+        const exp = res.access?.expires_at;
+        const hours = exp
+          ? Math.round((new Date(exp).getTime() - Date.now()) / 3.6e6)
+          : null;
         toast(
           decision === "approve"
-            ? "Access granted for 24 hours"
+            ? `Access granted${hours ? ` for ~${hours}h` : ""}`
             : "Request denied",
           "success",
         );
@@ -84,6 +114,13 @@ export default function SupportAccessRequests() {
 
       {loading ? (
         <Spinner />
+      ) : failed ? (
+        <EmptyState
+          title="Could not load the request queue"
+          description="The pending-requests fetch failed, so this page cannot say whether the queue is clear."
+          actionLabel="Retry"
+          onAction={() => void fetchPending()}
+        />
       ) : items.length === 0 ? (
         <EmptyState
           title="No pending requests"
@@ -92,7 +129,11 @@ export default function SupportAccessRequests() {
       ) : (
         <DataTable<AccessRequest>
           columns={[
-            { key: "tenant_id", header: "Tenant" },
+            {
+              key: "tenant_id",
+              header: "Tenant",
+              render: (r) => tenantNames[r.tenant_id] ?? r.tenant_id,
+            },
             { key: "requested_by", header: "Requested by" },
             {
               key: "requested_at",
@@ -113,14 +154,14 @@ export default function SupportAccessRequests() {
               render: (r) => (
                 <span style={{ display: "flex", gap: "0.5rem" }}>
                   <button
-                    className="btn btn-sm"
+                    className="btn btn-primary btn-sm"
                     disabled={acting === r.id}
                     onClick={() => void decide(r.id, "approve")}
                   >
-                    Approve 24h
+                    Approve
                   </button>
                   <button
-                    className="btn btn-sm"
+                    className="btn btn-danger btn-sm"
                     disabled={acting === r.id}
                     onClick={() => void decide(r.id, "deny")}
                   >

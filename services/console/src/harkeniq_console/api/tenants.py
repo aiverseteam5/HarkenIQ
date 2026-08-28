@@ -9,11 +9,14 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Listing a tenant and entering one are different acts. Reading the
-# registry is `tenant.view` — which platform_support holds, and was refused
-# for as long as this router was blanket require_super_admin. Entering a
-# tenant is still governed by tenant_scope plus a support-access grant, so
-# widening the read does not widen anyone's reach into tenant data.
-from harkeniq_console.api.deps import get_session, require_permission
+# registry is `tenant.view` held by PLATFORM staff — platform_support was
+# refused for as long as this router was blanket require_super_admin. But
+# tenant_owner ALSO holds tenant.view (it is shared vocabulary, inside the
+# custom-role ceiling), so a bare permission check leaked the whole
+# customer registry to customers [review CRITICAL, 4 passes]. Platform
+# plane asks both questions: vendor staff AND the permission. Entering a
+# tenant is still governed by tenant_scope plus a support-access grant.
+from harkeniq_console.api.deps import get_session, require_platform_permission
 from harkeniq_console.auth import UserContext
 from harkeniq_console.db.repos import TenantRepo
 from harkeniq_console.tenant_service import TenantCreateRequest, TenantError, TenantService
@@ -59,7 +62,7 @@ def _tenant_dict(t) -> dict:
 @router.post("/")
 async def create_tenant(
     body: CreateTenantBody,
-    user: UserContext = Depends(require_permission("tenant.manage")),
+    user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     svc = TenantService(session)
@@ -87,7 +90,7 @@ async def list_tenants(
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _user: UserContext = Depends(require_permission("tenant.view")),
+    _user: UserContext = Depends(require_platform_permission("tenant.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     items, total = await TenantRepo(session).list_filtered(
@@ -104,7 +107,7 @@ async def list_tenants(
 @router.get("/{tenant_id}")
 async def get_tenant(
     tenant_id: str,
-    _user: UserContext = Depends(require_permission("tenant.view")),
+    _user: UserContext = Depends(require_platform_permission("tenant.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     svc = TenantService(session)
@@ -118,7 +121,7 @@ async def get_tenant(
 async def update_tenant(
     tenant_id: str,
     body: UpdateTenantBody,
-    user: UserContext = Depends(require_permission("tenant.manage")),
+    user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     repo = TenantRepo(session)
@@ -136,7 +139,7 @@ async def update_tenant(
 async def suspend_tenant(
     tenant_id: str,
     body: SuspendBody,
-    user: UserContext = Depends(require_permission("tenant.manage")),
+    user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     svc = TenantService(session)
@@ -152,7 +155,7 @@ async def suspend_tenant(
 @router.post("/{tenant_id}/reactivate")
 async def reactivate_tenant(
     tenant_id: str,
-    user: UserContext = Depends(require_permission("tenant.manage")),
+    user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     svc = TenantService(session)

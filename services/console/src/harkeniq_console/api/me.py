@@ -50,11 +50,11 @@ async def selectable_tenants(
 ) -> dict:
     """Tenants this caller may act as.
 
-    Platform users may act as any tenant (that is the job); a tenant user
-    gets exactly their own, so the selector renders as a fixed label rather
-    than a choice. Backs the QA-046 remainder: the "current" alias resolves
-    a sole tenant fine, but a multi-tenant platform admin had no way to say
-    which one they meant.
+    Tenant users get exactly their own tenant — this is how the tenant
+    context header resolves the tenant NAME for roles that do not hold
+    tenant.view (most of them), without opening the platform registry to
+    customers. Platform users get the active list (programmatic parity
+    with the registry they can already read).
     """
     if user.is_platform_user:
         rows = (

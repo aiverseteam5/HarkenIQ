@@ -16,7 +16,13 @@ import type { AuthUser } from "./useAuth";
 
 export interface AccessRule {
   perm?: string;
+  /** super admin only (role check, no bundle can satisfy it) */
   platformOnly?: boolean;
+  /** any PLATFORM user holding `perm` — mirrors the server's
+   *  require_platform_permission: tenant.view is shared vocabulary
+   *  (tenant_owner holds it), so a bare perm check leaked the registry
+   *  page to customers [review CRITICAL]. */
+  platform?: boolean;
 }
 
 export const ROUTE_ACCESS: Record<string, AccessRule> = {
@@ -31,10 +37,10 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
 
   // Operations
   "/policies": { perm: "site.manage" },
-  // Listing tenants is `tenant.view` — platform_support holds it. Entering
-  // one is a separate act, gated server-side by tenant_scope plus a
+  // Listing tenants is `tenant.view` held by PLATFORM staff. Entering one
+  // is a separate act, gated server-side by tenant_scope plus a
   // support-access grant, so a visible registry is not a reachable tenant.
-  "/tenants": { perm: "tenant.view" },
+  "/tenants": { perm: "tenant.view", platform: true },
   "/users": { perm: "user.view" },
   "/licenses": { perm: "license.view" },
   "/support": { perm: "support.view" },
@@ -74,6 +80,7 @@ export function canAccess(user: AuthUser | null, rule?: AccessRule): boolean {
   if (rule.platformOnly) {
     return user.is_platform_user && user.role === "platform_super_admin";
   }
+  if (rule.platform && !user.is_platform_user) return false;
   return rule.perm ? can(user, rule.perm) : true;
 }
 

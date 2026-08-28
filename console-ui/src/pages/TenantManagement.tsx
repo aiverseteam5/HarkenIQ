@@ -383,14 +383,20 @@ export default function TenantManagement() {
      will 403 on every panel. */
   const enterTenant = useCallback(
     async (t: Tenant) => {
+      // Break-glass is not gated: probing the status endpoint first meant
+      // a wasted round trip for the demo's main persona — and a FAILING
+      // status endpoint wrongly blocked a super admin's entry (review,
+      // performance pass). The server enforces every request either way.
+      if (user?.role === "platform_super_admin") {
+        navigate(`/t/${t.id}/dashboard`);
+        return;
+      }
       setEntering(t.id);
       try {
         const status = await getJson<{ active: boolean; pending?: boolean }>(
           `/api/admin/support-access/${t.id}`,
         );
-        // Break-glass roles are not gated; the status call is advisory and
-        // the real decision is enforced on every request that follows.
-        if (user?.role === "platform_super_admin" || status.active) {
+        if (status.active) {
           navigate(`/t/${t.id}/dashboard`);
           return;
         }
