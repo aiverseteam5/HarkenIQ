@@ -34,7 +34,11 @@ echo "==> Registering the tenant's Central Command placement"
 # cannot do this for the demo because the container boots BEFORE this
 # script creates the tenant, so register it explicitly here — which is the
 # same thing a real multi-tenant install does.
-source "$(dirname "$0")/lib/tenant-lookup.sh"
+# Resolve from the REPO ROOT, not $0: this script cds into
+# deploy/full-stack before this line, so a $0-relative path breaks
+# (gate-caught: "No such file or directory" under set -e).
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/.." && pwd)")"
+source "$_REPO_ROOT/scripts/lib/tenant-lookup.sh"
 TENANT_ID=$(lookup_tenant_id "$CONSOLE" "$AUTH")
 if [ -n "$TENANT_ID" ]; then
   curl -s -X POST "$CONSOLE/api/admin/tenant-services/$TENANT_ID" -H "$AUTH" \
