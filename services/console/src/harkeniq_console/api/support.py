@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_console.api.deps import (
@@ -394,10 +395,12 @@ async def request_support_access(
         raise HTTPException(404, "tenant not found")
 
     repo = SupportAccessLogRepo(session)
-    existing = await repo.get_active(tenant_id)
+    # Both checks are per-requester: engineer A's grant or pending request
+    # must not block (nor admit) engineer B.
+    existing = await repo.get_active(tenant_id, user_id=user.user_id)
     if existing is not None:
         return {"status": "already_active", "access": _access_dict(existing)}
-    pending = await repo.get_pending(tenant_id)
+    pending = await repo.get_pending(tenant_id, requested_by=user.user_id)
     if pending is not None:
         return {"status": "already_requested", "access": _access_dict(pending)}
 
@@ -413,7 +416,16 @@ async def request_support_access(
         tenant_id=tenant_id,
         detail={"reason": body.reason},
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Two concurrent requests raced past the read check; the partial
+        # unique index (tenant_id, requested_by) WHERE requested caught the
+        # second. Same outcome as the sequential case.
+        await session.rollback()
+        pending = await repo.get_pending(tenant_id, requested_by=user.user_id)
+        return {"status": "already_requested",
+                "access": _access_dict(pending) if pending else None}
     return {"status": "requested", "access": _access_dict(entry)}
 
 
@@ -427,20 +439,11 @@ async def list_pending_support_access(
     return {"items": [_access_dict(r) for r in rows]}
 
 
-@support_mode_router.post("/requests/{request_id}/approve")
-async def approve_support_access(
-    request_id: str,
-    session: AsyncSession = Depends(get_session),
-    user: UserContext = Depends(require_super_admin),
+async def _settle_request(
+    request_id: str, session: AsyncSession, user: UserContext, verb: str,
 ) -> dict:
-    """Grant a pending request for 24h.
-
-    ``require_super_admin`` is the point of the slice: platform_support
-    raises the request and cannot approve it, so no internal person places
-    themselves inside a customer tenant. The clock starts here rather than
-    at request time, so a request that waited in the queue does not arrive
-    already half spent.
-    """
+    """Shared approve/deny skeleton: load, gate on 'requested', mutate,
+    audit, commit. Only the repo verb and audit detail differ."""
     repo = SupportAccessLogRepo(session)
     entry = await repo.get_by_id(request_id)
     if entry is None:
@@ -448,22 +451,40 @@ async def approve_support_access(
     if entry.status != "requested":
         raise HTTPException(400, f"request is {entry.status}, not requested")
 
-    await repo.approve(entry, user.user_id)
+    detail = {"request_id": request_id, "requested_by": entry.requested_by}
+    if verb == "approved":
+        await repo.approve(entry, user.user_id)
+        detail["expires_at"] = entry.expires_at.isoformat()
+    else:
+        await repo.deny(entry, user.user_id)
     await AuditRepo(session).append(
         actor_id=user.user_id,
         actor_email=user.email,
-        action="support_access.approved",
+        action=f"support_access.{verb}",
         subject_type="tenant",
         subject_id=entry.tenant_id,
         tenant_id=entry.tenant_id,
-        detail={
-            "request_id": request_id,
-            "requested_by": entry.requested_by,
-            "expires_at": entry.expires_at.isoformat(),
-        },
+        detail=detail,
     )
     await session.commit()
-    return {"status": "approved", "access": _access_dict(entry)}
+    return {"status": verb, "access": _access_dict(entry)}
+
+
+@support_mode_router.post("/requests/{request_id}/approve")
+async def approve_support_access(
+    request_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_super_admin),
+) -> dict:
+    """Grant a pending request (SUPPORT_ACCESS_TTL_HOURS).
+
+    ``require_super_admin`` is the point of the slice: platform_support
+    raises the request and cannot approve it, so no internal person places
+    themselves inside a customer tenant. The clock starts here rather than
+    at request time, so a request that waited in the queue does not arrive
+    already half spent. The grant admits its requester only.
+    """
+    return await _settle_request(request_id, session, user, "approved")
 
 
 @support_mode_router.post("/requests/{request_id}/deny")
@@ -472,25 +493,7 @@ async def deny_support_access(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_super_admin),
 ) -> dict:
-    repo = SupportAccessLogRepo(session)
-    entry = await repo.get_by_id(request_id)
-    if entry is None:
-        raise HTTPException(404, "support access request not found")
-    if entry.status != "requested":
-        raise HTTPException(400, f"request is {entry.status}, not requested")
-
-    await repo.deny(entry, user.user_id)
-    await AuditRepo(session).append(
-        actor_id=user.user_id,
-        actor_email=user.email,
-        action="support_access.denied",
-        subject_type="tenant",
-        subject_id=entry.tenant_id,
-        tenant_id=entry.tenant_id,
-        detail={"request_id": request_id, "requested_by": entry.requested_by},
-    )
-    await session.commit()
-    return {"status": "denied", "access": _access_dict(entry)}
+    return await _settle_request(request_id, session, user, "denied")
 
 
 @support_mode_router.post("/{tenant_id}/revoke")
@@ -499,7 +502,8 @@ async def revoke_support_access(
     session: AsyncSession = Depends(get_session),
     user: UserContext = Depends(require_role("platform_super_admin", "platform_support")),
 ) -> dict:
-    entry = await SupportAccessLogRepo(session).get_active(tenant_id)
+    caller = None if user.role == "platform_super_admin" else user.user_id
+    entry = await SupportAccessLogRepo(session).get_active(tenant_id, user_id=caller)
     if entry is None:
         raise HTTPException(404, "no active support access for this tenant")
 
@@ -524,12 +528,16 @@ async def get_support_access_status(
     user: UserContext = Depends(require_role("platform_super_admin", "platform_support")),
 ) -> dict:
     repo = SupportAccessLogRepo(session)
-    entry = await repo.get_active(tenant_id)
+    # Scoped to the CALLER for support (their grant, their request);
+    # tenant-wide for the super admin, who is auditing the tenant's state
+    # rather than asking about their own access.
+    caller = None if user.role == "platform_super_admin" else user.user_id
+    entry = await repo.get_active(tenant_id, user_id=caller)
     if entry is not None:
         return {"active": True, "access": _access_dict(entry)}
     # Distinguish "waiting on an approver" from "nobody has asked": the UI
     # offers a request button in one case and a status line in the other.
-    pending = await repo.get_pending(tenant_id)
+    pending = await repo.get_pending(tenant_id, requested_by=caller)
     if pending is not None:
         return {"active": False, "pending": True, "access": _access_dict(pending)}
     return {"active": False, "pending": False}

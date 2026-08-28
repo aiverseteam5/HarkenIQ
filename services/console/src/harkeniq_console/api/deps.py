@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import wraps
 from typing import Callable
 
 from fastapi import Depends, HTTPException, Request
@@ -39,6 +38,28 @@ def require_role(*roles: str) -> Callable:
 def require_permission(permission: str) -> Callable:
     """Dependency that checks the authenticated user has *permission*."""
     async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
+        if not has_permission(user.role, permission, user.permissions):
+            raise HTTPException(status_code=403, detail=f"missing permission: {permission}")
+        return user
+    return _check
+
+
+def require_platform_permission(permission: str) -> Callable:
+    """A platform-plane guard: platform realm AND the permission.
+
+    Review finding (4 independent passes): guarding a platform endpoint with
+    ``require_permission`` alone leaks it to customers, because the atomic
+    permissions are shared vocabulary — ``tenant.view`` is held by
+    ``tenant_owner`` (and sits inside the custom-role ceiling), so a bare
+    permission check let any tenant owner read the vendor's tenant registry
+    and every tenant's Central Command endpoint. Platform-plane routes ask
+    two questions: is this vendor staff, and does their role grant it.
+    """
+    async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
+        if not user.is_platform_user:
+            raise HTTPException(
+                status_code=403, detail="platform credentials required"
+            )
         if not has_permission(user.role, permission, user.permissions):
             raise HTTPException(status_code=403, detail=f"missing permission: {permission}")
         return user
@@ -94,7 +115,12 @@ async def tenant_scope(
         raise HTTPException(status_code=404, detail="tenant not found")
 
     if user.is_platform_user and user.role != "platform_super_admin":
-        active = await SupportAccessLogRepo(session).get_active(tenant_id)
+        # The grant admits its REQUESTER, not all of support: one approval
+        # must not open the tenant to every platform_support engineer
+        # (red-team finding; per-person elevation is the model).
+        active = await SupportAccessLogRepo(session).get_active(
+            tenant_id, user_id=user.user_id,
+        )
         if active is None:
             raise HTTPException(
                 status_code=403,

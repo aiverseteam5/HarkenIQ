@@ -1032,46 +1032,64 @@ class TicketStateChangeRepo:
         ).scalars().all()
 
 
+#: One grant duration, one definition — the endpoint docstring, DEMO.md
+#: and the UI derive from expires_at rather than restating "24".
+SUPPORT_ACCESS_TTL_HOURS = 24
+
+
 class SupportAccessLogRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, **kwargs) -> SupportAccessLog:
-        row = SupportAccessLog(**kwargs)
-        self.session.add(row)
-        await self.session.flush()
-        return row
-
     async def get_by_id(self, entry_id: str) -> Optional[SupportAccessLog]:
         return await self.session.get(SupportAccessLog, entry_id)
 
-    async def get_active(self, tenant_id: str) -> Optional[SupportAccessLog]:
-        now = utcnow()
-        return (
-            await self.session.execute(
-                select(SupportAccessLog).where(
-                    SupportAccessLog.tenant_id == tenant_id,
-                    # Approval is the gate. Without this clause a merely
-                    # REQUESTED row would satisfy tenant_scope and asking
-                    # for access would be the same as being granted it.
-                    SupportAccessLog.status == "approved",
-                    SupportAccessLog.expires_at.is_not(None),
-                    SupportAccessLog.expires_at > now,
-                    SupportAccessLog.revoked_at.is_(None),
-                )
-            )
-        ).scalars().first()
+    async def get_active(
+        self, tenant_id: str, user_id: Optional[str] = None,
+    ) -> Optional[SupportAccessLog]:
+        """The live grant for *tenant_id* — bound to its requester.
 
-    async def get_pending(self, tenant_id: str) -> Optional[SupportAccessLog]:
-        """An outstanding request, so asking twice does not queue twice."""
-        return (
-            await self.session.execute(
-                select(SupportAccessLog).where(
-                    SupportAccessLog.tenant_id == tenant_id,
-                    SupportAccessLog.status == "requested",
-                )
-            )
-        ).scalars().first()
+        Red-team finding: a tenant-scoped lookup meant ONE approval
+        admitted EVERY platform_support engineer for 24h. A grant is for
+        the person who requested it (Vinod's model: request -> approved ->
+        specific tenant, per person), so callers gating access pass their
+        user_id and only that requester's grant admits them. user_id=None
+        keeps the tenant-wide view for status/duplicate checks.
+        """
+        now = utcnow()
+        stmt = select(SupportAccessLog).where(
+            SupportAccessLog.tenant_id == tenant_id,
+            # Approval is the gate. Without this clause a merely
+            # REQUESTED row would satisfy tenant_scope and asking
+            # for access would be the same as being granted it.
+            SupportAccessLog.status == "approved",
+            SupportAccessLog.expires_at.is_not(None),
+            SupportAccessLog.expires_at > now,
+            SupportAccessLog.revoked_at.is_(None),
+        )
+        if user_id is not None:
+            stmt = stmt.where(SupportAccessLog.requested_by == user_id)
+        stmt = stmt.order_by(SupportAccessLog.approved_at.desc())
+        return (await self.session.execute(stmt)).scalars().first()
+
+    async def get_pending(
+        self, tenant_id: str, requested_by: Optional[str] = None,
+    ) -> Optional[SupportAccessLog]:
+        """An outstanding request, so asking twice does not queue twice.
+
+        Per-requester when *requested_by* is given: each engineer requests
+        for themselves, so engineer A's pending request must not block
+        engineer B's. A partial unique index enforces the invariant the
+        old read-then-insert check only hoped for.
+        """
+        stmt = select(SupportAccessLog).where(
+            SupportAccessLog.tenant_id == tenant_id,
+            SupportAccessLog.status == "requested",
+        )
+        if requested_by is not None:
+            stmt = stmt.where(SupportAccessLog.requested_by == requested_by)
+        stmt = stmt.order_by(SupportAccessLog.requested_at.asc())
+        return (await self.session.execute(stmt)).scalars().first()
 
     async def list_pending(self) -> Sequence[SupportAccessLog]:
         """The approver's queue, across every tenant."""
@@ -1101,7 +1119,8 @@ class SupportAccessLogRepo:
         return row
 
     async def approve(
-        self, entry: SupportAccessLog, approved_by: str, ttl_hours: int = 24,
+        self, entry: SupportAccessLog, approved_by: str,
+        ttl_hours: int = SUPPORT_ACCESS_TTL_HOURS,
     ) -> SupportAccessLog:
         now = utcnow()
         entry.status = "approved"
@@ -1444,6 +1463,21 @@ class TenantServiceRepo:
             )
         ).scalars().all()
 
+    async def find_active_by_endpoint(self, endpoint_url: str) -> Optional[TenantService]:
+        """The active placement bound to *endpoint_url*, any tenant, any kind.
+
+        Backs the one-tenant-one-CC invariant: the API refuses to bind an
+        endpoint that is already another tenant's stack.
+        """
+        return (
+            await self.session.execute(
+                select(TenantService).where(
+                    TenantService.endpoint_url == endpoint_url,
+                    TenantService.status == "active",
+                )
+            )
+        ).scalars().first()
+
     async def register(
         self, *, tenant_id: str, service_kind: str, endpoint_url: str,
         registered_by: str = "",
@@ -1456,9 +1490,7 @@ class TenantServiceRepo:
         """
         existing = await self.resolve(tenant_id, service_kind)
         if existing is not None:
-            existing.status = "disabled"
-            existing.updated_at = utcnow()
-            await self.session.flush()
+            await self.disable(existing)
         row = TenantService(
             tenant_id=tenant_id,
             service_kind=service_kind,
@@ -1475,7 +1507,3 @@ class TenantServiceRepo:
         await self.session.flush()
         return row
 
-    async def mark_verified(self, row: TenantService) -> TenantService:
-        row.last_verified_at = utcnow()
-        await self.session.flush()
-        return row

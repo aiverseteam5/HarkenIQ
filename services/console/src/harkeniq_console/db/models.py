@@ -441,6 +441,16 @@ class SupportAccessLog(Base):
     __table_args__ = (
         Index("ix_support_access_log_tenant_id", "tenant_id"),
         Index("ix_support_access_log_status", "status"),
+        # One pending request per engineer per tenant (red-team finding:
+        # the read-then-insert check alone allowed duplicate queue rows).
+        Index(
+            "uq_support_access_pending",
+            "tenant_id",
+            "requested_by",
+            unique=True,
+            sqlite_where=text("status = 'requested'"),
+            postgresql_where=text("status = 'requested'"),
+        ),
     )
 
 
@@ -582,9 +592,6 @@ class TenantService(Base):
     registered_by: Mapped[str] = mapped_column(String(32), default="")
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_verified_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
 
     __table_args__ = (
         # One active placement per kind per tenant. Partial index so
@@ -593,6 +600,16 @@ class TenantService(Base):
             "uq_tenant_services_active",
             "tenant_id",
             "service_kind",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+        # One tenant -> one CC (spec §3): an endpoint may serve at most one
+        # active placement across ALL tenants. DB backstop for the API's
+        # 409; CC has no per-tenant filtering, so sharing = silent leak.
+        Index(
+            "uq_tenant_services_endpoint_active",
+            "endpoint_url",
             unique=True,
             sqlite_where=text("status = 'active'"),
             postgresql_where=text("status = 'active'"),

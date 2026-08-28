@@ -43,7 +43,6 @@ def upgrade() -> None:
         sa.Column("registered_by", sa.String(32), nullable=False, server_default=""),
         sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("last_verified_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index(
         "ix_tenant_services_tenant", "tenant_services", ["tenant_id"],
@@ -54,6 +53,16 @@ def upgrade() -> None:
         "uq_tenant_services_active",
         "tenant_services",
         ["tenant_id", "service_kind"],
+        unique=True,
+        postgresql_where=sa.text("status = 'active'"),
+        sqlite_where=sa.text("status = 'active'"),
+    )
+    # One tenant -> one CC (spec §3): an endpoint serves at most one active
+    # placement across all tenants; DB backstop for the API's 409.
+    op.create_index(
+        "uq_tenant_services_endpoint_active",
+        "tenant_services",
+        ["endpoint_url"],
         unique=True,
         postgresql_where=sa.text("status = 'active'"),
         sqlite_where=sa.text("status = 'active'"),

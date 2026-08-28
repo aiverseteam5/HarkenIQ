@@ -34,13 +34,8 @@ echo "==> Registering the tenant's Central Command placement"
 # cannot do this for the demo because the container boots BEFORE this
 # script creates the tenant, so register it explicitly here — which is the
 # same thing a real multi-tenant install does.
-TENANT_ID=$(curl -sf -H "$AUTH" "$CONSOLE/api/admin/tenants/?search=tenant-demo" \
-  | python3 -c "
-import sys, json
-items = json.load(sys.stdin).get('items', [])
-match = [t for t in items if t.get('slug') == 'tenant-demo']
-print(match[0]['id'] if match else '')
-")
+source "$(dirname "$0")/lib/tenant-lookup.sh"
+TENANT_ID=$(lookup_tenant_id "$CONSOLE" "$AUTH")
 if [ -n "$TENANT_ID" ]; then
   curl -s -X POST "$CONSOLE/api/admin/tenant-services/$TENANT_ID" -H "$AUTH" \
     -H "Content-Type: application/json" \
