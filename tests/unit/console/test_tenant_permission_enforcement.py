@@ -541,3 +541,84 @@ class TestGrantsBindToTheirRequester:
         finally:
             await client.aclose()
             await engine.dispose()
+
+
+class TestA14DenialSemantics:
+    """A14 (OQ-25, decided by Vinod): denial is non-final — re-request is
+    allowed — but the approver sees the engineer's denial history for that
+    tenant at decision time. No cooldowns, no locks."""
+
+    async def _request_then_deny(self, client, tenant_id, reason="not now"):
+        app = client._transport.app  # type: ignore[attr-defined]
+        rid = (
+            await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": reason},
+            )
+        ).json()["access"]["id"]
+
+        async def _admin() -> UserContext:
+            return UserContext(
+                user_id="kc-admin", email="admin@example.com",
+                tenant_id=None, role="platform_super_admin",
+                permissions=[], is_platform_user=True,
+            )
+
+        app.dependency_overrides[get_current_user] = _admin
+        assert (
+            await client.post(
+                f"/api/admin/support-access/requests/{rid}/deny",
+            )
+        ).status_code == 200
+        app.dependency_overrides[get_current_user] = _support_user(tenant_id)
+        return rid
+
+    async def test_rerequest_after_denial_is_allowed(self):
+        """Half one of A14: a deny does not permanently deny the person."""
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            await self._request_then_deny(client, tenant_id)
+            again = await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "new ticket, new window"},
+            )
+            assert again.json()["status"] == "requested"
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    async def test_approver_sees_denial_history_at_decision_time(self):
+        """Half two: the history is never hidden from the next decision."""
+        client, engine, tenant_id = await _client_as(
+            "platform_support", platform=True,
+        )
+        try:
+            app = client._transport.app  # type: ignore[attr-defined]
+            await self._request_then_deny(client, tenant_id, reason="ask one")
+            await self._request_then_deny(client, tenant_id, reason="ask two")
+            await client.post(
+                f"/api/admin/support-access/{tenant_id}/request",
+                json={"reason": "third ask"},
+            )
+
+            async def _admin() -> UserContext:
+                return UserContext(
+                    user_id="kc-admin", email="admin@example.com",
+                    tenant_id=None, role="platform_super_admin",
+                    permissions=[], is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _admin
+            queue = (
+                await client.get("/api/admin/support-access/requests/pending")
+            ).json()["items"]
+            assert len(queue) == 1
+            history = queue[0]["prior_denials"]
+            assert history["count"] == 2
+            assert history["last_reason"] == "ask two"
+            assert history["last_denied_at"] is not None
+        finally:
+            await client.aclose()
+            await engine.dispose()

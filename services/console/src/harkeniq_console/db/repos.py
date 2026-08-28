@@ -1101,6 +1101,28 @@ class SupportAccessLogRepo:
             )
         ).scalars().all()
 
+    async def denial_history(
+        self, tenant_id: str, requested_by: str,
+    ) -> tuple[int, Optional[SupportAccessLog]]:
+        """(count, most recent) of this engineer's denials for this tenant.
+
+        A14 (OQ-25): denial is non-final — re-request is allowed — but the
+        approver must SEE the history at decision time. The audit chain
+        stays the durable record; this is the decision-time read.
+        """
+        rows = (
+            await self.session.execute(
+                select(SupportAccessLog)
+                .where(
+                    SupportAccessLog.tenant_id == tenant_id,
+                    SupportAccessLog.requested_by == requested_by,
+                    SupportAccessLog.status == "denied",
+                )
+                .order_by(SupportAccessLog.denied_at.desc())
+            )
+        ).scalars().all()
+        return len(rows), (rows[0] if rows else None)
+
     async def request(
         self, *, tenant_id: str, requested_by: str, reason: str = "",
     ) -> SupportAccessLog:
