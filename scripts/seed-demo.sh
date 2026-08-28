@@ -27,6 +27,29 @@ curl -s -X POST "$CONSOLE/api/admin/tenants/" -H "$AUTH" \
        "node_commit": 10, "admin_email": "owner@demo.example"}' \
   | python3 -m json.tool | head -6 || true
 
+echo "==> Registering the tenant's Central Command placement"
+# The Console resolves each tenant's L1-L3 stack through tenant_services,
+# fail-closed: without a placement its infrastructure pages return 503
+# rather than falling back to a shared endpoint. The Console's startup seed
+# cannot do this for the demo because the container boots BEFORE this
+# script creates the tenant, so register it explicitly here — which is the
+# same thing a real multi-tenant install does.
+# Resolve from the REPO ROOT, not $0: this script cds into
+# deploy/full-stack before this line, so a $0-relative path breaks
+# (gate-caught: "No such file or directory" under set -e).
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/.." && pwd)")"
+source "$_REPO_ROOT/scripts/lib/tenant-lookup.sh"
+TENANT_ID=$(lookup_tenant_id "$CONSOLE" "$AUTH")
+if [ -n "$TENANT_ID" ]; then
+  curl -s -X POST "$CONSOLE/api/admin/tenant-services/$TENANT_ID" -H "$AUTH" \
+    -H "Content-Type: application/json" \
+    -d "{\"service_kind\": \"central_command\",
+         \"endpoint_url\": \"${CC_INTERNAL:-http://central-command:8090}\"}" \
+    | python3 -m json.tool | head -5 || true
+else
+  echo "  !! demo tenant not found; skipping placement" >&2
+fi
+
 echo "==> Registering site-1's Site Manager with Central Command"
 curl -s -X POST "$CC/api/sites/register" -H "$AUTH" \
   -H "Content-Type: application/json" \

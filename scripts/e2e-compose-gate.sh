@@ -50,8 +50,45 @@ TOKEN=$(curl -sf -X POST \
 wait_for "CC fleet has the device" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:8090/api/fleet/ | grep -q agent_id"
 
-step "Console proxy serves CC data (SPA path)"
-curl -sfL -H "Authorization: Bearer $TOKEN" http://localhost:8100/api/fleet/summary | grep -q total_nodes
+step "Console proxy serves CC data for the tenant (SPA path)"
+# The proxy is tenant-scoped now: /api/t/{tenant}/fleet/... resolved through
+# the tenant_services placement registry. A tenant with no placement is
+# refused with 503 rather than handed a shared Central Command, so this
+# step also proves seed-demo.sh registered one.
+# Resolve from the REPO ROOT, not $0: this script cds into
+# deploy/full-stack before this line, so a $0-relative path breaks
+# (gate-caught: "No such file or directory" under set -e).
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/.." && pwd)")"
+source "$_REPO_ROOT/scripts/lib/tenant-lookup.sh"
+TENANT_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN")
+[ -n "$TENANT_ID" ] || { echo "demo tenant not found" >&2; exit 1; }
+curl -sfL -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/$TENANT_ID/fleet/summary" | grep -q total_nodes
+
+step "Placement is fail-closed: an unregistered tenant is refused, not defaulted"
+UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/does-not-exist/fleet/summary")
+# Refusal semantics differ across the PR stack this gate rides on: with
+# the tenant-existence check in tenant_scope (navigation slice) an unknown
+# id is 404; without it, placement resolution fail-closes as 503. Both are
+# refusals; 200 is the only failure. The REAL 503-branch proof is the
+# placement-less tenant step below, which is exact on every branch.
+case "$UNREG" in 404|503) : ;; *) echo "unknown tenant returned $UNREG, want 404/503" >&2; exit 1;; esac
+
+step "Fail-closed for a REAL tenant with no placement (the 503 branch itself)"
+DARK_ID=$(curl -sf -X POST "http://localhost:8100/api/admin/tenants/" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "Gate Dark Tenant", "slug": "gate-dark", "billing_country": "US",
+       "currency": "USD", "plan": "observe", "node_commit": 1,
+       "admin_email": "dark@gate.example"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" ) || \
+  DARK_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN" gate-dark)
+DARK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/$DARK_ID/fleet/summary")
+[ "$DARK" = "503" ] || { echo "placement-less tenant returned $DARK, want 503" >&2; exit 1; }
+# Known gate limitation (documented, not hidden): the scenario runs on a
+# platform_super_admin token whose break-glass bypasses membership and the
+# support-access gate; those paths are pinned by the unit suite, not here.
 
 step "Auth is real: no token / garbage token are rejected"
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/fleet/)" = "401" ]

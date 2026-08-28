@@ -55,12 +55,80 @@ async def make_state(config: ConsoleConfig) -> AppState:
     return state
 
 
+async def seed_service_placement(state: AppState) -> None:
+    """Turn a configured ``cc_url`` into an explicit placement row.
+
+    ``cc_url`` used to be the request-time destination for every tenant's
+    infrastructure pages. It is now a *seed* only: on a single-tenant
+    install (the sovereign and demo shape) it registers that one tenant's
+    Central Command in ``tenant_services`` and says so in the log.
+
+    It deliberately does nothing when more than one tenant exists. Guessing
+    which of several tenants a lone URL belongs to is how one tenant ends
+    up reading another's fleet, and the registry is fail-closed precisely
+    so that never happens silently — a multi-tenant install registers
+    placements explicitly through the admin API.
+    """
+    cc_url = getattr(state.config, "cc_url", "")
+    if not cc_url or state.sessionmaker is None:
+        return
+
+    try:
+        await _seed_placement(state, cc_url)
+    except Exception:  # noqa: BLE001 — convenience must never block boot
+        # Seeding is a convenience, not a correctness requirement: the
+        # registry is fail-closed at request time regardless. Refusing to
+        # start because the table is not migrated yet would turn a missing
+        # nicety into an outage.
+        logger.warning(
+            "Could not seed the central_command placement; register it via "
+            "/api/admin/tenant-services", exc_info=True,
+        )
+
+
+async def _seed_placement(state: AppState, cc_url: str) -> None:
+    from sqlalchemy import select
+
+    from harkeniq_console.db.models import Tenant
+    from harkeniq_console.db.repos import TenantServiceRepo
+
+    async with state.sessionmaker() as session:
+        tenant_ids = (
+            await session.execute(select(Tenant.id).limit(2))
+        ).scalars().all()
+        if len(tenant_ids) != 1:
+            if len(tenant_ids) > 1:
+                logger.info(
+                    "cc_url set but %d tenants exist; not guessing a "
+                    "placement — register them via /api/admin/tenant-services",
+                    len(tenant_ids),
+                )
+            return
+
+        repo = TenantServiceRepo(session)
+        if await repo.resolve(tenant_ids[0], "central_command") is not None:
+            return
+        await repo.register(
+            tenant_id=tenant_ids[0],
+            service_kind="central_command",
+            endpoint_url=cc_url,
+            registered_by="startup-seed",
+        )
+        await session.commit()
+        logger.info(
+            "Seeded central_command placement for sole tenant %s -> %s",
+            tenant_ids[0], cc_url,
+        )
+
+
 async def run(config: ConsoleConfig, state: Optional[AppState] = None) -> None:
     """Serve until cancelled. ``state`` injection is for tests."""
     from harkeniq_console.app import create_app  # late: app imports routers
 
     if state is None:
         state = await make_state(config)
+
+    await seed_service_placement(state)
 
     uv_config = uvicorn.Config(
         create_app(state),
