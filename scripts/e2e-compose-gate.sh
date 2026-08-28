@@ -68,10 +68,12 @@ curl -sfL -H "Authorization: Bearer $TOKEN" \
 step "Placement is fail-closed: an unregistered tenant is refused, not defaulted"
 UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8100/api/t/does-not-exist/fleet/summary")
-# An unknown tenant id 404s in tenant_scope BEFORE placement resolution, so
-# this step alone never reaches the 503 branch (red-team finding). It stays
-# as the unknown-id refusal check; the real fail-closed path is next.
-[ "$UNREG" = "404" ] || { echo "unknown tenant returned $UNREG, want 404" >&2; exit 1; }
+# Refusal semantics differ across the PR stack this gate rides on: with
+# the tenant-existence check in tenant_scope (navigation slice) an unknown
+# id is 404; without it, placement resolution fail-closes as 503. Both are
+# refusals; 200 is the only failure. The REAL 503-branch proof is the
+# placement-less tenant step below, which is exact on every branch.
+case "$UNREG" in 404|503) : ;; *) echo "unknown tenant returned $UNREG, want 404/503" >&2; exit 1;; esac
 
 step "Fail-closed for a REAL tenant with no placement (the 503 branch itself)"
 DARK_ID=$(curl -sf -X POST "http://localhost:8100/api/admin/tenants/" \
