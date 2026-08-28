@@ -98,6 +98,17 @@ class FleetCacheRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def site_names_for(self, site_ids: set[str]) -> dict[str, str]:
+        """site_id -> site_name for a batch of rows (avoids an N+1 per agent)."""
+        if not site_ids:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(CCSite.id, CCSite.site_name).where(CCSite.id.in_(site_ids))
+            )
+        ).all()
+        return {r[0]: r[1] for r in rows}
+
     async def upsert_device(
         self,
         site_id: str,
@@ -111,6 +122,7 @@ class FleetCacheRepo:
         service_tag: str = "",
         firmware: Optional[list] = None,
         device_class: str = "",
+        last_seen_at: Optional[datetime] = None,
     ) -> CCFleetCache:
         row = (
             await self.session.execute(
@@ -133,6 +145,8 @@ class FleetCacheRepo:
         if subsystems is not None:
             row.subsystems = subsystems
         row.service_tag = service_tag or row.service_tag
+        if last_seen_at is not None:
+            row.last_seen_at = last_seen_at
         if firmware is not None:
             row.firmware = firmware
         row.snapshot_at = utcnow()

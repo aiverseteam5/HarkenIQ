@@ -8,11 +8,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
+from typing import Optional
 
 from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo
 from harkeniq_cc.sm_client import SMClient
 
 logger = logging.getLogger("harkeniq.cc.fleet_poller")
+
+
+def _last_seen(dev: dict) -> Optional[datetime]:
+    """FleetDevice.last_seen_unix -> aware datetime.
+
+    SM has always sent this and SMClient has always dictified it; nothing
+    consumed it, so the fleet cache reported its own refresh time as the
+    agent's last-seen. 0 means the site has no reading, not epoch.
+    """
+    ts = dev.get("last_seen_unix")
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
 async def fleet_poll_loop(state) -> None:
@@ -53,6 +68,7 @@ async def fleet_poll_loop(state) -> None:
                                 service_tag=dev.get("service_tag", ""),
                                 firmware=dev.get("firmware"),
                                 device_class=dev.get("device_class", ""),
+                                last_seen_at=_last_seen(dev),
                             )
                         # R3b-3: ingest action outcomes for fleet learning
                         outcomes = snapshot.get("outcomes", [])

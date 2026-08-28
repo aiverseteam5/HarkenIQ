@@ -194,3 +194,54 @@ class TestAuditRepo:
             date_to=t + timedelta(minutes=1),
         )
         assert len(rows) == 1
+
+
+class TestFleetCacheLastSeen:
+    """SM sends FleetDevice.last_seen_unix and SMClient dictifies it, but
+    fleet_poller never forwarded it and the cache had no column, so
+    /api/fleet/ served snapshot_at (CC's own refresh) as last_seen_at.
+    Same shape as QA-042: a field crossing a translation layer with no
+    test that reads it on the far side.
+    """
+
+    def test_last_seen_helper_converts_unix(self):
+        from datetime import timezone
+
+        from harkeniq_cc.fleet_poller import _last_seen
+
+        got = _last_seen({"last_seen_unix": 1756400000})
+        assert got is not None
+        assert got.tzinfo is not None
+        assert int(got.timestamp()) == 1756400000
+        assert got.utcoffset() == timezone.utc.utcoffset(None)
+
+    def test_last_seen_helper_treats_absent_and_zero_as_no_reading(self):
+        from harkeniq_cc.fleet_poller import _last_seen
+
+        # 0 means "the site has no reading", not the epoch.
+        assert _last_seen({}) is None
+        assert _last_seen({"last_seen_unix": 0}) is None
+
+    async def test_upsert_persists_last_seen(self, session):
+        from datetime import datetime, timezone
+
+        site = await SiteRepo(session).upsert(
+            "t1", "site-a", "https://sm.lab:50051"
+        )
+        seen = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        row = await FleetCacheRepo(session).upsert_device(
+            site.id, "agent-x", last_seen_at=seen
+        )
+        await session.commit()
+        assert row.last_seen_at is not None
+        assert int(row.last_seen_at.timestamp()) == int(seen.timestamp())
+        # Distinct from CC's own cache-refresh stamp.
+        assert row.snapshot_at is not None
+
+    async def test_upsert_without_last_seen_leaves_it_null(self, session):
+        site = await SiteRepo(session).upsert(
+            "t1", "site-b", "https://sm.lab:50051"
+        )
+        row = await FleetCacheRepo(session).upsert_device(site.id, "agent-y")
+        await session.commit()
+        assert row.last_seen_at is None

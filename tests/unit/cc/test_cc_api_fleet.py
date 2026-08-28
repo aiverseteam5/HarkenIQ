@@ -154,3 +154,23 @@ class TestFleetSummary:
         assert data["by_health"]["critical"] == 0
         assert data["by_health"]["unknown"] == 0
         assert data["sites_count"] == 0
+
+
+class TestFleetLastSeenIsNotCacheTime:
+    """/api/fleet/ served snapshot_at (CC's cache refresh) under the name
+    last_seen_at, so a silent agent looked fresh every time CC polled.
+    List and detail must agree, and both must carry the real reading.
+    """
+
+    async def test_list_and_detail_expose_both_stamps(self, client):
+        r = await client.get("/api/fleet/")
+        assert r.status_code == 200
+        device = r.json()["devices"][0]
+        assert "last_seen_at" in device
+        assert "snapshot_at" in device
+
+        d = await client.get(f"/api/fleet/{device['id']}")
+        assert d.status_code == 200
+        detail = d.json()
+        assert detail["last_seen_at"] == device["last_seen_at"]
+        assert detail["snapshot_at"] == device["snapshot_at"]

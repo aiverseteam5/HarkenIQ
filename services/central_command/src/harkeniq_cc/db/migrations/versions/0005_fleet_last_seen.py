@@ -1,0 +1,39 @@
+"""cc_fleet_cache.last_seen_at — when the SITE last saw the agent.
+
+SM has always sent FleetDevice.last_seen_unix and SMClient has always
+dictified it, but the poller dropped it on the floor and the cache had
+nowhere to put it, so /api/fleet/ served snapshot_at (CC's own cache
+refresh time) under the name last_seen_at. Nullable: rows cached before
+this migration have no honest value, and inventing one would restate the
+same lie in a new column.
+
+Revision ID: 0005
+Revises: 0004
+Create Date: 2026-08-28
+"""
+
+from alembic import op
+import sqlalchemy as sa
+
+revision = "0005"
+down_revision = "0004"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    # 0001 is a create_all from CURRENT models, so fresh databases are born
+    # with the column; only existing ones need the ALTER (same live finding
+    # as 0002).
+    inspector = sa.inspect(op.get_bind())
+    columns = {c["name"] for c in inspector.get_columns("cc_fleet_cache")}
+    if "last_seen_at" in columns:
+        return
+    op.add_column(
+        "cc_fleet_cache",
+        sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("cc_fleet_cache", "last_seen_at")

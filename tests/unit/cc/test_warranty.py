@@ -228,6 +228,10 @@ async def client():
             vendor="dell", model="R750", service_tag="DTAG1",
             firmware=[{"component": "bmc", "name": "iDRAC9",
                        "version": "7.00.00.00"}],
+            # A real site reading. This used to be unset and the assertion
+            # below still passed, because the API aliased snapshot_at (CC's
+            # own cache refresh) to last_seen_at.
+            last_seen_at=datetime(2026, 8, 28, 9, 30, tzinfo=timezone.utc),
         )
         device_id = row.id
         await WarrantyRepo(session).upsert_records([
@@ -275,7 +279,9 @@ class TestWarrantyAPI:
         assert detail["site_name"] == "dc-blr-1"
         assert detail["warranty"]["status"] == "active"
         assert detail["firmware"][0]["version"] == "7.00.00.00"
-        assert detail["last_seen_at"]
+        # The site's reading, not CC's cache refresh — they are separate
+        # fields now and only the seeded one is asserted here.
+        assert detail["last_seen_at"].startswith("2026-08-28T09:30")
 
     async def test_device_detail_404(self, client):
         r = await client.get("/api/fleet/nonexistent-id")
