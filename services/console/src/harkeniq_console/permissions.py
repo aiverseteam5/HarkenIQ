@@ -91,12 +91,22 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "skill.submit",
     },
 
+    # A13 (OQ-24, decided by Vinod 2026-08-28): the auditor is read-only
+    # EVERYTHING — every atomic *.view plus audit.export, and nothing else.
+    # No mutation, no approvals, no elevation, no tenant.view (that is a
+    # platform-plane read since A11.4; the auditor's own-tenant name comes
+    # from /api/me/tenants). The custom-role ceiling does not move:
+    # tenant_owner already holds every permission granted here.
     "auditor": {
         "fleet.view",
         "incident.view",
         "billing.view",
         "audit.view",
         "audit.export",
+        "user.view",
+        "site.view",
+        "license.view",
+        "support.view",
     },
 
     "viewer": {
