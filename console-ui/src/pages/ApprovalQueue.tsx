@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
@@ -137,6 +138,7 @@ function formatDate(iso: string): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function ApprovalQueue() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const { toasts, toast, dismiss } = useToast();
 
   /* ── Tab state ──────────────────────────────────── */
@@ -233,7 +235,7 @@ export default function ApprovalQueue() {
       // {items,...} — res.items was undefined and .length crashed the
       // page to a white screen.
       const res = await getJson<{ actions: ApprovalAction[]; total: number }>(
-        `/api/approvals?${params.toString()}`,
+        `/api/t/${tenantId}/approvals?${params.toString()}`,
       );
       setPendingActions(res.actions ?? []);
     } catch (err) {
@@ -254,7 +256,7 @@ export default function ApprovalQueue() {
       params.set("page", String(historyPage));
       params.set("page_size", String(PAGE_SIZE));
       const res = await getJson<{ actions: ApprovalAction[]; total: number }>(
-        `/api/approvals/history?${params.toString()}`,
+        `/api/t/${tenantId}/approvals/history?${params.toString()}`,
       );
       setHistoryActions(res.actions ?? []);
       setHistoryTotal(res.total ?? 0);
@@ -288,7 +290,7 @@ export default function ApprovalQueue() {
     async (id: string, decision: "approve" | "deny") => {
       setActionLoading(id);
       try {
-        await postJson(`/api/approvals/${id}/${decision}`, {});
+        await postJson(`/api/t/${tenantId}/approvals/${id}/${decision}`, {});
         toast(
           decision === "approve" ? "Action approved" : "Action denied",
           decision === "approve" ? "success" : "info",
@@ -313,7 +315,7 @@ export default function ApprovalQueue() {
     async (decision: "approve" | "deny") => {
       setBatchLoading(true);
       try {
-        await postJson("/api/approvals/batch", {
+        await postJson(`/api/t/${tenantId}/approvals/batch`, {
           ids: Array.from(selected),
           decision,
         });

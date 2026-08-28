@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import MetricCard from "../components/MetricCard";
@@ -24,12 +25,13 @@ const metricsRow: CSSProperties = {
 };
 
 export default function Dashboard() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const [summary, setSummary] = useState<FleetSummary | null>(null);
   const [failed, setFailed] = useState(false);
 
   const fetchSummary = useCallback(async () => {
     try {
-      setSummary(await getJson<FleetSummary>("/api/fleet/summary"));
+      setSummary(await getJson<FleetSummary>(`/api/t/${tenantId}/fleet/summary`));
       setFailed(false);
     } catch {
       setFailed(true);

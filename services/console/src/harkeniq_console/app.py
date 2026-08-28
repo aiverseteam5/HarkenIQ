@@ -208,69 +208,12 @@ def create_app(state) -> FastAPI:
                 name=f"{route.name}_noslash",
             )
 
-    # QA ISSUE-006: every tenant-scoped SPA page hardcodes tenantId
-    # "current", an alias the backend never implemented — Audit Logs,
-    # Billing, Usage, Reports, Support, and API Keys all 404'd (and
-    # usage/estimate 500'd) since R2b. Resolve "current" to the caller's
-    # tenant claim when present, else to the sole tenant when exactly one
-    # exists (the demo and the sovereign single-tenant shape). Ambiguous
-    # multi-tenant platform users keep an honest 404; tenant_scope still
-    # authorizes downstream either way.
-    @app.middleware("http")
-    async def resolve_current_tenant(request: Request, call_next):
-        path = request.scope.get("path", "")
-        marker = "/api/tenants/current"
-        if path == marker or path.startswith(marker + "/"):
-            resolved = ""
-            # An explicit choice wins. tenant_scope still authorizes
-            # downstream, so a tenant user naming someone else's tenant gets
-            # 403 rather than access — the header selects, it never grants.
-            header = request.headers.get("x-harken-tenant", "").strip()
-            claim = ""
-            if not header:
-                # request.state.user is never populated by anything, so the
-                # original claim branch here was dead: every request fell
-                # through to the sole-tenant lookup, which happened to be
-                # right only because the demo has exactly one tenant.
-                try:
-                    claim = (await get_current_user(request)).tenant_id or ""
-                except Exception:
-                    claim = ""
-            if header:
-                resolved = header
-            elif claim:
-                resolved = claim
-            else:
-                from sqlalchemy import select
-
-                from harkeniq_console.db.models import Tenant
-
-                async with state.sessionmaker() as session:
-                    ids = (
-                        await session.execute(select(Tenant.id).limit(2))
-                    ).scalars().all()
-                if len(ids) == 1:
-                    resolved = ids[0]
-            if resolved:
-                new_path = path.replace(marker, f"/api/tenants/{resolved}", 1)
-                request.scope["path"] = new_path
-                request.scope["raw_path"] = new_path.encode()
-            else:
-                # Unresolved "current" used to fall through to the routes,
-                # where behaviour split: /usage/estimate 404'd because it
-                # validates the tenant, while /audit filtered on the literal
-                # string "current" and returned 200 with an empty list — a
-                # platform admin reads that as "no audit entries", not "no
-                # tenant selected". Refuse once, here, so no route can serve
-                # phantom-tenant data.
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "detail": "tenant not resolved: select a tenant "
-                                  "(send X-Harken-Tenant)",
-                    },
-                )
-        return await call_next(request)
+    # The `/api/tenants/current` alias and its X-Harken-Tenant header are
+    # gone. Tenant context is a path segment now, so there is no alias to
+    # resolve and no hidden header whose absence changes which tenant a
+    # page reads — the URL says which tenant, and tenant_scope authorizes
+    # it. Deleting this removes the last place a request could acquire a
+    # tenant implicitly.
 
     # Dashboard build (ui/dist) — mounted last so API routes win.
     if state.config.ui_dist:

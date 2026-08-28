@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
@@ -65,7 +66,7 @@ export default function AuditLogs() {
   const [selected, setSelected] = useState<AuditEntry | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  const tenantId = "current";
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const filterDefs = useMemo<FilterDef[]>(() => [
     { key: "actor", label: "Actor", type: "text", placeholder: "Email..." },

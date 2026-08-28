@@ -31,10 +31,10 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
 
   // Operations
   "/policies": { perm: "site.manage" },
-  // tenants.py is entirely require_super_admin, so platform_support cannot
-  // actually read the registry despite holding tenant.view. Mirrored here
-  // rather than papered over — see the note in the PR.
-  "/tenants": { platformOnly: true },
+  // Listing tenants is `tenant.view` — platform_support holds it. Entering
+  // one is a separate act, gated server-side by tenant_scope plus a
+  // support-access grant, so a visible registry is not a reachable tenant.
+  "/tenants": { perm: "tenant.view" },
   "/users": { perm: "user.view" },
   "/licenses": { perm: "license.view" },
   "/support": { perm: "support.view" },
@@ -77,11 +77,27 @@ export function canAccess(user: AuthUser | null, rule?: AccessRule): boolean {
   return rule.perm ? can(user, rule.perm) : true;
 }
 
+/** Strip the tenant-plane prefix, so `/t/acme/audit` is ruled on as
+ *  `/audit`. One ROUTE_ACCESS map serves both planes; the tenant id in the
+ *  path says WHICH tenant, never WHAT the caller may do there. */
+export function stripTenantPrefix(pathname: string): string {
+  const m = /^\/t\/[^/]+(\/.*)?$/.exec(pathname);
+  if (!m) return pathname;
+  return m[1] ?? "/dashboard";
+}
+
+/** Is this path inside a tenant context, and which tenant? */
+export function tenantFromPath(pathname: string): string | null {
+  const m = /^\/t\/([^/]+)(?:\/|$)/.exec(pathname);
+  return m ? m[1] : null;
+}
+
 /** Rule for a route key, longest-prefix first so /admin/features does not
  *  match /admin. */
 export function ruleFor(pathname: string): AccessRule | undefined {
+  const path = stripTenantPrefix(pathname);
   const key = Object.keys(ROUTE_ACCESS)
     .sort((a, b) => b.length - a.length)
-    .find((k) => pathname === k || pathname.startsWith(`${k}/`));
+    .find((k) => path === k || path.startsWith(`${k}/`));
   return key ? ROUTE_ACCESS[key] : undefined;
 }

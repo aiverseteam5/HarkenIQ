@@ -8,6 +8,7 @@ from typing import Callable
 from fastapi import Depends, HTTPException, Request
 
 from harkeniq_console.auth import UserContext, get_current_user
+from harkeniq_console.db.models import Tenant
 from harkeniq_console.db.repos import SupportAccessLogRepo
 from harkeniq_console.permissions import has_permission
 
@@ -75,6 +76,15 @@ async def tenant_scope(
     the break-glass, and gating it on the grant mechanism would mean a
     failure of that mechanism locks everyone out mid-incident.
     """
+    # A tenant id that does not exist must 404, not sail through to a route
+    # that filters on it and returns an empty list. "No audit entries" and
+    # "no such tenant" look identical to a reader, and the second one is
+    # usually a typo or a stale link. The old `current` alias middleware
+    # refused this centrally; with the alias gone the check belongs here,
+    # where every tenant-scoped route already passes.
+    if await session.get(Tenant, tenant_id) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
     if user.is_platform_user:
         if user.role == "platform_super_admin":
             return user

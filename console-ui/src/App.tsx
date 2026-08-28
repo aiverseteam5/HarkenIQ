@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./useAuth";
 import SidebarLayout from "./layouts/SidebarLayout";
 import AuthLayout from "./layouts/AuthLayout";
@@ -33,6 +33,7 @@ import ApiKeys from "./pages/ApiKeys";
 import ReportingAnalytics from "./pages/ReportingAnalytics";
 import ImpersonationLog from "./pages/ImpersonationLog";
 import UsageChargeback from "./pages/UsageChargeback";
+import SupportAccessRequests from "./pages/SupportAccessRequests";
 
 /* ── Route guards ─────────────────────────────────── */
 
@@ -52,6 +53,26 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }
 
   return <>{children}</>;
+}
+
+/**
+ * Bare tenant-plane paths (`/audit`, `/billing`, a stale bookmark) have no
+ * tenant in them. A tenant user has exactly one, so send them there and
+ * they never see a chooser or type an id. A platform user has many, and
+ * guessing for them is precisely the auto-select behaviour this
+ * restructure removed — so they go to the registry and pick.
+ */
+function TenantPathRedirect() {
+  const { user } = useAuth();
+  const location = useLocation();
+
+  if (!user) return null;
+
+  if (!user.is_platform_user && user.tenant_id) {
+    const path = location.pathname === "/" ? "/dashboard" : location.pathname;
+    return <Navigate to={`/t/${user.tenant_id}${path}`} replace />;
+  }
+  return <Navigate to="/tenants" replace />;
 }
 
 function RedirectIfAuth({ children }: { children: React.ReactNode }) {
@@ -100,35 +121,47 @@ function AppRoutes() {
           </RequireAuth>
         }
       >
-        <Route path="/dashboard" element={<Dashboard />} />
+        {/* ── Platform plane: no tenant context ──────────────
+            Administering the platform is not administering any one
+            tenant, so these paths carry no tenant id and the tenant
+            context header does not render on them. */}
         <Route path="/tenants" element={<TenantManagement />} />
-        <Route path="/users" element={<UserManagement />} />
-        <Route path="/licenses" element={<LicenseManagement />} />
-        <Route path="/fleet" element={<FleetOverview />} />
-        <Route path="/reliability" element={<VendorReliability />} />
-        <Route path="/marketplace" element={<SkillMarketplace />} />
-        <Route path="/approvals" element={<ApprovalQueue />} />
-        <Route path="/agents" element={<AgentManagement />} />
-        <Route path="/policies" element={<ApprovalPolicies />} />
-        <Route path="/billing" element={<BillingDashboard />} />
-        <Route path="/invoices/:id" element={<InvoiceDetail />} />
-        <Route path="/usage" element={<UsageChargeback />} />
-        <Route path="/admin/billing" element={<AdminBillingStats />} />
-        <Route path="/support" element={<SupportTicketing />} />
-        <Route path="/audit" element={<AuditLogs />} />
-        <Route path="/reports" element={<ReportingAnalytics />} />
         <Route path="/admin" element={<AdminDashboard />} />
+        <Route path="/admin/billing" element={<AdminBillingStats />} />
         <Route path="/admin/features" element={<FeatureToggles />} />
         <Route path="/admin/releases" element={<ReleaseManagement />} />
         <Route path="/admin/health" element={<PlatformHealth />} />
-        <Route path="/settings" element={<TenantSettings />} />
-        <Route path="/downloads" element={<Downloads />} />
-        <Route path="/api-keys" element={<ApiKeys />} />
         <Route path="/admin/impersonation" element={<ImpersonationLog />} />
-      </Route>
+        <Route path="/admin/support-access" element={<SupportAccessRequests />} />
+        <Route path="/marketplace" element={<SkillMarketplace />} />
 
-      {/* 404 fallback */}
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        {/* ── Tenant plane: context is the URL ───────────────
+            Not a header, not localStorage. The tenant is visible,
+            bookmarkable, survives the back button, and two tabs can
+            hold two different tenants. */}
+        <Route path="/t/:tenantId/dashboard" element={<Dashboard />} />
+        <Route path="/t/:tenantId/users" element={<UserManagement />} />
+        <Route path="/t/:tenantId/licenses" element={<LicenseManagement />} />
+        <Route path="/t/:tenantId/fleet" element={<FleetOverview />} />
+        <Route path="/t/:tenantId/reliability" element={<VendorReliability />} />
+        <Route path="/t/:tenantId/approvals" element={<ApprovalQueue />} />
+        <Route path="/t/:tenantId/agents" element={<AgentManagement />} />
+        <Route path="/t/:tenantId/policies" element={<ApprovalPolicies />} />
+        <Route path="/t/:tenantId/billing" element={<BillingDashboard />} />
+        <Route path="/t/:tenantId/invoices/:id" element={<InvoiceDetail />} />
+        <Route path="/t/:tenantId/usage" element={<UsageChargeback />} />
+        <Route path="/t/:tenantId/support" element={<SupportTicketing />} />
+        <Route path="/t/:tenantId/audit" element={<AuditLogs />} />
+        <Route path="/t/:tenantId/reports" element={<ReportingAnalytics />} />
+        <Route path="/t/:tenantId/settings" element={<TenantSettings />} />
+        <Route path="/t/:tenantId/downloads" element={<Downloads />} />
+        <Route path="/t/:tenantId/api-keys" element={<ApiKeys />} />
+
+        {/* Bare tenant-plane paths from bookmarks and old links: send a
+            tenant user into their own tenant, a platform user to the
+            registry to choose one deliberately. */}
+        <Route path="/*" element={<TenantPathRedirect />} />
+      </Route>
     </Routes>
   );
 }

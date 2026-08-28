@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
@@ -14,7 +15,7 @@ import type { PaginatedResponse, FleetDevice } from "../types";
 
 /* ── Extended types ───────────────────────────────── */
 
-// Matches GET /api/fleet/summary (QA ISSUE-003/004: the UI previously
+// Matches GET /api/t/{tenantId}/fleet/summary (QA ISSUE-003/004: the UI previously
 // read healthy_pct/open_incidents/sites, which the API never sent —
 // cards rendered "undefined %" and "--").
 interface FleetSummary {
@@ -139,6 +140,7 @@ function formatDate(iso: string | undefined): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function FleetOverview() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const { toasts, toast, dismiss } = useToast();
 
   /* ── Summary state ─────────────────────────────── */
@@ -211,7 +213,7 @@ export default function FleetOverview() {
   /* ── Fetch summary ─────────────────────────────── */
   const fetchSummary = useCallback(async () => {
     try {
-      const res = await getJson<FleetSummary>("/api/fleet/summary");
+      const res = await getJson<FleetSummary>(`/api/t/${tenantId}/fleet/summary`);
       setSummary(res);
     } catch {
       // summary fetch failures are non-fatal
@@ -230,7 +232,7 @@ export default function FleetOverview() {
       params.set("page", String(page));
       params.set("page_size", String(PAGE_SIZE));
       const res = await getJson<PaginatedResponse<FleetRow>>(
-        `/api/fleet?${params.toString()}`,
+        `/api/t/${tenantId}/fleet?${params.toString()}`,
       );
       // Client-side sort by health (critical first)
       const sorted = [...res.items].sort((a, b) => {
@@ -268,7 +270,7 @@ export default function FleetOverview() {
       setDetailOpen(true);
       setDetailLoading(true);
       try {
-        const detail = await getJson<FleetDeviceDetail>(`/api/fleet/${device.id}`);
+        const detail = await getJson<FleetDeviceDetail>(`/api/t/${tenantId}/fleet/${device.id}`);
         setSelectedDevice(detail);
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load device detail", "error");

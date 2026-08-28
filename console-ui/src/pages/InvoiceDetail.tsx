@@ -108,7 +108,8 @@ export default function InvoiceDetail() {
   const [data, setData] = useState<InvoiceDetailData | null>(null);
   const [paying, setPaying] = useState(false);
 
-  const tenantId = "current";
+  // `id` is the invoice; `tenantId` is the tenant context from the route.
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
 
   const fetchInvoice = useCallback(async () => {
     setLoading(true);
