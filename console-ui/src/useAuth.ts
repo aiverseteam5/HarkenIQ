@@ -91,20 +91,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessToken(accessToken);
       sessionStorage.setItem("hiq_refresh_token", refreshToken);
 
-      // Parse user info from JWT
-      try {
-        const claims = parseJwt(accessToken);
-        setUser({
-          email: (claims.email as string) ?? "",
-          name: (claims.name as string) ?? (claims.preferred_username as string) ?? "",
-          role: extractRole(claims),
-          tenant_id: (claims.tenant_id as string) ?? "",
-          permissions: (claims.permissions as string[]) ?? [],
-          is_platform_user: (claims.is_platform_user as boolean) ?? false,
-        });
-      } catch {
-        setUser(null);
-      }
+      // Identity comes from the server, not from decoding the token.
+      // Spec S4: enforcement is server-side and the UI only reflects it,
+      // so the UI asks what it may do rather than guessing. The token
+      // carries no permissions / tenant_id / is_platform_user claim, and
+      // its role claim is realm_roles (not realm_access.roles), which is
+      // why every user used to render as "viewer".
+      void fetchMe(accessToken).then(setUser);
 
       // Schedule token refresh at 80% of expiry
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
@@ -184,12 +177,51 @@ export function useAuth(): AuthState {
 
 /* ── helpers ──────────────────────────────────────── */
 
-function extractRole(claims: Record<string, unknown>): string {
-  // Try realm_access.roles, then resource_access
-  const realmAccess = claims.realm_access as { roles?: string[] } | undefined;
-  if (realmAccess?.roles) {
-    const hiqRoles = realmAccess.roles.filter((r) => r.startsWith("hiq_"));
-    if (hiqRoles.length > 0) return hiqRoles[0];
+/** GET /api/me — the server's own view of who this is and what they may do.
+ *
+ *  Replaces the previous token-decoding path, which was wrong three ways:
+ *  it read realm_access.roles (Keycloak mints realm_roles), it filtered
+ *  for an "hiq_" prefix the roles do not carry, and permissions /
+ *  tenant_id / is_platform_user are not minted as claims at all. Every
+ *  user therefore fell through to the "viewer" default, super admins
+ *  included.
+ */
+async function fetchMe(accessToken: string): Promise<AuthUser | null> {
+  try {
+    const resp = await fetch("/api/me", {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    if (!resp.ok) return null;
+    const me = (await resp.json()) as {
+      email?: string;
+      role?: string;
+      tenant_id?: string | null;
+      is_platform_user?: boolean;
+      permissions?: string[];
+    };
+    return {
+      email: me.email ?? "",
+      // /api/me has no display name; the token is the right source for it.
+      name: displayName(accessToken, me.email ?? ""),
+      role: me.role ?? "viewer",
+      tenant_id: me.tenant_id ?? "",
+      permissions: me.permissions ?? [],
+      is_platform_user: me.is_platform_user ?? false,
+    };
+  } catch {
+    return null;
   }
-  return (claims.role as string) ?? "viewer";
+}
+
+function displayName(accessToken: string, fallback: string): string {
+  try {
+    const claims = parseJwt(accessToken);
+    return (
+      (claims.name as string) ??
+      (claims.preferred_username as string) ??
+      fallback
+    );
+  } catch {
+    return fallback;
+  }
 }

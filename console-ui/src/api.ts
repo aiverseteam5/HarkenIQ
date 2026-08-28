@@ -12,6 +12,10 @@ export class AuthError extends Error {
 
 let _accessToken = "";
 let _onAuthError: (() => void) | null = null;
+/** Platform admins act on one tenant at a time; the "current" alias needs to
+ *  be told which. Selection only — the server still authorizes every call,
+ *  so naming a tenant you are not entitled to yields 403, not access. */
+let _activeTenant = "";
 
 export function setAccessToken(token: string): void {
   _accessToken = token;
@@ -25,6 +29,25 @@ export function clearAccessToken(): void {
   _accessToken = "";
 }
 
+export function setActiveTenant(tenantId: string): void {
+  _activeTenant = tenantId;
+  try {
+    if (tenantId) localStorage.setItem("hiq_active_tenant", tenantId);
+    else localStorage.removeItem("hiq_active_tenant");
+  } catch {
+    /* storage unavailable (private window, blocked cookies) — in-memory is fine */
+  }
+}
+
+export function getActiveTenant(): string {
+  if (_activeTenant) return _activeTenant;
+  try {
+    return localStorage.getItem("hiq_active_tenant") ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export function setOnAuthError(callback: () => void): void {
   _onAuthError = callback;
 }
@@ -33,6 +56,10 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   if (_accessToken) {
     headers.set("authorization", `Bearer ${_accessToken}`);
+  }
+  const tenant = getActiveTenant();
+  if (tenant) {
+    headers.set("x-harken-tenant", tenant);
   }
   const resp = await fetch(path, { ...init, headers });
   if (resp.status === 401) {

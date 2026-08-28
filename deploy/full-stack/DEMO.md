@@ -108,3 +108,32 @@ After a fresh reset, give the agent ~2 minutes before injecting faults:
 baselines must re-learn (5 polls at the demo stack's compressed learning
 window) before actions are proposed — the A2.3 confidence gate refuses to
 act on a baseline it hasn't earned, which is itself a talking point.
+
+## Upgrading an existing stack: the `basic` client scope
+
+Keycloak persists realms in postgres, so `--import-realm` is a no-op once
+the realm exists — editing `deploy/r2b/keycloak-realm-platform.json` does
+not reach a stack that has already booted. A `docker compose down -v`
+picks it up; anything else needs the scope attached by hand.
+
+Without it, Keycloak 24+ mints access tokens with **no `sub` claim** (that
+mapper lives in the built-in `basic` scope), so `UserContext.user_id` is
+empty: custom-role grants never resolve, and Console audit rows land with
+a null `actor_id` (`actor_email` still carries the actor, so the trail
+stays attributable).
+
+```bash
+KC=http://localhost:8180
+AT=$(curl -s -X POST "$KC/realms/master/protocol/openid-connect/token" \
+  -d client_id=admin-cli -d grant_type=password \
+  -d username=admin -d password=admin | jq -r .access_token)
+CID=$(curl -s -H "Authorization: Bearer $AT" \
+  "$KC/admin/realms/harkeniq-platform/clients?clientId=harkeniq-console" | jq -r '.[0].id')
+SID=$(curl -s -H "Authorization: Bearer $AT" \
+  "$KC/admin/realms/harkeniq-platform/client-scopes" | jq -r '.[] | select(.name=="basic") | .id')
+curl -s -X PUT -H "Authorization: Bearer $AT" \
+  "$KC/admin/realms/harkeniq-platform/clients/$CID/default-client-scopes/$SID"
+```
+
+Verify: a fresh token should decode with a `sub`, and `GET /api/me`
+should return a non-empty `user_id`.

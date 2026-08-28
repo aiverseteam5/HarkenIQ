@@ -1,0 +1,87 @@
+/**
+ * Route access rules, mirroring the server.
+ *
+ * Spec S4: "Permission checks are enforced server-side per request; the UI
+ * only reflects them." This module is the reflection — one map used by both
+ * the sidebar and the route guards, so a nav entry and its page can never
+ * disagree about who may see it.
+ *
+ * Permission names are the Console's own atomic set
+ * (harkeniq_console/permissions.py). `platformOnly` mirrors endpoints
+ * guarded by require_super_admin, which checks the role directly rather
+ * than a permission, so no bundle can satisfy it.
+ */
+
+import type { AuthUser } from "./useAuth";
+
+export interface AccessRule {
+  perm?: string;
+  platformOnly?: boolean;
+}
+
+export const ROUTE_ACCESS: Record<string, AccessRule> = {
+  // Fleet — fleet.view is held by every tenant role including viewer.
+  "/dashboard": { perm: "fleet.view" },
+  "/fleet": { perm: "fleet.view" },
+  "/reliability": { perm: "fleet.view" },
+  // Auditor and viewer may read the queue; the page gates the approve and
+  // deny buttons on action.approve separately.
+  "/approvals": { perm: "incident.view" },
+  "/agents": { perm: "fleet.view" },
+
+  // Operations
+  "/policies": { perm: "site.manage" },
+  // tenants.py is entirely require_super_admin, so platform_support cannot
+  // actually read the registry despite holding tenant.view. Mirrored here
+  // rather than papered over — see the note in the PR.
+  "/tenants": { platformOnly: true },
+  "/users": { perm: "user.view" },
+  "/licenses": { perm: "license.view" },
+  "/support": { perm: "support.view" },
+  "/audit": { perm: "audit.view" },
+  "/reports": { perm: "fleet.view" },
+  "/marketplace": { perm: "skill.submit" },
+
+  // Billing
+  "/billing": { perm: "billing.view" },
+  "/invoices": { perm: "billing.view" },
+  "/usage": { perm: "billing.view" },
+  "/admin/billing": { platformOnly: true },
+
+  // Administration — every /admin route is require_super_admin server-side.
+  "/admin": { platformOnly: true },
+  "/admin/features": { platformOnly: true },
+  "/admin/releases": { platformOnly: true },
+  "/admin/health": { platformOnly: true },
+  "/admin/impersonation": { platformOnly: true },
+  "/settings": { perm: "user.manage" },
+  "/downloads": { perm: "site.view" },
+  "/api-keys": { perm: "user.manage" },
+};
+
+/** Does this user hold a single atomic permission? */
+export function can(user: AuthUser | null, perm: string): boolean {
+  if (!user) return false;
+  return user.permissions.includes(perm);
+}
+
+/** May this user reach a route? Unknown routes are allowed: the server is
+ *  the enforcement point, and a missing map entry must not silently hide a
+ *  page that everyone is entitled to. */
+export function canAccess(user: AuthUser | null, rule?: AccessRule): boolean {
+  if (!rule) return true;
+  if (!user) return false;
+  if (rule.platformOnly) {
+    return user.is_platform_user && user.role === "platform_super_admin";
+  }
+  return rule.perm ? can(user, rule.perm) : true;
+}
+
+/** Rule for a route key, longest-prefix first so /admin/features does not
+ *  match /admin. */
+export function ruleFor(pathname: string): AccessRule | undefined {
+  const key = Object.keys(ROUTE_ACCESS)
+    .sort((a, b) => b.length - a.length)
+    .find((k) => pathname === k || pathname.startsWith(`${k}/`));
+  return key ? ROUTE_ACCESS[key] : undefined;
+}
