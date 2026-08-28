@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from harkeniq_console.api import me as me_api
-from harkeniq_console.auth import UserContext
+from harkeniq_console.auth import UserContext, get_current_user
 from harkeniq_console.api import admin as admin_api
 from harkeniq_console.api import audit as audit_api
 from harkeniq_console.api import billing as billing_api
