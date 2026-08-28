@@ -6,7 +6,8 @@ bind {tenant_id} literally, so Audit Logs, Billing, Usage, Reports,
 Support, and API Keys 404'd — and /usage/estimate 500'd on the
 unhandled ValueError — for every operator since R2b. The middleware now
 resolves "current" to the caller's tenant claim, else to the sole
-tenant when exactly one exists; ambiguity stays an honest 404.
+tenant when exactly one exists, else an explicit X-Harken-Tenant
+selection; genuinely unresolved requests are refused with 400.
 """
 
 import httpx
@@ -65,7 +66,12 @@ async def test_current_ambiguous_with_two_tenants_is_404_not_500():
     client, engine = await _make_client(db_seed_tenants=2)
     try:
         resp = await client.get("/api/tenants/current/usage/estimate")
-        assert resp.status_code == 404  # honest, never a crash
+        # Was 404, which this route produced only because it happens to
+        # validate the tenant; /audit answered the same unresolved state
+        # with 200 and an empty list. The middleware now refuses once,
+        # uniformly, so no route serves phantom-tenant data.
+        assert resp.status_code == 400  # honest, never a crash
+        assert "select a tenant" in resp.json()["detail"]
     finally:
         await client.aclose()
         await engine.dispose()

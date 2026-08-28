@@ -15,8 +15,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from harkeniq_console.auth import UserContext
-
+from harkeniq_console.api import me as me_api
+from harkeniq_console.auth import UserContext, get_current_user
 from harkeniq_console.api import admin as admin_api
 from harkeniq_console.api import audit as audit_api
 from harkeniq_console.api import billing as billing_api
@@ -62,6 +62,7 @@ def create_app(state) -> FastAPI:
     app.include_router(apikeys_api.router)
     app.include_router(apikeys_api.impersonation_router)
     app.include_router(marketplace_api.router)
+    app.include_router(me_api.router)
     app.include_router(marketplace_api.admin_router)
 
     # QA-010: a hardcoded ok reported healthy while the database had no
@@ -221,10 +222,23 @@ def create_app(state) -> FastAPI:
         marker = "/api/tenants/current"
         if path == marker or path.startswith(marker + "/"):
             resolved = ""
-            claim = getattr(
-                getattr(request.state, "user", None), "tenant_id", ""
-            )
-            if claim:
+            # An explicit choice wins. tenant_scope still authorizes
+            # downstream, so a tenant user naming someone else's tenant gets
+            # 403 rather than access — the header selects, it never grants.
+            header = request.headers.get("x-harken-tenant", "").strip()
+            claim = ""
+            if not header:
+                # request.state.user is never populated by anything, so the
+                # original claim branch here was dead: every request fell
+                # through to the sole-tenant lookup, which happened to be
+                # right only because the demo has exactly one tenant.
+                try:
+                    claim = (await get_current_user(request)).tenant_id or ""
+                except Exception:
+                    claim = ""
+            if header:
+                resolved = header
+            elif claim:
                 resolved = claim
             else:
                 from sqlalchemy import select
@@ -241,6 +255,21 @@ def create_app(state) -> FastAPI:
                 new_path = path.replace(marker, f"/api/tenants/{resolved}", 1)
                 request.scope["path"] = new_path
                 request.scope["raw_path"] = new_path.encode()
+            else:
+                # Unresolved "current" used to fall through to the routes,
+                # where behaviour split: /usage/estimate 404'd because it
+                # validates the tenant, while /audit filtered on the literal
+                # string "current" and returned 200 with an empty list — a
+                # platform admin reads that as "no audit entries", not "no
+                # tenant selected". Refuse once, here, so no route can serve
+                # phantom-tenant data.
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "detail": "tenant not resolved: select a tenant "
+                                  "(send X-Harken-Tenant)",
+                    },
+                )
         return await call_next(request)
 
     # Dashboard build (ui/dist) — mounted last so API routes win.
