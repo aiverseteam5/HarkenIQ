@@ -217,6 +217,22 @@ class TestSeeding:
             await _client.aclose()
             await engine.dispose()
 
+    async def test_seeding_never_blocks_boot(self):
+        """Seeding is a convenience; the registry is fail-closed anyway.
+
+        Refusing to start because the table is not migrated yet would turn a
+        missing nicety into an outage.
+        """
+        _client, engine, _sm, state, _ids = await _stack(cc_url="http://cc:8090")
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("DROP TABLE tenant_services")
+            # Must not raise.
+            await seed_service_placement(state)
+        finally:
+            await _client.aclose()
+            await engine.dispose()
+
     async def test_seeding_is_idempotent(self):
         _client, engine, sm, state, ids = await _stack(cc_url="http://cc:8090")
         try:
