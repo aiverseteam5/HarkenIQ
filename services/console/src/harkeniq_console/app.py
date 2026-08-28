@@ -12,8 +12,10 @@ from pathlib import Path
 # turns handler annotations into strings, and FastAPI resolves them against
 # module globals — a function-local Request import made the proxy handlers
 # grow a required `request` QUERY param (QA-029 live finding).
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse, Response
+
+from harkeniq_console.auth import UserContext
 
 from harkeniq_console.api import admin as admin_api
 from harkeniq_console.api import audit as audit_api
@@ -23,6 +25,7 @@ from harkeniq_console.api import invoices as invoices_api
 from harkeniq_console.api import licenses as licenses_api
 from harkeniq_console.api import marketplace as marketplace_api
 from harkeniq_console.api import support as support_api
+from harkeniq_console.api import tenant_services as tenant_services_api
 from harkeniq_console.api import tenants as tenants_api
 from harkeniq_console.api import users as users_api
 from harkeniq_console.api import apikeys as apikeys_api
@@ -39,6 +42,7 @@ def create_app(state) -> FastAPI:
 
     app.add_middleware(request_id_middleware(app))
     app.include_router(tenants_api.router)
+    app.include_router(tenant_services_api.router)
     app.include_router(users_api.router)
     app.include_router(users_api.roles_router)
     app.include_router(licenses_api.router)
@@ -94,48 +98,87 @@ def create_app(state) -> FastAPI:
         "fleet", "approvals", "agents", "policies", "outcomes",
         "predictive", "warranty", "firmware", "sites", "audit",
     )
-    if state.config.cc_url:
-        import httpx
+    # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
+    # header and not in browser storage. One global cc_url served every
+    # tenant the same Central Command, so a per-tenant URL would have been
+    # a promise the backend did not keep. Placement now resolves through
+    # the tenant_services registry, and resolution is fail-closed: a tenant
+    # with no active placement is refused, never quietly handed a shared
+    # endpoint. Requests are authorized BEFORE proxying, so the tenant
+    # scope and support-access gate cover infrastructure too.
+    import httpx
 
-        cc_base = state.config.cc_url.rstrip("/")
-        cc_client = httpx.AsyncClient(base_url=cc_base, timeout=30.0)
+    from harkeniq_console.api.deps import get_session, tenant_scope
+    from harkeniq_console.db.repos import TenantServiceRepo
 
-        async def _proxy_cc(request: Request, rest: str, prefix: str) -> Response:
-            # rest="" targets the collection root: CC's canonical form is
-            # the trailing slash (returning its 307 verbatim would send
-            # the browser into a redirect loop between the two origins).
-            upstream = await cc_client.request(
-                request.method,
-                f"/api/{prefix}/{rest}" if rest else f"/api/{prefix}/",
-                params=request.query_params,
-                content=await request.body(),
-                headers={
-                    key: value
-                    for key, value in request.headers.items()
-                    if key.lower() in ("authorization", "content-type")
+    cc_client = httpx.AsyncClient(timeout=30.0)
+
+    async def _proxy_cc(
+        request: Request, tenant_id: str, rest: str, prefix: str,
+        session,
+    ) -> Response:
+        placement = await TenantServiceRepo(session).resolve(
+            tenant_id, "central_command",
+        )
+
+        if placement is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": (
+                        "no central_command registered for this tenant — "
+                        "register a service placement before using this page"
+                    ),
                 },
             )
-            return Response(
-                content=upstream.content,
-                status_code=upstream.status_code,
-                media_type=upstream.headers.get("content-type"),
-            )
 
-        for _prefix in _CC_PREFIXES:
-            def _make(prefix: str):
-                async def handler(request: Request, rest: str = "") -> Response:
-                    return await _proxy_cc(request, rest, prefix)
-                return handler
+        base = placement.endpoint_url.rstrip("/")
+        # rest="" targets the collection root: CC's canonical form is
+        # the trailing slash (returning its 307 verbatim would send
+        # the browser into a redirect loop between the two origins).
+        suffix = f"/api/{prefix}/{rest}" if rest else f"/api/{prefix}/"
+        upstream = await cc_client.request(
+            request.method,
+            f"{base}{suffix}",
+            params=request.query_params,
+            content=await request.body(),
+            headers={
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() in ("authorization", "content-type")
+            },
+        )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
 
-            methods = ["GET", "POST", "PATCH", "PUT", "DELETE"]
-            app.add_api_route(
-                f"/api/{_prefix}", _make(_prefix), methods=methods,
-                include_in_schema=False,
-            )
-            app.add_api_route(
-                f"/api/{_prefix}/{{rest:path}}", _make(_prefix),
-                methods=methods, include_in_schema=False,
-            )
+    for _prefix in _CC_PREFIXES:
+        def _make(prefix: str):
+            # tenant_scope as a real dependency, not a hand-rolled call:
+            # FastAPI resolves tenant_id from the path and the session for
+            # it, so the membership check and the PR #8 support-access gate
+            # both run before a single byte reaches the tenant's stack.
+            async def handler(
+                request: Request,
+                tenant_id: str,
+                rest: str = "",
+                _user: UserContext = Depends(tenant_scope),
+                session=Depends(get_session),
+            ) -> Response:
+                return await _proxy_cc(request, tenant_id, rest, prefix, session)
+            return handler
+
+        methods = ["GET", "POST", "PATCH", "PUT", "DELETE"]
+        app.add_api_route(
+            f"/api/t/{{tenant_id}}/{_prefix}", _make(_prefix), methods=methods,
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            f"/api/t/{{tenant_id}}/{_prefix}/{{rest:path}}", _make(_prefix),
+            methods=methods, include_in_schema=False,
+        )
 
     # QA ISSUE-007: the SPA mount at "/" pre-empts Starlette's
     # trailing-slash redirect, so every collection-root API route

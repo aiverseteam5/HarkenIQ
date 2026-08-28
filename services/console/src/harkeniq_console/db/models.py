@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -521,4 +522,54 @@ class MarketplaceInstall(Base):
 
     __table_args__ = (
         Index("ix_marketplace_installs_tenant", "tenant_id", "installed_at"),
+    )
+
+
+# ── R7+: tenant service placement registry ───────────────────────────
+
+
+class TenantService(Base):
+    """Where a tenant's L1–L3 stack actually lives.
+
+    The Console proxied every infrastructure surface (fleet, approvals,
+    agents, policies, outcomes…) to one global ``config.cc_url``, so every
+    tenant saw the same Central Command. Per the constitution, L1–L3 stay
+    single-tenant and tenancy lives only at L4 — which means the vendor
+    Console must know, per tenant, which stack is theirs.
+
+    This is that registry, and it is authoritative: resolution is
+    fail-closed. A tenant with no active placement gets a clear error, and
+    NEVER another tenant's endpoint. ``config.cc_url`` survives only as a
+    startup seed that writes an explicit row here (see runtime seeding),
+    never as a request-time fallback — an implicit fallback is exactly the
+    cross-tenant leak this table exists to prevent.
+    """
+
+    __tablename__ = "tenant_services"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    # "central_command" today; "site_manager" reserved.
+    service_kind: Mapped[str] = mapped_column(String(32))
+    endpoint_url: Mapped[str] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    registered_by: Mapped[str] = mapped_column(String(32), default="")
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        # One active placement per kind per tenant. Partial index so
+        # disabled rows stay as history rather than blocking a re-register.
+        Index(
+            "uq_tenant_services_active",
+            "tenant_id",
+            "service_kind",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+        Index("ix_tenant_services_tenant", "tenant_id"),
     )

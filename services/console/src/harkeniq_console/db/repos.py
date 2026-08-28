@@ -32,6 +32,7 @@ from harkeniq_console.db.models import (
     PriceBook,
     Subscription,
     SupportAccessLog,
+    TenantService,
     SupportTicket,
     Tenant,
     TenantSite,
@@ -1325,3 +1326,75 @@ class MarketplaceInstallRepo:
         if since is not None:
             stmt = stmt.where(MarketplaceInstall.installed_at > since)
         return (await self.session.execute(stmt)).scalars().all()
+
+
+class TenantServiceRepo:
+    """Tenant → service placement. Resolution is deliberately fail-closed."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def resolve(self, tenant_id: str, kind: str) -> Optional[TenantService]:
+        """The tenant's active placement for *kind*, or None.
+
+        Returning None is the whole point: callers must refuse the request
+        rather than reach for a global default. A shared fallback endpoint
+        would serve one tenant's data under another tenant's URL.
+        """
+        return (
+            await self.session.execute(
+                select(TenantService).where(
+                    TenantService.tenant_id == tenant_id,
+                    TenantService.service_kind == kind,
+                    TenantService.status == "active",
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_id(self, service_id: str) -> Optional[TenantService]:
+        return await self.session.get(TenantService, service_id)
+
+    async def list_by_tenant(self, tenant_id: str) -> Sequence[TenantService]:
+        return (
+            await self.session.execute(
+                select(TenantService)
+                .where(TenantService.tenant_id == tenant_id)
+                .order_by(TenantService.service_kind, TenantService.registered_at.desc())
+            )
+        ).scalars().all()
+
+    async def register(
+        self, *, tenant_id: str, service_kind: str, endpoint_url: str,
+        registered_by: str = "",
+    ) -> TenantService:
+        """Register a placement, disabling any active one for the same kind.
+
+        Re-registering is how a tenant gets moved to a new stack, so the
+        previous row is retired rather than deleted — the history of where
+        a tenant's data was served from is worth keeping.
+        """
+        existing = await self.resolve(tenant_id, service_kind)
+        if existing is not None:
+            existing.status = "disabled"
+            existing.updated_at = utcnow()
+            await self.session.flush()
+        row = TenantService(
+            tenant_id=tenant_id,
+            service_kind=service_kind,
+            endpoint_url=endpoint_url,
+            registered_by=registered_by,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def disable(self, row: TenantService) -> TenantService:
+        row.status = "disabled"
+        row.updated_at = utcnow()
+        await self.session.flush()
+        return row
+
+    async def mark_verified(self, row: TenantService) -> TenantService:
+        row.last_verified_at = utcnow()
+        await self.session.flush()
+        return row
