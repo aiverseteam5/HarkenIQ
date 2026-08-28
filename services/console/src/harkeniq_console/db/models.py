@@ -589,7 +589,10 @@ class TenantService(Base):
     service_kind: Mapped[str] = mapped_column(String(32))
     endpoint_url: Mapped[str] = mapped_column(String(512))
     status: Mapped[str] = mapped_column(String(16), default="active")
-    registered_by: Mapped[str] = mapped_column(String(32), default="")
+    # String(128): receives the Keycloak subject (36 chars) — the repo's
+    # identity-column width precedent (users.keycloak_user_id). sqlite does
+    # not enforce VARCHAR lengths; postgres does (gate-caught truncation).
+    registered_by: Mapped[str] = mapped_column(String(128), default="")
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

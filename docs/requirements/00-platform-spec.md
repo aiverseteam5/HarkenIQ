@@ -780,3 +780,49 @@ amendment record.
    POST with 405 fixed-slot fallback, verify by fresh session as the new
    account, disable via PATCH, rollback delete) and proven against the
    simulator's AccountService. OQ-14's rotation answer needs no de-claim.
+
+### A11 — 2026-08-28 — Tenant plane separation + service placement registry (decided: Vinod)
+
+Scope amendment for the Console work landing as PRs #9–#11 (with #7/#8 already on
+main). Product decisions were made in-session by Vinod; this records them under
+change control before merge.
+
+1. **Tenant service placement registry (new architectural concept).** The vendor
+   Console resolves each tenant's L1–L3 stack through an authoritative
+   `tenant_services` registry (tenant → service kind → endpoint), not through a
+   global configured URL. Resolution is **fail-closed**: a tenant with no active
+   placement is refused (503), never handed a shared or default endpoint.
+   `cc_url` survives only as a single-tenant startup seed that writes an explicit
+   registry row. Rationale: §3 gives each tenant exactly one Central Command and
+   L1–L3 stay single-tenant; the Console is therefore the component that must
+   know, per tenant, which stack is whose — and must never guess.
+2. **One tenant → one Central Command is an enforced invariant.** Registering an
+   endpoint already active for another tenant is refused (409) with a DB unique
+   backstop. CC has no per-tenant data filtering, so a shared endpoint would
+   silently serve one tenant's data under another tenant's URL. If shared CC is
+   ever wanted (scale/cost), it requires explicit tenant isolation inside CC and
+   arrives only by a future amendment — never as a registration side effect
+   (OQ-26).
+3. **Tenant context lives in the URL** (`/t/{tenantId}/…`), not in a header or
+   browser storage. A platform user is never placed inside a tenant
+   automatically; entering is an explicit act from the tenant registry. The
+   `current`-alias middleware, `X-Harken-Tenant` header, and client-side tenant
+   selector are removed.
+4. **Listing a tenant and entering one are different acts.** The registry is
+   readable by platform staff holding `tenant.view`; because the atomic
+   permissions are shared vocabulary (tenant roles hold some of the same names),
+   platform-plane routes check *platform realm AND permission*
+   (`require_platform_permission`). Entering a tenant is governed by
+   `tenant_scope`: membership for tenant users; for `platform_support`, an
+   approved, time-bound, requester-bound support-access grant
+   (request → super-admin approval → TTL clock starts at approval; one approval
+   admits exactly the engineer who requested it). `platform_super_admin` keeps an
+   unconditional break-glass at L4 by design.
+5. **Marketplace installs are tenant-explicit.** The install API accepts the
+   target tenant, validated by the same tenant-scope gate; a tenant user may name
+   only their own tenant. (Closes the silent no-op where a platform user's
+   install recorded nothing and CC never delivered.)
+6. **Deliberately NOT decided here:** cross-realm authentication for platform
+   staff at per-tenant CCs (OQ-23), auditor scope (OQ-24), deny-then-re-request
+   semantics (OQ-25). These are open questions with owners in §8; no
+   implementation may assume their answers.
