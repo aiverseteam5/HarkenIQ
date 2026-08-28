@@ -24,7 +24,45 @@ def _has_table(name: str) -> bool:
     return name in sa.inspect(op.get_bind()).get_table_names()
 
 
+#: Identity/actor columns with a writer-confirmed Keycloak subject or email
+#: (gate-caught: a subject is 36 chars, these were String(32); sqlite does
+#: not enforce VARCHAR lengths, postgres does). String(128) is the repo's
+#: identity precedent (users.keycloak_user_id). Runs BEFORE the has-table
+#: early return so legacy databases are widened even though fresh ones
+#: (already 128 via create_all) skip the table creation below. Widening an
+#: already-128 column is a no-op, so this is idempotent by construction.
+IDENTITY_COLUMNS = [
+    ("console_audit_log", "actor_id"),
+    ("delinquency_log", "actor_id"),
+    ("users", "invited_by"),
+    ("custom_roles", "created_by"),
+    ("api_keys", "created_by"),
+    ("support_tickets", "created_by"),
+    ("support_tickets", "assigned_to"),
+    ("ticket_messages", "author_id"),
+    ("ticket_state_changes", "changed_by"),
+    ("feature_flags", "updated_by"),
+    ("platform_settings", "updated_by"),
+    ("licenses", "issued_by"),
+    ("licenses", "revoked_by"),
+    ("credit_notes", "issued_by"),
+    ("impersonation_log", "admin_user_id"),
+    ("support_access_log", "enabled_by"),
+    ("support_access_log", "revoked_by"),
+]
+
+
 def upgrade() -> None:
+    insp = sa.inspect(op.get_bind())
+    tables = set(insp.get_table_names())
+    for table, column in IDENTITY_COLUMNS:
+        if table not in tables:
+            continue
+        with op.batch_alter_table(table) as batch:
+            batch.alter_column(
+                column, existing_type=sa.String(32), type_=sa.String(128),
+            )
+
     # 0001 is `Base.metadata.create_all()` against LIVE metadata, so a fresh
     # database already has every table the models currently declare —
     # including this one — while a database stamped at 0001 before this
