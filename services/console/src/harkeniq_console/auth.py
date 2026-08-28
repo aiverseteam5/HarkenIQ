@@ -126,6 +126,7 @@ async def get_current_user(request: Request) -> UserContext:
             raise HTTPException(
                 status_code=403, detail="no platform role assigned"
             )
+        # Platform roles are vendor-side and take no tenant custom bundles.
         return UserContext(
             user_id=validated.subject,
             email=validated.email,
@@ -140,11 +141,39 @@ async def get_current_user(request: Request) -> UserContext:
         logger.info("token from unknown tenant realm %r", validated.realm)
         raise HTTPException(status_code=401, detail="invalid token")
     role = pick_role(validated.roles, _TENANT_ROLES, default="viewer")
+    # Custom-role grants were hardcoded to [] here, which made
+    # has_permission's custom branch dead code: a tenant could define a
+    # bundle and assign it, and the assignment granted nothing (spec S4).
+    permissions = await _custom_grants(
+        request, validated.subject, validated.email, tenant_id
+    )
     return UserContext(
         user_id=validated.subject,
         email=validated.email,
         tenant_id=tenant_id,
         role=role,
-        permissions=[],
+        permissions=permissions,
         is_platform_user=False,
     )
+
+
+async def _custom_grants(
+    request: Request, subject: str, email: str = "", tenant_id: str = ""
+) -> list[str]:
+    """Load custom-role grants; never fail the request over them.
+
+    A lookup error must not turn an authenticated call into a 500 — the
+    fixed role already carries the user's baseline, and degrading to it
+    can only ever remove permissions, never add them.
+    """
+    from harkeniq_console.permissions import effective_permissions
+
+    state = request.app.state.console
+    try:
+        async with state.sessionmaker() as session:
+            return await effective_permissions(
+                session, subject, email, tenant_id
+            )
+    except Exception:
+        logger.exception("custom-role lookup failed for %s", subject)
+        return []
