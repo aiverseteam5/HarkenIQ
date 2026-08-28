@@ -107,6 +107,18 @@ class UserRepo:
     async def get_by_id(self, user_id: str) -> Optional[User]:
         return await self.session.get(User, user_id)
 
+    async def get_by_keycloak_id(self, keycloak_user_id: str) -> Optional[User]:
+        """Resolve the local user row from the JWT subject.
+
+        UserContext.user_id is the Keycloak subject; custom-role grants are
+        keyed by the local users.id, so the two must be joined explicitly.
+        """
+        return (
+            await self.session.execute(
+                select(User).where(User.keycloak_user_id == keycloak_user_id)
+            )
+        ).scalar_one_or_none()
+
     async def get_by_email(self, tenant_id: str, email: str) -> Optional[User]:
         return (
             await self.session.execute(

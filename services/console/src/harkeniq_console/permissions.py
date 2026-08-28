@@ -118,3 +118,38 @@ def has_permission(
     if custom_permissions and permission in custom_permissions:
         return True
     return False
+
+
+async def effective_permissions(
+    session, user_id: str, email: str = "", tenant_id: Optional[str] = None
+) -> list[str]:
+    """Custom-role grants for the JWT subject *user_id*, if any.
+
+    Spec S4 allows tenants to define permission bundles and "assign them
+    like fixed roles". The tables and the assignment API shipped in R2b,
+    but nothing ever loaded the grants into a request, so
+    has_permission's custom branch was dead in production and an assigned
+    bundle granted nothing.
+
+    Returns [] for an unknown subject: a token whose user row is missing
+    keeps exactly its fixed-role permissions, never more.
+    """
+    from harkeniq_console.db.repos import CustomRoleRepo, UserRepo
+
+    repo = UserRepo(session)
+    local = await repo.get_by_keycloak_id(user_id) if user_id else None
+    if local is None and email and tenant_id:
+        # Fallback for realms whose access tokens carry no `sub` claim
+        # (Keycloak 24+ moved that mapper into the `basic` client scope,
+        # which this deployment's realm import omitted). Scoped to the
+        # caller's own tenant, so it can only ever find the same person.
+        local = await repo.get_by_email(tenant_id, email)
+    if local is None:
+        return []
+    grants: set[str] = set()
+    for role in await CustomRoleRepo(session).get_user_custom_roles(local.id):
+        for perm in role.permissions or []:
+            # A bundle can never widen beyond the known permission set.
+            if perm in PERMISSIONS:
+                grants.add(perm)
+    return sorted(grants)
