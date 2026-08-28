@@ -167,3 +167,7 @@ deferred remainders. Open questions with architectural weight live in spec
   super-admin token whose break-glass bypasses membership + support-access
   gates; those paths are unit-pinned but not e2e. Needs a seeded
   tenant-realm user with a password in the demo Keycloak. (red team)
+- [ ] **SPA realm discovery** — the login flow bakes one realm
+  (`VITE_KEYCLOAK_REALM`); a real multi-tenant deployment needs tenant-slug →
+  realm resolution at the login page. (Recorded with A12; owner: next Console
+  slice)

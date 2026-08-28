@@ -327,7 +327,7 @@ here) no later than the start of their owning slice.
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
-| OQ-23 | Cross-realm auth for platform staff at L3: per-tenant CCs pin one realm, so platform-realm support tokens 401 at a real tenant's CC — support access to infrastructure pages works only in the single-realm demo. Token exchange? per-tenant service identity? | 2026-08-28 review (adversarial pass, verified against `harkeniq_cc/auth.py`) | next Console/CC slice — owner: Vinod |
+| OQ-23 | Cross-realm auth for platform staff at L3 | 2026-08-28 review (adversarial pass, verified against `harkeniq_cc/auth.py`) | **answered, A12** — vendor staff never touch L3 live by default (spec-literal role 2); a CC-verified signed grant assertion is the only sanctioned future mechanism |
 | OQ-24 | Auditor scope: §4 prose says "read-only everything + export" but the implemented role holds 5 permissions (no ticket/license/user/site reads) — now ENFORCED since the tenant plane is permission-gated. Which is canonical? Same family: CC's site_admin passes audit via its `*` wildcard | 2026-08-28 review | next Console slice — owner: Vinod |
 | OQ-25 | Support-access denial semantics: after a deny, the engineer may simply re-request (currently unpinned by tests in either direction). Does D16 "denied is final" extend to support elevation, or is re-request-with-new-reason the intent? | 2026-08-28 review (testing pass) | next Console slice — owner: Vinod |
 | OQ-26 | Shared Central Command for scale/cost: registration now enforces one-tenant-one-CC (409). If sharing is ever wanted, it requires explicit tenant isolation INSIDE CC — a deliberate architecture decision, never a registration side effect (decided: Vinod, 2026-08-28) | 2026-08-28 review | future — reopen only by amendment |
@@ -784,3 +784,30 @@ amendment record.
    POST with 405 fixed-slot fallback, verify by fresh session as the new
    account, disable via PATCH, rollback delete) and proven against the
    simulator's AccountService. OQ-14's rotation answer needs no de-claim.
+
+### A12 — 2026-08-28 — OQ-23 answered: vendor staff at tenant Central Commands (decided: Vinod)
+
+1. **Operating default (effective now): spec §4 role 2 is literal.** Platform staff
+   work vendor-side — tenant registry, health aggregates from phone-home usage
+   (R-H4), the support queue, and Console-plane tenant data under an approved,
+   requester-bound support-access grant. Live L3 access for vendor staff does not
+   exist: a tenant's CC validates only its own realm, refuses platform-realm
+   tokens, and that refusal is the intended behavior, not a defect. Deep
+   diagnosis is customer-mediated (customer-granted account in *their* realm,
+   screen-share, on-site). The single-realm demo is the only environment where
+   platform staff see live L3, and it must be presented as such.
+2. **The only sanctioned future mechanism ("B"), built when a real support case
+   demands it and only by its own slice:** a connected tenant's CC may
+   additionally accept the vendor platform realm **iff** the request carries a
+   Console-signed grant assertion — requester-bound, tenant-bound, TTL'd,
+   verified against the vendor Ed25519 trust CC already holds for licensing —
+   mapping platform_support to read-only and logging the engineer in CC's own
+   audit chain. It must be tenant-disableable (config, default off), and is
+   structurally absent in customer-run-Keycloak and sovereign shapes.
+   Token-exchange / Console-as-token-authority designs are rejected: they make
+   vendor staff indistinguishable from tenant users at CC and concentrate
+   every tenant realm's credentials at L4.
+3. **Follow-up recorded, independent of this answer:** the Console SPA bakes one
+   Keycloak realm at build time (`VITE_KEYCLOAK_REALM`), so multi-tenant login
+   needs realm discovery (tenant slug → realm at the login page). Work item, not
+   an open question.
