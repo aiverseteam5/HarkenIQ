@@ -4,6 +4,9 @@ import Sidebar, { type SidebarSection } from "../components/Sidebar";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { useAuth } from "../useAuth";
+import { ROUTE_ACCESS, canAccess } from "../permissions";
+import RequirePermission from "../components/RequirePermission";
+import TenantSelector from "../components/TenantSelector";
 
 /* ── Navigation structure ─────────────────────────── */
 
@@ -85,10 +88,19 @@ export default function SidebarLayout() {
     .sort((a, b) => b.length - a.length) // longest match first
     .find((key) => location.pathname.startsWith(key)) ?? "/dashboard";
 
+  // Spec S4: the UI reflects server-side permissions. Sections whose items
+  // are all filtered out disappear rather than leaving an empty heading.
+  const visibleSections = NAV_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((item) =>
+      canAccess(user, ROUTE_ACCESS[item.key]),
+    ),
+  })).filter((section) => section.items.length > 0);
+
   return (
     <div style={layoutStyle}>
       <Sidebar
-        sections={NAV_SECTIONS}
+        sections={visibleSections}
         activeItem={activeItem}
         onNavigate={(key) => navigate(key)}
         user={{
@@ -99,7 +111,13 @@ export default function SidebarLayout() {
         onLogout={logout}
       />
       <main style={contentStyle}>
-        <Outlet />
+        <TenantSelector />
+        {/* Inside the layout on purpose: a denied page keeps the sidebar so
+            the user can navigate away, rather than being dropped onto a
+            bare 403 with no way back. */}
+        <RequirePermission>
+          <Outlet />
+        </RequirePermission>
       </main>
       <Toast toasts={toasts} onDismiss={dismiss} />
     </div>
