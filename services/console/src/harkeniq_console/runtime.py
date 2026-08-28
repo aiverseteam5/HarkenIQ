@@ -69,14 +69,28 @@ async def seed_service_placement(state: AppState) -> None:
     so that never happens silently — a multi-tenant install registers
     placements explicitly through the admin API.
     """
+    cc_url = getattr(state.config, "cc_url", "")
+    if not cc_url or state.sessionmaker is None:
+        return
+
+    try:
+        await _seed_placement(state, cc_url)
+    except Exception:  # noqa: BLE001 — convenience must never block boot
+        # Seeding is a convenience, not a correctness requirement: the
+        # registry is fail-closed at request time regardless. Refusing to
+        # start because the table is not migrated yet would turn a missing
+        # nicety into an outage.
+        logger.warning(
+            "Could not seed the central_command placement; register it via "
+            "/api/admin/tenant-services", exc_info=True,
+        )
+
+
+async def _seed_placement(state: AppState, cc_url: str) -> None:
     from sqlalchemy import select
 
     from harkeniq_console.db.models import Tenant
     from harkeniq_console.db.repos import TenantServiceRepo
-
-    cc_url = getattr(state.config, "cc_url", "")
-    if not cc_url or state.sessionmaker is None:
-        return
 
     async with state.sessionmaker() as session:
         tenant_ids = (
