@@ -330,7 +330,7 @@ here) no later than the start of their owning slice.
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
 | OQ-23 | Cross-realm auth for platform staff at L3 | 2026-08-28 review (adversarial pass, verified against `harkeniq_cc/auth.py`) | **answered, A12** — vendor staff never touch L3 live by default (spec-literal role 2); a CC-verified signed grant assertion is the only sanctioned future mechanism |
 | OQ-24 | Auditor scope: prose vs implemented 5-permission set | 2026-08-28 review | **answered, A13** — prose is canonical: read-only everything + export; three read-gate follow-ups recorded |
-| OQ-25 | Support-access denial semantics: after a deny, the engineer may simply re-request (currently unpinned by tests in either direction). Does D16 "denied is final" extend to support elevation, or is re-request-with-new-reason the intent? | 2026-08-28 review (testing pass) | next Console slice — owner: Vinod |
+| OQ-25 | Support-access denial semantics vs D16 | 2026-08-28 review (testing pass) | **answered, A14** — denial is non-final; re-request allowed; the approver sees the engineer's denial history at decision time; D16 stays hardware-specific |
 | OQ-26 | Shared Central Command for scale/cost: registration now enforces one-tenant-one-CC (409). If sharing is ever wanted, it requires explicit tenant isolation INSIDE CC — a deliberate architecture decision, never a registration side effect (decided: Vinod, 2026-08-28) | 2026-08-28 review | future — reopen only by amendment |
 
 ---
@@ -859,3 +859,24 @@ amendment record.
    lands by its own reviewed change, not silently.
 4. **Sequencing (decided):** spec first, then the resulting permission matrix
    presented for review; code changes only after that review.
+
+### A14 — 2026-08-28 — OQ-25 answered: support-access denial is non-final, history visible (decided: Vinod)
+
+1. **A support-access denial does not permanently deny the person.** The same
+   engineer may legitimately request again — context changes between asks
+   ("not for this ticket", "not during the window"). No cooldowns, no
+   permanent locks, no super-admin unlock machinery.
+2. **But the history is never hidden from the next decision.** The approver's
+   pending queue shows, per request, the engineer's prior denial history for
+   that tenant (count, last denial time, last reason) at the point of
+   decision. Read-only enrichment; the audit chain remains the durable record
+   (`support_access.requested/approved/denied`), unchanged.
+3. **D16 stays specific to hardware-action safety.** "Denied actions are
+   final" constrains the MACHINE (the platform never re-proposes a denied
+   action); it is not transplanted onto human support-access requests. What
+   carries over is its spirit: a denial is never silently erased, and repeated
+   asking is visible pressure, not invisible pressure.
+4. **Scope of the sanctioned implementation:** the queue-payload enrichment,
+   its UI display on the approver page, and regression tests pinning both
+   halves (re-request allowed after deny; history present in the queue).
+   Nothing else.
