@@ -16,15 +16,21 @@ logger = logging.getLogger("harkeniq.cc.api.agents")
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 
-def _agent_dict(dev) -> dict:
+def _agent_dict(dev, site_name: str = "") -> dict:
     return {
         "agent_id": dev.agent_id,
         "agent_name": dev.agent_name,
         "vendor": dev.vendor,
         "model": dev.model,
+        "device_class": dev.device_class,
         "observation": dev.observation,
         "health": dev.health,
         "site_id": dev.site_id,
+        # Resolved so the caller does not have to render a raw site UUID.
+        "site_name": site_name,
+        # When the SITE last saw the agent. None when the site never
+        # reported one; snapshot_at below is only CC's cache refresh.
+        "last_seen_at": dev.last_seen_at.isoformat() if dev.last_seen_at else None,
         "snapshot_at": dev.snapshot_at.isoformat() if dev.snapshot_at else None,
     }
 
@@ -37,6 +43,10 @@ async def list_agents(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     site_id: str | None = None,
+    # FleetCacheRepo.list_filtered has always supported these; the endpoint
+    # simply never forwarded them, so the Console's filters did nothing.
+    health: str | None = None,
+    vendor: str | None = None,
     search: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
@@ -45,12 +55,19 @@ async def list_agents(
     devices, total = await FleetCacheRepo(session).list_filtered(
         tenant_id=user.tenant_id,
         site_id=site_id,
+        health=health,
+        vendor=vendor,
         search=search,
         page=page,
         page_size=page_size,
     )
+    site_names = await FleetCacheRepo(session).site_names_for(
+        {d.site_id for d in devices}
+    )
     return {
-        "agents": [_agent_dict(d) for d in devices],
+        "agents": [
+            _agent_dict(d, site_names.get(d.site_id, "")) for d in devices
+        ],
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -77,8 +94,7 @@ async def get_agent(
     site = await session.get(CCSite, dev.site_id)
     if site is None or site.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="agent not found")
-    result = _agent_dict(dev)
-    result["site_name"] = site.site_name
+    result = _agent_dict(dev, site.site_name)
     result["subsystems"] = dev.subsystems
     return result
 

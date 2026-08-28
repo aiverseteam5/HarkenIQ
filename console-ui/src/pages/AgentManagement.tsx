@@ -13,17 +13,22 @@ import { getJson, postJson } from "../api";
 
 /* ── Types ────────────────────────────────────────── */
 
+/* Mirrors CC's /api/agents payload (see cc api/agents.py:_agent_dict).
+   The previous shape was invented: `version`, `status`, `device`,
+   `enabled` and `last_heartbeat_at` are fields CC has never sent, so
+   those columns rendered empty on every row. */
 interface Agent {
-  id: string;
   agent_id: string;
-  version: string;
-  status: "online" | "offline";
-  device: string;
+  agent_name: string;
+  vendor: string;
+  model: string;
+  device_class: string;
+  observation: string;
+  health: "ok" | "warning" | "critical" | "unknown" | string;
   site_id: string;
   site_name: string;
-  last_seen_at: string;
-  last_heartbeat_at: string;
-  enabled: boolean;
+  last_seen_at: string | null;
+  snapshot_at: string | null;
 }
 
 /* ── Constants ────────────────────────────────────── */
@@ -31,10 +36,17 @@ interface Agent {
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
 
-const STATUS_VARIANT: Record<string, "success" | "neutral"> = {
-  online: "success",
-  offline: "neutral",
+const HEALTH_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
+  ok: "success",
+  warning: "warning",
+  critical: "critical",
+  unknown: "neutral",
 };
+
+/** vendor + model, the operator-facing device name CC sends in parts. */
+function deviceLabel(a: Agent): string {
+  return [a.vendor, a.model].filter(Boolean).join(" ") || "—";
+}
 
 /* ── Styles ───────────────────────────────────────── */
 
@@ -103,8 +115,7 @@ export default function AgentManagement() {
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<Record<string, string>>({
     site_id: "",
-    status: "",
-    version: "",
+    health: "",
     search: "",
   });
 
@@ -126,19 +137,15 @@ export default function AgentManagement() {
       options: [],
     },
     {
-      key: "status",
-      label: "Status",
+      key: "health",
+      label: "Health",
       type: "select",
       options: [
-        { value: "online", label: "Online" },
-        { value: "offline", label: "Offline" },
+        { value: "ok", label: "OK" },
+        { value: "warning", label: "Warning" },
+        { value: "critical", label: "Critical" },
+        { value: "unknown", label: "Unknown" },
       ],
-    },
-    {
-      key: "version",
-      label: "Version",
-      type: "text",
-      placeholder: "Filter by version...",
     },
     {
       key: "search",
@@ -153,8 +160,7 @@ export default function AgentManagement() {
     try {
       const params = new URLSearchParams();
       if (filters.site_id) params.set("site_id", filters.site_id);
-      if (filters.status) params.set("status", filters.status);
-      if (filters.version) params.set("version", filters.version);
+      if (filters.health) params.set("health", filters.health);
       if (filters.search) params.set("search", filters.search);
       params.set("page", String(page));
       params.set("page_size", String(PAGE_SIZE));
@@ -189,7 +195,7 @@ export default function AgentManagement() {
       setDetailOpen(true);
       setDetailLoading(true);
       try {
-        const detail = await getJson<Agent>(`/api/agents/${agent.id}`);
+        const detail = await getJson<Agent>(`/api/agents/${agent.agent_id}`);
         setSelectedAgent(detail);
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load agent detail", "error");
@@ -206,7 +212,7 @@ export default function AgentManagement() {
     if (!toggleConfirm) return;
     setToggleLoading(true);
     try {
-      await postJson(`/api/agents/${toggleConfirm.agent.id}/${toggleConfirm.action}`, {});
+      await postJson(`/api/agents/${toggleConfirm.agent.agent_id}/${toggleConfirm.action}`, {});
       toast(
         `Agent ${toggleConfirm.action === "enable" ? "enabled" : "disabled"}`,
         "success",
@@ -214,7 +220,7 @@ export default function AgentManagement() {
       setToggleConfirm(null);
       void fetchAgents();
       // If the detail panel is showing this agent, close it
-      if (selectedAgent?.id === toggleConfirm.agent.id) {
+      if (selectedAgent?.agent_id === toggleConfirm.agent.agent_id) {
         setDetailOpen(false);
         setSelectedAgent(null);
       }
@@ -237,24 +243,31 @@ export default function AgentManagement() {
           </code>
         ),
       },
-      { key: "version", header: "Version" },
       {
-        key: "status",
-        header: "Status",
+        key: "health",
+        header: "Health",
         render: (r) => (
           <StatusBadge
-            status={r.status}
-            variant={STATUS_VARIANT[r.status] ?? "neutral"}
+            status={r.health || "unknown"}
+            variant={HEALTH_VARIANT[r.health] ?? "neutral"}
             size="sm"
           />
         ),
       },
-      { key: "device", header: "Device" },
-      { key: "site_name", header: "Site" },
+      { key: "observation", header: "Observation" },
+      { key: "device", header: "Device", render: (r) => deviceLabel(r) },
+      {
+        key: "site_name",
+        header: "Site",
+        render: (r) => r.site_name || r.site_id,
+      },
       {
         key: "last_seen_at",
         header: "Last Seen",
-        render: (r) => formatDate(r.last_seen_at),
+        // null when the site has never reported a reading. Rendering CC's
+        // own cache time here (the old behaviour) made every agent look
+        // fresh on each poll.
+        render: (r) => (r.last_seen_at ? formatDate(r.last_seen_at) : "never"),
       },
     ],
     [],
@@ -280,7 +293,7 @@ export default function AgentManagement() {
   }, []);
 
   const handleFilterClear = useCallback(() => {
-    setFilters({ site_id: "", status: "", version: "", search: "" });
+    setFilters({ site_id: "", health: "", search: "" });
     setPage(1);
   }, []);
 
@@ -301,7 +314,7 @@ export default function AgentManagement() {
         onClear={handleFilterClear}
       />
 
-      {!loading && agents.length === 0 && !filters.search && !filters.status && !filters.version ? (
+      {!loading && agents.length === 0 && !filters.search && !filters.health ? (
         <EmptyState
           title="No agents registered"
           description="Agents will appear here once they are deployed and connected."
@@ -331,7 +344,7 @@ export default function AgentManagement() {
           setSelectedAgent(null);
         }}
         title={selectedAgent?.agent_id ?? "Agent Details"}
-        subtitle={selectedAgent?.device}
+        subtitle={selectedAgent ? deviceLabel(selectedAgent) : undefined}
         width={480}
       >
         {detailLoading ? (
@@ -348,44 +361,42 @@ export default function AgentManagement() {
               </span>
             </div>
             <div style={detailRow}>
-              <span style={detailLabel}>Version</span>
-              <span style={detailValue}>{selectedAgent.version}</span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Status</span>
+              <span style={detailLabel}>Health</span>
               <span style={detailValue}>
                 <StatusBadge
-                  status={selectedAgent.status}
-                  variant={STATUS_VARIANT[selectedAgent.status] ?? "neutral"}
+                  status={selectedAgent.health || "unknown"}
+                  variant={HEALTH_VARIANT[selectedAgent.health] ?? "neutral"}
                   size="sm"
                 />
               </span>
+            </div>
+            <div style={detailRow}>
+              <span style={detailLabel}>Observation</span>
+              <span style={detailValue}>{selectedAgent.observation || "—"}</span>
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Device</span>
-              <span style={detailValue}>{selectedAgent.device}</span>
+              <span style={detailValue}>{deviceLabel(selectedAgent)}</span>
+            </div>
+            <div style={detailRow}>
+              <span style={detailLabel}>Class</span>
+              <span style={detailValue}>{selectedAgent.device_class || "server"}</span>
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Site</span>
-              <span style={detailValue}>{selectedAgent.site_name}</span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Enabled</span>
-              <span style={detailValue}>
-                <StatusBadge
-                  status={selectedAgent.enabled ? "enabled" : "disabled"}
-                  variant={selectedAgent.enabled ? "success" : "neutral"}
-                  size="sm"
-                />
-              </span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Last Heartbeat</span>
-              <span style={detailValue}>{formatDate(selectedAgent.last_heartbeat_at)}</span>
+              <span style={detailValue}>{selectedAgent.site_name || selectedAgent.site_id}</span>
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Last Seen</span>
-              <span style={detailValue}>{formatDate(selectedAgent.last_seen_at)}</span>
+              <span style={detailValue}>
+                {selectedAgent.last_seen_at ? formatDate(selectedAgent.last_seen_at) : "never"}
+              </span>
+            </div>
+            <div style={detailRow}>
+              <span style={detailLabel}>Cache Refreshed</span>
+              <span style={detailValue}>
+                {selectedAgent.snapshot_at ? formatDate(selectedAgent.snapshot_at) : "—"}
+              </span>
             </div>
 
             <div style={noteStyle}>
@@ -393,14 +404,16 @@ export default function AgentManagement() {
             </div>
 
             <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem" }}>
-              {selectedAgent.enabled ? (
-                <button
-                  className="btn btn-danger"
-                  onClick={() => setToggleConfirm({ agent: selectedAgent, action: "disable" })}
-                >
-                  Disable Agent
-                </button>
-              ) : (
+              {/* CC exposes enable and disable as separate endpoints and
+                  reports no enabled state, so both stay available rather
+                  than branching on a field that does not exist. */}
+              <button
+                className="btn btn-danger"
+                onClick={() => setToggleConfirm({ agent: selectedAgent, action: "disable" })}
+              >
+                Disable Agent
+              </button>
+              {(
                 <button
                   className="btn btn-primary"
                   onClick={() => setToggleConfirm({ agent: selectedAgent, action: "enable" })}
