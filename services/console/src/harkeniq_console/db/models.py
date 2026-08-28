@@ -68,7 +68,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(64))
     is_platform_user: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(32), default="invited")
-    invited_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    invited_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -85,7 +85,7 @@ class CustomRole(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
     name: Mapped[str] = mapped_column(String(128))
     permissions: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
-    created_by: Mapped[str] = mapped_column(String(32))
+    created_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
@@ -103,7 +103,7 @@ class ConsoleAuditLog(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     actor_email: Mapped[str] = mapped_column(String(320), default="")
     action: Mapped[str] = mapped_column(String(128))
     subject_type: Mapped[str] = mapped_column(String(64), default="")
@@ -128,7 +128,7 @@ class PlatformSetting(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
-    updated_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -144,9 +144,9 @@ class License(Base):
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="active")
-    issued_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    issued_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    revoked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -201,7 +201,7 @@ class FeatureFlag(Base):
     tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
     feature_name: Mapped[str] = mapped_column(String(128))
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    updated_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("tenant_id", "feature_name"),)
@@ -293,7 +293,7 @@ class CreditNote(Base):
     amount_cents: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(3))
     reason: Mapped[str] = mapped_column(Text)
-    issued_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    issued_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_credit_notes_invoice_id", "invoice_id"),)
@@ -342,7 +342,7 @@ class DelinquencyLog(Base):
     from_state: Mapped[str] = mapped_column(String(32))
     to_state: Mapped[str] = mapped_column(String(32))
     reason: Mapped[str] = mapped_column(Text, default="")
-    actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_delinquency_log_tenant_id", "tenant_id"),)
@@ -363,8 +363,8 @@ class SupportTicket(Base):
     component: Mapped[str] = mapped_column(String(64), default="other")
     site_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="open")
-    assigned_to: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(32))
+    assigned_to: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -382,7 +382,7 @@ class TicketMessage(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     ticket_id: Mapped[str] = mapped_column(ForeignKey("support_tickets.id"))
-    author_id: Mapped[str] = mapped_column(String(32))
+    author_id: Mapped[str] = mapped_column(String(128))
     author_email: Mapped[str] = mapped_column(String(320), default="")
     body: Mapped[str] = mapped_column(Text)
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -398,7 +398,7 @@ class TicketStateChange(Base):
     ticket_id: Mapped[str] = mapped_column(ForeignKey("support_tickets.id"))
     from_status: Mapped[str] = mapped_column(String(32))
     to_status: Mapped[str] = mapped_column(String(32))
-    changed_by: Mapped[str] = mapped_column(String(32))
+    changed_by: Mapped[str] = mapped_column(String(128))
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_ticket_state_changes_ticket_id", "ticket_id"),)
@@ -423,20 +423,20 @@ class SupportAccessLog(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
     # requested -> approved | denied; approved -> revoked, or simply expires.
     status: Mapped[str] = mapped_column(String(16), default="requested")
-    requested_by: Mapped[str] = mapped_column(String(32), default="")
+    requested_by: Mapped[str] = mapped_column(String(128), default="")
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    approved_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    denied_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    denied_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     denied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # enabled_by/at retain their R2b meaning: who put the grant into force.
-    enabled_by: Mapped[str] = mapped_column(String(32))
+    enabled_by: Mapped[str] = mapped_column(String(128))
     enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Only meaningful once approved; a pending request has no clock yet.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    revoked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
         Index("ix_support_access_log_tenant_id", "tenant_id"),
@@ -467,7 +467,7 @@ class ApiKey(Base):
     key_prefix: Mapped[str] = mapped_column(String(12))
     scope: Mapped[str] = mapped_column(String(32), default="read")
     status: Mapped[str] = mapped_column(String(32), default="active")
-    created_by: Mapped[str] = mapped_column(String(32))
+    created_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -483,7 +483,7 @@ class ImpersonationLog(Base):
     __tablename__ = "impersonation_log"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    admin_user_id: Mapped[str] = mapped_column(String(32))
+    admin_user_id: Mapped[str] = mapped_column(String(128))
     admin_email: Mapped[str] = mapped_column(String(320))
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
