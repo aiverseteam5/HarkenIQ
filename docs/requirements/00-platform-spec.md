@@ -327,6 +327,10 @@ here) no later than the start of their owning slice.
 | OQ-17 | Per-node price point per currency | PRD §9 | R2b (config), business decision |
 | OQ-18 | Air-gapped LLM (model, GPU floor) | Platform-Design | R3b (LLM interface at SM) / R4 (full air-gapped serving) |
 | OQ-19 | Agent language long-term (Python vs Go rewrite) | Platform-Design | Re-evaluate after R2b; Python governs until amended |
+| OQ-23 | Cross-realm auth for platform staff at L3: per-tenant CCs pin one realm, so platform-realm support tokens 401 at a real tenant's CC — support access to infrastructure pages works only in the single-realm demo. Token exchange? per-tenant service identity? | 2026-08-28 review (adversarial pass, verified against `harkeniq_cc/auth.py`) | next Console/CC slice — owner: Vinod |
+| OQ-24 | Auditor scope: §4 prose says "read-only everything + export" but the implemented role holds 5 permissions (no ticket/license/user/site reads) — now ENFORCED since the tenant plane is permission-gated. Which is canonical? Same family: CC's site_admin passes audit via its `*` wildcard | 2026-08-28 review | next Console slice — owner: Vinod |
+| OQ-25 | Support-access denial semantics: after a deny, the engineer may simply re-request (currently unpinned by tests in either direction). Does D16 "denied is final" extend to support elevation, or is re-request-with-new-reason the intent? | 2026-08-28 review (testing pass) | next Console slice — owner: Vinod |
+| OQ-26 | Shared Central Command for scale/cost: registration now enforces one-tenant-one-CC (409). If sharing is ever wanted, it requires explicit tenant isolation INSIDE CC — a deliberate architecture decision, never a registration side effect (decided: Vinod, 2026-08-28) | 2026-08-28 review | future — reopen only by amendment |
 
 ---
 
