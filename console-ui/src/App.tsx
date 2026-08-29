@@ -14,6 +14,7 @@ import TenantManagement from "./pages/TenantManagement";
 import UserManagement from "./pages/UserManagement";
 import LicenseManagement from "./pages/LicenseManagement";
 import FleetOverview from "./pages/FleetOverview";
+import Incidents from "./pages/Incidents";
 import Learning from "./pages/Learning";
 import RiskExposure from "./pages/RiskExposure";
 import VendorReliability from "./pages/VendorReliability";
@@ -140,6 +141,7 @@ function AppRoutes() {
         <Route path="/t/:tenantId/dashboard" element={<Dashboard />} />
         <Route path="/t/:tenantId/users" element={<UserManagement />} />
         <Route path="/t/:tenantId/licenses" element={<LicenseManagement />} />
+        <Route path="/t/:tenantId/incidents" element={<Incidents />} />
         <Route path="/t/:tenantId/fleet" element={<FleetOverview />} />
         <Route path="/t/:tenantId/risk" element={<RiskExposure />} />
         <Route path="/t/:tenantId/learning" element={<Learning />} />

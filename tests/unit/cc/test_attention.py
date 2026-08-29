@@ -333,3 +333,59 @@ class TestSummary:
 
     def test_tenant_id_is_echoed_for_the_consumer(self):
         assert _build()["tenant_id"] == TENANT
+
+
+class TestIncidentsChangeTheRecommendation:
+    """S4: when a diagnosed incident already exists, the honest next step is
+    to READ the diagnosis, not to tell a human to go investigate."""
+
+    def _inc(self, iid="inc-1", agent="a1", diagnosed=True):
+        return SimpleNamespace(
+            incident_id=iid, device_agent_id=agent, title="fan CRITICAL",
+            subsystem="fan", kind="device",
+            explanation={"provider": "llm", "summary": "s"} if diagnosed else None,
+            opened_at=None,
+        )
+
+    def test_a_diagnosed_incident_recommends_reading_it(self):
+        res = _build(
+            risks=[_risk(score=0.7, band="high")],
+            incidents=[self._inc()],
+        )
+        rec = res["items"][0]["recommended_next"]
+        assert rec["capability"] == "review_diagnosis"
+        assert rec["refs"] == ["inc-1"]
+        assert rec["requires_approval"] is False
+
+    def test_an_undiagnosed_incident_still_beats_generic_investigation(self):
+        res = _build(
+            risks=[_risk(score=0.7, band="high")],
+            incidents=[self._inc(diagnosed=False)],
+        )
+        assert res["items"][0]["recommended_next"]["capability"] == "review_incident"
+
+    def test_pending_approval_still_outranks_an_incident(self):
+        """Something already waiting on a human decision comes first."""
+        res = _build(
+            risks=[_risk(score=0.7, band="high")],
+            incidents=[self._inc()],
+            pending_routes=[_route("act-9", "a1")],
+        )
+        assert res["items"][0]["recommended_next"]["capability"] == \
+            "review_pending_approval"
+
+    def test_incidents_appear_in_current_state(self):
+        res = _build(risks=[_risk()], incidents=[self._inc()])
+        state = res["items"][0]["current_state"]
+        assert state["open_incidents"][0]["incident_id"] == "inc-1"
+        assert state["open_incidents"][0]["diagnosis"] is True
+
+    def test_another_devices_incident_is_not_attached(self):
+        res = _build(
+            devices=[_dev("a1"), _dev("a2")],
+            risks=[_risk("a1"), _risk("a2", 0.2, "low")],
+            incidents=[self._inc(agent="a2")],
+        )
+        by_agent = {i["agent_id"]: i for i in res["items"]}
+        assert by_agent["a1"]["current_state"]["open_incidents"] == []
+        assert by_agent["a2"]["current_state"]["open_incidents"]

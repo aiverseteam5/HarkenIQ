@@ -402,6 +402,19 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                         device_agent_id=device_agent_id,
                         subsystem=inc.subsystem or "",
                         opened_at_unix=_ts(inc.opened_at),
+                        # S4: the diagnosis and its correlation context ride
+                        # the snapshot, so the tenant surface can finally show
+                        # WHY, not just that something is wrong.
+                        parent_incident_id=inc.parent_id or "",
+                        confidence=inc.confidence or 0.0,
+                        inferred=bool(inc.inferred),
+                        correlation_meta_json=(
+                            json.dumps(inc.correlation_meta)
+                            if inc.correlation_meta else ""
+                        ),
+                        explanation_json=(
+                            json.dumps(inc.explanation) if inc.explanation else ""
+                        ),
                     )
                 )
 

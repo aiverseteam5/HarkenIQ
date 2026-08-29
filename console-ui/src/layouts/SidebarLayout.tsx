@@ -49,7 +49,8 @@ const TENANT_NAV: SidebarSection[] = [
   {
     label: "Fleet",
     items: [
-      { key: "/dashboard", label: "Dashboard", icon: "\u25A6" },
+      { key: "/dashboard", label: "Overview", icon: "\u25A6" },
+      { key: "/incidents", label: "Incidents", icon: "\u26A1" },
       { key: "/fleet", label: "Fleet Overview", icon: "\u2318" },
       { key: "/risk", label: "Risk & Exposure", icon: "\u26a0" },
       { key: "/learning", label: "Learning", icon: "\u2726" },

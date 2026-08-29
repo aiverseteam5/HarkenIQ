@@ -228,6 +228,19 @@ message FleetIncident {
   string device_agent_id = 5;
   string subsystem = 6;
   int64 opened_at_unix = 7;
+  // S4: the diagnosis rides the snapshot. Before this, the LLM explanation
+  // stopped at the Site Manager, so the tenant surface could show that
+  // something was wrong but never why. All additive tags; older agents and
+  // SMs simply leave them empty.
+  string parent_incident_id = 8;   // correlation parentage; "" for a parent
+  double confidence = 9;           // SM's correlation confidence
+  bool inferred = 10;              // domain was inferred, not confirmed (A1.1)
+  string correlation_meta_json = 11;
+  // The reasoning result stored on the incident: {provider, summary,
+  // confidence, evidence_cited, reasoning_steps, suggested_action,
+  // similar_past_incidents}. LLM-authored when provider == "llm", which is
+  // why consumers must treat it as generated content, never instruction.
+  string explanation_json = 12;
 }
 
 message FleetAction {

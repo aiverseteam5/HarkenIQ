@@ -24,6 +24,7 @@ from harkeniq_cc.db.models import (
     CCCveEntry,
     CCFleetCache,
     CCFleetPattern,
+    CCIncident,
     CCLearnedSignal,
     CCLearningCycle,
     CCOutcomeHistory,
@@ -1284,3 +1285,108 @@ class LearnedSignalRepo:
             stmt = stmt.where(CCLearnedSignal.scope_ref == scope_ref)
         stmt = stmt.order_by(CCLearnedSignal.confidence.desc()).limit(limit)
         return (await self.session.execute(stmt)).scalars().all()
+
+
+class IncidentRepo:
+    """Real incidents projected from Site Manager snapshots (S4)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, tenant_id: str, site_id: str, inc: dict) -> CCIncident:
+        """Idempotent on incident_id; refreshes diagnosis on every poll.
+
+        The diagnosis can arrive AFTER the incident opens (the LLM enriches
+        asynchronously at the site), so a later poll legitimately carries an
+        explanation the first one did not.
+        """
+        row = await self.session.get(CCIncident, inc["incident_id"])
+        if row is None:
+            row = CCIncident(
+                incident_id=inc["incident_id"], tenant_id=tenant_id,
+            )
+            self.session.add(row)
+        row.tenant_id = tenant_id or row.tenant_id
+        row.site_id = site_id
+        row.kind = inc.get("kind", "")
+        row.status = inc.get("status", "open")
+        row.title = (inc.get("title") or "")[:512]
+        row.device_agent_id = inc.get("device_agent_id", "")
+        row.subsystem = inc.get("subsystem", "")
+        row.parent_incident_id = inc.get("parent_incident_id") or None
+        row.confidence = inc.get("confidence", 0.0)
+        row.inferred = bool(inc.get("inferred", False))
+        if inc.get("correlation_meta"):
+            row.correlation_meta = dict(inc["correlation_meta"])
+        if inc.get("explanation"):
+            row.explanation = dict(inc["explanation"])
+        opened = inc.get("opened_at_unix")
+        if opened:
+            row.opened_at = datetime.fromtimestamp(opened, tz=timezone.utc)
+        row.last_seen_at = utcnow()
+        # Reappearing after an inferred resolution means it never really
+        # cleared; reopen rather than leaving a stale resolved row.
+        row.resolved_at = None
+        row.status = inc.get("status", "open")
+        await self.session.flush()
+        return row
+
+    async def resolve_absent(
+        self, tenant_id: str, site_id: str, present_ids: set[str],
+    ) -> int:
+        """D3 absence-inference: an open incident missing from this site's
+        snapshot has cleared at the site, so mark it resolved here.
+
+        Scoped to ONE site: another site's incidents are absent from this
+        snapshot for the obvious reason and must not be resolved by it.
+        """
+        rows = (
+            await self.session.execute(
+                select(CCIncident)
+                .where(CCIncident.tenant_id == tenant_id)
+                .where(CCIncident.site_id == site_id)
+                .where(CCIncident.status == "open")
+            )
+        ).scalars().all()
+        resolved = 0
+        for row in rows:
+            if row.incident_id not in present_ids:
+                row.status = "resolved"
+                row.resolved_at = utcnow()
+                resolved += 1
+        if resolved:
+            await self.session.flush()
+        return resolved
+
+    async def list_incidents(
+        self, tenant_id: str, status: Optional[str] = "open",
+        site_id: Optional[str] = None, device_agent_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> Sequence[CCIncident]:
+        stmt = select(CCIncident).where(CCIncident.tenant_id == tenant_id)
+        if status:
+            stmt = stmt.where(CCIncident.status == status)
+        if site_id:
+            stmt = stmt.where(CCIncident.site_id == site_id)
+        if device_agent_id:
+            stmt = stmt.where(CCIncident.device_agent_id == device_agent_id)
+        stmt = stmt.order_by(CCIncident.opened_at.desc().nullslast()).limit(limit)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def get(self, tenant_id: str, incident_id: str) -> Optional[CCIncident]:
+        row = await self.session.get(CCIncident, incident_id)
+        if row is None or row.tenant_id != tenant_id:
+            return None
+        return row
+
+    async def children_of(
+        self, tenant_id: str, parent_id: str,
+    ) -> Sequence[CCIncident]:
+        return (
+            await self.session.execute(
+                select(CCIncident)
+                .where(CCIncident.tenant_id == tenant_id)
+                .where(CCIncident.parent_incident_id == parent_id)
+                .order_by(CCIncident.opened_at)
+            )
+        ).scalars().all()

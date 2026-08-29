@@ -179,7 +179,7 @@ step "S1: the surfaces the Tenant Console now renders are reachable THROUGH the 
 # Each of these had a live endpoint and no consumer before S1. The proxy
 # path is the one the browser actually uses, so assert it, not CC direct.
 for _p in learning/candidates learning/cycles learning/signals predictive/risk \
-          firmware/exposure audit/verify attention; do
+          firmware/exposure audit/verify attention incidents; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
     "http://localhost:8100/api/t/$TENANT_ID/$_p")
   [ "$code" = "200" ] || { echo "proxy path $_p returned $code, want 200" >&2; exit 1; }
@@ -248,6 +248,34 @@ echo "$RESULT" | grep -q '"decision": *"approved"'
 echo "$RESULT" | grep -q 'operator1@harkeniq.com'
 wait_for "SM action approved" 60 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q '\"status\": *\"approved\"\\|approved'"
+
+step "S4: the diagnosis reaches the tenant surface, with its provenance"
+# The whole point of S4: before it, the LLM explanation stopped at the Site
+# Manager and the tenant could see WHAT was wrong but never WHY.
+SM_INC=$(curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/incidents)
+echo "$SM_INC" | python3 -c "import sys,json; d=json.load(sys.stdin); print('SM incidents:', len(d))"
+wait_for "incident at CC" 120 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/incidents/ | grep -q incident_id"
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/incidents/ | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert "incidents" in d, "incident contract shape"
+for i in d["incidents"]:
+    assert i["incident_id"] and i["site_id"], "tenant/site attribution"
+    assert "is_parent" in i and "children" in i, "correlation hierarchy preserved"
+    diag = i.get("diagnosis")
+    if diag:
+        # Provenance is a security property: a future agent reading this is
+        # itself a language model, and this text came from device telemetry.
+        assert diag["origin"], "diagnosis must name its origin"
+        assert diag["trust"] in ("untrusted_generated", "deterministic")
+        assert "generated" in diag, "model-authored fields must be grouped"
+print("incidents OK:", len(d["incidents"]), "| explained:", d["diagnosed"])
+'
+# Read-only: incidents are a record, not a control surface.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/incidents/)" = "405" ]
+# The pseudo-incident placeholder is gone, not left to disagree with truth.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/incidents)" = "404" ]
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

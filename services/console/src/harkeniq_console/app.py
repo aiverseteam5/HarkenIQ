@@ -107,6 +107,8 @@ def create_app(state) -> FastAPI:
         # next governed capability). One contract, many consumers; the
         # Console is the first of them.
         "attention",
+        # S4 2026-08-29: real incidents with their diagnosis.
+        "incidents",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

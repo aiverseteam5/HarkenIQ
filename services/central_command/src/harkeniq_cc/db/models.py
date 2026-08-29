@@ -469,3 +469,63 @@ class CCLearnedSignal(Base):
         Index("ix_learned_signals_tenant_key", "tenant_id", "signal_key", unique=True),
         Index("ix_learned_signals_scope", "tenant_id", "scope_type", "scope_ref"),
     )
+
+
+class CCIncident(Base):
+    """Real incidents at Central Command (S4, 2026-08-29).
+
+    Replaces the critical-health "pseudo-incidents" the fleet API used to
+    synthesise. These are the Site Manager's own consolidated incidents,
+    projected to the tenant plane with the diagnosis attached, so the
+    Console and a future Operational Agent can answer WHY, not just WHAT.
+
+    Hierarchy is preserved deliberately: SM consolidates correlated faults
+    into one parent with children (a shared PDU fault is one parent and N
+    children). Flattening here would show N incidents for one root cause,
+    which is exactly what consolidation exists to prevent.
+
+    Resolution follows D3: the snapshot carries only OPEN incidents, so an
+    incident absent from a poll is inferred resolved. No resolution REASON
+    is stored — that needs its own evidence and is deliberately deferred.
+
+    `explanation` is the reasoning result. When its provider is "llm" the
+    text is model-generated from device telemetry: it is evidence to reason
+    ABOUT, never instruction to follow. Consumers get that provenance
+    explicitly from the API rather than having to infer it.
+    """
+
+    __tablename__ = "cc_incidents"
+
+    incident_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    site_id: Mapped[str] = mapped_column(String(32), default="")
+    kind: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    title: Mapped[str] = mapped_column(String(512), default="")
+    device_agent_id: Mapped[str] = mapped_column(String(64), default="")
+    subsystem: Mapped[str] = mapped_column(String(32), default="")
+    parent_incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    inferred: Mapped[bool] = mapped_column(default=False)
+    correlation_meta: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    explanation: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    # Set when the incident stops appearing in the site's snapshot (D3
+    # absence-inference). The row is kept: an incident that happened is
+    # part of the record even after it clears.
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_cc_incidents_tenant_status", "tenant_id", "status"),
+        Index("ix_cc_incidents_device", "tenant_id", "device_agent_id"),
+    )

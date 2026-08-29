@@ -51,7 +51,7 @@ the Console proxy. Agent/MCP readiness refers to the future consumer surface
 | Capability (purpose) | API · owning service | Scope · permission | Approval · audit | UI / CC / Agent / MCP | Deps | Status → next action |
 |---|---|---|---|---|---|---|
 | Fleet view (what do I have, how healthy) | `/api/fleet[/{id}]` · CC | tenant · fleet.view | — · — | ✓ / ✓ / read-ready / Tier-1 | — | existing → drawer gains risk+CVE (S1) |
-| Incidents + diagnosis (what is wrong and why) | SM `/api/incidents` only | site · site token | — · — | ✗ / ✗ / read-ready / Tier-1 `explain_incident` | proto ext. +`cc_incidents` | **wiring → S4** (the one P1 contract repair; resolution by absence per D3) |
+| Incidents + diagnosis (what is wrong and why) | SM `/api/incidents` + **CC `/api/incidents` (S4)** | tenant · incident.view | — · — | **✓ (S4)** / ✓ / read-ready, provenance-marked / Tier-1 `explain_incident` | — | **S4 landed**: proto +5 additive fields, `cc_incidents` (0006), absence-inference per D3, pseudo-incidents retired |
 | Approvals (human gate on actions) | `/api/approvals/*` · CC | tenant · action.approve | IS the gate · chained | ✓ / ✓ / propose-target / Tier-2 | — | existing (P0-proven) → diagnosis excerpt rides S4 |
 | Action execution (14 types, gate funnel) | node `_execute_gated` via SM directives | device · lease/approval | per class · 4 phases | via queue / — / core loop / never direct | — | existing → consumed by A1 |
 | Autonomy budgets + stop switch (the trust ladder) | `/api/policies/autonomy`, `/stop-switch` · CC | tenant · reads fleet.view (D2, **landed S1**); writes site.manage | mutation human-only · chained | partial (Overview strip, **S1**) / ✓ / posture-read / Tier-1 + `activate_stop_switch` | — | **S1 landed** (read-split + strip) → S5 full surface |
@@ -235,6 +235,17 @@ it establishes surfaces so those layers add without redesign.
   slice, on an explicit decision.
 
 ### Test-infrastructure debt (NOT product architecture)
+
+- **`test_r2a_exit_gate` is load-sensitive** *(observed once, 2026-08-29,
+  during S4)*. It boots real agents and a Site Manager in-process with
+  compressed timings (0.2s sweeper, 0.5s inference) and a 30s `wait_until`
+  budget, so a full-suite run competing with Docker for CPU can miss the
+  deadline. Verified unrelated to the S4 change: the only SM edit is inside
+  `GetFleetSnapshot`, which that test never calls. Passed six consecutive
+  isolated runs and two consecutive full runs afterwards. Deliberately NOT
+  "fixed" by inflating the timeout on one observation — the budget is part
+  of a ratified exit gate. If it recurs, make the wait budget explicit and
+  load-aware rather than larger.
 
 - **The compose gate is not hermetic** *(observed 2026-08-29)*. Docker volumes
   (postgres) survive between runs, so SM actions and CC approval routes

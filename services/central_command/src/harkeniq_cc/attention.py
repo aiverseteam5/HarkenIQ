@@ -189,7 +189,8 @@ def _reasons(risk, cves: list[dict], warranty: Optional[dict],
     return out
 
 
-def _recommend(risk, cves: list[dict], pending: list[dict]) -> dict:
+def _recommend(risk, cves: list[dict], pending: list[dict],
+               incidents: Optional[list[dict]] = None) -> dict:
     """The next governed capability, chosen deterministically.
 
     Ordered by what a human would actually do first. Every branch names a
@@ -228,6 +229,29 @@ def _recommend(risk, cves: list[dict], pending: list[dict]) -> dict:
                 "facing mediation arrives in a later slice."
             ),
             "refs": sorted({c["cve_id"] for c in fixable}),
+        }
+
+    # S4: when a diagnosed incident already exists, the honest next step is
+    # to READ the diagnosis, not to go investigate from scratch.
+    diagnosed = [i for i in (incidents or []) if i.get("diagnosis")]
+    if diagnosed:
+        return {
+            "capability": "review_diagnosis",
+            "summary": (
+                f"{len(diagnosed)} open incident already diagnosed for this "
+                f"device."
+            ),
+            "requires_approval": False,
+            "available": True,
+            "refs": [i["incident_id"] for i in diagnosed],
+        }
+    if incidents:
+        return {
+            "capability": "review_incident",
+            "summary": f"{len(incidents)} open incident on this device.",
+            "requires_approval": False,
+            "available": True,
+            "refs": [i["incident_id"] for i in incidents],
         }
 
     basis = (risk.factors or {}).get("basis")
@@ -312,6 +336,7 @@ def build_attention(
     tenant_id: str,
     now: Optional[datetime] = None,
     learned_signals=None,
+    incidents=None,
 ) -> dict:
     """Compose the tenant's attention answer. Pure: no I/O, no DB.
 
@@ -326,6 +351,22 @@ def build_attention(
     for e in exposures:
         cves_by_agent.setdefault(e["agent_id"], []).append(e)
 
+    # S4: open incidents by device, so attention can point at a real
+    # diagnosis instead of telling a human to go investigate from scratch.
+    incidents_by_agent: dict[str, list[dict]] = {}
+    for inc in (incidents or []):
+        agent = getattr(inc, "device_agent_id", "") or ""
+        if not agent:
+            continue
+        incidents_by_agent.setdefault(agent, []).append({
+            "incident_id": inc.incident_id,
+            "title": inc.title,
+            "subsystem": inc.subsystem,
+            "kind": inc.kind,
+            "diagnosis": bool(inc.explanation),
+            "opened_at": inc.opened_at.isoformat() if inc.opened_at else None,
+        })
+
     pending_by_agent: dict[str, list[dict]] = {}
     for r in pending_routes:
         pending_by_agent.setdefault(r.device_agent_id, []).append({
@@ -339,6 +380,7 @@ def build_attention(
         dev = dev_by_agent.get(risk.agent_id)
         cves = cves_by_agent.get(risk.agent_id, [])
         pending = pending_by_agent.get(risk.agent_id, [])
+        device_incidents = incidents_by_agent.get(risk.agent_id, [])
         warranty = warranty_map.get(getattr(dev, "service_tag", "")) if dev else None
         warranty_d = (
             {"status": None, "end_date": warranty.end_date} if warranty else None
@@ -394,10 +436,11 @@ def build_attention(
                 "fleet_patterns": cohort_patterns,
             },
             "current_state": {
+                "open_incidents": device_incidents,
                 "pending_approvals": pending,
                 "open_action_count": len(pending),
             },
-            "recommended_next": _recommend(risk, cves, pending),
+            "recommended_next": _recommend(risk, cves, pending, device_incidents),
         })
 
     # Rank: driver first (failing now > waiting on a human > degraded >

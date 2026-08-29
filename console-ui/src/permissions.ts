@@ -36,6 +36,8 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
   "/reliability": { perm: "fleet.view" },
   // Auditor and viewer may read the queue; the page gates the approve and
   // deny buttons on action.approve separately.
+  // S4: real incidents with their diagnosis.
+  "/incidents": { perm: "incident.view" },
   "/approvals": { perm: "incident.view" },
   "/agents": { perm: "fleet.view" },
 

@@ -154,6 +154,21 @@ class SMClient:
                 })
             incidents = []
             for inc in snap.incidents:
+                # S4: the diagnosis now rides the snapshot. Decode defensively
+                # — an older SM leaves these empty, and a malformed blob must
+                # not cost us the whole fleet poll.
+                explanation = {}
+                if inc.explanation_json:
+                    try:
+                        explanation = json.loads(inc.explanation_json)
+                    except (ValueError, TypeError):
+                        explanation = {}
+                correlation_meta = {}
+                if inc.correlation_meta_json:
+                    try:
+                        correlation_meta = json.loads(inc.correlation_meta_json)
+                    except (ValueError, TypeError):
+                        correlation_meta = {}
                 incidents.append({
                     "incident_id": inc.incident_id,
                     "kind": inc.kind,
@@ -162,6 +177,11 @@ class SMClient:
                     "device_agent_id": inc.device_agent_id,
                     "subsystem": inc.subsystem,
                     "opened_at_unix": inc.opened_at_unix,
+                    "parent_incident_id": inc.parent_incident_id,
+                    "confidence": inc.confidence,
+                    "inferred": inc.inferred,
+                    "correlation_meta": correlation_meta,
+                    "explanation": explanation,
                 })
             pending_actions = []
             for act in snap.pending_actions:
