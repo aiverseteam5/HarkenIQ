@@ -341,6 +341,19 @@ class ApprovalRouteRepo:
         ).scalars().all()
         return rows, total
 
+    async def list_undecided_for_site(
+        self, site_id: str
+    ) -> Sequence[CCApprovalRoute]:
+        """Undecided routes for one site — the reconciliation set the
+        fleet poller compares against the SM's current pending list."""
+        return (
+            await self.session.execute(
+                select(CCApprovalRoute)
+                .where(CCApprovalRoute.site_id == site_id)
+                .where(CCApprovalRoute.decision.is_(None))
+            )
+        ).scalars().all()
+
     async def update_decision(
         self,
         route: CCApprovalRoute,
@@ -518,6 +531,29 @@ class AuditRepo:
         stmt = stmt.order_by(CCAuditLog.ts.desc())
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         return (await self.session.execute(stmt)).scalars().all()
+
+    async def count_filtered(
+        self,
+        tenant_id: str,
+        actor: Optional[str] = None,
+        action: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+    ) -> int:
+        """True total for the same filter — P0 2026-08-29: the audit list
+        endpoint reported the current page length as "total"."""
+        stmt = select(func.count(CCAuditLog.id)).where(
+            CCAuditLog.tenant_id == tenant_id
+        )
+        if actor is not None:
+            stmt = stmt.where(CCAuditLog.actor == actor)
+        if action is not None:
+            stmt = stmt.where(CCAuditLog.action == action)
+        if date_from is not None:
+            stmt = stmt.where(CCAuditLog.ts >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(CCAuditLog.ts <= date_to)
+        return (await self.session.execute(stmt)).scalar() or 0
 
 
 # ---------------------------------------------------------------------------

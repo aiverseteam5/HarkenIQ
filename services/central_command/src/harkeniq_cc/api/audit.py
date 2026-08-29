@@ -37,18 +37,22 @@ async def list_audit(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Paginated audit entries."""
-    rows = await AuditRepo(session).list_filtered(
+    repo = AuditRepo(session)
+    rows = await repo.list_filtered(
         tenant_id=user.tenant_id,
         actor=actor,
         action=action,
         page=page,
         page_size=page_size,
     )
+    total = await repo.count_filtered(
+        tenant_id=user.tenant_id, actor=actor, action=action,
+    )
     return {
         "entries": [_entry_dict(r) for r in rows],
         "page": page,
         "page_size": page_size,
-        "total": len(rows),
+        "total": total,
         "tenant_id": user.tenant_id,
     }
 
