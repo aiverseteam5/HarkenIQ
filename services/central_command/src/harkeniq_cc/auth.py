@@ -36,14 +36,47 @@ _RANKED_ROLES = [
     "auditor",
     "viewer",
 ]
-#: Roles allowed to mutate (approve/deny, policies); everything else views.
-_ADMIN_ROLES = {"platform_super_admin", "tenant_owner", "site_admin"}
-#: Extra grants for non-admin roles, by role. The auditor's job is the
-#: audit trail (spec §4 role 6); operator/viewer hold plain "view" and are
-#: refused audit reads — review 2026-08-28: CC's audit routes were gated
-#: on authentication alone, so any authenticated viewer could read the
-#: audit log through the Console proxy.
-_EXTRA_PERMISSIONS = {"auditor": ["audit.view"]}
+
+#: Role -> atomic permission grants, mirroring the Console's
+#: ROLE_PERMISSIONS (harkeniq_console/permissions.py) for the shared
+#: tenant roles. P0 2026-08-29 (final-assessment C1): the previous model
+#: granted only "*" (admins) or the literal string "view", so the
+#: fleet.view / action.approve / site.manage guards on every route were
+#: satisfiable by nobody below site_admin — operators could not approve
+#: and viewers could not view, contradicting spec §4 and R-C4. One
+#: vocabulary now serves both services; tests pin parity with the
+#: Console's map so they cannot drift apart silently.
+#:
+#: platform_support is deliberately ABSENT: vendor staff have no live L3
+#: access by default (A12.1) — CC's realm pinning keeps them out in real
+#: deployments, and in the single-realm demo an unlisted role falls
+#: through pick_role to "viewer" rather than gaining staff powers here.
+ROLE_PERMISSIONS: dict[str, list[str]] = {
+    "platform_super_admin": ["*"],
+    "tenant_owner": [
+        "tenant.view", "user.manage", "user.view", "role.manage",
+        "site.manage", "site.view", "fleet.view", "action.approve",
+        "incident.view", "incident.acknowledge", "billing.manage",
+        "billing.view", "license.view", "support.create", "support.view",
+        "audit.view", "audit.export", "skill.submit", "skill.install",
+    ],
+    "site_admin": [
+        "site.manage", "site.view", "fleet.view", "action.approve",
+        "incident.view", "incident.acknowledge", "user.view",
+    ],
+    "operator": [
+        "fleet.view", "action.approve", "incident.view",
+        "incident.acknowledge", "support.create", "support.view",
+        "skill.submit",
+    ],
+    # A13 (OQ-24): read-only everything + audit.export, nothing else.
+    "auditor": [
+        "fleet.view", "incident.view", "billing.view", "audit.view",
+        "audit.export", "user.view", "site.view", "license.view",
+        "support.view",
+    ],
+    "viewer": ["fleet.view", "incident.view"],
+}
 
 
 @dataclass
@@ -120,9 +153,6 @@ async def get_current_user(request: Request) -> UserContext:
         email=validated.email,
         tenant_id=request.app.state.cc.config.tenant_id,
         role=role,
-        permissions=(
-            ["*"] if role in _ADMIN_ROLES
-            else ["view", *_EXTRA_PERMISSIONS.get(role, [])]
-        ),
+        permissions=list(ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS["viewer"])),
         is_platform_user=role == "platform_super_admin",
     )
