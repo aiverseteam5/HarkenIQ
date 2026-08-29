@@ -53,7 +53,9 @@ const TENANT_NAV: SidebarSection[] = [
       { key: "/fleet", label: "Fleet Overview", icon: "\u2318" },
       { key: "/reliability", label: "Vendor Reliability", icon: "\u2696" },
       { key: "/approvals", label: "Approvals", icon: "\u2714" },
-      { key: "/agents", label: "Agents", icon: "\u2699" },
+      // S1: named for what it lists. "Agents" is reserved for the
+      // operational-agent surface (A0+), so the two never blur.
+      { key: "/agents", label: "Harken Nodes", icon: "\u2699" },
     ],
   },
   {

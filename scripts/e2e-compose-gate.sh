@@ -105,10 +105,20 @@ wait_for "fan incident open" 120 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
 
 step "Action proposed at the SM"
-wait_for "pending action" 120 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q COLLECT_DIAGNOSTICS"
-ACTION=$(curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+# Select the PENDING action, never actions[0]. The stack's volumes survive
+# between gate runs, so index 0 is whatever the LAST run left behind — an
+# already-approved action that never appears in CC's pending queue, which
+# then times out the C2 step below for a reason unrelated to the code
+# under test (observed 2026-08-29). Wait for and pick a genuinely pending one.
+pending_action_id() {
+  curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
+    | python3 -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a.get('status')=='pending'), ''))"
+}
+have_pending_action() { [ -n "$(pending_action_id)" ]; }
+
+wait_for "pending action" 120 have_pending_action
+ACTION=$(pending_action_id)
+[ -n "$ACTION" ] || { echo "no pending action at SM" >&2; exit 1; }
 
 step "Seed an OPERATOR (P0 2026-08-29): the role that was locked out of CC"
 # C1's proof at runtime: before the RBAC repair, CC granted non-admins
@@ -157,6 +167,24 @@ OP_TOKEN=$(curl -sf -X POST \
 step "CC RBAC is real: operator reads fleet (200), cannot read audit (403)"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/)" = "200" ]
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/audit/)" = "403" ]
+
+step "S1: the trust ladder is VISIBLE to an operator, and still immutable (D2)"
+# Posture reads opened to fleet.view so the people living under the ladder
+# can see it; mutation stayed at site.manage. Both halves asserted.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/autonomy)" = "200" ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/stop-switch)" = "200" ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/stop-switch)" = "403" ]
+
+step "S1: the surfaces the Tenant Console now renders are reachable THROUGH the proxy"
+# Each of these had a live endpoint and no consumer before S1. The proxy
+# path is the one the browser actually uses, so assert it, not CC direct.
+for _p in learning/candidates predictive/risk firmware/exposure audit/verify; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8100/api/t/$TENANT_ID/$_p")
+  [ "$code" = "200" ] || { echo "proxy path $_p returned $code, want 200" >&2; exit 1; }
+done
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/$TENANT_ID/audit/verify" | grep -q '"valid": *true'
 
 step "CC ingested the pending action (C2: the approvals hop is wired)"
 # Fleet poll interval is 30s in this stack; the route must appear at CC.

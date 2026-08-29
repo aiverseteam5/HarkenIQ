@@ -90,6 +90,17 @@ const detailValue: CSSProperties = {
   textAlign: "right",
 };
 
+const framingNote: CSSProperties = {
+  padding: "0.75rem 1rem",
+  marginBottom: "1rem",
+  background: "var(--bg-card)",
+  border: "1px solid var(--border-light)",
+  borderRadius: "var(--radius-md)",
+  fontSize: "0.8125rem",
+  color: "var(--text-secondary)",
+  lineHeight: 1.5,
+};
+
 const noteStyle: CSSProperties = {
   marginTop: "1.25rem",
   padding: "0.75rem",
@@ -284,9 +295,21 @@ export default function AgentManagement() {
       <Toast toasts={toasts} onDismiss={dismiss} />
 
       <PageHeader
-        title="Agent Management"
-        breadcrumbs={[{ label: "HarkenIQ" }, { label: "Fleet" }, { label: "Agents" }]}
+        title="Harken Nodes"
+        breadcrumbs={[{ label: "HarkenIQ" }, { label: "Fleet" }, { label: "Harken Nodes" }]}
       />
+
+      {/* S1 2026-08-29: "agent" means three distinct things in HarkenIQ and
+          conflating them is how a product grows a second runtime. Say which
+          one this page is (p1-agentic-product.md §2). */}
+      <div style={framingNote}>
+        <strong>Harken Nodes</strong> are the deployed agents: one per device,
+        each with its own cryptographic identity, and the final safety gate on
+        every action. They are not the same as <em>operational agents</em>
+        (named, scoped bundles a tenant configures) or{" "}
+        <em>external agents</em> (your own software calling HarkenIQ with its
+        own credential) — both arrive in later releases.
+      </div>
 
       <FilterBar
         filters={filterDefs}

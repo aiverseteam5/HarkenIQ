@@ -100,6 +100,9 @@ def create_app(state) -> FastAPI:
     _CC_PREFIXES = (
         "fleet", "approvals", "agents", "policies", "outcomes",
         "predictive", "warranty", "firmware", "sites", "audit",
+        # S1 2026-08-29: /api/learning/* was unreachable from the product —
+        # the R-C1 loop ran headless with no consumer (final assessment).
+        "learning",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

@@ -495,6 +495,52 @@ class TestProxyForwardsFaithfully:
             await client.aclose()
             await engine.dispose()
 
+    async def test_learning_prefix_is_proxied(self):
+        """S1 (2026-08-29): /api/learning/* existed at CC with NO consumer —
+        it was missing from _CC_PREFIXES, so the R-C1 learning loop ran
+        headless and unreachable from the product. Pin the route."""
+        import httpx as _httpx
+
+        seen = {}
+
+        def _capture(req: _httpx.Request) -> _httpx.Response:
+            seen["url"] = str(req.url)
+            return _httpx.Response(200, json={"candidates": []})
+
+        client, engine, sm, state, ids = await _stack()
+        try:
+            async with sm() as session:
+                await TenantServiceRepo(session).register(
+                    tenant_id=ids[0], service_kind="central_command",
+                    endpoint_url="http://cc-upstream.internal",
+                )
+                await session.commit()
+
+            state.cc_transport = _httpx.MockTransport(_capture)
+            app = create_app(state)
+
+            async def _fake_user() -> UserContext:
+                return UserContext(
+                    user_id="kc-1", email="a@example.com", tenant_id=None,
+                    role="platform_super_admin", permissions=[],
+                    is_platform_user=True,
+                )
+
+            app.dependency_overrides[get_current_user] = _fake_user
+            seamed = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+            )
+            resp = await seamed.get(f"/api/t/{ids[0]}/learning/candidates")
+            await seamed.aclose()
+
+            assert resp.status_code == 200
+            assert seen["url"] == (
+                "http://cc-upstream.internal/api/learning/candidates"
+            )
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
     async def test_schema_skew_degrades_to_503_not_500(self):
         """New binary + unmigrated DB must fail closed, not crash open."""
         client, engine, sm, _state, ids = await _stack()

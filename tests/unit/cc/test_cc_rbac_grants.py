@@ -76,6 +76,13 @@ class TestRoleRouteBehavior:
         ("operator", "/api/policies/", 403),
         ("viewer", "/api/policies/", 403),
         ("site_admin", "/api/policies/", 200),
+        # S1 (D2): autonomy POSTURE is readable by every tenant role —
+        # the trust ladder must be visible to the people under it.
+        ("operator", "/api/policies/autonomy", 200),
+        ("viewer", "/api/policies/autonomy", 200),
+        ("auditor", "/api/policies/autonomy", 200),
+        ("operator", "/api/policies/stop-switch", 200),
+        ("viewer", "/api/policies/stop-switch", 200),
         # audit.view — auditor and admins only
         ("auditor", "/api/audit/", 200),
         ("operator", "/api/audit/", 403),
@@ -85,6 +92,28 @@ class TestRoleRouteBehavior:
         client, engine = await _client_as(role)
         try:
             assert (await client.get(path)).status_code == expected
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    @pytest.mark.parametrize("role,expected", [
+        # D2's hard boundary: posture READS opened up, mutations did not.
+        ("operator", 403),
+        ("viewer", 403),
+        ("auditor", 403),
+        ("site_admin", 200),
+    ])
+    async def test_autonomy_mutation_stays_site_manage(self, role, expected):
+        client, engine = await _client_as(role)
+        try:
+            resp = await client.post(
+                "/api/policies/autonomy",
+                json={"device_type": "*", "level": 1,
+                      "budget_limit": 5, "budget_period": "daily"},
+            )
+            assert resp.status_code == expected
+            resp = await client.post("/api/policies/stop-switch")
+            assert resp.status_code == expected
         finally:
             await client.aclose()
             await engine.dispose()

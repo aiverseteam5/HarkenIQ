@@ -46,6 +46,44 @@ interface FleetDeviceDetail extends FleetDevice {
   firmware?: { component: string; name: string; version: string }[];
 }
 
+/* S1 2026-08-29: risk + CVE exposure in the drawer — both endpoints
+   existed with zero consumers (p1-agentic-product.md §3). */
+interface DeviceRisk {
+  agent_id: string;
+  risk_score: number;
+  band: string; // low | medium | high | insufficient_data
+  factors: Record<string, unknown>;
+}
+
+interface CveExposure {
+  agent_id: string;
+  component: string;
+  component_name: string;
+  version: string;
+  cve_id: string;
+  severity: string;
+  fixed_version: string;
+}
+
+interface SiteRow {
+  id: string;
+  site_name: string;
+}
+
+const RISK_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
+  low: "success",
+  medium: "warning",
+  high: "critical",
+  insufficient_data: "neutral",
+};
+
+const CVE_VARIANT: Record<string, "warning" | "critical" | "info" | "neutral"> = {
+  critical: "critical",
+  high: "critical",
+  medium: "warning",
+  low: "info",
+};
+
 interface FleetRow extends FleetDevice {
   name: string;
   observation: string;
@@ -165,6 +203,27 @@ export default function FleetOverview() {
   const [selectedDevice, setSelectedDevice] = useState<FleetDeviceDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [deviceRisk, setDeviceRisk] = useState<DeviceRisk | null>(null);
+  const [deviceCves, setDeviceCves] = useState<CveExposure[]>([]);
+  const [sites, setSites] = useState<SiteRow[]>([]);
+
+  /* ── Sites for the filter (was a permanently empty dropdown) ── */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getJson<{ sites: SiteRow[] }>(
+          `/api/t/${tenantId}/sites?page_size=200`,
+        );
+        if (!cancelled) setSites(res.sites ?? []);
+      } catch {
+        // filter degrades; the table still loads
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId]);
 
   /* ── Filter definitions ────────────────────────── */
   const filterDefs = useMemo<FilterDef[]>(() => [
@@ -172,7 +231,7 @@ export default function FleetOverview() {
       key: "site_id",
       label: "Site",
       type: "select",
-      options: [], // populated dynamically if needed
+      options: sites.map((s) => ({ value: s.id, label: s.site_name })),
     },
     {
       key: "vendor",
@@ -269,9 +328,38 @@ export default function FleetOverview() {
     async (device: FleetRow) => {
       setDetailOpen(true);
       setDetailLoading(true);
+      setDeviceRisk(null);
+      setDeviceCves([]);
       try {
         const detail = await getJson<FleetDeviceDetail>(`/api/t/${tenantId}/fleet/${device.id}`);
         setSelectedDevice(detail);
+        // S1: risk + CVE exposure for THIS device. Both are fleet-wide
+        // endpoints filtered client-side by agent_id; each failure is
+        // non-fatal so the drawer still renders device + warranty.
+        void (async () => {
+          try {
+            const res = await getJson<{ risks: DeviceRisk[] }>(
+              `/api/t/${tenantId}/predictive/risk`,
+            );
+            setDeviceRisk(
+              (res.risks ?? []).find((r) => r.agent_id === detail.agent_id) ?? null,
+            );
+          } catch {
+            setDeviceRisk(null);
+          }
+        })();
+        void (async () => {
+          try {
+            const res = await getJson<{ exposures: CveExposure[] }>(
+              `/api/t/${tenantId}/firmware/exposure`,
+            );
+            setDeviceCves(
+              (res.exposures ?? []).filter((e) => e.agent_id === detail.agent_id),
+            );
+          } catch {
+            setDeviceCves([]);
+          }
+        })();
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load device detail", "error");
         setDetailOpen(false);
@@ -279,7 +367,7 @@ export default function FleetOverview() {
         setDetailLoading(false);
       }
     },
-    [toast],
+    [toast, tenantId],
   );
 
   /* ── Sort handler ──────────────────────────────── */
@@ -431,6 +519,8 @@ export default function FleetOverview() {
         onClose={() => {
           setDetailOpen(false);
           setSelectedDevice(null);
+          setDeviceRisk(null);
+          setDeviceCves([]);
         }}
         title={selectedDevice?.name || selectedDevice?.agent_id || "Device Details"}
         subtitle={selectedDevice?.agent_id}
@@ -476,6 +566,56 @@ export default function FleetOverview() {
               <span style={detailValue}>{formatDate(selectedDevice.last_seen_at ?? selectedDevice.snapshot_at)}</span>
             </div>
 
+            {/* S1: predictive risk — deterministic scoring that already
+                existed with no consumer. "insufficient_data" is rendered
+                as exactly that, never as a fabricated number. */}
+            <div style={sectionTitle}>Failure Risk</div>
+            {deviceRisk ? (
+              <>
+                <div style={detailRow}>
+                  <span style={detailLabel}>Band</span>
+                  <span style={detailValue}>
+                    <StatusBadge
+                      status={
+                        deviceRisk.band === "insufficient_data"
+                          ? "insufficient data"
+                          : deviceRisk.band
+                      }
+                      variant={RISK_VARIANT[deviceRisk.band] ?? "neutral"}
+                      size="sm"
+                    />
+                  </span>
+                </div>
+                {deviceRisk.band !== "insufficient_data" && (
+                  <div style={detailRow}>
+                    <span style={detailLabel}>Score</span>
+                    <span style={detailValue}>
+                      {Math.round(deviceRisk.risk_score * 100)}%
+                    </span>
+                  </div>
+                )}
+                {Object.entries(deviceRisk.factors ?? {}).map(([key, value]) => (
+                  <div key={key} style={detailRow}>
+                    <span style={detailLabel}>{key.replace(/_/g, " ")}</span>
+                    <span style={detailValue}>
+                      {typeof value === "number"
+                        ? Number.isInteger(value)
+                          ? value
+                          : value.toFixed(3)
+                        : String(value)}
+                    </span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <div style={detailRow}>
+                <span style={detailLabel}>Band</span>
+                <span style={detailValue}>
+                  <StatusBadge status="unavailable" variant="neutral" size="sm" />
+                </span>
+              </div>
+            )}
+
             <div style={sectionTitle}>Warranty & Lifecycle</div>
             {selectedDevice.warranty ? (
               <>
@@ -514,6 +654,37 @@ export default function FleetOverview() {
                   <div key={`${fw.component}-${i}`} style={detailRow}>
                     <span style={detailLabel}>{fw.name || fw.component}</span>
                     <span style={detailValue}><code>{fw.version}</code></span>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* S1: CVE exposure from the local, air-gap-safe feed. Silence
+                here means "no feed match", which is only meaningful if a
+                feed is loaded — so say which. */}
+            {deviceCves.length > 0 && (
+              <>
+                <div style={sectionTitle}>CVE Exposure ({deviceCves.length})</div>
+                {deviceCves.map((cve, i) => (
+                  <div key={`${cve.cve_id}-${i}`} style={detailRow}>
+                    <span style={detailLabel}>
+                      <code>{cve.cve_id}</code>
+                      <span style={{ color: "var(--text-muted)", marginLeft: "0.5rem" }}>
+                        {cve.component_name || cve.component} {cve.version}
+                      </span>
+                    </span>
+                    <span style={detailValue}>
+                      <StatusBadge
+                        status={cve.severity || "unknown"}
+                        variant={CVE_VARIANT[(cve.severity || "").toLowerCase()] ?? "neutral"}
+                        size="sm"
+                      />
+                      {cve.fixed_version && (
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                          fixed in {cve.fixed_version}
+                        </div>
+                      )}
+                    </span>
                   </div>
                 ))}
               </>
