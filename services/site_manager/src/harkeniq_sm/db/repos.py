@@ -22,6 +22,7 @@ from harkeniq_sm.db.models import (
     DeviceSubsystemState,
     DirectedDirective,
     DomainMembership,
+    ErrorBudgetRow,
     FaultDomain,
     FirmwareCampaign,
     FirmwareCampaignTarget,
@@ -521,6 +522,90 @@ class SMFleetPatternRepo:
                 )
             )
         ).scalars().all()
+
+
+class ErrorBudgetRepo:
+    """Persisted A2.2 error budgets (S5).
+
+    R3b-1 declared `sm_error_budgets` and R3a wrote the drop-back model,
+    but nothing at runtime ever instantiated a KnowledgeBase — so the
+    table had no writer, `is_action_type_dropped_back` had no caller, and
+    automatic demotion, a RATIFIED safety property, did not happen on a
+    running system. S5 wires it to the one place the Site Manager learns
+    an action's terminal result (`ApprovalService._record_outcome`).
+
+    The decision itself is not re-implemented here: `ErrorBudgetState`
+    from `harkeniq_sm.knowledge` folds the outcome, so the persisted row
+    and the in-memory knowledge base cannot judge the same evidence
+    differently. This path only ever WITHDRAWS autonomy; nothing here can
+    grant it.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(self, action_type: str, outcome: str) -> tuple[ErrorBudgetRow, bool]:
+        """Fold one outcome into this action type's budget.
+
+        Returns (row, newly_dropped_back).
+        """
+        from harkeniq_sm.knowledge import ErrorBudgetState
+
+        row = await self.session.get(ErrorBudgetRow, action_type)
+        if row is None:
+            row = ErrorBudgetRow(action_type=action_type)
+            self.session.add(row)
+            await self.session.flush()
+        state = ErrorBudgetState(
+            action_type=action_type,
+            success_count=row.success_count or 0,
+            failure_count=row.failure_count or 0,
+            total_count=row.total_count or 0,
+            min_success_rate=row.min_success_rate or 0.95,
+            dropped_back=bool(row.dropped_back),
+        )
+        newly = state.record((outcome or "").upper())
+        row.success_count = state.success_count
+        row.failure_count = state.failure_count
+        row.total_count = state.total_count
+        row.dropped_back = state.dropped_back
+        if newly:
+            row.dropped_back_at = utcnow()
+        row.updated_at = utcnow()
+        await self.session.flush()
+        return row, newly
+
+    async def list_all(self) -> Sequence[ErrorBudgetRow]:
+        return (
+            await self.session.execute(
+                select(ErrorBudgetRow).order_by(ErrorBudgetRow.action_type)
+            )
+        ).scalars().all()
+
+    async def dropped_back_types(self) -> set[str]:
+        """Action types whose autonomy the error budget has withdrawn."""
+        rows = (
+            await self.session.execute(
+                select(ErrorBudgetRow).where(
+                    ErrorBudgetRow.dropped_back == True  # noqa: E712
+                )
+            )
+        ).scalars().all()
+        return {r.action_type for r in rows}
+
+    async def recover(self, action_type: str) -> bool:
+        """Operator lifts a drop-back: counters reset for a fresh period."""
+        row = await self.session.get(ErrorBudgetRow, action_type)
+        if row is None or not row.dropped_back:
+            return False
+        row.dropped_back = False
+        row.dropped_back_at = None
+        row.success_count = 0
+        row.failure_count = 0
+        row.total_count = 0
+        row.updated_at = utcnow()
+        await self.session.flush()
+        return True
 
 
 class AuditRepo:

@@ -84,6 +84,16 @@ async def fleet_poll_loop(state) -> None:
                             snapshot.get("incidents", []),
                         )
 
+                        # S5: live autonomy safety state. Written on every
+                        # poll INCLUDING when the site reported none, so a
+                        # stale row can never pass for a current reading.
+                        from harkeniq_cc.db.repos import SafetyStateRepo
+
+                        await SafetyStateRepo(session).upsert(
+                            state.config.tenant_id, site.id,
+                            snapshot.get("safety") or {"reported": False},
+                        )
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
 

@@ -19,6 +19,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger("harkeniq.sm.knowledge")
 
+#: Below this many outcomes an action type is not judged at all. A
+#: drop-back on two failures would revoke autonomy on noise.
+MIN_OUTCOMES_TO_JUDGE = 5
+
 
 @dataclass
 class StoredOutcome:
@@ -58,9 +62,27 @@ class ErrorBudgetState:
     @property
     def should_drop_back(self) -> bool:
         """True if success rate is below threshold and we have enough data."""
-        if self.total_count < 5:
+        if self.total_count < MIN_OUTCOMES_TO_JUDGE:
             return False  # not enough data to judge
         return self.success_rate < self.min_success_rate
+
+    def record(self, outcome: str) -> bool:
+        """Fold one outcome in. Returns True if this NEWLY dropped back.
+
+        S5: the single place the A2.2 drop-back decision is made, so the
+        in-memory knowledge base and the persisted `sm_error_budgets` row
+        can never judge the same evidence differently.
+        """
+        self.total_count += 1
+        if outcome == "SUCCESS":
+            self.success_count += 1
+        elif outcome in ("FAILURE", "ROLLBACK_TRIGGERED"):
+            self.failure_count += 1
+            if self.should_drop_back and not self.dropped_back:
+                self.dropped_back = True
+                self.dropped_back_at = time.time()
+                return True
+        return False
 
 
 class KnowledgeBase:
@@ -91,23 +113,16 @@ class KnowledgeBase:
             )
             self._error_budgets[outcome.action_type] = budget
 
-        budget.total_count += 1
-        if outcome.outcome == "SUCCESS":
-            budget.success_count += 1
-        elif outcome.outcome in ("FAILURE", "ROLLBACK_TRIGGERED"):
-            budget.failure_count += 1
-            if budget.should_drop_back and not budget.dropped_back:
-                budget.dropped_back = True
-                budget.dropped_back_at = time.time()
-                logger.warning(
-                    "Error budget drop-back: %s success rate %.1f%% < %.1f%% "
-                    "threshold (%d/%d). Autonomy revoked for this action type.",
-                    outcome.action_type,
-                    budget.success_rate * 100,
-                    budget.min_success_rate * 100,
-                    budget.success_count,
-                    budget.total_count,
-                )
+        if budget.record(outcome.outcome):
+            logger.warning(
+                "Error budget drop-back: %s success rate %.1f%% < %.1f%% "
+                "threshold (%d/%d). Autonomy revoked for this action type.",
+                outcome.action_type,
+                budget.success_rate * 100,
+                budget.min_success_rate * 100,
+                budget.success_count,
+                budget.total_count,
+            )
 
         # Trim old outcomes (keep last 1000 per device)
         device_list = self._device_outcomes[outcome.device_id]

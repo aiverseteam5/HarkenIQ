@@ -188,6 +188,7 @@ async def run(config: SMConfig, state: Optional[AppState] = None) -> None:
         directives=getattr(state, "directives", None),
         autonomy=getattr(state, "autonomy", None),
         ingest=state.ingest,
+        suppression=getattr(state, "suppression", None),
     )
     grpc_server, grpc_port = build_server(config, servicer, sm_servicer=sm_servicer)
     state.grpc_port = grpc_port

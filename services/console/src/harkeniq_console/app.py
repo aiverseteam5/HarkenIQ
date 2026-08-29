@@ -109,6 +109,11 @@ def create_app(state) -> FastAPI:
         "attention",
         # S4 2026-08-29: real incidents with their diagnosis.
         "incidents",
+        # S5 2026-08-29: the governed decision boundary for action —
+        # what may run without a human, on what evidence, under what
+        # live safety state. Read-only; every mutation stays on the
+        # existing /api/policies/* routes at site.manage.
+        "autonomy",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

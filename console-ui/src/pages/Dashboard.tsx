@@ -152,11 +152,15 @@ export default function Dashboard() {
         {autonomyLevel === null ? (
           <span>--</span>
         ) : (
-          <StatusBadge
-            status={AUTONOMY_LABELS[autonomyLevel] ?? `level ${autonomyLevel}`}
-            variant={autonomyLevel >= 2 ? "info" : "neutral"}
-            size="sm"
-          />
+          // S5: the strip states the level; the Autonomy surface states
+          // what that level means per action class, on what evidence.
+          <Link to={`/t/${tenantId}/autonomy`} style={{ textDecoration: "none" }}>
+            <StatusBadge
+              status={AUTONOMY_LABELS[autonomyLevel] ?? `level ${autonomyLevel}`}
+              variant={autonomyLevel >= 2 ? "info" : "neutral"}
+              size="sm"
+            />
+          </Link>
         )}
         {canApprove && (
           <>

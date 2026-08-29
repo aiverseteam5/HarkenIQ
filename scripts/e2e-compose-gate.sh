@@ -277,6 +277,43 @@ print("incidents OK:", len(d["incidents"]), "| explained:", d["diagnosed"])
 # The pseudo-incident placeholder is gone, not left to disagree with truth.
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/incidents)" = "404" ]
 
+step "S5: the autonomy contract is served, and it fences what it must"
+# Read at fleet.view (D2's read-split): the people living under the trust
+# ladder must be able to see it. The operator persona is used deliberately.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["contract_version"], "contract must be versioned for its consumers"
+for key in ("actor", "scope", "posture", "safety_state", "action_classes"):
+    assert key in d, f"missing contract section: {key}"
+by = {c["action_type"]: c for c in d["action_classes"]}
+# Every action the executor can run must be governed by a row here; a
+# class missing from the contract is a class nobody governs.
+assert len(by) >= 14, f"only {len(by)} action classes"
+# The boundary. No level, and no amount of evidence, may ever make these
+# autonomous through an autonomy budget.
+for at in ("FIRMWARE_UPDATE", "FIRMWARE_ROLLBACK", "INTERFACE_RESET",
+           "INTERFACE_DISABLE"):
+    assert by[at]["never_budget_grantable"] is True, at
+    assert by[at]["disposition"] == "denied", at
+# Every class states WHY it is where it is, and what would move it.
+for at, c in by.items():
+    assert c["disposition_reason"], f"{at} has no reason"
+    assert c["advancement"]["statement"], f"{at} has no advancement line"
+    assert "evidence" in c and "safety" in c
+print("autonomy OK:", len(by), "classes | level:",
+      d["posture"]["configured_level"],
+      "| safety reported:", d["safety_state"]["reported"])
+'
+# The contract is READ-ONLY. Every autonomy mutation stays on
+# /api/policies/* at site.manage; S5 added no second control path.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/autonomy/)" = "405" ]
+# Safety state must actually have travelled SM -> CC, not defaulted.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_safety_state WHERE reported = true" \
+  | grep -qv '^0$'
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

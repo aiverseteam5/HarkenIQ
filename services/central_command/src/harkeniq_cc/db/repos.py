@@ -28,6 +28,7 @@ from harkeniq_cc.db.models import (
     CCLearnedSignal,
     CCLearningCycle,
     CCOutcomeHistory,
+    CCSafetyState,
     CCSite,
     CCSkillDelivery,
     CCStopSwitch,
@@ -1285,6 +1286,49 @@ class LearnedSignalRepo:
             stmt = stmt.where(CCLearnedSignal.scope_ref == scope_ref)
         stmt = stmt.order_by(CCLearnedSignal.confidence.desc()).limit(limit)
         return (await self.session.execute(stmt)).scalars().all()
+
+
+class SafetyStateRepo:
+    """Live autonomy safety state per site (S5).
+
+    Replace-on-poll, like the fleet cache: safety state is a CURRENT
+    reading, and a stale row read as current would be worse than none.
+    A poll that carried no safety state writes `reported=False` rather
+    than leaving yesterday's row to look like today's truth.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, tenant_id: str, site_id: str, safety: dict,
+    ) -> CCSafetyState:
+        row = await self.session.get(CCSafetyState, site_id)
+        if row is None:
+            row = CCSafetyState(site_id=site_id)
+            self.session.add(row)
+        row.tenant_id = tenant_id
+        row.reported = bool(safety.get("reported"))
+        as_of = safety.get("as_of_unix") or 0
+        row.as_of = (
+            datetime.fromtimestamp(as_of, tz=timezone.utc) if as_of else None
+        )
+        row.sm_stop_switch = bool(safety.get("sm_stop_switch"))
+        row.suppressions = safety.get("suppressions") or []
+        row.error_budgets = safety.get("error_budgets") or []
+        row.site_budgets = safety.get("site_budgets") or {}
+        row.ingested_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        return row
+
+    async def list_for_tenant(self, tenant_id: str) -> Sequence[CCSafetyState]:
+        return (
+            await self.session.execute(
+                select(CCSafetyState)
+                .where(CCSafetyState.tenant_id == tenant_id)
+                .order_by(CCSafetyState.site_id)
+            )
+        ).scalars().all()
 
 
 class IncidentRepo:

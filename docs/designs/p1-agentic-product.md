@@ -54,7 +54,10 @@ the Console proxy. Agent/MCP readiness refers to the future consumer surface
 | Incidents + diagnosis (what is wrong and why) | SM `/api/incidents` + **CC `/api/incidents` (S4)** | tenant · incident.view | — · — | **✓ (S4)** / ✓ / read-ready, provenance-marked / Tier-1 `explain_incident` | — | **S4 landed**: proto +5 additive fields, `cc_incidents` (0006), absence-inference per D3, pseudo-incidents retired |
 | Approvals (human gate on actions) | `/api/approvals/*` · CC | tenant · action.approve | IS the gate · chained | ✓ / ✓ / propose-target / Tier-2 | — | existing (P0-proven) → diagnosis excerpt rides S4 |
 | Action execution (14 types, gate funnel) | node `_execute_gated` via SM directives | device · lease/approval | per class · 4 phases | via queue / — / core loop / never direct | — | existing → consumed by A1 |
-| Autonomy budgets + stop switch (the trust ladder) | `/api/policies/autonomy`, `/stop-switch` · CC | tenant · reads fleet.view (D2, **landed S1**); writes site.manage | mutation human-only · chained | partial (Overview strip, **S1**) / ✓ / posture-read / Tier-1 + `activate_stop_switch` | — | **S1 landed** (read-split + strip) → S5 full surface |
+| Autonomy budgets + stop switch (the trust ladder) | `/api/policies/autonomy`, `/stop-switch` · CC | tenant · reads fleet.view (D2, **landed S1**); writes site.manage | mutation human-only · chained | partial (Overview strip, **S1**) / ✓ / posture-read / Tier-1 + `activate_stop_switch` | — | **S1 landed** (read-split + strip); **S5 landed** the contract below |
+| **Autonomy contract** (may this run without a human, and why) | **`GET /api/autonomy` · CC (S5)** | tenant · fleet.view (D2 read-split) | none — read-only, confers no authority · — | **✓ (S5)** / ✓ / **decision input** / Tier-1 | safety transport | **S5 landed**: declared ladder (`autonomy.py`, also THE source for `policy_push`), per-class disposition + blocking conditions + evidence + advancement; no mutation surface added |
+| **Autonomy safety state** (what has already been withdrawn) | proto `FleetSafetyState` → `cc_safety_state` (0007) | tenant/site · fleet.view via the contract | — · — | via contract / ✓ / **governance input** / later | — | **S5 landed**: suppression + error budgets + site budget remaining leave the SM at last; unreported reads UNKNOWN, never safe |
+| **Error-budget demotion** (autonomy withdrawn on evidence) | SM `sm_error_budgets`; recovery at SM `/api/autonomy/error-budget/{type}/recover` | site · site token | automatic demote · recovery audited | via contract / ✓ / read / later | — | **S5 landed**: R3a's model had NO runtime writer and no caller — now folded at `_record_outcome` and enforced in the lease as `propose`. Tenant-plane recovery = registry candidate (§11) |
 | Approval policies/groups | `/api/policies/*` · CC | tenant · site.manage | — · chained | ✓ / ✓ / later / later | push unwired | **partial → A2 wires `approval_policies_json` push** |
 | Outcomes + patterns (what worked) | `/api/outcomes/*` · CC | tenant · fleet.view | — · — | partial (Reliability) / ✓ / read-ready / Tier-1 | — | existing → Learning surface (S3) |
 | Learning loop (candidates, cycles, promotions) | `/api/learning/*` · CC | tenant · fleet.view | promotion = human (marketplace) · — | ✗ / **✓ proxied (S1)** / read-ready / Tier-1 | — | **S1 landed** (reachable at last) → S3 surface; cycles in-process (label honestly; durable P2) |
@@ -181,8 +184,11 @@ P0 (landed: PR #13, merge 4dabdd4)
    populate → cc_incidents + migration 0005 + reconcile-by-absence (D3) →
    /api/incidents (incident.view) → proxy → UI + drill-throughs → retire
    pseudo-incidents)
-→ S5 Autonomy surface (trust ladder + per-class evidence + stop-switch
-   control; D2 split already live from S1)
+→ S5 Autonomy — the governed decision boundary for action (LANDED):
+   declared ladder as one object shared with policy_push · GET /api/autonomy
+   (fleet.view) · FleetSafetyState proto + cc_safety_state (0007) ·
+   error-budget demotion made real at the SM and enforced in the lease ·
+   Console Autonomy page. See §12.
 → A0+A1 named-agent thesis slice (bundle tables + migration 0006 → CRUD/UI →
    binding + deployment via existing directives → attribution → labeled
    proposals → demo: agent proposes, operator approves, node executes,
@@ -220,6 +226,37 @@ hop-by-hop in the Agentic Model artifact). S1 implements none of MCP/agents;
 it establishes surfaces so those layers add without redesign.
 
 ## 11. Open items (genuinely unresolved only)
+
+### Capability-registry candidates (named, sequenced, NOT abandoned)
+
+Recorded per Vinod's S5 sequencing call (2026-08-29): these are deferred
+capabilities that stay on the roadmap as candidates for the Operational
+Agent's capability registry — not silent drops.
+
+- **The 9 unmapped action classes.** A10.4 maps 5 of the platform's 14
+  action types. Four are structurally fenced (risk `high`: FIRMWARE_UPDATE,
+  FIRMWARE_ROLLBACK, INTERFACE_RESET, INTERFACE_DISABLE). The remaining
+  nine — IDENTIFY_LED and COLLECT_DIAGNOSTICS (risk `none`), FAN_RESET,
+  CLEAR_COUNTERS, INTERFACE_ENABLE (risk `low`), and the rest — are
+  neither granted nor fenced. S5 reports them as `not_budget_mapped`
+  rather than widening a boundary inside a slice about boundaries. The
+  live stack shows COLLECT_DIAGNOSTICS at 8/8 SUCCESS and still unable to
+  run unattended, which is the case for mapping it. **Mapping is a product
+  decision, not an evidence threshold** — it needs its own call.
+
+- **Tenant-plane recovery from an error-budget drop-back.** Demotion is
+  automatic and now real; recovery lives at the Site Manager
+  (`POST /api/autonomy/error-budget/{action_type}/recover`, site token,
+  audited). A tenant operator can SEE the drop-back but must use the site
+  break-glass to clear it. Closing this needs a one-shot CC→SM command
+  verb: `PushPolicy` is convergent and re-applies every poll, so a
+  recovery flag riding it would defeat drop-back permanently. That verb
+  belongs with A2's governed per-agent control design, not invented here
+  as a third CC→SM control path.
+
+- **Suppression re-enable from the tenant plane.** Same shape, same
+  reason; SM `POST /api/autonomy/suppression/{domain_id}/re-enable`
+  remains the control today.
 
 ### Backlog capabilities (discovered during implementation; not built)
 
@@ -274,3 +311,83 @@ it establishes surfaces so those layers add without redesign.
   correct the status ledger at the next milestone entry.
 - **Incident resolution reasons:** absence-inference ratified (D3); explicit
   reasons only on a concrete compliance/product requirement.
+
+---
+
+## 12. The S5 autonomy contract (landed 2026-08-29)
+
+`GET /api/autonomy` — Central Command, `fleet.view`, tenant-scoped
+structurally, optional `?site_id=` / `?action_type=`. **A stable
+machine-readable governance contract, not a Console DTO.** The Console is
+its first consumer; the Operational Agent (A0/A1) is its second and gets
+nothing extra.
+
+### Three axes, never merged
+
+```
+PERMISSION       may this ACTOR address the capability      RBAC, Keycloak
+AUTONOMY         may this ACTION CLASS run without a human  this contract
+EXECUTION GATES  may this SPECIFIC ACTION run right now     node funnel
+```
+
+**Autonomy is not permission, and autonomy is not execution
+authorization.** A `disposition` of `autonomous` is a PREDICTION an actor
+may plan with. Execution still runs the unchanged funnel: allow-list →
+preconditions → stop switch → lease → blast radius.
+
+### What the contract carries
+
+`actor` (identity, species, tenant, may_observe/approve/change_posture) ·
+`scope` (tenant, optional site, per-site safety-reporting) · `posture`
+(stop switch with who and when, configured level, budget, the declared
+`ladder`, device-scoped budgets marked `enforced: false`) ·
+`safety_state` (suppressions, error budgets, site stop switches, and
+explicitly which sites did NOT report) · `action_classes`, one row per
+action type the executor can run, each with: `risk`,
+`required_permission`, `granted_at_level`, `never_budget_grantable`,
+`disposition` + `disposition_reason`, `blocking_conditions` (scoped
+tenant/site/domain), `evidence`, `learning`, `safety`, `approval`,
+`advancement`.
+
+### Invariants (pinned by tests, asserted again at the compose gate)
+
+1. **No `high`-risk action is ever budget-grantable, at any level.** Stated
+   as a derived rule over `ACTION_RISK`, not a hand-kept list, so a new
+   high-risk action is fenced the moment it is classified.
+2. **The contract's ladder IS `policy_push`'s mapping.** They were two
+   copies; `grants_for_level` is now the single object and a test fails if
+   they diverge.
+3. **Unreported safety reads UNKNOWN, never safe.** The one direction a
+   governance input may not err.
+4. **Evidence below 5 outcomes yields no rate**, not a flattering one.
+5. **Demotion is automatic; promotion is always human.** Evidence
+   qualifies a class; only a person raises the level.
+6. **S5 added no mutation surface.** Every autonomy mutation stays on
+   `/api/policies/*` at `site.manage`.
+
+### The path an Operational Agent takes
+
+```
+token (tenant realm)              -> actor.identity, actor.tenant_id
+GET /api/autonomy?site_id=...     -> 403 without fleet.view (same guard as a human)
+read disposition                  -> autonomous | requires_approval | denied
+read blocking_conditions          -> say WHY in the proposal, not "denied"
+read safety.suppressed_domains    -> do not propose into a suppressed domain
+read evidence + learning          -> attach real justification
+propose into the SAME queue       -> no agent queue, no agent endpoint
+a named human approves            -> until the class has earned its level
+execute via the node funnel       -> unchanged; the contract authorized nothing
+outcome -> cc_outcome_history     -> becomes evidence on the next read
+```
+
+### What S5 fixed that was not on its list
+
+R3a ratified the A2.2 error-budget drop-back and R3b-1 declared
+`sm_error_budgets`, but **nothing at runtime ever constructed a
+`KnowledgeBase`**: the table had no writer, `is_action_type_dropped_back`
+had no caller, and a class could fail repeatedly and keep its autonomy on
+a running system. S5 folds every terminal outcome at
+`ApprovalService._record_outcome` and enforces the result in the lease as
+`propose` (drop back to Approve — not `deny`, since the action is still
+the right one). Automatic demotion is a ratified safety property; it is
+now real.

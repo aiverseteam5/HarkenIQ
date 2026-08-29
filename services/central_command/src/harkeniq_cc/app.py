@@ -17,6 +17,7 @@ from harkeniq_cc.api import learning as learning_api
 from harkeniq_cc.api import outcomes as outcomes_api
 from harkeniq_cc.api import policies as policies_api
 from harkeniq_cc.api import attention as attention_api
+from harkeniq_cc.api import autonomy as autonomy_api
 from harkeniq_cc.api import incidents as incidents_api
 from harkeniq_cc.api import predictive as predictive_api
 from harkeniq_cc.api import sites as sites_api
@@ -58,6 +59,7 @@ def create_app(state) -> FastAPI:
     app.include_router(attention_api.router)
     app.include_router(incidents_api.router)
     app.include_router(learning_api.router)
+    app.include_router(autonomy_api.router)
 
     # QA-010: a hardcoded ok reported healthy while the database had no
     # schema. Real probe via the R4-0 HealthChecker (same pattern as SM).

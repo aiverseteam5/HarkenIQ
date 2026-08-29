@@ -122,6 +122,20 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                     budgets.update(
                         self.autonomy.get_budget_for_agent(request.agent_id)
                     )
+                    # S5: a class the error budget has dropped back gets a
+                    # remaining budget of 0, which the lease reads as
+                    # "propose" — drop back to Approve, exactly the A2.2
+                    # semantic. Not "deny": the action is still the right
+                    # one, it just no longer runs without a human.
+                    async with self.ingest.sessionmaker() as budget_session:
+                        from harkeniq_sm.db.repos import ErrorBudgetRepo
+
+                        dropped = await ErrorBudgetRepo(
+                            budget_session
+                        ).dropped_back_types()
+                    for action_type in dropped:
+                        if action_type in budgets:
+                            budgets[action_type] = 0
                     rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
                     ceiling = max(
                         ["low", *policy_actions.values()],
@@ -243,6 +257,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         directives=None,
         autonomy=None,
         ingest=None,
+        suppression=None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.approvals = approvals
@@ -250,6 +265,9 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         self.directives = directives  # R5-2: skill installs from CC
         self.autonomy = autonomy  # QA-021/022: SMAutonomyEnforcer
         self.ingest = ingest  # QA-033: fleet-pattern mirror lives here
+        # S5: SuppressionEngine — its active domains are safety state CC
+        # must see, not just something leases carry to agents.
+        self.suppression = suppression
 
     async def InstallSkill(self, request, context):
         """R5-2: CC pushes a marketplace skill; queue directives for
@@ -506,6 +524,13 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             except Exception as e:
                 logger.debug("Candidate skill reporting skipped: %s", e)
 
+            # S5: the site's live autonomy safety state rides the snapshot.
+            # Assembled inside the session so a failure here degrades to
+            # `reported=False` — CC then shows the site as NOT REPORTING,
+            # which is the honest answer. An unobserved safety state must
+            # never round down to "safe".
+            safety = await self._safety_state(session)
+
         return harkeniq_pb2.FleetSnapshot(
             devices=fleet_devices,
             incidents=fleet_incidents,
@@ -513,7 +538,63 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             snapshot_at_unix=int(time.time()),
             outcomes=fleet_outcomes,
             candidate_skills=candidate_skills,
+            safety=safety,
         )
+
+    async def _safety_state(self, session) -> "harkeniq_pb2.FleetSafetyState":
+        """Compose FleetSafetyState from the live enforcer + persisted budgets."""
+        try:
+            from harkeniq_sm.db.repos import ErrorBudgetRepo
+
+            suppressions = []
+            engine = self.suppression
+            if engine is not None:
+                for domain_id, s in engine.get_state()[
+                    "active_suppressions"
+                ].items():
+                    suppressions.append(harkeniq_pb2.SuppressedDomain(
+                        domain_id=domain_id,
+                        event_family=s.get("event_family", "") or "",
+                        trigger_reason=s.get("trigger_reason", "") or "",
+                        device_count=int(s.get("device_count", 0) or 0),
+                        triggered_at_unix=int(s.get("triggered_at", 0) or 0),
+                        all_clear_at_unix=int(s.get("all_clear_at") or 0),
+                    ))
+
+            budgets = []
+            for row in await ErrorBudgetRepo(session).list_all():
+                budgets.append(harkeniq_pb2.ActionErrorBudget(
+                    action_type=row.action_type,
+                    success_count=row.success_count or 0,
+                    failure_count=row.failure_count or 0,
+                    total_count=row.total_count or 0,
+                    min_success_rate=row.min_success_rate or 0.95,
+                    dropped_back=bool(row.dropped_back),
+                    dropped_back_at_unix=_ts(row.dropped_back_at),
+                ))
+
+            site_budgets = []
+            stop_switch = False
+            if self.autonomy is not None:
+                state = self.autonomy.get_state()
+                stop_switch = bool(state.get("stop_switch"))
+                for action_type, vals in (state.get("budgets") or {}).items():
+                    site_budgets.append(harkeniq_pb2.SiteBudgetRemaining(
+                        action_type=action_type,
+                        remaining=int(vals.get("remaining", -1)),
+                    ))
+
+            return harkeniq_pb2.FleetSafetyState(
+                reported=True,
+                as_of_unix=int(time.time()),
+                sm_stop_switch=stop_switch,
+                suppressions=suppressions,
+                error_budgets=budgets,
+                site_budgets=site_budgets,
+            )
+        except Exception as e:  # noqa: BLE001 — degrade to unknown, never to safe
+            logger.warning("Safety state unavailable for snapshot: %s", e)
+            return harkeniq_pb2.FleetSafetyState(reported=False)
 
     async def RouteApproval(self, request, context):
         try:

@@ -9,14 +9,11 @@ poll loop (so SM restarts and new sites converge).
 Budget-row -> policy mapping (conservative, documented):
   - Only the ``device_type="*"`` row maps; the SM enforcer is site-wide
     per action type and has no device dimension yet (R3b deferral).
-  - level 0 (observe) / 1 (suggest): grants nothing.
-  - level 2 (batch): grants the low-risk gated server actions
-    (SEL_CLEAR, BMC_RESET), bounded by budget_limit per period.
-  - level 3 (autonomous): additionally grants the medium-risk actions
-    (POWER_CYCLE, POWER_CAP_ADJUST, CONFIG_RESTORE).
-  - High-risk actions (FIRMWARE_*, INTERFACE_*) are NEVER granted by
-    budget mapping — they keep their dedicated approval paths (campaign
-    approval per OQ-21; T1 quorum + SM + CC approval per A9).
+  - Which classes each level grants is NOT decided here. S5 promoted that
+    mapping to ``harkeniq_cc.autonomy.grants_for_level`` — the same object
+    the ``/api/autonomy`` contract reports — so the posture an operator
+    reads and the policy an enforcer receives cannot drift apart. A test
+    fails if this module and that contract ever disagree.
 """
 
 from __future__ import annotations
@@ -24,16 +21,11 @@ from __future__ import annotations
 import json
 import logging
 
+from harkeniq_cc.autonomy import grants_for_level
 from harkeniq_cc.db.repos import AutonomyBudgetRepo, SiteRepo, StopSwitchRepo
 
 logger = logging.getLogger("harkeniq.cc.policy_push")
 
-_LEVEL_2_ACTIONS = {"SEL_CLEAR": "low", "BMC_RESET": "low"}
-_LEVEL_3_ACTIONS = {
-    "POWER_CYCLE": "medium",
-    "POWER_CAP_ADJUST": "medium",
-    "CONFIG_RESTORE": "medium",
-}
 _PERIOD_SECONDS = {
     "hourly": 3600,
     "daily": 86400,
@@ -44,11 +36,9 @@ _PERIOD_SECONDS = {
 
 def budget_row_to_policies(budget) -> list[dict]:
     """Map one CCAutonomyBudget row to SM enforcer policy dicts."""
-    if budget.level < 2:
+    granted = grants_for_level(budget.level)
+    if not granted:
         return []
-    granted = dict(_LEVEL_2_ACTIONS)
-    if budget.level >= 3:
-        granted.update(_LEVEL_3_ACTIONS)
     window = _PERIOD_SECONDS.get(budget.budget_period, 86400)
     return [
         {

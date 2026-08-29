@@ -221,6 +221,43 @@ class SMClient:
                     "warnings_json": cand.warnings_json,
                     "dry_run_matches": cand.dry_run_matches,
                 })
+            # S5: live safety state. An SM that predates the field leaves
+            # `reported` false, which CC stores and renders as UNKNOWN —
+            # the same answer as a site that failed to assemble it. Never
+            # synthesise a "safe" default here; that is the one direction
+            # a governance input may not err. (QA-042's lesson: a field
+            # decoded nowhere is a feed that silently carries nothing.)
+            safety = {
+                "reported": bool(snap.safety.reported),
+                "as_of_unix": snap.safety.as_of_unix,
+                "sm_stop_switch": bool(snap.safety.sm_stop_switch),
+                "suppressions": [
+                    {
+                        "domain_id": d.domain_id,
+                        "event_family": d.event_family,
+                        "trigger_reason": d.trigger_reason,
+                        "device_count": d.device_count,
+                        "triggered_at_unix": d.triggered_at_unix,
+                        "all_clear_at_unix": d.all_clear_at_unix,
+                    }
+                    for d in snap.safety.suppressions
+                ],
+                "error_budgets": [
+                    {
+                        "action_type": b.action_type,
+                        "success_count": b.success_count,
+                        "failure_count": b.failure_count,
+                        "total_count": b.total_count,
+                        "min_success_rate": b.min_success_rate,
+                        "dropped_back": bool(b.dropped_back),
+                        "dropped_back_at_unix": b.dropped_back_at_unix,
+                    }
+                    for b in snap.safety.error_budgets
+                ],
+                "site_budgets": {
+                    sb.action_type: sb.remaining for sb in snap.safety.site_budgets
+                },
+            }
             return {
                 "devices": devices,
                 "incidents": incidents,
@@ -228,6 +265,7 @@ class SMClient:
                 "snapshot_at_unix": snap.snapshot_at_unix,
                 "outcomes": outcomes,
                 "candidate_skills": candidate_skills,
+                "safety": safety,
             }
 
     async def route_approval(

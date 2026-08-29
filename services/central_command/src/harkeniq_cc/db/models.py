@@ -529,3 +529,45 @@ class CCIncident(Base):
         Index("ix_cc_incidents_tenant_status", "tenant_id", "status"),
         Index("ix_cc_incidents_device", "tenant_id", "device_agent_id"),
     )
+
+
+class CCSafetyState(Base):
+    """Live autonomy safety state per site (S5, 2026-08-29).
+
+    Suppression and error-budget drop-back are the two mechanisms that
+    withdraw autonomy WITHOUT a human. Before S5 both lived only inside
+    the Site Manager, reachable through its site-token break-glass API,
+    so neither the tenant operator nor any future agent could observe a
+    demotion that had already happened.
+
+    This is a governance INPUT, not a display cache: `/api/autonomy`
+    folds it into each action class's disposition, and an Operational
+    Agent must evaluate the same state before it acts.
+
+    One row per site, replaced on each poll. A site whose snapshot did
+    not carry safety state is stored with `reported=False` and rendered
+    as UNKNOWN — an unobserved safety state must never round down to
+    "safe", which is the one direction a governance layer may not err.
+    """
+
+    __tablename__ = "cc_safety_state"
+
+    site_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    reported: Mapped[bool] = mapped_column(default=False)
+    as_of: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sm_stop_switch: Mapped[bool] = mapped_column(default=False)
+    #: [{domain_id, event_family, trigger_reason, device_count, ...}]
+    suppressions: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    #: [{action_type, success_count, failure_count, total_count,
+    #:   min_success_rate, dropped_back, dropped_back_at}]
+    error_budgets: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    #: {action_type: remaining}; -1 means unlimited
+    site_budgets: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (Index("ix_cc_safety_tenant", "tenant_id"),)
