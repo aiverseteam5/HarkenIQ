@@ -377,3 +377,95 @@ class CCSkillDelivery(Base):
     directives_queued: Mapped[int] = mapped_column(default=0)
     detail: Mapped[str] = mapped_column(String(512), default="")
     delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCLearningCycle(Base):
+    """The learning PROCESS, made durable (S3, 2026-08-29).
+
+    One row per iteration of the R-C1 loop: a detected pattern, the
+    candidate capability it produced, how far that was distributed, the
+    measured improvement, and whether promotion was recommended.
+
+    Why durable: the tracker held cycles in memory, so the record of what
+    the fleet learned vanished on restart — and cc_candidate_skills.cycle_id
+    already pointed at it, leaving a dangling reference. A learning
+    substrate whose evidence does not survive a restart cannot support
+    "improved future decisions", and no auditor can answer why a capability
+    earned promotion. The in-memory tracker stays as the live working set;
+    this is the ledger.
+    """
+
+    __tablename__ = "cc_learning_cycles"
+
+    cycle_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    pattern_id: Mapped[str] = mapped_column(String(64), default="")
+    pattern_type: Mapped[str] = mapped_column(String(32), default="")
+    skill_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sites_distributed: Mapped[int] = mapped_column(default=0)
+    devices_applied: Mapped[int] = mapped_column(default=0)
+    outcomes_before: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    outcomes_after: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    improvement_pct: Mapped[float | None] = mapped_column(nullable=True)
+    # Recommended != promoted. Promotion stays governed (marketplace human
+    # review); this column records only that the evidence bar was met.
+    promotion_recommended: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_learning_cycles_tenant_status", "tenant_id", "status"),
+    )
+
+
+class CCLearnedSignal(Base):
+    """Durable knowledge derived from a pattern and its outcomes (S3).
+
+    Distinct from a pattern: a PATTERN is an evidence-derived recurring
+    relationship detected fleet-wide; a LEARNED SIGNAL is the knowledge
+    that relationship yields, projected onto the scope its evidence
+    actually supports, and carried forward so it can inform tomorrow's
+    attention, diagnosis and (later) an agent's reasoning.
+
+    Scope is evidence-bound, never assumed global: cohort scope comes from
+    the pattern's vendor/model, and site scope only from patterns that
+    name failing sites (cross_site_batch). Device and tenant scope are NOT
+    derived from patterns, because pattern evidence does not support them.
+
+    A signal is knowledge, not authority: nothing here permits an action.
+    """
+
+    __tablename__ = "cc_learned_signals"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    # Stable identity for upsert, so re-detection refreshes rather than
+    # duplicating: scope + action + cohort.
+    signal_key: Mapped[str] = mapped_column(String(255), default="")
+    scope_type: Mapped[str] = mapped_column(String(16), default="cohort")  # cohort|site
+    scope_ref: Mapped[str] = mapped_column(String(128), default="")
+    action_type: Mapped[str] = mapped_column(String(64), default="")
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    statement: Mapped[str] = mapped_column(String(512), default="")
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    source_pattern_id: Mapped[str] = mapped_column(String(64), default="")
+    source_cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    observation_count: Mapped[int] = mapped_column(default=1)
+    first_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        Index("ix_learned_signals_tenant_key", "tenant_id", "signal_key", unique=True),
+        Index("ix_learned_signals_scope", "tenant_id", "scope_type", "scope_ref"),
+    )

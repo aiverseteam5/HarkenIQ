@@ -70,13 +70,39 @@ class IntelligenceEngine:
                     pattern_type=pattern.pattern_type,
                     baseline_metrics=self._scope_metrics(pattern.affected_scope),
                 )
+                # S3: the pattern becomes durable KNOWLEDGE, scoped to what
+                # its evidence supports, so tomorrow's attention can use it.
+                await self._record_learned_signals(session, tenant_id, pattern)
             logger.info(
                 "Intelligence cycle: %d outcomes ingested, %d new patterns",
                 len(outcomes), len(new_patterns),
             )
         await self._link_candidates(session, tenant_id)
         await self._track_outcomes(session, tenant_id)
+        # S3: persist the cycle ledger last, so it reflects everything this
+        # pass advanced. The tracker remains the live working set; this is
+        # the record that survives a restart.
+        await self._persist_cycles(session, tenant_id)
         return new_patterns
+
+    async def _record_learned_signals(self, session, tenant_id: str, pattern) -> None:
+        """Derive and upsert the knowledge a pattern justifies (S3)."""
+        from harkeniq_cc.db.repos import LearnedSignalRepo
+        from harkeniq_cc.learned_signals import derive_signals
+
+        repo = LearnedSignalRepo(session)
+        for signal in derive_signals(pattern):
+            await repo.upsert(tenant_id, signal, cycle_id=pattern.pattern_id)
+
+    async def _persist_cycles(self, session, tenant_id: str) -> None:
+        """Write the in-memory cycle working set to the durable ledger (S3)."""
+        from harkeniq_cc.db.repos import LearningCycleRepo
+
+        repo = LearningCycleRepo(session)
+        for entry in list(self.feedback.get_active_cycles()) + list(
+            self.feedback.get_completed_cycles()
+        ):
+            await repo.upsert(tenant_id, entry)
 
     # -- R-C1 learning feedback (QA-033) --------------------------------
 

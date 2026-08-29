@@ -7,7 +7,7 @@ so multi-table updates remain atomic.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select
@@ -24,6 +24,8 @@ from harkeniq_cc.db.models import (
     CCCveEntry,
     CCFleetCache,
     CCFleetPattern,
+    CCLearnedSignal,
+    CCLearningCycle,
     CCOutcomeHistory,
     CCSite,
     CCSkillDelivery,
@@ -1164,3 +1166,121 @@ class SkillDeliveryRepo:
                 select(CCSkillDelivery).order_by(CCSkillDelivery.delivered_at)
             )
         ).scalars().all()
+
+
+class LearningCycleRepo:
+    """Durable ledger of R-C1 learning cycles (S3)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, tenant_id: str, entry) -> CCLearningCycle:
+        """Persist a tracker cycle. Idempotent on cycle_id, so the loop can
+        write the same cycle on every pass as it advances."""
+        row = await self.session.get(CCLearningCycle, entry.cycle_id)
+        if row is None:
+            row = CCLearningCycle(cycle_id=entry.cycle_id, tenant_id=tenant_id)
+            self.session.add(row)
+            if entry.started_at:
+                row.started_at = datetime.fromtimestamp(
+                    entry.started_at, tz=timezone.utc
+                )
+        row.tenant_id = tenant_id or row.tenant_id
+        row.pattern_id = entry.pattern_id
+        row.pattern_type = entry.pattern_type
+        row.skill_id = entry.skill_id
+        row.sites_distributed = entry.sites_distributed
+        row.devices_applied = entry.devices_applied
+        row.outcomes_before = dict(entry.outcomes_before or {})
+        row.outcomes_after = dict(entry.outcomes_after or {})
+        row.improvement_pct = entry.improvement_pct
+        row.promotion_recommended = bool(entry.promoted)
+        row.updated_at = utcnow()
+        if entry.completed_at:
+            row.completed_at = datetime.fromtimestamp(
+                entry.completed_at, tz=timezone.utc
+            )
+            row.status = "closed"
+        elif entry.promoted:
+            row.status = "promotion_recommended"
+        elif entry.skill_id:
+            row.status = "measuring"
+        else:
+            row.status = "open"
+        await self.session.flush()
+        return row
+
+    async def list_cycles(
+        self, tenant_id: str, status: Optional[str] = None, limit: int = 200,
+    ) -> Sequence[CCLearningCycle]:
+        stmt = select(CCLearningCycle).where(
+            CCLearningCycle.tenant_id == tenant_id
+        )
+        if status:
+            stmt = stmt.where(CCLearningCycle.status == status)
+        stmt = stmt.order_by(CCLearningCycle.started_at.desc()).limit(limit)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def get(self, cycle_id: str) -> Optional[CCLearningCycle]:
+        return await self.session.get(CCLearningCycle, cycle_id)
+
+
+class LearnedSignalRepo:
+    """Durable knowledge derived from patterns (S3).
+
+    Upsert on (tenant, signal_key): re-detecting the same relationship
+    REFRESHES the knowledge and bumps its observation count rather than
+    accumulating duplicates.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, tenant_id: str, signal: dict, cycle_id: Optional[str] = None,
+    ) -> CCLearnedSignal:
+        existing = (
+            await self.session.execute(
+                select(CCLearnedSignal)
+                .where(CCLearnedSignal.tenant_id == tenant_id)
+                .where(CCLearnedSignal.signal_key == signal["signal_key"])
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = CCLearnedSignal(
+                tenant_id=tenant_id, signal_key=signal["signal_key"],
+            )
+            self.session.add(existing)
+        else:
+            existing.observation_count += 1
+        existing.scope_type = signal["scope_type"]
+        existing.scope_ref = signal["scope_ref"]
+        existing.action_type = signal["action_type"]
+        existing.vendor = signal.get("vendor", "")
+        existing.model = signal.get("model", "")
+        existing.statement = signal["statement"][:512]
+        existing.evidence = dict(signal.get("evidence") or {})
+        existing.confidence = signal["confidence"]
+        existing.source_pattern_id = signal.get("source_pattern_id", "")
+        if cycle_id:
+            existing.source_cycle_id = cycle_id
+        existing.status = "active"
+        existing.last_confirmed_at = utcnow()
+        await self.session.flush()
+        return existing
+
+    async def list_active(
+        self, tenant_id: str, scope_type: Optional[str] = None,
+        scope_ref: Optional[str] = None, limit: int = 500,
+    ) -> Sequence[CCLearnedSignal]:
+        stmt = (
+            select(CCLearnedSignal)
+            .where(CCLearnedSignal.tenant_id == tenant_id)
+            .where(CCLearnedSignal.status == "active")
+        )
+        if scope_type:
+            stmt = stmt.where(CCLearnedSignal.scope_type == scope_type)
+        if scope_ref:
+            stmt = stmt.where(CCLearnedSignal.scope_ref == scope_ref)
+        stmt = stmt.order_by(CCLearnedSignal.confidence.desc()).limit(limit)
+        return (await self.session.execute(stmt)).scalars().all()

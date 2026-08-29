@@ -178,7 +178,8 @@ step "S1: the trust ladder is VISIBLE to an operator, and still immutable (D2)"
 step "S1: the surfaces the Tenant Console now renders are reachable THROUGH the proxy"
 # Each of these had a live endpoint and no consumer before S1. The proxy
 # path is the one the browser actually uses, so assert it, not CC direct.
-for _p in learning/candidates predictive/risk firmware/exposure audit/verify attention; do
+for _p in learning/candidates learning/cycles learning/signals predictive/risk \
+          firmware/exposure audit/verify attention; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
     "http://localhost:8100/api/t/$TENANT_ID/$_p")
   [ "$code" = "200" ] || { echo "proxy path $_p returned $code, want 200" >&2; exit 1; }
@@ -204,6 +205,36 @@ print("attention OK:", len(d["items"]), "ranked,", len(d["sites"]), "sites")
 '
 # Read-only: the capability names next steps, it never performs them.
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/)" = "405" ]
+
+step "S3: the learning substrate is DURABLE, not process memory"
+# The learning ledger and the knowledge it produced must live in the
+# database, so a restart cannot erase what the fleet learned. Assert the
+# tables exist and are the ones attention reads.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT to_regclass('cc_learning_cycles'), to_regclass('cc_learned_signals')" \
+  | grep -q "cc_learning_cycles|cc_learned_signals"
+# Learned signals are knowledge, never authority: no write verb exists.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/learning/signals)" = "405" ]
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/learning/signals \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert "signals" in d, "learned-signal contract shape"
+for s in d["signals"]:
+    assert s["scope_type"] in ("cohort", "site"), "scope must be evidence-bound"
+    assert s["statement"] and s["source_pattern_id"], "knowledge traces to a pattern"
+print("learned signals OK:", len(d["signals"]))
+'
+# Attention must expose the learned-signal slot, so yesterdays learning has
+# a path into tomorrows answer even before any pattern has been detected.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/ \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for i in d["items"]:
+    assert "learned_signals" in i["evidence"], "attention consumes learned knowledge"
+print("attention<-learning wired OK")
+'
 
 step "CC ingested the pending action (C2: the approvals hop is wired)"
 # Fleet poll interval is 30s in this stack; the route must appear at CC.

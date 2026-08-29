@@ -31,6 +31,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from harkeniq_cc.learned_signals import signals_for_device
+
 #: Ranking order for bands. Lower sorts first (needs attention sooner).
 _BAND_ORDER = {"high": 0, "medium": 1, "low": 2, "insufficient_data": 3}
 
@@ -112,7 +114,8 @@ def _confidence(risk) -> dict:
 
 
 def _reasons(risk, cves: list[dict], warranty: Optional[dict],
-             patterns: list[dict], health: str, driver: str = "") -> list[str]:
+             patterns: list[dict], health: str, driver: str = "",
+             learned: Optional[list[dict]] = None) -> list[str]:
     """Human-readable 'why does this matter', derived only from evidence.
 
     Every string here traces to a value the caller supplied. Nothing is
@@ -172,6 +175,17 @@ def _reasons(risk, cves: list[dict], warranty: Optional[dict],
                 "(anomaly pattern detected across the fleet)."
             )
             break
+
+    # S3: prior learning, stated as learning. This is what makes the loop
+    # visible to the operator — yesterday's outcomes speaking to today's
+    # decision, most specific scope first.
+    for signal in (learned or [])[:2]:
+        scope_word = "this site" if signal["scope_type"] == "site" else "this model"
+        out.append(
+            f"Learned for {scope_word}: {signal['statement']} "
+            f"(confidence {signal['confidence']:.0%}, "
+            f"seen {signal['observation_count']}x)"
+        )
     return out
 
 
@@ -273,7 +287,13 @@ def _patterns_for(patterns, vendor: str, model: str) -> list[dict]:
         if not s_vendor and not s_model:
             continue  # unscoped patterns say nothing about THIS device
         hits.append({
-            "pattern_id": p.pattern_id,
+            # The PERSISTED row (CCFleetPattern) keys on `id`; the in-memory
+            # detector dataclass (FleetPattern) keys on `pattern_id`. This
+            # function is handed rows in production and dataclasses in some
+            # tests, so accept both. Reading only `pattern_id` 500'd the
+            # whole attention endpoint the moment a real pattern existed —
+            # invisible until the fleet actually learned something.
+            "pattern_id": getattr(p, "pattern_id", None) or getattr(p, "id", ""),
             "pattern_type": p.pattern_type,
             "description": p.description,
             "confidence": p.confidence,
@@ -291,6 +311,7 @@ def build_attention(
     sites,
     tenant_id: str,
     now: Optional[datetime] = None,
+    learned_signals=None,
 ) -> dict:
     """Compose the tenant's attention answer. Pure: no I/O, no DB.
 
@@ -326,6 +347,13 @@ def build_attention(
         site_id = risk.site_id or (dev.site_id if dev else "")
         health = (dev.health if dev else "") or "unknown"
         driver = _driver(health, risk.band, pending)
+        # S3: what the fleet has already LEARNED that applies to this
+        # device — site knowledge first, then cohort. This is the edge that
+        # closes the loop: yesterday's outcomes change what today's
+        # attention says, for humans and agents alike.
+        device_signals = signals_for_device(
+            learned_signals or [], risk.vendor, risk.model, site_id,
+        )
 
         items.append({
             "agent_id": risk.agent_id,
@@ -348,8 +376,10 @@ def build_attention(
             "factors": risk.factors or {},
             "reasons": _reasons(
                 risk, cves, warranty_d, cohort_patterns, health, driver,
+                device_signals,
             ),
             "evidence": {
+                "learned_signals": device_signals,
                 "cves": [
                     {
                         "cve_id": c["cve_id"],

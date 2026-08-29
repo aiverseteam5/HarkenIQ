@@ -24,6 +24,7 @@ from harkeniq_cc.db.repos import (
     CveFeedRepo,
     FleetCacheRepo,
     FleetPatternRepo,
+    LearnedSignalRepo,
     OutcomeHistoryRepo,
     SiteRepo,
     WarrantyRepo,
@@ -71,6 +72,9 @@ async def attention(
     pending_routes = await ApprovalRouteRepo(session).list_pending(tenant_id)
     patterns = await FleetPatternRepo(session).list_patterns(tenant_id=tenant_id)
     sites = await SiteRepo(session).list_all(tenant_id)
+    # S3: durable learned signals — what the fleet already knows. Survives
+    # restart, which is what lets yesterday's learning reach today's answer.
+    learned = await LearnedSignalRepo(session).list_active(tenant_id)
 
     # Score with the existing model — this endpoint adds no risk maths.
     cohorts = cohort_failure_rates(outcomes)
@@ -105,6 +109,7 @@ async def attention(
         patterns=patterns,
         sites=sites,
         tenant_id=tenant_id,
+        learned_signals=learned,
     )
     # Rank is assigned before truncation, so "rank 1" always means first in
     # the tenant, never first on the page.
