@@ -70,7 +70,11 @@ class MeteringService:
             {
                 "tenant_id": tenant_id,
                 "site_name": e["site_name"],
-                "date": e["date"],
+                # P0 2026-08-29 (C3, found by the wire test): CC sends an
+                # ISO string but usage_events.date is a Date column — the
+                # raw string raises on sqlite AND asyncpg. The signed
+                # upload path already parsed; this path never did.
+                "date": _parse_date(e["date"]),
                 "node_count": e["node_count"],
                 "agent_versions": e.get("agent_versions"),
                 "source": "cc_report",
