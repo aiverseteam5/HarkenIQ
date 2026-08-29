@@ -14,6 +14,31 @@ from harkeniq_cc.sm_client import SMClient
 logger = logging.getLogger("harkeniq.cc.usage_reporter")
 
 
+def build_console_usage_payload(
+    tenant_id: str, site_name: str, date: str, usage: dict,
+) -> dict:
+    """The exact body POSTed to the Console's /api/internal/usage-events.
+
+    P0 2026-08-29 (final-assessment C3): CC used to post a FLAT single
+    event while the Console's UsageEventsRequest requires
+    ``{tenant_id, events:[...]}`` — every report 422ed and was swallowed
+    as a warning, silently starving metering and therefore billing.
+    Kept as a module-level function so the contract test can POST this
+    exact shape at a real Console app over the wire.
+    """
+    return {
+        "tenant_id": tenant_id,
+        "events": [
+            {
+                "site_name": site_name,
+                "date": date,
+                "node_count": usage["node_count"],
+                "agent_versions": usage.get("agent_versions"),
+            }
+        ],
+    }
+
+
 async def usage_report_loop(state) -> None:
     """Report daily usage snapshots to the Console (L4).
 
@@ -51,25 +76,25 @@ async def usage_report_loop(state) -> None:
                         if state.config.console_url:
                             try:
                                 async with httpx.AsyncClient() as http:
-                                    await http.post(
+                                    resp = await http.post(
                                         f"{state.config.console_url}/api/internal/usage-events",
-                                        json={
-                                            "tenant_id": state.config.tenant_id,
-                                            "site_id": site.id,
-                                            "site_name": site.site_name,
-                                            "date": yesterday,
-                                            "node_count": usage["node_count"],
-                                            "agent_versions": usage.get(
-                                                "agent_versions"
-                                            ),
-                                        },
+                                        json=build_console_usage_payload(
+                                            state.config.tenant_id,
+                                            site.site_name,
+                                            yesterday,
+                                            usage,
+                                        ),
                                         headers={
                                             "Authorization": f"Bearer {state.config.console_api_key}"
                                         },
                                         timeout=10,
                                     )
+                                    # C3: a 4xx here used to pass silently
+                                    # — the whole billing pipeline starved
+                                    # without a single ERROR log.
+                                    resp.raise_for_status()
                             except Exception as exc:
-                                logger.warning(
+                                logger.error(
                                     "Console usage report failed for %s: %s",
                                     site.site_name,
                                     exc,

@@ -48,11 +48,13 @@ async def list_warranty(
 
 @router.post(
     "/import",
-    dependencies=[Depends(require_permission("fleet.view"))],
+    # P0 2026-08-29: writes are site.manage, not the read-grade fleet.view
+    # this route declared before real role grants existed (C1 follow-on).
+    dependencies=[Depends(require_permission("site.manage"))],
 )
 async def import_warranty(
     payload: dict = Body(...),
-    user: UserContext = Depends(require_permission("fleet.view")),
+    user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Import warranty records: {"records": [{service_tag, vendor,

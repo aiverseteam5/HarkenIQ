@@ -51,13 +51,14 @@ async def _client_as(role: str, perms: list[str]):
 
 class TestAuditRequiresAuditView:
     @pytest.mark.parametrize("role,perms,expected", [
-        # CC's mapping: admins carry "*", auditor carries audit.view,
-        # operator/viewer carry plain "view" (the closed hole).
+        # P0 2026-08-29 (C1): roles now carry real atomic grants mirroring
+        # the Console's ROLE_PERMISSIONS. Audit stays auditor/admin-only —
+        # operator and viewer hold no audit.view, exactly as at L4.
         ("platform_super_admin", ["*"], 200),
-        ("tenant_owner", ["*"], 200),
-        ("auditor", ["view", "audit.view"], 200),
-        ("operator", ["view"], 403),
-        ("viewer", ["view"], 403),
+        ("tenant_owner", ["audit.view", "fleet.view"], 200),
+        ("auditor", ["fleet.view", "audit.view", "audit.export"], 200),
+        ("operator", ["fleet.view", "action.approve"], 403),
+        ("viewer", ["fleet.view", "incident.view"], 403),
     ])
     async def test_audit_list_per_role(self, role, perms, expected):
         client, engine = await _client_as(role, perms)
@@ -71,7 +72,9 @@ class TestAuditRequiresAuditView:
     async def test_auth_mapping_grants_auditor_audit_view(self):
         """Pin the role->permission mapping itself, so the route gate and
         the mapping cannot drift apart silently."""
-        from harkeniq_cc.auth import _ADMIN_ROLES, _EXTRA_PERMISSIONS
+        from harkeniq_cc.auth import ROLE_PERMISSIONS
 
-        assert "audit.view" in _EXTRA_PERMISSIONS.get("auditor", [])
-        assert "auditor" not in _ADMIN_ROLES
+        assert "audit.view" in ROLE_PERMISSIONS["auditor"]
+        assert "audit.view" not in ROLE_PERMISSIONS["operator"]
+        assert "audit.view" not in ROLE_PERMISSIONS["viewer"]
+        assert "*" not in ROLE_PERMISSIONS["auditor"]

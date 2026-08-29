@@ -4,27 +4,40 @@ import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
-import ConfirmDialog from "../components/ConfirmDialog";
 import StatusBadge from "../components/StatusBadge";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
-import { getJson, postJson } from "../api";
+import { getJson } from "../api";
 
-/* ── Types ────────────────────────────────────────── */
+/* ── Types ────────────────────────────────────────────
+   P0 2026-08-29 (final assessment §7): this page used to declare
+   version/status/device/last_seen/enabled — fields Central Command never
+   sends — so every column rendered blank, the detail drawer 404ed
+   (agent.id was undefined), and the Enable/Disable buttons drove
+   backend placebos. The interface now IS the CC contract
+   (harkeniq_cc/api/agents.py::_agent_dict), nothing more. */
 
 interface Agent {
-  id: string;
   agent_id: string;
-  version: string;
-  status: "online" | "offline";
-  device: string;
+  agent_name: string;
+  vendor: string;
+  model: string;
+  observation: string;
+  health: string;
   site_id: string;
+  snapshot_at: string | null;
+}
+
+interface AgentDetail extends Agent {
+  site_name?: string;
+  subsystems?: Record<string, string> | null;
+}
+
+interface SiteRow {
+  id: string;
   site_name: string;
-  last_seen_at: string;
-  last_heartbeat_at: string;
-  enabled: boolean;
 }
 
 /* ── Constants ────────────────────────────────────── */
@@ -32,9 +45,16 @@ interface Agent {
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
 
-const STATUS_VARIANT: Record<string, "success" | "neutral"> = {
-  online: "success",
-  offline: "neutral",
+const HEALTH_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
+  ok: "success",
+  warning: "warning",
+  critical: "critical",
+  unknown: "neutral",
+};
+
+const OBSERVATION_VARIANT: Record<string, "success" | "neutral"> = {
+  observed: "success",
+  unobserved: "neutral",
 };
 
 /* ── Styles ───────────────────────────────────────── */
@@ -82,7 +102,7 @@ const noteStyle: CSSProperties = {
 
 /* ── Helpers ──────────────────────────────────────── */
 
-function formatDate(iso: string): string {
+function formatDate(iso: string | null | undefined): string {
   if (!iso) return "--";
   return new Date(iso).toLocaleString("en-US", {
     month: "short",
@@ -103,21 +123,16 @@ export default function AgentManagement() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [sites, setSites] = useState<SiteRow[]>([]);
   const [filters, setFilters] = useState<Record<string, string>>({
     site_id: "",
-    status: "",
-    version: "",
     search: "",
   });
 
   /* ── Detail state ──────────────────────────────── */
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
-
-  /* ── Enable/Disable confirm ────────────────────── */
-  const [toggleConfirm, setToggleConfirm] = useState<{ agent: Agent; action: "enable" | "disable" } | null>(null);
-  const [toggleLoading, setToggleLoading] = useState(false);
 
   /* ── Filter definitions ────────────────────────── */
   const filterDefs = useMemo<FilterDef[]>(() => [
@@ -125,22 +140,9 @@ export default function AgentManagement() {
       key: "site_id",
       label: "Site",
       type: "select",
-      options: [],
-    },
-    {
-      key: "status",
-      label: "Status",
-      type: "select",
-      options: [
-        { value: "online", label: "Online" },
-        { value: "offline", label: "Offline" },
-      ],
-    },
-    {
-      key: "version",
-      label: "Version",
-      type: "text",
-      placeholder: "Filter by version...",
+      // Populated from the real sites list — the old page shipped a
+      // permanently empty dropdown.
+      options: sites.map((s) => ({ value: s.id, label: s.site_name })),
     },
     {
       key: "search",
@@ -148,20 +150,34 @@ export default function AgentManagement() {
       type: "text",
       placeholder: "Search agents...",
     },
-  ], []);
+  ], [sites]);
+
+  /* ── Fetch sites for the filter ────────────────── */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getJson<{ sites: SiteRow[] }>(
+          `/api/t/${tenantId}/sites?page_size=200`,
+        );
+        if (!cancelled) setSites(res.sites ?? []);
+      } catch {
+        // The filter degrades to search-only; the table still loads.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId]);
 
   /* ── Fetch list ────────────────────────────────── */
   const fetchAgents = useCallback(async () => {
     try {
       const params = new URLSearchParams();
       if (filters.site_id) params.set("site_id", filters.site_id);
-      if (filters.status) params.set("status", filters.status);
-      if (filters.version) params.set("version", filters.version);
       if (filters.search) params.set("search", filters.search);
       params.set("page", String(page));
       params.set("page_size", String(PAGE_SIZE));
-      // QA ISSUE-008: CC returns {agents,...}, not {items,...} — the
-      // undefined read white-screened the page.
       const res = await getJson<{ agents: Agent[]; total: number }>(
         `/api/t/${tenantId}/agents?${params.toString()}`,
       );
@@ -172,7 +188,7 @@ export default function AgentManagement() {
     } finally {
       setLoading(false);
     }
-  }, [filters, page, toast]);
+  }, [filters, page, toast, tenantId]);
 
   useEffect(() => {
     setLoading(true);
@@ -191,7 +207,9 @@ export default function AgentManagement() {
       setDetailOpen(true);
       setDetailLoading(true);
       try {
-        const detail = await getJson<Agent>(`/api/t/${tenantId}/agents/${agent.id}`);
+        const detail = await getJson<AgentDetail>(
+          `/api/t/${tenantId}/agents/${agent.agent_id}`,
+        );
         setSelectedAgent(detail);
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load agent detail", "error");
@@ -200,34 +218,21 @@ export default function AgentManagement() {
         setDetailLoading(false);
       }
     },
-    [toast],
+    [toast, tenantId],
   );
 
-  /* ── Enable/Disable ────────────────────────────── */
-  const handleToggle = useCallback(async () => {
-    if (!toggleConfirm) return;
-    setToggleLoading(true);
-    try {
-      await postJson(`/api/t/${tenantId}/agents/${toggleConfirm.agent.id}/${toggleConfirm.action}`, {});
-      toast(
-        `Agent ${toggleConfirm.action === "enable" ? "enabled" : "disabled"}`,
-        "success",
-      );
-      setToggleConfirm(null);
-      void fetchAgents();
-      // If the detail panel is showing this agent, close it
-      if (selectedAgent?.id === toggleConfirm.agent.id) {
-        setDetailOpen(false);
-        setSelectedAgent(null);
-      }
-    } catch (err) {
-      toast(err instanceof Error ? err.message : `Failed to ${toggleConfirm.action} agent`, "error");
-    } finally {
-      setToggleLoading(false);
-    }
-  }, [toggleConfirm, toast, fetchAgents, selectedAgent]);
+  /* ── Filter handlers ───────────────────────────── */
+  const handleFilterChange = useCallback((key: string, value: string) => {
+    setFilters((prev) => ({ ...prev, [key]: value }));
+    setPage(1);
+  }, []);
 
-  /* ── Table columns ─────────────────────────────── */
+  const handleFilterClear = useCallback(() => {
+    setFilters({ site_id: "", search: "" });
+    setPage(1);
+  }, []);
+
+  /* ── Table columns — every column is a field CC sends ── */
   const columns = useMemo<Column<Agent>[]>(
     () => [
       {
@@ -239,52 +244,39 @@ export default function AgentManagement() {
           </code>
         ),
       },
-      { key: "version", header: "Version" },
+      { key: "agent_name", header: "Name" },
+      { key: "vendor", header: "Vendor" },
+      { key: "model", header: "Model" },
       {
-        key: "status",
-        header: "Status",
+        key: "health",
+        header: "Health",
         render: (r) => (
           <StatusBadge
-            status={r.status}
-            variant={STATUS_VARIANT[r.status] ?? "neutral"}
+            status={r.health || "unknown"}
+            variant={HEALTH_VARIANT[r.health] ?? "neutral"}
             size="sm"
           />
         ),
       },
-      { key: "device", header: "Device" },
-      { key: "site_name", header: "Site" },
       {
-        key: "last_seen_at",
-        header: "Last Seen",
-        render: (r) => formatDate(r.last_seen_at),
+        key: "observation",
+        header: "Observation",
+        render: (r) => (
+          <StatusBadge
+            status={r.observation || "unknown"}
+            variant={OBSERVATION_VARIANT[r.observation] ?? "neutral"}
+            size="sm"
+          />
+        ),
+      },
+      {
+        key: "snapshot_at",
+        header: "Snapshot At",
+        render: (r) => formatDate(r.snapshot_at),
       },
     ],
     [],
   );
-
-  /* ── Row actions ───────────────────────────────── */
-  const rowActions = useMemo(() => [
-    {
-      label: "Enable",
-      onClick: (r: Agent) => setToggleConfirm({ agent: r, action: "enable" as const }),
-    },
-    {
-      label: "Disable",
-      variant: "danger" as const,
-      onClick: (r: Agent) => setToggleConfirm({ agent: r, action: "disable" as const }),
-    },
-  ], []);
-
-  /* ── Filter handlers ───────────────────────────── */
-  const handleFilterChange = useCallback((key: string, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
-    setPage(1);
-  }, []);
-
-  const handleFilterClear = useCallback(() => {
-    setFilters({ site_id: "", status: "", version: "", search: "" });
-    setPage(1);
-  }, []);
 
   /* ── Render ─────────────────────────────────────── */
   return (
@@ -303,7 +295,7 @@ export default function AgentManagement() {
         onClear={handleFilterClear}
       />
 
-      {!loading && agents.length === 0 && !filters.search && !filters.status && !filters.version ? (
+      {!loading && agents.length === 0 && !filters.search && !filters.site_id ? (
         <EmptyState
           title="No agents registered"
           description="Agents will appear here once they are deployed and connected."
@@ -320,7 +312,6 @@ export default function AgentManagement() {
           total={total}
           onPageChange={setPage}
           onRowClick={openDetail}
-          rowActions={rowActions}
           striped
         />
       )}
@@ -332,8 +323,8 @@ export default function AgentManagement() {
           setDetailOpen(false);
           setSelectedAgent(null);
         }}
-        title={selectedAgent?.agent_id ?? "Agent Details"}
-        subtitle={selectedAgent?.device}
+        title={selectedAgent?.agent_name || selectedAgent?.agent_id || "Agent Details"}
+        subtitle={selectedAgent ? `${selectedAgent.vendor} ${selectedAgent.model}` : undefined}
         width={480}
       >
         {detailLoading ? (
@@ -350,86 +341,69 @@ export default function AgentManagement() {
               </span>
             </div>
             <div style={detailRow}>
-              <span style={detailLabel}>Version</span>
-              <span style={detailValue}>{selectedAgent.version}</span>
+              <span style={detailLabel}>Name</span>
+              <span style={detailValue}>{selectedAgent.agent_name || "--"}</span>
             </div>
             <div style={detailRow}>
-              <span style={detailLabel}>Status</span>
+              <span style={detailLabel}>Vendor / Model</span>
               <span style={detailValue}>
-                <StatusBadge
-                  status={selectedAgent.status}
-                  variant={STATUS_VARIANT[selectedAgent.status] ?? "neutral"}
-                  size="sm"
-                />
+                {selectedAgent.vendor || "--"} {selectedAgent.model}
               </span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Device</span>
-              <span style={detailValue}>{selectedAgent.device}</span>
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Site</span>
-              <span style={detailValue}>{selectedAgent.site_name}</span>
+              <span style={detailValue}>{selectedAgent.site_name ?? selectedAgent.site_id}</span>
             </div>
             <div style={detailRow}>
-              <span style={detailLabel}>Enabled</span>
+              <span style={detailLabel}>Health</span>
               <span style={detailValue}>
                 <StatusBadge
-                  status={selectedAgent.enabled ? "enabled" : "disabled"}
-                  variant={selectedAgent.enabled ? "success" : "neutral"}
+                  status={selectedAgent.health || "unknown"}
+                  variant={HEALTH_VARIANT[selectedAgent.health] ?? "neutral"}
                   size="sm"
                 />
               </span>
             </div>
             <div style={detailRow}>
-              <span style={detailLabel}>Last Heartbeat</span>
-              <span style={detailValue}>{formatDate(selectedAgent.last_heartbeat_at)}</span>
+              <span style={detailLabel}>Observation</span>
+              <span style={detailValue}>
+                <StatusBadge
+                  status={selectedAgent.observation || "unknown"}
+                  variant={OBSERVATION_VARIANT[selectedAgent.observation] ?? "neutral"}
+                  size="sm"
+                />
+              </span>
             </div>
             <div style={detailRow}>
-              <span style={detailLabel}>Last Seen</span>
-              <span style={detailValue}>{formatDate(selectedAgent.last_seen_at)}</span>
+              <span style={detailLabel}>Snapshot At</span>
+              <span style={detailValue}>{formatDate(selectedAgent.snapshot_at)}</span>
             </div>
+
+            {selectedAgent.subsystems &&
+              Object.keys(selectedAgent.subsystems).length > 0 && (
+                <>
+                  <div style={sectionTitle}>Subsystem States</div>
+                  {Object.entries(selectedAgent.subsystems).map(([subsystem, severity]) => (
+                    <div key={subsystem} style={detailRow}>
+                      <span style={detailLabel}>{subsystem}</span>
+                      <span style={detailValue}>
+                        <StatusBadge
+                          status={String(severity)}
+                          variant={HEALTH_VARIANT[String(severity)] ?? "neutral"}
+                          size="sm"
+                        />
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
 
             <div style={noteStyle}>
-              View detailed logs on Site Manager
-            </div>
-
-            <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem" }}>
-              {selectedAgent.enabled ? (
-                <button
-                  className="btn btn-danger"
-                  onClick={() => setToggleConfirm({ agent: selectedAgent, action: "disable" })}
-                >
-                  Disable Agent
-                </button>
-              ) : (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => setToggleConfirm({ agent: selectedAgent, action: "enable" })}
-                >
-                  Enable Agent
-                </button>
-              )}
+              Detailed telemetry and action history live on the Site Manager
             </div>
           </>
         ) : null}
       </DetailPanel>
-
-      {/* ── Toggle confirm dialog ─────────────────── */}
-      <ConfirmDialog
-        open={toggleConfirm !== null}
-        title={toggleConfirm?.action === "enable" ? "Enable Agent" : "Disable Agent"}
-        message={
-          toggleConfirm?.action === "enable"
-            ? `Enable agent "${toggleConfirm?.agent.agent_id}"? It will resume normal operations.`
-            : `Disable agent "${toggleConfirm?.agent.agent_id}"? It will stop executing actions but continue basic monitoring.`
-        }
-        confirmLabel={toggleConfirm?.action === "enable" ? "Enable" : "Disable"}
-        variant={toggleConfirm?.action === "disable" ? "danger" : "default"}
-        onConfirm={handleToggle}
-        onCancel={() => setToggleConfirm(null)}
-        loading={toggleLoading}
-      />
     </div>
   );
 }

@@ -37,7 +37,8 @@ const PLATFORM_NAV: SidebarSection[] = [
       { key: "/admin/features", label: "Feature Toggles", icon: "\u2692" },
       { key: "/admin/releases", label: "Releases", icon: "\u2B06" },
       { key: "/admin/health", label: "Platform Health", icon: "\u2665" },
-      { key: "/admin/impersonation", label: "Impersonation Log", icon: "\u263A" },
+      // Impersonation Log retired (P0 2026-08-29): no impersonation
+      // capability exists to log.
     ],
   },
 ];
@@ -63,7 +64,6 @@ const TENANT_NAV: SidebarSection[] = [
       { key: "/licenses", label: "Licenses", icon: "\u26BF" },
       { key: "/support", label: "Support", icon: "\u2709" },
       { key: "/audit", label: "Audit Logs", icon: "\u2630" },
-      { key: "/reports", label: "Reports", icon: "\u2261" },
       { key: "/marketplace", label: "Skill Marketplace", icon: "\u2606" },
     ],
   },
@@ -77,9 +77,10 @@ const TENANT_NAV: SidebarSection[] = [
   {
     label: "Settings",
     items: [
-      { key: "/settings", label: "Settings", icon: "\u2338" },
+      // Settings + API Keys retired (P0 2026-08-29): the settings page
+      // saved nothing and API keys authenticated nothing. Service
+      // accounts replace API keys in P2; Settings returns when real.
       { key: "/downloads", label: "Downloads", icon: "\u2913" },
-      { key: "/api-keys", label: "API Keys", icon: "\u26BF" },
     ],
   },
 ];

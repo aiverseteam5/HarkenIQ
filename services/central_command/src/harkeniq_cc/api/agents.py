@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.db.repos import AuditRepo, FleetCacheRepo
+from harkeniq_cc.db.repos import FleetCacheRepo
 
 logger = logging.getLogger("harkeniq.cc.api.agents")
 
@@ -83,49 +83,9 @@ async def get_agent(
     return result
 
 
-@router.post(
-    "/{agent_id}/enable",
-    dependencies=[Depends(require_permission("site.manage"))],
-)
-async def enable_agent(
-    agent_id: str,
-    user: UserContext = Depends(require_permission("site.manage")),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Enable an agent (placeholder: log + audit)."""
-    dev = await FleetCacheRepo(session).get_by_agent_id(agent_id)
-    if dev is None:
-        raise HTTPException(status_code=404, detail="agent not found")
-    logger.info("Agent enable requested: %s by %s", agent_id, user.user_id)
-    await AuditRepo(session).append(
-        actor=user.user_id,
-        action="agent.enable",
-        subject=agent_id,
-        tenant_id=user.tenant_id,
-    )
-    await session.commit()
-    return {"agent_id": agent_id, "action": "enable", "status": "acknowledged"}
-
-
-@router.post(
-    "/{agent_id}/disable",
-    dependencies=[Depends(require_permission("site.manage"))],
-)
-async def disable_agent(
-    agent_id: str,
-    user: UserContext = Depends(require_permission("site.manage")),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Disable an agent (placeholder: log + audit)."""
-    dev = await FleetCacheRepo(session).get_by_agent_id(agent_id)
-    if dev is None:
-        raise HTTPException(status_code=404, detail="agent not found")
-    logger.info("Agent disable requested: %s by %s", agent_id, user.user_id)
-    await AuditRepo(session).append(
-        actor=user.user_id,
-        action="agent.disable",
-        subject=agent_id,
-        tenant_id=user.tenant_id,
-    )
-    await session.commit()
-    return {"agent_id": agent_id, "action": "disable", "status": "acknowledged"}
+# P0 2026-08-29 (final assessment §7): the enable/disable endpoints were
+# PLACEBOS — they wrote an audit row, returned "acknowledged", and changed
+# nothing anywhere (no directive, no SM call, no agent effect). A control
+# that claims success while doing nothing is worse than no control, so they
+# are removed until a real disable path exists (SM directive + agent state,
+# a P1+ slice). The audit-only history they wrote remains in the chain.

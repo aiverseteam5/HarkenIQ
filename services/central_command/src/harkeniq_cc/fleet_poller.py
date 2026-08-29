@@ -68,6 +68,15 @@ async def fleet_poll_loop(state) -> None:
                                 site.id, candidates,
                             )
 
+                        # P0 2026-08-29 (final-assessment C2): the snapshot's
+                        # pending_actions were decoded and DISCARDED, so
+                        # cc_approval_routes was never written in production
+                        # and the tenant approval surface listed nothing.
+                        await _ingest_pending_actions(
+                            session, site.id,
+                            snapshot.get("pending_actions", []),
+                        )
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
 
@@ -129,6 +138,47 @@ async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
         )
         session.add(row)
     logger.info("Ingested %d outcomes from site %s", len(outcomes), site_id)
+
+
+async def _ingest_pending_actions(
+    session, site_id: str, pending: list[dict],
+) -> None:
+    """Reconcile cc_approval_routes with the SM's current pending set (C2).
+
+    New pending actions become undecided routes (idempotent on action_id).
+    Undecided routes whose action no longer waits at the SM — decided
+    locally via the SM dashboard/CLI, or expired — are closed as
+    ``superseded`` so the CC queue never shows a decision that can no
+    longer be delivered. Routes already decided at CC are untouched.
+    """
+    from harkeniq_cc.db.repos import ApprovalRouteRepo
+
+    repo = ApprovalRouteRepo(session)
+    pending_ids: set[str] = set()
+    created = 0
+    for act in pending:
+        action_id = act.get("action_id", "")
+        if not action_id:
+            continue
+        pending_ids.add(action_id)
+        if await repo.get_by_action_id(action_id) is None:
+            await repo.create(
+                site_id=site_id,
+                action_id=action_id,
+                action_type=act.get("type", ""),
+                device_agent_id=act.get("device_agent_id", ""),
+            )
+            created += 1
+    superseded = 0
+    for route in await repo.list_undecided_for_site(site_id):
+        if route.action_id not in pending_ids:
+            await repo.update_decision(route, "superseded", "sm")
+            superseded += 1
+    if created or superseded:
+        logger.info(
+            "Approval routes reconciled for site %s: %d new, %d superseded",
+            site_id, created, superseded,
+        )
 
 
 async def _ingest_candidates(

@@ -104,15 +104,72 @@ step "Agent detects -> SM opens the incident"
 wait_for "fan incident open" 120 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
 
-step "Action proposed -> approve as a named operator"
+step "Action proposed at the SM"
 wait_for "pending action" 120 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q COLLECT_DIAGNOSTICS"
 ACTION=$(curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
   | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-RESULT=$(curl -s -X POST -H "Authorization: Bearer dev-token-sm" \
-  -H "Content-Type: application/json" -d '{"actor": "ci-gate"}' \
-  "http://localhost:8080/api/actions/$ACTION/approve")
-echo "$RESULT" | grep -q '"sm-local:ci-gate"'
+
+step "Seed an OPERATOR (P0 2026-08-29): the role that was locked out of CC"
+# C1's proof at runtime: before the RBAC repair, CC granted non-admins
+# only the literal "view" — an operator 403ed on every route including
+# approvals, so this persona could not function at all. Create the role
+# and a user via the Keycloak admin API (idempotent: 409s tolerated).
+KC_ADMIN_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=${HARKENIQ_KC_ADMIN_PASSWORD:-admin}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+curl -s -o /dev/null -X POST \
+  "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "operator"}'
+curl -s -o /dev/null -X POST \
+  "http://localhost:8180/admin/realms/harkeniq-platform/users" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"username": "operator1@harkeniq.com", "email": "operator1@harkeniq.com",
+       "firstName": "Gate", "lastName": "Operator",
+       "enabled": true, "emailVerified": true,
+       "credentials": [{"type": "password", "value": "operator", "temporary": false}]}'
+OP_UID=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/users?username=operator1@harkeniq.com" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+# Keycloak's declarative user profile queues VERIFY_PROFILE on users
+# created without a full profile, and "Account is not fully set up" then
+# refuses the password grant. Clear required actions idempotently so a
+# rerun (or a partial earlier run) always converges to a usable operator.
+curl -s -o /dev/null -X PUT \
+  "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"firstName": "Gate", "lastName": "Operator",
+       "email": "operator1@harkeniq.com", "emailVerified": true,
+       "enabled": true, "requiredActions": []}'
+OP_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/operator" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN")
+curl -s -o /dev/null -X POST \
+  "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID/role-mappings/realm" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d "[$OP_ROLE]"
+OP_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=operator1@harkeniq.com&password=operator" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+step "CC RBAC is real: operator reads fleet (200), cannot read audit (403)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/)" = "200" ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/audit/)" = "403" ]
+
+step "CC ingested the pending action (C2: the approvals hop is wired)"
+# Fleet poll interval is 30s in this stack; the route must appear at CC.
+wait_for "approval route at CC" 120 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/approvals/ | grep -q '$ACTION'"
+
+step "OPERATOR approves through CC -> RouteApproval -> SM records the decision"
+RESULT=$(curl -s -X POST -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$ACTION/approve")
+echo "$RESULT" | grep -q '"decision": *"approved"'
+echo "$RESULT" | grep -q 'operator1@harkeniq.com'
+wait_for "SM action approved" 60 bash -c \
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q '\"status\": *\"approved\"\\|approved'"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

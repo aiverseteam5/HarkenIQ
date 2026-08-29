@@ -213,17 +213,61 @@ async def revoke_license(
 
 
 @validate_router.post("/validate")
-async def validate_license(body: ValidateBody) -> dict:
+async def validate_license(
+    body: ValidateBody,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Validate a license token: Ed25519 signature, expiry, revocation.
+
+    P0 2026-08-29 (final assessment §7): this public endpoint used to
+    base64-decode the payload and check only ``exp`` — it never verified
+    the signature, so any self-minted payload with a future expiry came
+    back ``valid: true`` from the vendor's own API. It now runs the full
+    ``verify_license`` path (format, signature, fingerprint integrity,
+    expiry) against the deployment's signing key, plus a revocation check
+    against the license ledger. If no signing key is available the
+    endpoint refuses rather than half-validating.
+    """
+    from harkeniq_console.db.repos import LicenseRepo, SettingsRepo
+    from harkeniq_console.licensing import (
+        public_key_pem_from_private,
+        verify_license,
+    )
+
+    config = request.app.state.console.config
+    private_key_pem: bytes | None = None
+    if config.license_signing_key_path:
+        from pathlib import Path
+
+        try:
+            private_key_pem = Path(config.license_signing_key_path).read_bytes()
+        except OSError:
+            private_key_pem = None
+    if private_key_pem is None and config.insecure:
+        keypair_setting = await SettingsRepo(session).get(
+            "license_signing_keypair"
+        )
+        if keypair_setting and keypair_setting.value:
+            private_key_pem = keypair_setting.value["private_key"].encode()
+    if private_key_pem is None:
+        raise HTTPException(
+            status_code=503,
+            detail="license verification key unavailable (fail closed)",
+        )
+
     try:
-        parts = body.license_key.split(".")
-        if len(parts) != 2:
-            return {"valid": False, "errors": ["invalid license format"]}
-        padding = "=" * (4 - len(parts[0]) % 4) if len(parts[0]) % 4 else ""
-        payload_bytes = base64.urlsafe_b64decode(parts[0] + padding)
-        payload = json.loads(payload_bytes)
-        errors = []
-        if payload.get("exp", 0) < time.time():
-            errors.append("license expired")
-        return {"valid": len(errors) == 0, "payload": payload, "errors": errors}
-    except Exception as exc:
+        public_key_pem = public_key_pem_from_private(private_key_pem)
+        payload = verify_license(public_key_pem, body.license_key)
+    except ValueError as exc:
         return {"valid": False, "errors": [str(exc)]}
+    except Exception:
+        return {"valid": False, "errors": ["license verification failed"]}
+
+    errors: list[str] = []
+    fingerprint = payload.get("fingerprint", "")
+    if fingerprint:
+        lic = await LicenseRepo(session).get_by_fingerprint(fingerprint)
+        if lic is not None and lic.status == "revoked":
+            errors.append("license revoked")
+    return {"valid": len(errors) == 0, "payload": payload, "errors": errors}

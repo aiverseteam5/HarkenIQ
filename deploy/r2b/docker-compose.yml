@@ -1,3 +1,12 @@
+# ─────────────────────────────────────────────────────────────────────────
+# LEGACY R2b LAB STACK — INSECURE BY CONFIGURATION. DO NOT DEPLOY.
+#
+# This compose runs Console and CC with HARKEN_*_INSECURE=true (auth fully
+# bypassed; every request is a synthetic super admin). It predates the
+# canonical full-stack compose at deploy/full-stack/docker-compose.yml,
+# which runs real Keycloak auth and is the stack the e2e gate boots.
+# Kept only as a minimal R2b-era development sandbox. (P0 2026-08-29.)
+# ─────────────────────────────────────────────────────────────────────────
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16

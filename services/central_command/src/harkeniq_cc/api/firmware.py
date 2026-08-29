@@ -53,11 +53,13 @@ def match_exposures(devices, entries) -> list[dict]:
 
 @router.post(
     "/cve-feed",
-    dependencies=[Depends(require_permission("fleet.view"))],
+    # P0 2026-08-29: writes are site.manage, not the read-grade fleet.view
+    # this route declared before real role grants existed (C1 follow-on).
+    dependencies=[Depends(require_permission("site.manage"))],
 )
 async def import_cve_feed(
     payload: dict = Body(...),
-    user: UserContext = Depends(require_permission("fleet.view")),
+    user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Import CVE feed entries from an offline bundle: {"entries": [...]}."""

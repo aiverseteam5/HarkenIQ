@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { setAccessToken } from "../api";
 import { exchangeCode } from "../auth";
+import { useAuth } from "../useAuth";
 import Spinner from "../components/Spinner";
 
 const KEYCLOAK_URL = import.meta.env.VITE_KEYCLOAK_URL ?? "";
@@ -10,6 +10,7 @@ const CLIENT_ID = import.meta.env.VITE_OIDC_CLIENT_ID ?? "harkeniq-console";
 
 export default function Callback() {
   const navigate = useNavigate();
+  const { completeLogin } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,17 +36,20 @@ export default function Callback() {
 
     const redirectUri = `${window.location.origin}/callback`;
 
+    // D1 fix (P0 2026-08-29): the exchange used to set the raw token and
+    // navigate WITHOUT ever telling AuthProvider — RequireAuth still saw
+    // an unauthenticated session and parked the user on /login until a
+    // hard reload. completeLogin resolves the user first; only then move.
     exchangeCode(KEYCLOAK_URL, KEYCLOAK_REALM, CLIENT_ID, redirectUri, code, verifier)
-      .then((tokens) => {
-        setAccessToken(tokens.access_token);
-        sessionStorage.setItem("hiq_refresh_token", tokens.refresh_token);
+      .then(async (tokens) => {
+        await completeLogin(tokens);
         sessionStorage.removeItem("hiq_code_verifier");
         navigate("/dashboard", { replace: true });
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Token exchange failed.");
       });
-  }, [navigate]);
+  }, [navigate, completeLogin]);
 
   if (error) {
     return (

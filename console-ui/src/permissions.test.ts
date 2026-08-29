@@ -69,13 +69,25 @@ describe("tenantFromPath", () => {
 describe("ruleFor under a tenant prefix", () => {
   it("still finds the rule, so the guard keeps guarding", () => {
     expect(ruleFor("/t/acme/audit")).toEqual(ruleFor("/audit"));
-    expect(ruleFor("/t/acme/api-keys")).toEqual(ruleFor("/api-keys"));
+    expect(ruleFor("/t/acme/downloads")).toEqual(ruleFor("/downloads"));
   });
 
   it("refuses a viewer the pages they do not hold", () => {
+    // /api-keys retired 2026-08-29 (P0): keys authenticated nothing.
     expect(canAccess(viewer, ruleFor("/t/acme/audit"))).toBe(false);
-    expect(canAccess(viewer, ruleFor("/t/acme/api-keys"))).toBe(false);
+    expect(canAccess(viewer, ruleFor("/t/acme/downloads"))).toBe(false);
     expect(canAccess(viewer, ruleFor("/t/acme/billing"))).toBe(false);
+  });
+
+  it("D3 (P0 2026-08-29): support-access rule exists and is super-admin only", () => {
+    const rule = ruleFor("/admin/support-access");
+    expect(rule).toEqual({ platformOnly: true });
+    const support = {
+      email: "s@x", name: "s", role: "platform_support",
+      tenant_id: "", permissions: ["tenant.view", "support.view"],
+      is_platform_user: true,
+    };
+    expect(canAccess(support, rule)).toBe(false);
   });
 
   it("still admits a viewer to the fleet pages they do hold", () => {

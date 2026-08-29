@@ -47,6 +47,23 @@ class TestAuth:
             )
             assert ok.status_code == 200
 
+    async def test_no_token_secure_mode_fails_closed(self, db):
+        """P0 2026-08-29: with no site token and no insecure flag, every
+        /api/* route used to be UNAUTHENTICATED (the fail-open hole). It
+        is 503 now; only the explicit lab flag opens the surface."""
+        state = _state(db)  # no site_token, insecure defaults False
+        transport = httpx.ASGITransport(app=create_app(state))
+        async with httpx.AsyncClient(transport=transport, base_url="http://sm") as c:
+            assert (await c.get("/api/coverage")).status_code == 503
+            assert (await c.get("/api/fault-domains")).status_code == 503
+            assert (await c.get("/healthz")).status_code == 200  # probe stays open
+
+    async def test_no_token_insecure_lab_stays_open(self, db):
+        state = _state(db, insecure=True)  # explicit lab bypass
+        transport = httpx.ASGITransport(app=create_app(state))
+        async with httpx.AsyncClient(transport=transport, base_url="http://sm") as c:
+            assert (await c.get("/api/coverage")).status_code == 200
+
 
 class TestSiteYamlApi:
     async def test_put_then_get(self, client):
