@@ -125,6 +125,55 @@ class TestRegisterSite:
         assert ack.accepted is False
         assert "required" in ack.reason
 
+    async def test_secure_mode_without_configured_fingerprint_refuses(self, db):
+        """P0 2026-08-29: with NO fingerprint configured, RegisterSite
+        used to accept any non-empty value — and it hands out the site
+        token. Secure mode fails closed until a fingerprint is set."""
+        config = _config(insecure=False, tls_cert="c", tls_key="k")
+        approvals = ApprovalService(db, config)
+        from harkeniq_sm.autonomy import SMAutonomyEnforcer
+
+        servicer = SiteManagerServiceServicer(
+            db, approvals, config, autonomy=SMAutonomyEnforcer()
+        )
+        request = harkeniq_pb2.SiteRegistration(
+            tenant_id="t1", site_id="s1", site_name="DC-BLR-1",
+            cc_endpoint="https://cc.lab:8090",
+            license_key_fingerprint="anything-goes",
+        )
+        ack = await servicer.RegisterSite(request, None)
+        assert ack.accepted is False
+        assert "fail closed" in ack.reason
+        assert ack.site_token == ""
+
+    async def test_secure_mode_with_matching_fingerprint_accepts(self, db):
+        config = _config(
+            insecure=False, tls_cert="c", tls_key="k",
+            license_fingerprint="fp-tenant-1",
+        )
+        approvals = ApprovalService(db, config)
+        from harkeniq_sm.autonomy import SMAutonomyEnforcer
+
+        servicer = SiteManagerServiceServicer(
+            db, approvals, config, autonomy=SMAutonomyEnforcer()
+        )
+        good = harkeniq_pb2.SiteRegistration(
+            tenant_id="t1", site_id="s1", site_name="DC-BLR-1",
+            cc_endpoint="https://cc:8090",
+            license_key_fingerprint="fp-tenant-1",
+        )
+        ack = await servicer.RegisterSite(good, None)
+        assert ack.accepted is True
+        assert ack.site_token == "test-token"
+        bad = harkeniq_pb2.SiteRegistration(
+            tenant_id="t1", site_id="s1", site_name="DC-BLR-1",
+            cc_endpoint="https://cc:8090",
+            license_key_fingerprint="fp-wrong",
+        )
+        nack = await servicer.RegisterSite(bad, None)
+        assert nack.accepted is False
+        assert "mismatch" in nack.reason
+
 
 class TestGetFleetSnapshot:
     async def test_devices_returned(self, sm_env):

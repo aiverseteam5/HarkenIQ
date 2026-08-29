@@ -299,6 +299,20 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         # interceptor); the fingerprint is its credential. When the SM is
         # deployed with an expected fingerprint, it must match.
         expected = getattr(self.config, "license_fingerprint", "")
+        # P0 2026-08-29 (final assessment §6): with NO fingerprint
+        # configured, this RPC accepted any non-empty value — and it is
+        # the RPC that hands out the site token. Secure mode now refuses
+        # registration until a fingerprint is configured; the explicit
+        # ``insecure`` lab flag is the only bypass.
+        if not expected and not getattr(self.config, "insecure", False):
+            logger.warning(
+                "RegisterSite refused: no license_fingerprint configured "
+                "(fail closed) from cc=%s", request.cc_endpoint,
+            )
+            return harkeniq_pb2.SiteRegistrationAck(
+                accepted=False,
+                reason="SM has no license_fingerprint configured (fail closed)",
+            )
         if expected and request.license_key_fingerprint != expected:
             logger.warning(
                 "RegisterSite rejected: fingerprint mismatch from cc=%s",

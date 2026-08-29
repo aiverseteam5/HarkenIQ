@@ -96,6 +96,22 @@ def _sha256_hex(data: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
+def public_key_pem_from_private(private_key_pem: bytes) -> bytes:
+    """Derive the PEM public key from a PEM private key.
+
+    P0 2026-08-29: the public validate endpoint needs the verification
+    key, but deployments configure only the private signing key file —
+    Ed25519 lets us derive the public half rather than store it twice.
+    """
+    private_key = serialization.load_pem_private_key(
+        private_key_pem, password=None,
+    )
+    return private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+
 def generate_keypair() -> tuple[bytes, bytes]:
     """Generate an Ed25519 key pair.
 
