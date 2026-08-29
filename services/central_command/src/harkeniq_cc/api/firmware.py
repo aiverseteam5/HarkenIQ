@@ -11,44 +11,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq.compliance.versions import version_in_range
 from harkeniq_cc.api.deps import get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import CveFeedRepo, FleetCacheRepo
+from harkeniq_cc.exposure import match_exposures  # noqa: F401  (re-exported)
 
 router = APIRouter(prefix="/api/firmware", tags=["firmware"])
-
-
-def match_exposures(devices, entries) -> list[dict]:
-    """Match devices' firmware inventories against CVE feed entries."""
-    exposures: list[dict] = []
-    for dev in devices:
-        for fw in (dev.firmware or []):
-            component = str(fw.get("component", ""))
-            version = str(fw.get("version", ""))
-            if not version:
-                continue
-            for entry in entries:
-                if entry.vendor not in ("*", dev.vendor):
-                    continue
-                if entry.component not in ("*", component):
-                    continue
-                if version_in_range(version, entry.affected_versions):
-                    exposures.append({
-                        "agent_id": dev.agent_id,
-                        "agent_name": dev.agent_name,
-                        "site_id": dev.site_id,
-                        "vendor": dev.vendor,
-                        "model": dev.model,
-                        "component": component,
-                        "component_name": str(fw.get("name", "")),
-                        "version": version,
-                        "cve_id": entry.cve_id,
-                        "severity": entry.severity,
-                        "description": entry.description,
-                        "fixed_version": entry.fixed_version,
-                    })
-    return exposures
 
 
 @router.post(

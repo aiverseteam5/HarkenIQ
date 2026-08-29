@@ -51,6 +51,7 @@ const TENANT_NAV: SidebarSection[] = [
     items: [
       { key: "/dashboard", label: "Dashboard", icon: "\u25A6" },
       { key: "/fleet", label: "Fleet Overview", icon: "\u2318" },
+      { key: "/risk", label: "Risk & Exposure", icon: "\u26a0" },
       { key: "/reliability", label: "Vendor Reliability", icon: "\u2696" },
       { key: "/approvals", label: "Approvals", icon: "\u2714" },
       // S1: named for what it lists. "Agents" is reserved for the

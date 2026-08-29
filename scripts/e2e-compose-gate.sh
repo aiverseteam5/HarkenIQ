@@ -178,13 +178,32 @@ step "S1: the trust ladder is VISIBLE to an operator, and still immutable (D2)"
 step "S1: the surfaces the Tenant Console now renders are reachable THROUGH the proxy"
 # Each of these had a live endpoint and no consumer before S1. The proxy
 # path is the one the browser actually uses, so assert it, not CC direct.
-for _p in learning/candidates predictive/risk firmware/exposure audit/verify; do
+for _p in learning/candidates predictive/risk firmware/exposure audit/verify attention; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
     "http://localhost:8100/api/t/$TENANT_ID/$_p")
   [ "$code" = "200" ] || { echo "proxy path $_p returned $code, want 200" >&2; exit 1; }
 done
 curl -sf -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8100/api/t/$TENANT_ID/audit/verify" | grep -q '"valid": *true'
+
+step "S2: the attention capability answers with site attribution and evidence"
+# The contract a future agent consumes, proven on the real stack: every
+# ranked item must carry the site it belongs to, or a site-scoped caller
+# cannot tell which rows are its own.
+ATT=$(curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/)
+echo "$ATT" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert "items" in d and "sites" in d and "summary" in d, "attention contract shape"
+for i in d["items"]:
+    assert "site_id" in i and i["site_id"], "every item must carry site attribution"
+    assert "rank" in i and "band" in i and "reasons" in i, "ranking + explanation"
+    assert "recommended_next" in i and "capability" in i["recommended_next"]
+    assert "confidence" in i and "basis" in i["confidence"], "data sufficiency"
+print("attention OK:", len(d["items"]), "ranked,", len(d["sites"]), "sites")
+'
+# Read-only: the capability names next steps, it never performs them.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/)" = "405" ]
 
 step "CC ingested the pending action (C2: the approvals hop is wired)"
 # Fleet poll interval is 30s in this stack; the route must appear at CC.

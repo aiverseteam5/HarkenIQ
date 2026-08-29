@@ -27,6 +27,7 @@ _BAND_ORDER = {"high": 0, "medium": 1, "low": 2, "insufficient_data": 3}
 )
 async def device_risk(
     band: str | None = Query(None, description="filter: high|medium|low|insufficient_data"),
+    site_id: str | None = Query(None, description="filter to one site's devices"),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -55,7 +56,13 @@ async def device_risk(
             vendor=dev.vendor,
             model=dev.model,
         )
+        # S2: attach device identity so a row can be placed on a site and
+        # a site-scoped caller can filter to its own scope.
+        risk.site_id = dev.site_id
+        risk.agent_name = dev.agent_name
         if band and risk.band != band:
+            continue
+        if site_id and dev.site_id != site_id:
             continue
         risks.append(risk)
 

@@ -51,10 +51,20 @@ class DeviceRisk:
     band: str = "low"  # low | medium | high | insufficient_data
     sample_count: int = 0
     factors: dict = field(default_factory=dict)
+    # S2 (2026-08-29): device identity beyond the agent hash. Without site
+    # attribution a risk row cannot be placed on a site, which blocks both
+    # the fleet -> site -> device drill-down AND any site-scoped consumer:
+    # an agent bounded to one site could not tell which rows were its own.
+    # Populated by the caller from the fleet cache; the scoring model
+    # itself is unchanged and does not read these.
+    site_id: str = ""
+    agent_name: str = ""
 
     def to_dict(self) -> dict:
         return {
             "agent_id": self.agent_id,
+            "agent_name": self.agent_name,
+            "site_id": self.site_id,
             "vendor": self.vendor,
             "model": self.model,
             "risk_score": round(self.risk_score, 4),

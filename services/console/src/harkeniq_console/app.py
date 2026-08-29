@@ -103,6 +103,10 @@ def create_app(state) -> FastAPI:
         # S1 2026-08-29: /api/learning/* was unreachable from the product —
         # the R-C1 loop ran headless with no consumer (final assessment).
         "learning",
+        # S2 2026-08-29: the attention capability (ranked risk + evidence +
+        # next governed capability). One contract, many consumers; the
+        # Console is the first of them.
+        "attention",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every
