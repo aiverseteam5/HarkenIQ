@@ -28,11 +28,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import FeatureToggles from "./pages/FeatureToggles";
 import ReleaseManagement from "./pages/ReleaseManagement";
 import PlatformHealth from "./pages/PlatformHealth";
-import TenantSettings from "./pages/TenantSettings";
 import Downloads from "./pages/Downloads";
-import ApiKeys from "./pages/ApiKeys";
-import ReportingAnalytics from "./pages/ReportingAnalytics";
-import ImpersonationLog from "./pages/ImpersonationLog";
 import UsageChargeback from "./pages/UsageChargeback";
 import SupportAccessRequests from "./pages/SupportAccessRequests";
 
@@ -128,7 +124,10 @@ function AppRoutes() {
         <Route path="/admin/features" element={<FeatureToggles />} />
         <Route path="/admin/releases" element={<ReleaseManagement />} />
         <Route path="/admin/health" element={<PlatformHealth />} />
-        <Route path="/admin/impersonation" element={<ImpersonationLog />} />
+        {/* P0 2026-08-29: /admin/impersonation retired — the log had no
+            writer anywhere in the backend (R-H3 lists impersonation as
+            "if ever added"); a page implying a capability that does not
+            exist is a trust bug. Returns with the capability, if ever. */}
         <Route path="/admin/support-access" element={<SupportAccessRequests />} />
         <Route path="/marketplace" element={<SkillMarketplace />} />
 
@@ -149,17 +148,35 @@ function AppRoutes() {
         <Route path="/t/:tenantId/usage" element={<UsageChargeback />} />
         <Route path="/t/:tenantId/support" element={<SupportTicketing />} />
         <Route path="/t/:tenantId/audit" element={<AuditLogs />} />
-        <Route path="/t/:tenantId/reports" element={<ReportingAnalytics />} />
-        <Route path="/t/:tenantId/settings" element={<TenantSettings />} />
+        {/* P0 2026-08-29 — three phantom pages retired (final assessment §3):
+            /reports called four endpoints that exist nowhere in the repo;
+            /settings was a mock whose Save was a 300ms timer storing
+            nothing; /api-keys minted credentials no endpoint ever
+            verified (get_by_hash has no production caller — service
+            accounts replace the concept in P2). Each returns only when
+            its backend is real. */}
         <Route path="/t/:tenantId/downloads" element={<Downloads />} />
-        <Route path="/t/:tenantId/api-keys" element={<ApiKeys />} />
         <Route path="/t/:tenantId/marketplace" element={<SkillMarketplace />} />
 
-        {/* Bare tenant-plane paths from bookmarks and old links: send a
-            tenant user into their own tenant, a platform user to the
-            registry to choose one deliberately. */}
-        <Route path="/*" element={<TenantPathRedirect />} />
       </Route>
+
+      {/* Bare tenant-plane paths from bookmarks and old links: send a
+          tenant user into their own tenant, a platform user to the
+          registry to choose one deliberately.
+
+          D2 fix (P0 2026-08-29): OUTSIDE the SidebarLayout on purpose.
+          Inside it, RequirePermission evaluated the STALE pathname's rule
+          before the redirect could run — a platform_support login landed
+          on a 403 for /dashboard instead of being sent to /tenants. The
+          redirect's target route is fully guarded once it renders. */}
+      <Route
+        path="/*"
+        element={
+          <RequireAuth>
+            <TenantPathRedirect />
+          </RequireAuth>
+        }
+      />
     </Routes>
   );
 }

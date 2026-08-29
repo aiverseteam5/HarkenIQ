@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import Spinner from "../components/Spinner";
@@ -42,6 +43,7 @@ const COMPONENTS: Record<string, { label: string; description: string }> = {
 /* ── Component ────────────────────────────────────── */
 
 export default function Downloads() {
+  const { tenantId = "" } = useParams<{ tenantId: string }>();
   const { toasts, toast, dismiss } = useToast();
   const [loading, setLoading] = useState(true);
   const [releases, setReleases] = useState<Record<string, ReleaseInfo>>({});
@@ -50,14 +52,19 @@ export default function Downloads() {
   const fetchReleases = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getJson<{ releases: Record<string, ReleaseInfo> }>("/api/admin/releases");
+      // P0 2026-08-29: this page fetched /api/admin/releases
+      // (super-admin only) behind a site.view nav rule — every tenant
+      // role 403ed. It reads the tenant-scoped endpoint now.
+      const res = await getJson<{ releases: Record<string, ReleaseInfo> }>(
+        `/api/tenants/${tenantId}/releases`,
+      );
       setReleases(res.releases);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load", "error");
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, tenantId]);
 
   useEffect(() => { void fetchReleases(); }, [fetchReleases]);
 
@@ -83,9 +90,10 @@ export default function Downloads() {
               <div style={versionBig}>{info?.current ?? "N/A"}</div>
               <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", margin: "0.25rem 0 0.5rem" }}>{meta.description}</div>
               <StatusBadge status={upToDate ? "up to date" : `${info?.latest ?? "?"} available`} variant={upToDate ? "success" : "warning"} size="sm" />
+              {/* P0 2026-08-29: the Download/Upgrade buttons did nothing
+                  (no artifact store exists yet) — removed rather than
+                  shipped as dead controls. Version + notes are real. */}
               <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
-                <button className="btn btn-sm btn-primary">Download</button>
-                {!upToDate && <button className="btn btn-sm">Upgrade</button>}
                 {info?.release_notes && (
                   <button className="btn btn-sm" onClick={() => setExpanded(expanded === key ? null : key)}>
                     {expanded === key ? "Hide" : "Notes"}

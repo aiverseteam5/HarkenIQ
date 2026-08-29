@@ -45,7 +45,6 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
   "/licenses": { perm: "license.view" },
   "/support": { perm: "support.view" },
   "/audit": { perm: "audit.view" },
-  "/reports": { perm: "fleet.view" },
   "/marketplace": { perm: "skill.submit" },
 
   // Billing
@@ -59,10 +58,14 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
   "/admin/features": { platformOnly: true },
   "/admin/releases": { platformOnly: true },
   "/admin/health": { platformOnly: true },
-  "/admin/impersonation": { platformOnly: true },
-  "/settings": { perm: "user.manage" },
+  // D3 fix (P0 2026-08-29): this key was MISSING, and the sidebar's
+  // direct-lookup filter treats an absent rule as visible-to-everyone —
+  // so platform_support saw a "Support Access" item that 403ed on click
+  // (the approver queue is require_super_admin, A14).
+  "/admin/support-access": { platformOnly: true },
   "/downloads": { perm: "site.view" },
-  "/api-keys": { perm: "user.manage" },
+  // /reports, /settings, /api-keys, /admin/impersonation: retired
+  // 2026-08-29 with their phantom pages (final assessment §3).
 };
 
 /** Does this user hold a single atomic permission? */

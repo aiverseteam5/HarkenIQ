@@ -41,6 +41,33 @@ def _sub_dict(sub) -> dict:
     }
 
 
+@router.get("/releases")
+async def list_releases_for_tenant(
+    tenant_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserContext = Depends(require_tenant_permission("site.view")),
+) -> dict:
+    """Published component versions, readable by tenant roles.
+
+    P0 2026-08-29 (final assessment §7): the Downloads page sat behind a
+    site.view nav rule but fetched /api/admin/releases, which is
+    require_super_admin — every tenant role that could see the page got a
+    403. Release/version info is not vendor-private; it gets a
+    tenant-scoped read here (same data the platform admin manages).
+    """
+    from harkeniq_console.db.repos import SettingsRepo
+
+    releases = await SettingsRepo(session).get("platform_releases")
+    return {
+        "releases": releases.value if releases else {
+            "site_manager": {"current": "0.1.0", "latest": "0.1.0"},
+            "agent": {"current": "0.1.0", "latest": "0.1.0"},
+            "cli": {"current": "0.1.0", "latest": "0.1.0"},
+            "skill_packs": {"current": "0.1.0", "latest": "0.1.0"},
+        }
+    }
+
+
 @router.get("/subscription")
 async def get_subscription(
     tenant_id: str,

@@ -42,6 +42,14 @@ interface AuthState {
   login: () => void;
   logout: () => void;
   loading: boolean;
+  /** Complete an OIDC code exchange: store tokens AND resolve the user
+   *  before returning, so callers can navigate without racing RequireAuth
+   *  (D1 fix, P0 2026-08-29). */
+  completeLogin: (tokens: {
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+  }) => Promise<void>;
 }
 
 /* ── Dev mock ─────────────────────────────────────── */
@@ -63,6 +71,7 @@ const AuthContext = createContext<AuthState>({
   login: () => {},
   logout: () => {},
   loading: true,
+  completeLogin: async () => {},
 });
 
 /* ── Provider ─────────────────────────────────────── */
@@ -87,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearSession]);
 
   const setTokensFromResponse = useCallback(
-    (accessToken: string, refreshToken: string, expiresIn: number) => {
+    async (accessToken: string, refreshToken: string, expiresIn: number) => {
       setAccessToken(accessToken);
       sessionStorage.setItem("hiq_refresh_token", refreshToken);
 
@@ -97,7 +106,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // carries no permissions / tenant_id / is_platform_user claim, and
       // its role claim is realm_roles (not realm_access.roles), which is
       // why every user used to render as "viewer".
-      void fetchMe(accessToken).then(setUser);
+      //
+      // D1 fix (P0 2026-08-29): AWAITED. The un-awaited version let
+      // `loading` flip false while `user` was still null, so RequireAuth
+      // bounced every valid session to /login on first paint.
+      setUser(await fetchMe(accessToken));
 
       // Schedule token refresh at 80% of expiry
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
@@ -116,11 +129,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     try {
       const tokens = await refreshAccessToken(KEYCLOAK_URL, KEYCLOAK_REALM, CLIENT_ID, rt);
-      setTokensFromResponse(tokens.access_token, tokens.refresh_token, tokens.expires_in);
+      await setTokensFromResponse(tokens.access_token, tokens.refresh_token, tokens.expires_in);
     } catch {
       clearSession();
     }
   }, [clearSession, setTokensFromResponse]);
+
+  const completeLogin = useCallback(
+    async (tokens: {
+      access_token: string;
+      refresh_token: string;
+      expires_in: number;
+    }) => {
+      await setTokensFromResponse(
+        tokens.access_token, tokens.refresh_token, tokens.expires_in,
+      );
+    },
+    [setTokensFromResponse],
+  );
 
   // On mount, try silent refresh if we have a refresh token
   useEffect(() => {
@@ -166,6 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     logout,
     loading,
+    completeLogin,
   };
 
   return createElement(AuthContext.Provider, { value }, children);

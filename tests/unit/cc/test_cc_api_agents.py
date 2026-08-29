@@ -89,27 +89,15 @@ class TestAgentDetail:
         assert r.status_code == 404
 
 
-class TestAgentControl:
-    async def test_enable_agent(self, client):
+class TestAgentControlRemoved:
+    """P0 2026-08-29: the enable/disable placebos are GONE. They audited
+    and returned "acknowledged" without changing anything anywhere; a
+    control that lies about success is removed until a real path exists."""
+
+    async def test_enable_endpoint_removed(self, client):
         r = await client.post("/api/agents/agent-01/enable")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["agent_id"] == "agent-01"
-        assert data["action"] == "enable"
-        assert data["status"] == "acknowledged"
+        assert r.status_code in (404, 405)
 
-    async def test_disable_agent(self, client):
+    async def test_disable_endpoint_removed(self, client):
         r = await client.post("/api/agents/agent-02/disable")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["agent_id"] == "agent-02"
-        assert data["action"] == "disable"
-        assert data["status"] == "acknowledged"
-
-    async def test_enable_nonexistent(self, client):
-        r = await client.post("/api/agents/nonexistent/enable")
-        assert r.status_code == 404
-
-    async def test_disable_nonexistent(self, client):
-        r = await client.post("/api/agents/nonexistent/disable")
-        assert r.status_code == 404
+        assert r.status_code in (404, 405)
