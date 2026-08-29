@@ -54,17 +54,17 @@ the Console proxy. Agent/MCP readiness refers to the future consumer surface
 | Incidents + diagnosis (what is wrong and why) | SM `/api/incidents` only | site · site token | — · — | ✗ / ✗ / read-ready / Tier-1 `explain_incident` | proto ext. +`cc_incidents` | **wiring → S4** (the one P1 contract repair; resolution by absence per D3) |
 | Approvals (human gate on actions) | `/api/approvals/*` · CC | tenant · action.approve | IS the gate · chained | ✓ / ✓ / propose-target / Tier-2 | — | existing (P0-proven) → diagnosis excerpt rides S4 |
 | Action execution (14 types, gate funnel) | node `_execute_gated` via SM directives | device · lease/approval | per class · 4 phases | via queue / — / core loop / never direct | — | existing → consumed by A1 |
-| Autonomy budgets + stop switch (the trust ladder) | `/api/policies/autonomy`, `/stop-switch` · CC | tenant · reads→fleet.view (D2, lands S1); writes site.manage | mutation human-only · chained | ✗ / ✓ / posture-read / Tier-1 + `activate_stop_switch` | — | partial → S1 read-split, S5 surface |
+| Autonomy budgets + stop switch (the trust ladder) | `/api/policies/autonomy`, `/stop-switch` · CC | tenant · reads fleet.view (D2, **landed S1**); writes site.manage | mutation human-only · chained | partial (Overview strip, **S1**) / ✓ / posture-read / Tier-1 + `activate_stop_switch` | — | **S1 landed** (read-split + strip) → S5 full surface |
 | Approval policies/groups | `/api/policies/*` · CC | tenant · site.manage | — · chained | ✓ / ✓ / later / later | push unwired | **partial → A2 wires `approval_policies_json` push** |
 | Outcomes + patterns (what worked) | `/api/outcomes/*` · CC | tenant · fleet.view | — · — | partial (Reliability) / ✓ / read-ready / Tier-1 | — | existing → Learning surface (S3) |
-| Learning loop (candidates, cycles, promotions) | `/api/learning/*` · CC | tenant · fleet.view | promotion = human (marketplace) · — | ✗ / **✗ not proxied** / read-ready / Tier-1 | proxy prefix | wiring → S1 prefix + S3 surface; cycles in-process (label honestly; durable P2) |
-| Predictive risk (what fails next) | `/api/predictive/risk` · CC | tenant · fleet.view | — · — | ✗ / ✓ / read-ready / Tier-1 | — | existing → S2 surface |
-| CVE exposure (what is vulnerable) | `/api/firmware/*` · CC | tenant · view fleet.view, import site.manage | — · — | ✗ / ✓ / read-ready / Tier-1 | — | existing → S2 surface; import stays API-only |
+| Learning loop (candidates, cycles, promotions) | `/api/learning/*` · CC | tenant · fleet.view | promotion = human (marketplace) · — | ✗ / **✓ proxied (S1)** / read-ready / Tier-1 | — | **S1 landed** (reachable at last) → S3 surface; cycles in-process (label honestly; durable P2) |
+| Predictive risk (what fails next) | `/api/predictive/risk` · CC | tenant · fleet.view | — · — | per-device drawer (**S1**) / ✓ / read-ready **but not site-scopable** / Tier-1 | site attribution (S2) | **S1 landed** (per-device) → S2 fleet ranking + site attribution |
+| CVE exposure (what is vulnerable) | `/api/firmware/*` · CC | tenant · view fleet.view, import site.manage | — · — | per-device drawer (**S1**) / ✓ / read-ready (already carries site_id) / Tier-1 | — | **S1 landed** (per-device) → S2 fleet view; import stays API-only |
 | Warranty/lifecycle | `/api/warranty` · CC | tenant · fleet.view (import site.manage) | — · — | ✓ drawer / ✓ / read / later | — | existing |
-| Harken Nodes (deployed agents) | `/api/agents` · CC | tenant · fleet.view | — · — | ✓ (truthful since P0) / ✓ / read / read | — | existing |
-| Audit + chain verify (prove it) | `/api/audit[/verify]` · CC + Console | per store · audit.view | — · IS audit | entries ✓, verify ✗ / ✓ / read / Tier-1 `verify_audit` | — | existing → S1 verify status line |
+| Harken Nodes (deployed agents) | `/api/agents` · CC | tenant · fleet.view | — · — | ✓ (truthful since P0; **named + framed S1**) / ✓ / read / read | — | existing |
+| Audit + chain verify (prove it) | `/api/audit[/verify]` · CC + Console | per store · audit.view | — · IS audit | entries ✓, **operational verify ✓ (S1)** / ✓ / read / Tier-1 `verify_audit` | — | **S1 landed**; Console-chain verify remains platform-only (backlog §11) |
 | Firmware campaigns (waves, halt, rollback) | SM `/api/firmware-campaigns/*` | site · site token | campaign-level human · chained | ✗ / **✗ no CC path** / status-read later / later | proto RPCs | **wiring → S6 CC mediation, WHOLE flow (D6)** |
-| Sites | `/api/sites` · CC | tenant · fleet.view (register site.manage) | — · register chained | ✗ / ✓ / read / read | — | existing → S1 filter facet |
+| Sites | `/api/sites` · CC | tenant · fleet.view (register site.manage) | — · register chained | filter facet (**S1**) / ✓ / read / read | — | **S1 landed**; site rollup consumes it in S2 |
 | Skill distribution (marketplace → node) | Console→CC `InstallSkill`→SM directives→node | tenant · skill.install | marketplace review · chained | ✓ / ✓ / A1 reuses / later | — | existing (R5-1/R5-2 proven) |
 | Operational Agent (the product noun) | — | tenant · interim site.manage; agent.manage at A2 (matrix review first) | activation human · chained | ✗ / ✗ / — / — | A0 tables | **missing → A0+A1 thesis slice** |
 | Machine identity (service accounts) | — (API keys inert; page retired in P0) | tenant · role bundle ≤ ceiling | — · species-labeled | — | Keycloak client credentials | **missing → A3**; remove api-keys routers then |
@@ -220,6 +220,32 @@ hop-by-hop in the Agentic Model artifact). S1 implements none of MCP/agents;
 it establishes surfaces so those layers add without redesign.
 
 ## 11. Open items (genuinely unresolved only)
+
+### Backlog capabilities (discovered during implementation; not built)
+
+- **Tenant-scoped Console audit-chain verification** *(found in S1, 2026-08-29)*.
+  A tenant owner or auditor can verify their **operational** chain (Central
+  Command, `audit.view`) but cannot verify the **Console governance** chain
+  whose entries the Audit page lists — the only verify for that chain is
+  `GET /api/admin/audit/verify`, which is `require_super_admin`. Closing this
+  needs BOTH a new tenant-scoped endpoint AND a permission decision (does
+  `audit.view` on the tenant plane entitle verification of the Console chain
+  for that tenant's rows?). Deliberately **not** implemented opportunistically
+  in S1; the banner instead names which chain it verifies. Owner: a later
+  slice, on an explicit decision.
+
+### Test-infrastructure debt (NOT product architecture)
+
+- **The compose gate is not hermetic** *(observed 2026-08-29)*. Docker volumes
+  (postgres) survive between runs, so SM actions and CC approval routes
+  accumulate. A gate assertion that pins "the thing we just created" must
+  select by **state** (first action with `status == "pending"`), never by list
+  position — `actions[0]` returns the previous run's approved action, which by
+  definition never appears in CC's pending queue, and the C2 step then times
+  out for reasons unrelated to the code under test. Fixed in S1 by selecting on
+  state. Remaining debt: the gate still has no clean-slate mode; `docker compose
+  down -v` is the manual answer. This is test infrastructure, not architecture —
+  it changes no product contract.
 
 - **A15 recording:** the Operational Agent object + machine-caller mechanism
   belong in the spec amendment record; timing (now vs. when A0+A1 lands) is
