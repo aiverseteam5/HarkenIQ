@@ -46,6 +46,12 @@ class SiteManagerReporter:
         self.agent_id: str = agent_cfg.get("id", "")
         self.agent_name: str = agent_cfg.get("name", "")
         self.token: str = sm.get("token", "")
+        # E1.3: the SITE-BOUND enrollment credential. The Site Manager
+        # resolves it to exactly one site; this agent never names a site
+        # and cannot choose one. Absent is legitimate on a Site Manager
+        # serving a single site, which is how existing deployments keep
+        # working without re-enrolling their fleets.
+        self.enrollment_token: str = sm.get("enrollment_token", "")
         # TLS on by default when a CA is provided; bare test configs
         # (no tls/tls_ca keys) keep the R1 insecure-channel behavior.
         # QA-017: tls requested without a CA used to silently downgrade to
@@ -145,8 +151,17 @@ class SiteManagerReporter:
             public_key_pem=public_key_pem or b"",
             firmware_json=json.dumps(firmware) if firmware else "",
             device_class=device_class,
+            enrollment_token=self.enrollment_token,
         )
-        return await self._call("RegisterAgent", request, want_response=True)
+        ack = await self._call("RegisterAgent", request, want_response=True)
+        if ack is not None and not ack.accepted:
+            # E1.3: a refusal is a configuration problem an operator has
+            # to see, not something to retry silently forever.
+            logger.error(
+                "Site Manager refused this agent's registration: %s",
+                ack.reason or "no reason given",
+            )
+        return ack
 
     async def report_action(self, action: Action) -> bool:
         """Report an action's current state to the Site Manager."""

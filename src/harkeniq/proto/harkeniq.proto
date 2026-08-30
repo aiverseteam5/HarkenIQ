@@ -120,6 +120,12 @@ message AgentRegistration {
   string resource_profile = 9;    // R3a: "constrained" | "standard" | "performance"
   string firmware_json = 10;      // R4-2: firmware inventory [{component,name,version}]
   string device_class = 11;       // R6: "server" (default when absent) | "switch"
+  // E1.3: the SITE-BOUND enrollment credential this device presents. The
+  // Site Manager resolves it to exactly one site; there is deliberately
+  // NO site_name field here, because a site an agent could name would be
+  // a claim rather than a fact, and correlation, blast radius, error
+  // budgets and (since E1.2) authority all resolve from it.
+  string enrollment_token = 12;
 }
 
 message RegistrationAck {
@@ -129,6 +135,10 @@ message RegistrationAck {
   bytes agent_certificate = 4;    // R3a: SM's signature over agent identity
   map<string, bytes> peer_keys = 5;      // R3b-2: agent_id -> public_key_pem
   bytes peer_keys_signature = 6;         // R3b-2: SM signature over canonical(peer_keys)
+  // E1.3: why a registration was refused. An agent that cannot prove its
+  // site does not get one, and it must be able to say so in its logs
+  // rather than retrying a malformed loop forever.
+  string reason = 7;
 }
 
 message ActionReport {

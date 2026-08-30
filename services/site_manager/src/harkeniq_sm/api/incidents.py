@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from harkeniq_sm.api.deps import require_site_token
+from harkeniq_sm.api.site_scope import SiteScope, resolve_site
 from harkeniq_sm.db.repos import DeviceRepo, IncidentRepo
 
 router = APIRouter(
@@ -38,15 +39,24 @@ async def _incident_dict(incident, device_repo) -> dict:
 
 
 @router.get("")
-async def list_incidents(request: Request, status: str = "open") -> list[dict]:
+async def list_incidents(request: Request, status: str = "open",
+    scope: SiteScope = Depends(resolve_site),
+) -> list[dict]:
     """Top-level incidents with nested children; ``status=all`` includes resolved."""
     state = request.app.state.sm
     async with state.sessionmaker() as session:
         repo = IncidentRepo(session)
         device_repo = DeviceRepo(session)
-        incidents = (
-            await repo.list_all() if status == "all" else await repo.list_open()
-        )
+        # E1.3: ONE site's incidents. `list_all`/`list_open` are
+        # Site Manager-wide, which was correct when a Site Manager was one
+        # site and is a cross-site read now.
+        incidents = [
+            i for i in (
+                await repo.list_all() if status == "all"
+                else await repo.list_open()
+            )
+            if i.site_id == scope.id
+        ]
         by_id = {i.id: i for i in incidents}
         cards = []
         children: dict[str, list] = {}
@@ -63,12 +73,18 @@ async def list_incidents(request: Request, status: str = "open") -> list[dict]:
 
 
 @router.get("/{incident_id}")
-async def get_incident(incident_id: str, request: Request) -> dict:
+async def get_incident(incident_id: str, request: Request,
+    scope: SiteScope = Depends(resolve_site),
+) -> dict:
     state = request.app.state.sm
     async with state.sessionmaker() as session:
         repo = IncidentRepo(session)
         incident = await repo.get(incident_id)
         if incident is None:
+            raise HTTPException(status_code=404, detail="unknown incident")
+        # E1.3: an incident at another site this Site Manager serves reads
+        # as absent. A 403 would confirm it exists.
+        if incident.site_id != scope.id:
             raise HTTPException(status_code=404, detail="unknown incident")
         device_repo = DeviceRepo(session)
         result = await _incident_dict(incident, device_repo)

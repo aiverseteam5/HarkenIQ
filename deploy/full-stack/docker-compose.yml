@@ -175,6 +175,41 @@ services:
       site-manager:
         condition: service_healthy
 
+  # -- A SECOND Site Manager (E1.3) ---------------------------------------
+  #
+  # SM-01 above serves Site A and Site B; this one serves Site C. It
+  # exists so the multi-site gate can prove the thing a single process
+  # cannot: that a Site Manager which does not serve a site answers for
+  # it with nothing rather than broadening its scope.
+  #
+  # Its own database, because two Site Managers do not share one -- each
+  # is the execution and safety boundary for the sites it serves.
+  site-manager-2:
+    profiles: ["multisite"]
+    build:
+      context: ../..
+      dockerfile: deploy/site_manager/Dockerfile
+    restart: unless-stopped
+    environment:
+      HARKEN_SM_SITE_NAME: site-c
+      HARKEN_SM_DSN: postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/harkeniq_sm2
+      HARKEN_SM_SITE_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
+      HARKEN_SM_LICENSE_FINGERPRINT: ${HARKENIQ_LICENSE_FINGERPRINT:-demo}
+      HARKEN_SM_INSECURE: "true"
+      HARKEN_SM_GRPC_PORT: "50051"
+      HARKEN_SM_HTTP_PORT: "8080"
+    ports:
+      - "8082:8080"
+      - "50053:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8080/healthz', timeout=4); sys.exit(0 if r.status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   # -- Console (L4) -------------------------------------------------------
 
   console:

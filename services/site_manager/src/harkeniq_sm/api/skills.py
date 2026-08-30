@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from harkeniq_sm.api.deps import require_site_token
+from harkeniq_sm.api.site_scope import SiteScope, resolve_site
 from harkeniq_sm.db.repos import DeviceRepo, SiteRepo
 from harkeniq_sm.skill_validation import SkillValidator
 
@@ -20,7 +21,9 @@ router = APIRouter(
 
 
 @router.post("/install")
-async def install_skill(request: Request, payload: dict = Body(...)) -> dict:
+async def install_skill(request: Request, payload: dict = Body(...),
+    scope: SiteScope = Depends(resolve_site),
+) -> dict:
     """Queue a skill for installation on agents.
 
     Body: {"skill_id", "skill_version", "yaml_content", "tier",
@@ -50,10 +53,10 @@ async def install_skill(request: Request, payload: dict = Body(...)) -> dict:
 
     agent_ids = payload.get("agent_ids", "all")
     async with state.sessionmaker() as session:
-        site = await SiteRepo(session).get_or_create(state.config.site_name)
+        # E1.3: install to ONE site's devices.
         device_repo = DeviceRepo(session)
         if agent_ids == "all":
-            devices = list(await device_repo.list_for_site(site.id))
+            devices = list(await device_repo.list_for_site(scope.id))
         else:
             devices = []
             for agent_id in agent_ids:

@@ -144,6 +144,21 @@ class DeviceRepo:
         if device is None:
             device = Device(site_id=site_id, agent_id=agent_id)
             self.session.add(device)
+        elif site_id and device.site_id and device.site_id != site_id:
+            # E1.3: a device does not move site by re-registering with a
+            # different credential.
+            #
+            # The upsert already happened not to rewrite `site_id`, so
+            # the outcome was right by accident. That is not enforcement:
+            # a silent no-op tells the operator nothing, and the ratified
+            # rule is that changing site is an EXPLICIT re-enrollment.
+            # So it is refused, loudly, with a reason.
+            raise ValueError(
+                f"device {agent_id!r} is already enrolled at another site. "
+                "Moving a device between sites is an explicit re-enrollment "
+                "(retire it at the old site, then enroll it at the new one), "
+                "not a re-registration with a different credential."
+            )
         device.agent_name = agent_name or device.agent_name
         device.vendor = vendor or device.vendor
         device.model = model or device.model
@@ -713,12 +728,23 @@ class AuditRepo:
         }
 
     async def append(
-        self, actor: str, action: str, subject: str = "", detail: Optional[dict] = None
+        self, actor: str, action: str, subject: str = "",
+        detail: Optional[dict] = None, site_id: Optional[str] = None,
     ) -> AuditLogRow:
+        """Append one entry to this Site Manager's hash chain.
+
+        E1.3: `site_id` is authorization/indexing metadata and is
+        DELIBERATELY absent from `_chain_payload`, exactly as CC's E1.2
+        column is. The chain hashes ts, actor, action, subject and detail
+        and nothing else, so recording a site neither changes an entry's
+        hash nor invalidates a chain written before this column existed.
+        A test asserts that rather than trusting it.
+        """
         from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
 
         row = AuditLogRow(
-            ts=utcnow(), actor=actor, action=action, subject=subject, detail=detail
+            ts=utcnow(), actor=actor, action=action, subject=subject,
+            detail=detail, site_id=site_id,
         )
         async with _audit_chain_lock:
             # R5-2: cross-replica serialization on PostgreSQL (held

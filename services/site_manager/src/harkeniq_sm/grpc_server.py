@@ -28,6 +28,8 @@ from harkeniq_sm.auth import BearerTokenInterceptor
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.coverage import observation_state, worst_health
 from harkeniq_sm.db.models import Device, DeviceSubsystemState
+from harkeniq_sm.enrollment import EnrollmentError, EnrollmentService
+from harkeniq_sm.stopswitch import SCOPE_TENANT, StopSwitchService
 from harkeniq_sm.db.repos import (
     ActionRepo,
     AuditRepo,
@@ -45,26 +47,131 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
     def __init__(
         self, ingest: IngestService, approvals=None, identity_service=None,
         directives=None, autonomy=None, suppression=None,
+        enrollment=None, stopswitch=None,
     ) -> None:
         self.ingest = ingest
+        # E1.3: site resolution and the per-site halt. Constructed by the
+        # runtime; defaulted here so every existing test double still works.
+        # Defaulted from the ingest service so every existing test double
+        # keeps working; `ingest=None` is a legitimate construction in the
+        # auth-only tests, so neither default may assume it is present.
+        self.enrollment = enrollment or (
+            EnrollmentService(ingest.sessionmaker, ingest.config)
+            if ingest is not None else None
+        )
+        self.stopswitch = stopswitch or (
+            StopSwitchService(ingest.sessionmaker) if ingest is not None else None
+        )
         self.approvals = approvals  # attached by the approvals phase
         self.identity_service = identity_service  # R3a: AgentIdentityService
         self.directives = directives  # R5: DirectiveService
         self.autonomy = autonomy  # QA-021: SMAutonomyEnforcer
         self.suppression = suppression  # QA-021: SuppressionEngine
 
+    async def _agent_site_halted(self, agent_id: str):
+        """Is a halt in force for this agent's own site? (E1.3)
+
+        Returns True when halted, so the lease carries the same shape it
+        always did. Falls back to the enforcer's in-memory flag only when
+        the device's site cannot be resolved -- never to "not halted".
+        """
+        if self.stopswitch is None:
+            # Not configured (a test double, or a deployment that predates
+            # E1.3). Fall back to the enforcer's flag, which is the
+            # pre-E1.3 behaviour -- absent machinery is not a halt.
+            return self.autonomy.stop_switch_active
+        try:
+            async with self.ingest.sessionmaker() as session:
+                device = await DeviceRepo(session).get_by_agent_id(agent_id)
+                if device is None or not device.site_id:
+                    return self.autonomy.stop_switch_active
+                halt = await self.stopswitch.state_for(session, device.site_id)
+                # The persisted halts, OR the in-memory flag: a Site
+                # Manager mid-upgrade may still be carrying one.
+                return halt.halted or self.autonomy.stop_switch_active
+        except Exception:
+            logger.exception("could not resolve the halt for %s", agent_id)
+            # A safety state that cannot be READ is a halt. This is the
+            # one place failing closed is right: an error here means we
+            # do not know whether an operator has stopped this site.
+            return True
+
+    async def _resolve_enrollment(self, request):
+        """Which site is this device at? Authoritatively (E1.3)."""
+        async with self.ingest.sessionmaker() as session:
+            enrollment = await self.enrollment.resolve(
+                session, getattr(request, "enrollment_token", "")
+            )
+            if not enrollment.legacy_single_site:
+                # Record the use, and the binding, on the same commit as
+                # the resolution so a refused registration leaves nothing.
+                await AuditRepo(session).append(
+                    actor=f"agent:{request.agent_id}",
+                    action="agent.enrolled",
+                    subject=request.agent_id,
+                    site_id=enrollment.site_id,
+                    detail={
+                        "site_name": enrollment.site_name,
+                        "token_id": enrollment.token_id,
+                    },
+                )
+            await session.commit()
+        return enrollment
+
+    async def _audit_enrollment_refusal(self, agent_id: str, exc) -> None:
+        """A refused enrollment is a security event; it goes in the chain."""
+        try:
+            async with self.ingest.sessionmaker() as session:
+                await AuditRepo(session).append(
+                    actor=f"agent:{agent_id}",
+                    action="agent.enrollment_refused",
+                    subject=agent_id,
+                    detail={"code": exc.code, "reason": exc.reason},
+                )
+                await session.commit()
+        except Exception:  # pragma: no cover - auditing must not mask refusal
+            logger.exception("could not audit an enrollment refusal")
+
     async def RegisterAgent(self, request, context):
-        site_name = await self.ingest.register(
-            agent_id=request.agent_id,
-            agent_name=request.agent_name,
-            vendor=request.vendor,
-            model=request.model,
-            service_tag=request.service_tag,
-            bmc_location_json=request.bmc_location_json,
-            peers=list(request.peers),
-            firmware_json=request.firmware_json,
-            device_class=request.device_class,
-        )
+        # E1.3, ratified D1: the site comes from the device's SITE-BOUND
+        # enrollment credential, never from a field the agent fills in.
+        # An agent that cannot prove its site does not get one.
+        try:
+            enrollment = await self._resolve_enrollment(request)
+        except EnrollmentError as exc:
+            logger.warning(
+                "RegisterAgent refused for %s: %s", request.agent_id, exc.reason
+            )
+            await self._audit_enrollment_refusal(request.agent_id, exc)
+            return harkeniq_pb2.RegistrationAck(
+                accepted=False, reason=exc.reason
+            )
+
+        try:
+            site_name = await self.ingest.register(
+                site_id=enrollment.site_id,
+                site_name=enrollment.site_name,
+                agent_id=request.agent_id,
+                agent_name=request.agent_name,
+                vendor=request.vendor,
+                model=request.model,
+                service_tag=request.service_tag,
+                bmc_location_json=request.bmc_location_json,
+                peers=list(request.peers),
+                firmware_json=request.firmware_json,
+                device_class=request.device_class,
+            )
+        except ValueError as exc:
+            # E1.3: the device is enrolled at another site. Refused with a
+            # reason rather than silently left where it was.
+            logger.warning(
+                "RegisterAgent refused for %s: %s", request.agent_id, exc
+            )
+            await self._audit_enrollment_refusal(
+                request.agent_id,
+                type("E", (), {"code": "site_conflict", "reason": str(exc)})(),
+            )
+            return harkeniq_pb2.RegistrationAck(accepted=False, reason=str(exc))
 
         # R3a: if agent sent a public key, register identity and issue cert
         sm_public_key_pem = b""
@@ -78,6 +185,7 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                         agent_id=request.agent_id,
                         public_key_pem=bytes(request.public_key_pem),
                         site_name=site_name,
+                        site_id=enrollment.site_id,
                     )
                 )
             except ValueError as e:
@@ -162,7 +270,12 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                         "action_classes": classes,
                         "budget_remaining": budgets,
                         "risk_ceiling": ceiling,
-                        "stop_switch": self.autonomy.stop_switch_active,
+                        # E1.3: the halt in force for THIS AGENT'S site
+                        # (tenant, site or Site Manager-wide), not one
+                        # boolean shared by every site on the process.
+                        "stop_switch": await self._agent_site_halted(
+                            request.agent_id
+                        ),
                     }
                 if self.suppression is not None:
                     kwargs["suppression_domains"] = (
@@ -275,8 +388,13 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         autonomy=None,
         ingest=None,
         suppression=None,
+        stopswitch=None,
     ) -> None:
         self.sessionmaker = sessionmaker
+        # E1.3: the per-site halt. Defaulted from the sessionmaker so a
+        # servicer built without one still resolves halts rather than
+        # falling back to a Site Manager-wide boolean.
+        self.stopswitch = stopswitch or StopSwitchService(sessionmaker)
         self.approvals = approvals
         self.config = config
         self.directives = directives  # R5-2: skill installs from CC
@@ -380,10 +498,28 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         # than trusting the caller's snapshot of it. The node re-checks
         # everything again; this refusal just avoids queueing work that
         # is already known to be refused.
+        #
+        # E1.3: THIS DEVICE'S OWN SITE decides. A halt at another site
+        # this Site Manager happens to serve must not stop this one, and
+        # a halt at this one must not be escapable by the process serving
+        # others -- which is exactly what a single Site Manager-wide
+        # boolean would have done in both directions.
+        if self.stopswitch is not None and device_site_id:
+            async with self.sessionmaker() as session:
+                halt = await self.stopswitch.state_for(session, device_site_id)
+            if halt.halted:
+                return harkeniq_pb2.ActionDispatchAck(
+                    accepted=False, reason=halt.reason
+                )
+
         if self.autonomy is not None:
+            # The enforcer's in-memory flag still counts. A Site Manager
+            # mid-upgrade may be carrying one that has not been persisted
+            # yet, and a halt that is live in the process must never be
+            # escapable just because it is not in the table.
             if self.autonomy.stop_switch_active:
                 return harkeniq_pb2.ActionDispatchAck(
-                    accepted=False, reason="site stop switch is active"
+                    accepted=False, reason="a stop switch is active"
                 )
             if request.authorization == "autonomous_grant":
                 async with self.sessionmaker() as session:
@@ -985,6 +1121,18 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     self.autonomy.activate_stop_switch(by)
                 else:
                     self.autonomy.deactivate_stop_switch(by)
+                # E1.3: a stop pushed from Central Command is the TENANT
+                # stop. It reaches every site this Site Manager serves,
+                # and it is persisted so a restart cannot silently resume
+                # what an operator halted.
+                if self.stopswitch is not None:
+                    async with self.sessionmaker() as session:
+                        await self.stopswitch.set_halt(
+                            session, scope=SCOPE_TENANT, site_id=None,
+                            active=desired, actor=by,
+                            reason="pushed by Central Command",
+                        )
+                        await session.commit()
                 async with self.sessionmaker() as session:
                     from harkeniq_sm.db.repos import AuditRepo
                     await AuditRepo(session).append(

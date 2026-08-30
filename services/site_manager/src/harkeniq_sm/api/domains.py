@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from harkeniq_sm.api.deps import require_site_token
+from harkeniq_sm.api.site_scope import SiteScope, resolve_site
 from harkeniq_sm.db.repos import AuditRepo, DeviceRepo, DomainRepo, SiteRepo
 
 router = APIRouter(
@@ -45,16 +46,20 @@ async def _members_as_agent_ids(session, domain_repo, domain_id: str) -> list[st
 
 
 @router.get("")
-async def list_domains(request: Request) -> list[dict]:
+async def list_domains(request: Request,
+    scope: SiteScope = Depends(resolve_site),
+) -> list[dict]:
     state = request.app.state.sm
     async with state.sessionmaker() as session:
-        site = await SiteRepo(session).get_or_create(state.config.site_name)
+        # E1.3: fault domains belong to ONE site. A blast radius that
+        # spanned sites would be a physical claim about buildings that
+        # do not touch.
         domain_repo = DomainRepo(session)
         result = [
             _domain_dict(
                 domain, await _members_as_agent_ids(session, domain_repo, domain.id)
             )
-            for domain in await domain_repo.list_for_site(site.id)
+            for domain in await domain_repo.list_for_site(scope.id)
         ]
         await session.commit()
     return result

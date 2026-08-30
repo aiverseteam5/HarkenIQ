@@ -58,6 +58,7 @@ class AgentIdentityService:
         public_key_pem: bytes,
         site_name: str,
         tenant_id: str = "",
+        site_id: str = "",
     ) -> tuple[bytes, bytes]:
         """Store agent public key, issue SM certificate.
 
@@ -94,10 +95,25 @@ class AgentIdentityService:
                         f"Agent {agent_id} already registered with a different key. "
                         "Re-enroll with a new provisioning token."
                     )
+                if site_id and row.site_id and row.site_id != site_id:
+                    # E1.3: a device does not move sites by re-registering.
+                    # Changing site is an explicit re-enrollment, not a
+                    # self-declaration -- the same posture E0.2 took for a
+                    # site's Central Command binding.
+                    raise ValueError(
+                        f"Agent {agent_id} is enrolled at another site. "
+                        "Moving a device between sites is an explicit "
+                        "re-enrollment, not a re-registration."
+                    )
+                if site_id and not row.site_id:
+                    # Adopt the site for an identity that predates E1.3.
+                    row.site_id = site_id
             else:
                 row = AgentIdentityRow(
                     agent_id=agent_id,
                     public_key_pem=public_key_pem,
+                    # E1.3: an identity is issued FOR a site.
+                    site_id=site_id or None,
                 )
                 session.add(row)
                 logger.info("Registered new agent identity: %s", agent_id)

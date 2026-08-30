@@ -1034,3 +1034,130 @@ Plus: a subset naming `role.manage` for an `operator` refused 400; a
 region owner granting Region B / site-3 / tenant all 403; an agent bound
 inside the region 201 and one reaching site-3 403 with the ceiling's own
 message; no token 401; another realm's token 401; chain valid at 113.
+
+## 19. E1.3 — one Site Manager, many sites (landed 2026-08-30)
+
+E0.2 made every Central Command-facing **read** resolve to one
+authoritative site. Every **write**, and all twenty of the Site
+Manager's own endpoints, still resolved a single name from its config
+file. E1.3 is the other half.
+
+### The defect this slice existed to fix
+
+**An agent never said which site it was at.** `AgentRegistration`
+carried eleven fields and no site; `Ingest.register()` resolved
+`config.site_name` and memoized the row id on the instance
+(`self._site_id`, a process-lifetime cache of "the one site"). Two sites
+on one Site Manager would have put **every device from both into one
+site row** — and the E0.2 reads would then have scoped perfectly to a set
+that was already wrong.
+
+### Ratified D1 — site identity is authoritative, not agent-declared
+
+The Site Manager issues a site-bound, revocable enrollment credential;
+an agent presents it; the Site Manager resolves it to exactly one site
+and persists the binding.
+
+A `site_name` field on the registration message would have been the
+smaller change and the wrong one: with one Site Manager token shared by
+every agent, a declared site is a **claim** any agent could make about
+any site, and correlation, blast radius, error budgets, metering and
+(since E1.2) both human and agent authority all resolve from it.
+
+- `site_enrollment_tokens` — hash only, so a leaked database yields no
+  usable credential; the secret is shown exactly once.
+- Unique `token_hash`: one secret can never resolve to two sites. The
+  ambiguity is removed by the database, not by a check.
+- Unknown, revoked, expired, or naming an inactive site → **refused**,
+  and the refusal is audited. A device that cannot prove its site does
+  not get one.
+- No credential on a **multi-site** Site Manager → refused. On a
+  **single-site** one → the one site, so an existing deployment upgrades
+  without re-enrolling its fleet.
+- **Changing site is an explicit re-enrollment.** The upsert already
+  happened not to rewrite `site_id`, so the outcome was right by
+  accident; a silent no-op is not enforcement, so it is now refused with
+  a reason.
+
+### Ratified D2 — the site is the normal operational safety boundary
+
+Three distinct halts, and they are not interchangeable:
+
+| Halt | Reaches | Set by |
+|---|---|---|
+| `tenant` | every site this Site Manager serves | pushed from Central Command |
+| `site` | one site; the others keep running | an operator, per site |
+| `site_manager` | every site, as an emergency | an operator, with a typed confirmation |
+
+Lifting the emergency halt does **not** resume a site an operator
+stopped separately.
+
+**The pre-E1.3 switch was an in-memory boolean.** It was neither per site
+nor persisted, so an operator could halt a site, the process could
+restart, and autonomy would silently resume with nothing in the record
+saying it had ever stopped. A stop switch that forgets is worse than no
+stop switch, because it is trusted. `sm_stop_switches` fixes both at
+once.
+
+### The governed execution decision
+
+`execution_permitted()` takes ten inputs and refuses unless every one of
+them fails to object:
+
+```
+tenant stop + site stop + SM emergency halt + agent scope + permission
+  + capability + autonomy + lease + preconditions + blast radius
+```
+
+An input **nobody supplied** is treated as *not yet evaluated and
+therefore refusing* — an unevaluated governing input must never read as
+consent. That default is what makes "an autonomy level is a ceiling,
+never unconditional execution authority" structural: autonomy is one
+input, evaluated seventh, and it can only ever fail to object.
+
+### Correlation, the correctness risk
+
+`on_onset` now correlates inside the **device's own** site and refuses to
+correlate a device that has none; `sweep` runs once **per site**. Left
+alone, two sites on one process would have produced a shared-power
+incident spanning estates that share no power at all.
+
+### Migration 0009
+
+`site_enrollment_tokens`, `sm_stop_switches`, and `site_id` on
+`agent_identities`, `sm_candidate_skills` and `audit_log`. The audit
+column sits **outside** `_chain_payload`, exactly as CC's E1.2 column
+does, so every chain written before it still verifies. The six
+site-anchored tables needed nothing (E0.2 built them) and the nine
+device-anchored ones reach a site through a total join. Backfill is
+unambiguous by construction: a pre-E1.3 Site Manager has exactly one
+site.
+
+### No second authorization model
+
+The Site Manager still authenticates with a site/service identity. The
+new site resolver answers *which site is this request about*, never *who
+may ask*. A test asserts over the **import graph** that no
+`harkeniq_sm` module references `harkeniq_cc` — the boundary as a fact,
+not a convention.
+
+### Live proof (two Site Manager processes, real PostgreSQL)
+
+SM-01 serves site-1 and site-b; SM-02 serves site-c, each with its own
+database.
+
+- Credentials are site-bound and distinct; **0 rows hold a raw secret**.
+- Registration lands each agent at its credential's site; re-registering
+  with another site's credential is **refused** and the device stays put.
+- Unknown credential → refused, **0 device rows created**; no credential
+  on a 2-site Site Manager → refused, naming why.
+- `AgentRegistration` has **no `site_name` and no `site_id` field**.
+- An unnamed read on a multi-site Site Manager → **400** naming both
+  sites; named reads return only their own; a site it does not serve →
+  404; a single-site Site Manager still answers unasked.
+- Stopping site-1 left site-b running; **the halt survived a restart**;
+  the emergency halt stopped both and required the typed confirmation;
+  lifting it left site-1's own halt standing.
+- SM-02 answered `site_resolved=false` with a reason for both site-1 and
+  site-b, and returned **0 devices** — never broadened.
+- Both audit chains verify with `site_id` recorded.

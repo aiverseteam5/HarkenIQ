@@ -41,7 +41,6 @@ class IngestService:
     def __init__(self, sessionmaker, config: SMConfig) -> None:
         self.sessionmaker = sessionmaker
         self.config = config
-        self._site_id: Optional[str] = None
         # Set by the correlation engine (phase: correlation); called after
         # commit for every onset transition (device_id, subsystem,
         # severity, onset_at).
@@ -57,10 +56,34 @@ class IngestService:
         self.skill_generator = None
 
     async def _site(self, session) -> str:
-        if self._site_id is None:
+        """The site for callers that legitimately have only one.
+
+        E1.3: this is NO LONGER a memo. It used to cache the configured
+        site's id on the instance for the life of the process, which made
+        "the site" a property of the Site Manager rather than of the
+        device -- so two sites on one process would have put every device
+        into one site row.
+
+        Callers that know their site (registration, correlation, an API
+        request that names one) pass it explicitly. This remains for the
+        genuinely SM-level paths, and it refuses to guess when the answer
+        is ambiguous.
+        """
+        from harkeniq_sm.db.models import Site
+        from sqlalchemy import select
+
+        sites = (
+            await session.execute(select(Site).where(Site.status == "active"))
+        ).scalars().all()
+        if len(sites) == 1:
+            return sites[0].id
+        if not sites:
             site = await SiteRepo(session).get_or_create(self.config.site_name)
-            self._site_id = site.id
-        return self._site_id
+            return site.id
+        raise ValueError(
+            "this Site Manager serves several sites; the caller must name "
+            "one rather than fall back to a configured default"
+        )
 
     async def register(
         self,
@@ -73,8 +96,17 @@ class IngestService:
         peers: Optional[list[str]] = None,
         firmware_json: str = "",
         device_class: str = "",
+        site_id: str = "",
+        site_name: str = "",
     ) -> str:
-        """Upsert the device row; returns the site name (RegistrationAck)."""
+        """Upsert the device row; returns the site name (RegistrationAck).
+
+        E1.3: `site_id` is resolved from the device's SITE-BOUND
+        enrollment credential before this is called, and is the only
+        thing that decides where the device lands. When it is absent the
+        Site Manager falls back to its single active site, which keeps a
+        pre-E1.3 deployment working and refuses when that is ambiguous.
+        """
         bmc_location = None
         if bmc_location_json:
             try:
@@ -90,9 +122,9 @@ class IngestService:
             except ValueError:
                 logger.warning("Unparseable firmware_json from %s", agent_id)
         async with self.sessionmaker() as session:
-            site_id = await self._site(session)
+            resolved_site = site_id or await self._site(session)
             await DeviceRepo(session).upsert_registration(
-                site_id=site_id,
+                site_id=resolved_site,
                 agent_id=agent_id,
                 agent_name=agent_name,
                 vendor=vendor,
@@ -105,7 +137,7 @@ class IngestService:
                 device_class=device_class,
             )
             await session.commit()
-        return self.config.site_name
+        return site_name or self.config.site_name
 
     async def heartbeat(
         self,

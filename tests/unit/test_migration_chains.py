@@ -27,7 +27,7 @@ REPO = Path(__file__).parents[2]
 
 SERVICES = {
     "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0011"),
-    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0008"),
+    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0009"),
 }
 
 

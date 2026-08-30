@@ -19,6 +19,7 @@ from harkeniq_sm.api import firmware_campaigns as firmware_campaigns_api
 from harkeniq_sm.api import domains as domains_api
 from harkeniq_sm.api import incidents as incidents_api
 from harkeniq_sm.api import site as site_api
+from harkeniq_sm.api import sites_admin as sites_admin_api
 from harkeniq_sm.api import skills as skills_api
 from harkeniq_sm.api.deps import require_site_token
 from harkeniq_sm.coverage import coverage_entry
@@ -42,6 +43,7 @@ def create_app(state) -> FastAPI:
 
     app.add_middleware(request_id_middleware(app))
     app.include_router(site_api.router)
+    app.include_router(sites_admin_api.router)
     app.include_router(domains_api.router)
     app.include_router(devices_api.router)
     app.include_router(incidents_api.router)

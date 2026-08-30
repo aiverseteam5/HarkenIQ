@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from harkeniq_sm.api.deps import require_site_token
+from harkeniq_sm.api.site_scope import SiteScope, resolve_site
 from harkeniq_sm.coverage import coverage_entry
 from harkeniq_sm.db.repos import (
     DeviceRepo,
@@ -31,13 +32,15 @@ def _device_dict(device, entry: dict) -> dict:
 
 
 @router.get("")
-async def list_devices(request: Request) -> list[dict]:
+async def list_devices(
+    request: Request, scope: SiteScope = Depends(resolve_site)
+) -> list[dict]:
+    """Devices at ONE site. E1.3: never every site this process serves."""
     state = request.app.state.sm
     async with state.sessionmaker() as session:
-        site = await SiteRepo(session).get_or_create(state.config.site_name)
         status_repo = StatusRepo(session)
         result = []
-        for device in await DeviceRepo(session).list_for_site(site.id):
+        for device in await DeviceRepo(session).list_for_site(scope.id):
             status = await status_repo.get(device.id)
             result.append(_device_dict(device, coverage_entry(device, status, state.config)))
         await session.commit()
@@ -45,11 +48,18 @@ async def list_devices(request: Request) -> list[dict]:
 
 
 @router.get("/{agent_id}")
-async def get_device(agent_id: str, request: Request) -> dict:
+async def get_device(
+    agent_id: str, request: Request,
+    scope: SiteScope = Depends(resolve_site),
+) -> dict:
     state = request.app.state.sm
     async with state.sessionmaker() as session:
         device = await DeviceRepo(session).get_by_agent_id(agent_id)
         if device is None:
+            raise HTTPException(status_code=404, detail="unknown device")
+        # E1.3: a device at another site this Site Manager serves reads
+        # as absent, not as forbidden -- 403 would confirm it exists.
+        if device.site_id != scope.id:
             raise HTTPException(status_code=404, detail="unknown device")
         status = await StatusRepo(session).get(device.id)
         result = _device_dict(device, coverage_entry(device, status, state.config))

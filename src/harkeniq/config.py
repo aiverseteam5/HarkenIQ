@@ -67,6 +67,12 @@ DEFAULTS: dict[str, Any] = {
         "port": 50051,
         "heartbeat_interval": 60,
         "token": "",
+        # E1.3: the site-bound enrollment credential this device presents
+        # at registration. The Site Manager resolves it to exactly one
+        # site; there is deliberately no "site" key here, because a site
+        # this agent could name would be a claim rather than a fact.
+        # Optional: a Site Manager serving one site is unambiguous.
+        "enrollment_token": "",
         "tls": True,
         "tls_ca": "",
         "action_poll_interval": 5,
