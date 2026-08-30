@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_current_user, get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_current_user, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo
 
@@ -20,6 +20,9 @@ def _entry_dict(row) -> dict:
         "action": row.action,
         "subject": row.subject,
         "tenant_id": row.tenant_id,
+        # E1.2: authorization/indexing metadata, outside the chain
+        # payload. Null means tenant-level (and every pre-E1.2 row).
+        "site_id": row.site_id,
         "detail": row.detail,
         "seq": row.seq,
         "prev_hash": row.prev_hash,
@@ -35,6 +38,7 @@ async def list_audit(
     action: str | None = None,
     user: UserContext = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Paginated audit entries."""
     repo = AuditRepo(session)
@@ -44,9 +48,10 @@ async def list_audit(
         action=action,
         page=page,
         page_size=page_size,
+        scope=scope,
     )
     total = await repo.count_filtered(
-        tenant_id=user.tenant_id, actor=actor, action=action,
+        tenant_id=user.tenant_id, scope=scope, actor=actor, action=action,
     )
     return {
         "entries": [_entry_dict(r) for r in rows],

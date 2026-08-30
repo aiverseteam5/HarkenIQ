@@ -125,13 +125,18 @@ def has_permission(
     role_perms = ROLE_PERMISSIONS.get(role, set())
     if permission in role_perms:
         return True
+    # Custom grants are already intersected with the role by
+    # `effective_permissions`, so this can only ever confirm something the
+    # role also holds. Kept as a separate branch because a caller may
+    # legitimately pass a narrower set than the role's own.
     if custom_permissions and permission in custom_permissions:
         return True
     return False
 
 
 async def effective_permissions(
-    session, user_id: str, email: str = "", tenant_id: Optional[str] = None
+    session, user_id: str, email: str = "", tenant_id: Optional[str] = None,
+    role: str = "",
 ) -> list[str]:
     """Custom-role grants for the JWT subject *user_id*, if any.
 
@@ -157,9 +162,21 @@ async def effective_permissions(
     if local is None:
         return []
     grants: set[str] = set()
-    for role in await CustomRoleRepo(session).get_user_custom_roles(local.id):
-        for perm in role.permissions or []:
-            # A bundle can never widen beyond the known permission set.
+    for bundle in await CustomRoleRepo(session).get_user_custom_roles(local.id):
+        for perm in bundle.permissions or []:
+            # A bundle can never name a permission outside the vocabulary.
             if perm in PERMISSIONS:
                 grants.add(perm)
+
+    # E1.4: a bundle INTERSECTS the holder's role; it never widens it.
+    #
+    # It used to be OR-ed with the role in `has_permission`, so a tenant
+    # could define a bundle naming any permission in the vocabulary --
+    # including platform-side ones like tenant.manage -- and assign it to
+    # a viewer. That is the same widening E1.2 refused for
+    # `permission_subset`, and the rule is the same here: a bundle
+    # re-shapes authority WITHIN a role, and can only ever remove.
+    if role:
+        ceiling = ROLE_PERMISSIONS.get(role, set())
+        grants &= set(ceiling)
     return sorted(grants)

@@ -43,11 +43,129 @@ class Base(DeclarativeBase):
 
 
 class Site(Base):
+    """A site this Site Manager serves.
+
+    E0.2: one Site Manager may serve several sites, and a site belongs to
+    exactly one active Site Manager. `cc_site_id` is the AUTHORITATIVE
+    identity, assigned by Central Command and persisted here at
+    RegisterSite. Before E0.2 it was received and discarded, so CC's site
+    id and the SM's own primary key were different id spaces that never
+    matched, and every site-scoped read silently widened to the whole
+    Site Manager.
+
+    The binding is never overwritten by a registration. Recovery from a
+    genuinely changed CC identity goes through the audited unbind on the
+    SM's break-glass API.
+    """
+
     __tablename__ = "sites"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    #: Central Command's site id. Unique: two sites can never bind to one
+    #: CC identity, which is what makes resolution unambiguous.
+    cc_site_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, unique=True
+    )
+    #: active | retired. A site moves between Site Managers by being
+    #: retired here before it is bound there.
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    bound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SiteEnrollmentToken(Base):
+    """A site-bound, revocable credential an agent presents to register.
+
+    E1.3, ratified invariant: **site identity is authoritative, never
+    agent-declared.** The Site Manager issues one of these FOR a site;
+    an agent presents it; the Site Manager resolves it to exactly one
+    site and binds the device there. There is no message field an agent
+    can set to choose or override its site, so the site is something the
+    Site Manager knows rather than something it is told.
+
+    That matters because everything downstream stands on it: correlation
+    is per site, blast radius is per site, error budgets are per site,
+    and at E1.2 a human's and an agent's authority are per site too. A
+    self-declared site would make all of that rest on a claim.
+
+    Only the HASH is stored. A leaked database gives an attacker no
+    usable enrollment credential, and the token itself is shown exactly
+    once, when it is issued.
+
+    This is NOT an authorization model. It answers "which site is this
+    device at", never "what may anybody do" -- that stays at Central
+    Command (E1.2), above the Site Manager, unchanged.
+    """
+
+    __tablename__ = "site_enrollment_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"), index=True)
+    #: sha256 of the presented secret. Unique so one secret can never
+    #: resolve to two sites -- the ambiguity this table exists to remove.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    issued_by: Mapped[str] = mapped_column(String(255), default="")
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Revocation is a timestamp, never a delete: an audit entry naming
+    #: this credential has to stay resolvable afterwards.
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[str] = mapped_column(String(255), default="")
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class StopSwitchRow(Base):
+    """A halt, per site or across the whole Site Manager. E1.3.
+
+    Ratified D2: **the site is the normal operational safety boundary.**
+    Stopping Site A stops Site A and leaves Site B running if Site B is
+    independently healthy. The Site Manager-wide emergency halt still
+    exists and still stops everything the process serves, but it is a
+    separate, explicitly audited action and NOT what the site control
+    means.
+
+    Persisted, which the pre-E1.3 switch was not: it lived in a single
+    in-memory boolean on the enforcer, so an operator could halt a site,
+    the process could restart, and autonomy would silently resume with
+    nothing in the record saying it had ever stopped. A stop switch that
+    forgets is worse than no stop switch.
+    """
+
+    __tablename__ = "sm_stop_switches"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    #: "site" | "site_manager". The SM-wide row carries site_id NULL.
+    scope: Mapped[str] = mapped_column(String(16), default="site")
+    site_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sites.id"), nullable=True, index=True
+    )
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    activated_by: Mapped[str] = mapped_column(String(255), default="")
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deactivated_by: Mapped[str] = mapped_column(String(255), default="")
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reason: Mapped[str] = mapped_column(String(512), default="")
+
+    __table_args__ = (
+        UniqueConstraint("scope", "site_id", name="uq_stop_switch_scope_site"),
+    )
 
 
 class Rack(Base):
@@ -244,6 +362,12 @@ class AgentIdentityRow(Base):
     # signature (not valid UTF-8), and asyncpg refuses bytes into VARCHAR.
     public_key_pem: Mapped[bytes] = mapped_column(LargeBinary)
     certificate: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    #: E1.3: an identity is issued FOR a site. Without it a revoked agent
+    #: at Site A and a fresh agent at Site B are indistinguishable rows on
+    #: a Site Manager serving both.
+    site_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sites.id"), nullable=True, index=True
+    )
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -260,6 +384,12 @@ class CandidateSkillRow(Base):
     __tablename__ = "sm_candidate_skills"
 
     skill_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: E1.3: which site's diagnosis produced this. The CC watermark was
+    #: already scoped by site in E0.2 through a join; the column makes it
+    #: a fact instead.
+    site_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sites.id"), nullable=True, index=True
+    )
     yaml_text: Mapped[str] = mapped_column(Text)
     source_device: Mapped[str] = mapped_column(String(64), default="")
     source_component: Mapped[str] = mapped_column(String(128), default="")
@@ -290,6 +420,11 @@ class ActionOutcomeRow(Base):
     side_effects: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
     operator_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[str] = mapped_column(String(512), default="")
+    #: A1: who caused this execution. "op-agent:<id>@v<n>" for an
+    #: Operational Agent, "user:<email>" for a human-approved action,
+    #: empty for node-proposed work with no external requester. Rides
+    #: FleetOutcome up to CC so evidence keeps its actor.
+    actor: Mapped[str] = mapped_column(String(255), default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     reported_to_cc: Mapped[bool] = mapped_column(Boolean, default=False)  # R3b-3: watermark
 
@@ -297,10 +432,23 @@ class ActionOutcomeRow(Base):
 
 
 class ErrorBudgetRow(Base):
-    """R3b-1 C8: persisted error budget state."""
+    """Persisted A2.2 error budget state, per site per action class.
+
+    R3b-1 C8 declared it; S5 gave it a writer and a caller. E0.2 gave it
+    a SITE: the key was `action_type` alone, so on a Site Manager serving
+    several sites a failure pattern at one site would have withdrawn
+    autonomy at every other site it serves. Autonomy is earned on
+    evidence, and one site's evidence is not another's.
+
+    The Site Manager remains the execution and safety boundary; what is
+    per-site is the EVIDENCE and the withdrawal it justifies.
+    """
 
     __tablename__ = "sm_error_budgets"
 
+    site_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("sites.id"), primary_key=True
+    )
     action_type: Mapped[str] = mapped_column(String(64), primary_key=True)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -319,6 +467,12 @@ class AuditLogRow(Base):
     actor: Mapped[str] = mapped_column(String(255))
     action: Mapped[str] = mapped_column(String(64))
     subject: Mapped[str] = mapped_column(String(255), default="")
+    #: E1.3: authorization/indexing metadata, DELIBERATELY OUTSIDE the
+    #: hash payload -- the same trade CC made in E1.2 and for the same
+    #: reason. Adding a column the payload does not name leaves every
+    #: chain written before it verifiable. Null means Site Manager-level,
+    #: which is also how every pre-E1.3 row reads.
+    site_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
     # service, seq 1..N, unique so a racing appender fails instead of
@@ -406,6 +560,20 @@ class DirectedDirective(Base):
     tier: Mapped[str] = mapped_column(String(32), default="")
     validation_state: Mapped[str] = mapped_column(String(32), default="")
     issued_by: Mapped[str] = mapped_column(String(255), default="")
+    #: A1: the actor on whose behalf this directive runs, in the
+    #: attribution form "op-agent:<id>@v<n>" or "user:<email>".
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    #: A1: the basis the node may claim when it runs this directive.
+    #: "human_approval" carries a named human's decision;
+    #: "autonomous_grant" carries only the tenant's autonomy contract and
+    #: must therefore still satisfy the node's lease. Empty means legacy
+    #: SM-authority work (firmware campaigns), which behaves as before.
+    #: NOT named `authorization`: that is a reserved word in PostgreSQL,
+    #: so every raw query (the compose gate does several) would need
+    #: quoting to read it. Matches cc_agent_proposals.authorization_basis.
+    authorization_basis: Mapped[str] = mapped_column(String(32), default="")
+    #: A1: the CC proposal this directive settles, when there is one.
+    proposal_id: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     result_detail: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

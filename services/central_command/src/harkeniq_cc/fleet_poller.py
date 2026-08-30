@@ -38,6 +38,22 @@ async def fleet_poll_loop(state) -> None:
                             state.config.tenant_id,
                             site.id,
                         )
+                        # E0.2: an unresolved site returns an explicit
+                        # empty snapshot. Ingesting it would clear this
+                        # site's fleet cache and, through D3 absence
+                        # inference, resolve every one of its incidents.
+                        # Skip the whole cycle and re-register once, since
+                        # Central Command owns the binding.
+                        if not snapshot.get("site_resolved", True):
+                            reason = snapshot.get("site_reason", "")
+                            logger.warning(
+                                "Site %s (%s) unresolved at its Site Manager: "
+                                "%s -- skipping ingest and re-registering",
+                                site.site_name, site.id, reason,
+                            )
+                            await _rebind_site(state, client, site)
+                            continue
+
                         cache = FleetCacheRepo(session)
                         await cache.clear_site(site.id)
                         for dev in snapshot.get("devices", []):
@@ -134,6 +150,41 @@ async def fleet_poll_loop(state) -> None:
             logger.error("Fleet poll cycle error: %s", exc)
 
 
+async def _rebind_site(state, client, site) -> None:
+    """Re-assert this site's identity at its Site Manager.
+
+    E0.2: Central Command assigns the site id, so CC is the authority on
+    the binding and re-registration is idempotent. This is what carries
+    an existing deployment across the upgrade without any adoption
+    guesswork at the Site Manager, and what recovers a Site Manager whose
+    database was rebuilt.
+
+    A Site Manager that refuses (the name is bound to a DIFFERENT
+    identity) is left alone: that is the fail-closed case, and resolving
+    it needs a human and the audited unbind, not a retry loop.
+    """
+    fingerprint = getattr(getattr(state, "license", None), "fingerprint", "")
+    try:
+        result = await client.register_site(
+            sm_endpoint=site.sm_endpoint,
+            tenant_id=state.config.tenant_id,
+            site_name=site.site_name,
+            license_fingerprint=fingerprint or site.license_fingerprint or "demo",
+            site_id=site.id,
+        )
+    except Exception as exc:  # noqa: BLE001 - a poll must never die here
+        logger.warning("Re-registration failed for site %s: %s", site.id, exc)
+        return
+    if result.get("accepted"):
+        logger.info("Site %s re-bound at its Site Manager", site.id)
+    else:
+        logger.error(
+            "Site %s could not be bound: %s -- an operator must unbind the "
+            "conflicting site at the Site Manager before this resolves",
+            site.id, result.get("reason", ""),
+        )
+
+
 async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
     """Store action outcomes in cc_outcome_history for pattern detection."""
     from datetime import datetime, timezone
@@ -149,6 +200,7 @@ async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
             model=oc.get("model", ""),
             outcome=oc.get("outcome", "UNKNOWN"),
             fault_resolved=oc.get("fault_resolved"),
+            actor=oc.get("actor", "") or "",
             recorded_at=datetime.fromtimestamp(
                 oc.get("recorded_at_unix", 0), tz=timezone.utc,
             ) if oc.get("recorded_at_unix") else datetime.now(timezone.utc),

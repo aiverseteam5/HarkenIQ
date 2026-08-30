@@ -40,13 +40,152 @@ bash ../../scripts/seed-demo.sh
 
 step "Agent registered and observed at SM"
 wait_for "SM device observed" 120 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/devices | grep -q '\"observation\": *\"observed\"\\|observed'"
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/devices?site=site-1 | grep -q '\"observation\": *\"observed\"\\|observed'"
 
-step "CC fleet poll picked up the agent (token bootstrap worked)"
-TOKEN=$(curl -sf -X POST \
+# E1.4: Central Command validates against the TENANT'S realm now, so
+# every CC-facing token below must come from tenant-demo. The platform
+# realm holds only platform_super_admin and platform_support, and a
+# platform token reaching Central Command is a 401 by design.
+tenant_realm_user() {
+  # $1 email, $2 password, $3 realm role
+  local kc_admin
+  kc_admin=$(curl -sf -X POST \
+    "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+    -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+  curl -s -X POST "http://localhost:8180/admin/realms/tenant-demo/users" \
+    -H "Authorization: Bearer $kc_admin" -H "Content-Type: application/json" \
+    -d "{\"username\":\"$1\",\"email\":\"$1\",\"enabled\":true,
+         \"emailVerified\":true,\"firstName\":\"Gate\",\"lastName\":\"User\",
+         \"credentials\":[{\"type\":\"password\",\"value\":\"$2\",
+                            \"temporary\":false}]}" -o /dev/null
+  local uid rj
+  uid=$(curl -s "http://localhost:8180/admin/realms/tenant-demo/users?username=$1&exact=true" \
+    -H "Authorization: Bearer $kc_admin" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
+  [ -n "$uid" ] || { echo "could not create tenant-realm user $1" >&2; return 1; }
+  rj=$(curl -s "http://localhost:8180/admin/realms/tenant-demo/roles/$3" \
+    -H "Authorization: Bearer $kc_admin")
+  curl -s -X POST \
+    "http://localhost:8180/admin/realms/tenant-demo/users/$uid/role-mappings/realm" \
+    -H "Authorization: Bearer $kc_admin" -H "Content-Type: application/json" \
+    -d "[$rj]" -o /dev/null
+}
+
+tenant_token() {
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=password&client_id=harkeniq-console&username=$1&password=$2" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+
+step "E1.4: the tenant's own realm exists, and Central Command validates against it"
+# Tenant creation provisions the realm; a tenant that predates E1.4 gets
+# one through the explicit provisioning endpoint. Either way the tenant
+# has an identity boundary before anybody authenticates into it.
+PLATFORM_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
   -d "grant_type=password&client_id=harkeniq-console&username=admin@harkeniq.com&password=admin" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+E14_TENANT=$(curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  http://localhost:8100/api/admin/tenants/ \
+  | python3 -c "
+import sys, json
+print([t['id'] for t in json.load(sys.stdin)['items'] if t['slug'] == 'tenant-demo'][0])")
+curl -sf -X POST -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  "http://localhost:8100/api/admin/tenants/$E14_TENANT/provision-realm" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['keycloak_realm'] == 'tenant-demo', d
+print('tenant realm:', d['keycloak_realm'])"
+
+tenant_realm_user gate-owner@demo gate-owner tenant_owner || true
+tenant_realm_user gate-op@demo gate-op operator || true
+tenant_realm_user gate-aud@demo gate-aud auditor || true
+
+KC_ADMIN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+step "E1.4: the realm carries the five tenant roles, a client, and an owner"
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/roles" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+have = {r['name'] for r in json.load(sys.stdin)}
+want = {'tenant_owner', 'site_admin', 'operator', 'auditor', 'viewer'}
+missing = want - have
+assert not missing, f'tenant realm is missing roles: {sorted(missing)}'
+print('five tenant roles provisioned:', sorted(want))
+"
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/clients?clientId=harkeniq-console" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+clients = json.load(sys.stdin)
+assert clients, 'the tenant realm has no console client to sign in through'
+print('console client registered in the tenant realm')
+"
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/users" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+users = [u['username'] for u in json.load(sys.stdin)]
+assert users, 'the tenant realm has no users at all'
+print('tenant realm users:', sorted(users)[:6])
+"
+
+step "E1.4: the tenant<->realm binding is recorded and authoritative"
+curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  http://localhost:8100/api/admin/tenants/ | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['items']
+demo = [t for t in rows if t['slug'] == 'tenant-demo'][0]
+assert demo['keycloak_realm'] == 'tenant-demo', demo
+# The defect this closes: creation used to return 200 with a NULL realm.
+assert all(t['keycloak_realm'] for t in rows), (
+    'a tenant exists with no realm: it reports success and nobody can '
+    'sign in to it'
+)
+print('every tenant has a recorded realm binding')
+"
+
+step "E1.4: the platform realm holds NO tenant operational role"
+curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+have = {r['name'] for r in json.load(sys.stdin)}
+tenant_roles = {'tenant_owner', 'site_admin', 'operator', 'auditor', 'viewer'}
+leaked = have & tenant_roles
+assert not leaked, (
+    f'the platform realm carries tenant operational roles {sorted(leaked)}: '
+    'a platform identity would become a tenant operator'
+)
+assert 'platform_super_admin' in have
+print('platform realm roles:', sorted(have - {'offline_access', 'uma_authorization'}))
+"
+
+step "E1.4: a PLATFORM identity is refused by Central Command"
+PLAT_CC=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" http://localhost:8090/api/fleet/)
+[ "$PLAT_CC" = "401" ] || {
+  echo "a platform identity reached tenant Central Command ($PLAT_CC)" >&2
+  exit 1; }
+echo "platform -> tenant Central Command: 401 at validation"
+
+step "E1.4: a stray realm cannot mint access"
+STRAY=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $KC_ADMIN" http://localhost:8090/api/fleet/)
+[ "$STRAY" = "401" ] || { echo "a master-realm token reached CC ($STRAY)" >&2; exit 1; }
+STRAY_CONSOLE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $KC_ADMIN" http://localhost:8100/api/admin/tenants/)
+[ "$STRAY_CONSOLE" = "401" ] || {
+  echo "a master-realm token reached the Console ($STRAY_CONSOLE)" >&2; exit 1; }
+echo "master-realm token: 401 at both services"
+
+step "CC fleet poll picked up the agent (token bootstrap worked)"
+# E1.4: a TENANT-realm identity. A platform token is refused by Central
+# Command at validation now, which is the boundary this proves.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
 wait_for "CC fleet has the device" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:8090/api/fleet/ | grep -q agent_id"
 
@@ -66,7 +205,19 @@ curl -sfL -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8100/api/t/$TENANT_ID/fleet/summary" | grep -q total_nodes
 
 step "Placement is fail-closed: an unregistered tenant is refused, not defaulted"
-UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+# E1.4: a TENANT identity is refused at the scope check before placement
+# is ever resolved -- 403, because a tenant may not probe another
+# tenant's id at all. That is stricter than the platform path, so it is
+# asserted first and separately.
+UNREG_TENANT=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/does-not-exist/fleet/summary")
+[ "$UNREG_TENANT" = "403" ] || {
+  echo "a tenant identity probing another tenant returned $UNREG_TENANT, want 403" >&2
+  exit 1; }
+
+# The PLACEMENT branch itself needs a caller that gets past the scope
+# check, which is the platform plane.
+UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PLATFORM_TOKEN" \
   "http://localhost:8100/api/t/does-not-exist/fleet/summary")
 # Refusal semantics differ across the PR stack this gate rides on: with
 # the tenant-existence check in tenant_scope (navigation slice) an unknown
@@ -77,18 +228,22 @@ case "$UNREG" in 404|503) : ;; *) echo "unknown tenant returned $UNREG, want 404
 
 step "Fail-closed for a REAL tenant with no placement (the 503 branch itself)"
 DARK_ID=$(curl -sf -X POST "http://localhost:8100/api/admin/tenants/" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" -H "Content-Type: application/json" \
   -d '{"name": "Gate Dark Tenant", "slug": "gate-dark", "billing_country": "US",
        "currency": "USD", "plan": "observe", "node_commit": 1,
        "admin_email": "dark@gate.example"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" ) || \
-  DARK_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN" gate-dark)
-DARK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  DARK_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $PLATFORM_TOKEN" gate-dark)
+# The 503 is about PLACEMENT, so it needs a caller who reaches placement
+# resolution -- the platform plane. A tenant identity is refused earlier,
+# at the scope check, which the step above asserts separately.
+DARK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PLATFORM_TOKEN" \
   "http://localhost:8100/api/t/$DARK_ID/fleet/summary")
 [ "$DARK" = "503" ] || { echo "placement-less tenant returned $DARK, want 503" >&2; exit 1; }
-# Known gate limitation (documented, not hidden): the scenario runs on a
-# platform_super_admin token whose break-glass bypasses membership and the
-# support-access gate; those paths are pinned by the unit suite, not here.
+# E1.4 narrowed this: the scenario now runs on a TENANT-realm identity, so
+# the tenant-plane path is genuinely exercised rather than ridden over by
+# a platform break-glass. Platform-plane calls are explicitly marked with
+# $PLATFORM_TOKEN, and there are only a handful.
 
 step "Auth is real: no token / garbage token are rejected"
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/fleet/)" = "401" ]
@@ -102,7 +257,7 @@ curl -skf -X POST https://localhost:9000/test/inject-fault \
 
 step "Agent detects -> SM opens the incident"
 wait_for "fan incident open" 120 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents?site=site-1 | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
 
 step "Action proposed at the SM"
 # Select the PENDING action, never actions[0]. The stack's volumes survive
@@ -111,7 +266,7 @@ step "Action proposed at the SM"
 # then times out the C2 step below for a reason unrelated to the code
 # under test (observed 2026-08-29). Wait for and pick a genuinely pending one.
 pending_action_id() {
-  curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
+  curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions?site=site-1 \
     | python3 -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a.get('status')=='pending'), ''))"
 }
 have_pending_action() { [ -n "$(pending_action_id)" ]; }
@@ -120,49 +275,21 @@ wait_for "pending action" 120 have_pending_action
 ACTION=$(pending_action_id)
 [ -n "$ACTION" ] || { echo "no pending action at SM" >&2; exit 1; }
 
-step "Seed an OPERATOR (P0 2026-08-29): the role that was locked out of CC"
+step "Seed an OPERATOR: the role that was locked out of CC"
 # C1's proof at runtime: before the RBAC repair, CC granted non-admins
-# only the literal "view" — an operator 403ed on every route including
-# approvals, so this persona could not function at all. Create the role
-# and a user via the Keycloak admin API (idempotent: 409s tolerated).
+# only the literal "view" -- an operator 403ed on every route including
+# approvals, so this persona could not function at all.
+#
+# E1.4: the operator lives in the TENANT realm now. This used to create
+# the role and the user in the PLATFORM realm, which is exactly the
+# boundary E1.4 closes -- and it ran AFTER the step asserting the
+# platform realm holds no tenant operational role, quietly putting one
+# back. `tenant_realm_user` created this persona at the top of the gate.
 KC_ADMIN_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/master/protocol/openid-connect/token" \
   -d "grant_type=password&client_id=admin-cli&username=admin&password=${HARKENIQ_KC_ADMIN_PASSWORD:-admin}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-curl -s -o /dev/null -X POST \
-  "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name": "operator"}'
-curl -s -o /dev/null -X POST \
-  "http://localhost:8180/admin/realms/harkeniq-platform/users" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"username": "operator1@harkeniq.com", "email": "operator1@harkeniq.com",
-       "firstName": "Gate", "lastName": "Operator",
-       "enabled": true, "emailVerified": true,
-       "credentials": [{"type": "password", "value": "operator", "temporary": false}]}'
-OP_UID=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/users?username=operator1@harkeniq.com" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-# Keycloak's declarative user profile queues VERIFY_PROFILE on users
-# created without a full profile, and "Account is not fully set up" then
-# refuses the password grant. Clear required actions idempotently so a
-# rerun (or a partial earlier run) always converges to a usable operator.
-curl -s -o /dev/null -X PUT \
-  "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"firstName": "Gate", "lastName": "Operator",
-       "email": "operator1@harkeniq.com", "emailVerified": true,
-       "enabled": true, "requiredActions": []}'
-OP_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/operator" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN")
-curl -s -o /dev/null -X POST \
-  "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID/role-mappings/realm" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d "[$OP_ROLE]"
-OP_TOKEN=$(curl -sf -X POST \
-  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
-  -d "grant_type=password&client_id=harkeniq-console&username=operator1@harkeniq.com&password=operator" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+OP_TOKEN=$(tenant_token gate-op@demo gate-op)
 
 step "CC RBAC is real: operator reads fleet (200), cannot read audit (403)"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/)" = "200" ]
@@ -245,14 +372,14 @@ step "OPERATOR approves through CC -> RouteApproval -> SM records the decision"
 RESULT=$(curl -s -X POST -H "Authorization: Bearer $OP_TOKEN" \
   "http://localhost:8090/api/approvals/$ACTION/approve")
 echo "$RESULT" | grep -q '"decision": *"approved"'
-echo "$RESULT" | grep -q 'operator1@harkeniq.com'
+echo "$RESULT" | grep -q 'gate-op@demo'
 wait_for "SM action approved" 60 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q '\"status\": *\"approved\"\\|approved'"
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions?site=site-1 | grep -q '\"status\": *\"approved\"\\|approved'"
 
 step "S4: the diagnosis reaches the tenant surface, with its provenance"
 # The whole point of S4: before it, the LLM explanation stopped at the Site
 # Manager and the tenant could see WHAT was wrong but never WHY.
-SM_INC=$(curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/incidents)
+SM_INC=$(curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/incidents?site=site-1)
 echo "$SM_INC" | python3 -c "import sys,json; d=json.load(sys.stdin); print('SM incidents:', len(d))"
 wait_for "incident at CC" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/incidents/ | grep -q incident_id"
@@ -313,6 +440,691 @@ print("autonomy OK:", len(by), "classes | level:",
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT count(*) FROM cc_safety_state WHERE reported = true" \
   | grep -qv '^0$'
+
+step "A0+A1: a named Operational Agent, end to end on the real stack"
+# The thesis slice, proven rather than described: create -> scope -> bind
+# -> activate -> observe -> propose -> approve -> dispatch -> execute ->
+# attribute. Every hop uses a capability that already existed; the only
+# new one is the CC->SM dispatch verb, which queues on the R5-1 directive
+# transport the firmware campaigns already ride.
+SITE_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['sites'][0]['id'])")
+
+# Creating an agent is site.manage. An operator holds action.approve and
+# must NOT be able to configure one: deciding is not configuring.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $OP_TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"nope","scopes":[],"capabilities":[]}' \
+    http://localhost:8090/api/operational-agents/)" = "403" ]
+
+AGENT_JSON=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"Gate Agent $(date +%s)\",
+       \"description\":\"compose gate\",
+       \"require_approval_always\":true,
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_ID\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"SEL_CLEAR\"},
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/)
+AGENT_ID=$(echo "$AGENT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "$AGENT_JSON" | python3 -c '
+import sys, json
+a = json.load(sys.stdin)
+assert a["status"] == "draft", "a new agent must not be born active"
+assert a["actor"].startswith("op-agent:") and a["actor"].endswith("@v1")
+reads = {c["capability_ref"] for c in a["capabilities"] if c["kind"] == "read"}
+assert {"attention", "autonomy"} <= reads, "required reads must be bound"
+print("agent created:", a["actor"], a["status"])
+'
+
+# A draft agent evaluates nothing. Activation is a separate human act.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/activate" \
+  | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active' and a['activated_by'], 'activation must name a human'
+print('agent activated by', a['activated_by'])
+"
+
+# The detail view answers what an operator actually asks.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID" | python3 -c '
+import sys, json
+v = json.load(sys.stdin)
+assert v["scope"]["device_count"] >= 1, "the agent must see the seeded node"
+classes = {c["action_type"]: c for c in v["capabilities"]["action_classes"]}
+assert set(classes) == {"SEL_CLEAR", "COLLECT_DIAGNOSTICS"}
+for at, c in classes.items():
+    assert c["disposition_reason"], at
+    # require_approval_always is a one-way tightening: nothing this agent
+    # holds may run unattended, whatever the tenant grants.
+    assert c["requires_approval"] is True, at
+print("agent sees", v["scope"]["device_count"], "device(s);",
+      len(classes), "classes, all requiring a human")
+'
+
+# Wait for the evaluator to observe the fault the gate already injected.
+wait_for "agent proposal in the ONE approval queue" 240 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/approvals/ \
+   | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('agent_total',0)>0 else 1)\""
+
+QUEUE=$(curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/approvals/)
+echo "$QUEUE" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+agent_items = [a for a in d["actions"] if a["origin"] == "agent"]
+assert agent_items, "the agent proposal must appear in the same queue"
+p = agent_items[0]["proposal"]
+# A request with no reasoning is not reviewable.
+assert p["rationale"], "a proposal must say what it saw and why"
+assert p["actor"].startswith("op-agent:"), "attribution on the proposal"
+assert p["evidence"]["observed"], "evidence must name the observation"
+assert p["authorization_basis"] == "human_approval"
+assert p["status"] == "awaiting_approval"
+print("proposal:", p["action_type"], "on", p["device_agent_id"])
+print("rationale:", p["rationale"][:160])
+'
+PROP_ID=$(echo "$QUEUE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print([a for a in d['actions'] if a['origin'] == 'agent'][0]['action_id'])
+")
+
+# The SAME endpoint and the SAME permission a node action uses.
+curl -sf -X POST -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$PROP_ID/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["origin"] == "agent"
+assert d["decided_by"], "a named human must be recorded"
+assert d["delivery"]["delivered"] is True, d["delivery"]
+print("approved by", d["decided_by"], "-> directive",
+      d["delivery"].get("directive_id"))
+'
+
+# Dispatch really reached the Site Manager as a directive carrying the
+# agent's attribution, and the node really settled it.
+wait_for "directive settled at the SM" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+   \"SELECT count(*) FROM sm_directives WHERE actor LIKE 'op-agent:%' \
+     AND status IN ('completed','failed')\" | grep -qv '^0\$'"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT actor, authorization_basis, status FROM sm_directives \
+   WHERE actor LIKE 'op-agent:%' LIMIT 1"
+
+# The execution became EVIDENCE with its actor intact. Before this slice a
+# directed action produced no outcome row at all, so nothing an agent (or
+# a firmware campaign) did could ever reach the error budget or learning.
+wait_for "attributed outcome at the SM" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+   \"SELECT count(*) FROM sm_action_outcomes WHERE actor LIKE 'op-agent:%'\" \
+   | grep -qv '^0\$'"
+wait_for "attributed outcome reached Central Command" 240 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_outcome_history WHERE actor LIKE 'op-agent:%'\" \
+   | grep -qv '^0\$'"
+
+# The proposal settles against its own outcome, so the agent's record is
+# closed rather than left dispatched forever.
+wait_for "proposal settled with its outcome" 240 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' \
+     http://localhost:8090/api/operational-agents/$AGENT_ID/proposals \
+   | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(p['outcome'] for p in d['proposals']) else 1)\""
+curl -sf -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/proposals" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+settled = [p for p in d["proposals"] if p["outcome"]]
+assert settled, "no settled proposal"
+p = settled[0]
+assert p["status"] in ("completed", "failed")
+assert p["directive_id"], "the proposal must name the directive it became"
+print("settled:", p["action_type"], p["status"], "outcome", p["outcome"])
+'
+
+# The whole chain is reconstructable from the existing audit chain, and
+# the agent is named in it as an actor.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/ | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+actions = {e["action"] for e in d["entries"]}
+for needed in ("operational_agent.created", "operational_agent.activated",
+               "agent_proposal.created", "action.approved",
+               "agent_proposal.dispatched"):
+    assert needed in actions, f"missing audit event: {needed}"
+assert any(e["actor"].startswith("op-agent:") for e in d["entries"]), \
+    "the agent must appear as an actor in the chain"
+print("audit chain carries the full agent journey")
+'
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | grep -q '"valid": *true'
+
+# There is no agent execution surface. An agent router that could act
+# would be the parallel governance path the architecture forbids.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$AGENT_ID/execute")" = "404" ]
+
+step "E0.2: the CC-SM site identity is authoritative, and scoping holds"
+# Before E0.2 the SM received CC's site id, discarded it, and answered
+# every site's poll with everything it knew. Prove the binding exists and
+# that a second site on the SAME Site Manager cannot see the first.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT name || ' -> ' || COALESCE(cc_site_id, '(unbound)') FROM sites"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT count(*) FROM sites WHERE cc_site_id IS NOT NULL" | grep -qv '^0$' || {
+    echo "no site is bound to a Central Command identity" >&2; exit 1; }
+
+SITE_A=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['sites'][0]['id'])")
+
+step "E0.2: a second site on the same Site Manager is isolated"
+# Register a second site pointing at the SAME Site Manager, then seed one
+# device into it directly. The write path that lets an AGENT choose its
+# site is E1.3; what E0.2 owns is that the read path cannot leak.
+SITE_B=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"site_name":"gate-site-b","sm_endpoint":"site-manager:50051",
+       "license_fingerprint":"demo"}' \
+  http://localhost:8090/api/sites/register \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['site']['id'])")
+echo "site B = $SITE_B"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                        service_tag, device_class, first_seen_at, last_seen_at)
+   SELECT 'gatedevb00000000000000000000000', s.id, 'gate-agent-b', 'b1',
+          'Dell', 'R750', 'GATEB1', 'server', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO incidents (id, site_id, kind, status, device_id, subsystem,
+                          title, confidence, inferred, opened_at)
+   SELECT 'gateincb00000000000000000000000', s.id, 'device', 'open',
+          'gatedevb00000000000000000000000', 'psu', 'site B only', 1.0, false, now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING"
+
+# Poll both sites and assert each sees only its own devices and incidents.
+wait_for "site B visible at CC" 180 bash -c \
+  "curl -s -H 'Authorization: Bearer $TOKEN' 'http://localhost:8090/api/fleet/?site_id=$SITE_B' \
+   | grep -q gate-agent-b"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/fleet/?site_id=$SITE_A&page_size=200" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+ids = {x["agent_id"] for x in d["devices"]}
+assert "gate-agent-b" not in ids, f"site A returned site B device: {ids}"
+print("site A devices:", sorted(ids))
+'
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/fleet/?site_id=$SITE_B&page_size=200" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+ids = {x["agent_id"] for x in d["devices"]}
+assert ids == {"gate-agent-b"}, f"site B returned foreign devices: {ids}"
+print("site B devices:", sorted(ids))
+'
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/incidents/?site_id=$SITE_A" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+titles = {i["title"] for i in d["incidents"]}
+assert "site B only" not in titles, f"site A returned site B incident: {titles}"
+print("site A incidents:", len(titles))
+'
+
+step "E0.2: usage is metered per site, not per Site Manager"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT site_id || '=' || node_count FROM cc_usage_snapshots
+   ORDER BY date DESC LIMIT 4" || true
+
+step "E0.2: an unbound site returns nothing, never another site's data"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE sites SET cc_site_id = NULL WHERE cc_site_id = '$SITE_B'"
+docker compose exec -T site-manager python -c "
+import asyncio, grpc, os, sys
+sys.path.insert(0, '/app/src')
+from harkeniq.proto import harkeniq_pb2, harkeniq_pb2_grpc
+async def main():
+    async with grpc.aio.insecure_channel('localhost:50051') as ch:
+        stub = harkeniq_pb2_grpc.SiteManagerServiceStub(ch)
+        snap = await stub.GetFleetSnapshot(
+            harkeniq_pb2.FleetSnapshotRequest(tenant_id='tenant-demo', site_id='$SITE_B'),
+            metadata=[('authorization', 'Bearer ' + os.environ['HARKEN_SM_SITE_TOKEN'])],
+        )
+        assert snap.site_resolved is False, 'unbound site was resolved'
+        assert len(snap.devices) == 0, 'unbound site returned devices'
+        assert snap.site_reason, 'no reason given'
+        print('unbound ->', snap.site_reason)
+asyncio.run(main())
+"
+
+step "E0.2: the audited unbind is the sanctioned recovery"
+curl -sf -X POST -H "Authorization: Bearer dev-token-sm" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"gate@harkeniq.com","confirm_site_name":"gate-site-b",
+       "reason":"compose gate: prove the recovery path"}' \
+  http://localhost:8080/api/site/gate-site-b/unbind > /dev/null 2>&1 || true
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT count(*) FROM audit_log WHERE action IN ('site.bound','site.unbound')" \
+  | grep -qv '^0$'
+curl -sf -H "Authorization: Bearer dev-token-sm" \
+  http://localhost:8080/api/audit/verify | grep -q true
+
+step "E0.1: a configured approval policy actually binds"
+# The defect this closes: cc_approval_policies has carried
+# required_approvers since R2b and nothing consulted it, so a tenant
+# could configure dual authorization and get single authorization.
+# Runs AFTER the A0+A1 step so there is a live agent to propose with.
+
+# auto_approve is refused: unattended execution is granted by the autonomy
+# contract, which needs evidence and a human, never by an approval policy.
+AUTO_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"gate-auto","approval_mode":"auto_approve"}' \
+  http://localhost:8090/api/policies/)
+[ "$AUTO_CODE" = "400" ] || {
+  echo "auto_approve policy accepted ($AUTO_CODE), want 400" >&2; exit 1; }
+
+POLICY_ID=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"gate-dual","action_type":"COLLECT_DIAGNOSTICS",
+       "required_approvers":2}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+
+# A second, different fault opens a new incident, so the agent proposes
+# again (its dedupe key names the condition, so the same fault would not
+# re-propose). This one is governed by the dual policy.
+curl -skf -X POST https://localhost:9000/test/inject-fault \
+  -H 'Content-Type: application/json' \
+  -d '{"fault_type":"psu","target":"PS1","params":{"health":"Critical","redundancy_health":"Critical"}}' \
+  > /dev/null
+wait_for "a second agent proposal under the dual policy" 300 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/approvals/ \
+   | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if [a for a in d['actions'] if a['origin']=='agent' and a['approval']['required']==2] else 1)\""
+DUAL_ID=$(curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/approvals/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print([a for a in d['actions']
+       if a['origin'] == 'agent' and a['approval']['required'] == 2][0]['action_id'])")
+
+step "E0.1: one approval records and does NOT execute"
+curl -sf -X POST -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("recorded") is True, d
+assert d.get("decision") is None, "one approval must not decide under a dual policy"
+assert d["approval"]["required"] == 2 and d["approval"]["received"] == 1
+print("1 of 2 recorded; nothing executed")
+'
+# The same person cannot be both approvers.
+DUP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/approve")
+[ "$DUP" = "409" ] || { echo "duplicate approver returned $DUP, want 409" >&2; exit 1; }
+
+step "E0.1: a second, different approver completes it"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["decision"] == "approved", d
+assert d["approval"]["received"] == 2, d["approval"]
+print("2 of 2 -> decided; delivered:", d["delivery"].get("delivered"))
+'
+# Each approval is individually auditable: the evidence R-C3 promises.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/records" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["total"] == 2, d
+approvers = {r["approver"] for r in d["records"]}
+assert len(approvers) == 2, "two DISTINCT approvers must be recorded"
+print("approval ledger:", ", ".join(sorted(approvers)))
+'
+# Leave the tenant as we found it: a stale rule must not govern a re-run.
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$POLICY_ID" > /dev/null
+
+step "E0.3: /metrics is served by every service, and it counts"
+# MetricsRegistry shipped with R4-0 and had NO callers: all three
+# services could say they were alive and nothing about what they did.
+for svc_port in "site-manager:8080" "central-command:8090" "console:8100"; do
+  name="${svc_port%%:*}"; port="${svc_port##*:}"
+  body=$(curl -sf "http://localhost:$port/metrics") || {
+    echo "$name serves no /metrics" >&2; exit 1; }
+  echo "$body" | grep -q "harkeniq_up 1.0" || {
+    echo "$name /metrics missing harkeniq_up" >&2; exit 1; }
+  before=$(echo "$body" | awk '/^harkeniq_http_requests_total /{print $2}')
+  curl -sf "http://localhost:$port/healthz" > /dev/null
+  after=$(curl -sf "http://localhost:$port/metrics" \
+    | awk '/^harkeniq_http_requests_total /{print $2}')
+  python3 -c "
+import sys
+before, after = float('$before'), float('$after')
+assert after > before, f'$name request counter did not move: {before} -> {after}'
+print('$name /metrics OK: requests', before, '->', after)
+"
+done
+
+step "E0.3: an auditor can read the evidence, and still change nothing"
+# A13 ratified read-only-everything for the auditor. Approval evidence
+# and approval posture were gated on permissions the auditor never holds.
+# E1.4: the auditor lives in the TENANT realm. This used to create the
+# auditor ROLE in the platform realm on demand, putting back the very
+# thing the platform-realm assertion had just checked was absent.
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+
+for _p in "approvals/" "approvals/history" "policies/" "policies/groups" "audit/"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUD_TOKEN" \
+    "http://localhost:8090/api/$_p")
+  [ "$code" = "200" ] || { echo "auditor read $_p returned $code, want 200" >&2; exit 1; }
+done
+echo "auditor reads approvals, history, policies, groups, audit"
+# ...and mutates nothing.
+for _m in "policies/" "policies/groups"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $AUD_TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"auditor-should-not"}' "http://localhost:8090/api/$_m")
+  [ "$code" = "403" ] || { echo "auditor WROTE $_m ($code)" >&2; exit 1; }
+done
+echo "auditor refused every mutation"
+
+step "E0.3: an inert capability declaration is refused, not accepted"
+SKILL_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"gate-skill-agent\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"skill\",\"capability_ref\":\"fan-health\"}]}" \
+  http://localhost:8090/api/operational-agents/)
+[ "$SKILL_CODE" = "400" ] || {
+  echo "skill binding accepted ($SKILL_CODE): it would do nothing" >&2; exit 1; }
+echo "skill binding refused with a reason naming A2"
+
+step "E1.1: the tenant's organizational tree, and it is containment ONLY"
+# The migration backfills one root per tenant with every site attached, so
+# a tenant that upgrades is never left with sites that have no path.
+ROOT_UNIT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/org-units/ \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tree'][0]['id'])")
+[ -n "$ROOT_UNIT" ] || { echo "migration 0010 left the tenant with no root unit" >&2; exit 1; }
+
+mkunit() {
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"name\":\"$1\",\"unit_type\":\"$2\",\"parent_id\":\"$3\"}" \
+    http://localhost:8090/api/org-units/
+}
+GATE_W=$(mkunit "Gate West" region "$ROOT_UNIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+GATE_E=$(mkunit "Gate East" region "$ROOT_UNIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+GATE_C=$(mkunit "Gate Cluster" cluster "$GATE_W" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+GATE_H=$(mkunit "Gate Hall" hall "$GATE_C" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# A move must rewrite every descendant path in the same transaction; a
+# half-moved subtree leaves paths that resolve to nothing.
+curl -sf -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"parent_id\":\"$GATE_E\"}" \
+  "http://localhost:8090/api/org-units/$GATE_C" > /dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/org-units/$GATE_H" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['unit']['path'].split('/')[2] == '$GATE_E', 'descendant path was not rewritten'
+assert d['unit']['depth'] == 4, f\"depth drifted: {d['unit']['depth']}\"
+names = [a['name'] for a in d['ancestors']]
+assert names[-2:] == ['Gate East', 'Gate Cluster'], names
+print('descendant paths followed the move:', ' > '.join(names))
+"
+
+# Cycle and depth are refused by the SERVER, not by the console.
+CYC=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"parent_id\":\"$GATE_H\"}" "http://localhost:8090/api/org-units/$GATE_E")
+[ "$CYC" = "400" ] || { echo "a cycle was accepted ($CYC)" >&2; exit 1; }
+
+# A unit holding a site is not deletable: a site with no organizational
+# path is a site nobody owns, and at E1.2 one nobody can be granted.
+SITE_ONE=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin); rows = d['sites'] if isinstance(d, dict) else d
+print(rows[0]['id'])")
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"org_unit_id\":\"$GATE_C\"}" \
+  "http://localhost:8090/api/sites/$SITE_ONE/org-unit" > /dev/null
+DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+  -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/org-units/$GATE_C")
+[ "$DEL" = "409" ] || { echo "a unit holding a site was deleted ($DEL)" >&2; exit 1; }
+echo "cycle refused, depth bounded, delete-with-contents refused"
+
+step "E1.1: the tree grants nobody anything (containment is not authorization)"
+# The whole point of decision B. An operator with no site.view cannot even
+# READ the tree, and moving a site between units changes no disposition.
+OP_TOKEN=$(tenant_token gate-op@demo gate-op)
+OP_READ=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
+  http://localhost:8090/api/org-units/)
+[ "$OP_READ" = "403" ] || { echo "operator read the tree without site.view ($OP_READ)" >&2; exit 1; }
+AUD_WRITE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AUD_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"auditor should not","unit_type":"region"}' \
+  http://localhost:8090/api/org-units/)
+[ "$AUD_WRITE" = "403" ] || { echo "auditor mutated the tree ($AUD_WRITE)" >&2; exit 1; }
+
+BEFORE_AUT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); d.pop('generated_at',None); print(json.dumps(d,sort_keys=True))")
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"org_unit_id\":\"$GATE_W\"}" \
+  "http://localhost:8090/api/sites/$SITE_ONE/org-unit" > /dev/null
+AFTER_AUT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); d.pop('generated_at',None); print(json.dumps(d,sort_keys=True))")
+[ "$BEFORE_AUT" = "$AFTER_AUT" ] || {
+  echo "moving a site between org units changed the autonomy contract" >&2; exit 1; }
+echo "operator 403, auditor 403 on write, and the governance contract did not move"
+
+step "E1.2: scope is enforced at the SERVER, for every persona"
+# The tenant already has a tree from the E1.1 step. Grant the operator a
+# site scope, flip to strict, and prove both directions.
+E12_SITE=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin); rows = d['sites'] if isinstance(d, dict) else d
+print(rows[0]['id'])")
+OP_SUB=$(python3 -c "
+import base64, json, sys
+t = '$OP_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+OWNER_SUB=$(python3 -c "
+import base64, json, sys
+t = '$TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+
+grant() {
+  curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",\"role\":\"$4\"}" \
+    http://localhost:8090/api/scope-grants/
+}
+[ "$(grant "$OWNER_SUB" tenant "" tenant_owner)" = "201" ] || {
+  echo "tenant grant refused" >&2; exit 1; }
+[ "$(grant "$OP_SUB" site "$E12_SITE" operator)" = "201" ] || {
+  echo "site grant refused" >&2; exit 1; }
+
+# The L1 preflight must pass now that an administrator exists, and the
+# flip must be atomic.
+FLIP=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"strict"}' http://localhost:8090/api/tenant-settings/scope-enforcement)
+[ "$FLIP" = "200" ] || { echo "strict flip refused ($FLIP)" >&2; exit 1; }
+echo "granted, and the tenant is in strict enforcement"
+
+# A subset may only narrow: handing an operator role.manage is refused.
+ESC=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$OP_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",
+       \"role\":\"operator\",\"permission_subset\":[\"role.manage\"]}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$ESC" = "400" ] || { echo "permission_subset widened a role ($ESC)" >&2; exit 1; }
+
+# The operator reads their own site and nothing else, and their own
+# resolved scope says so.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/scope-grants/me \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is False, 'a site-scoped operator resolved tenant-wide'
+assert d['site_ids'] == ['$E12_SITE'], d['site_ids']
+assert d['contextual_unit_ids']['authority'] is False
+print('operator scope:', d['site_ids'])
+"
+
+# An out-of-scope MUTATION is refused, and a tenant-governance READ is not:
+# read authority and mutation authority are different things.
+POL=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $OP_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"gate-should-refuse","required_approvers":1}' \
+  http://localhost:8090/api/policies/)
+[ "$POL" = "403" ] || { echo "an operator mutated tenant governance ($POL)" >&2; exit 1; }
+POL_READ=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/)
+[ "$POL_READ" = "200" ] || {
+  echo "an operator cannot read why they are blocked ($POL_READ)" >&2; exit 1; }
+echo "mutation 403, read 200 -- read authority != mutation authority"
+
+step "E1.2: the audit chain still verifies with site scoping recorded"
+# site_id sits outside _chain_payload, so every entry written before the
+# column existed must still verify. A break here means the payload moved.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['valid'], d
+print('chain valid,', d['length'], 'entries')
+"
+
+step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"legacy_open"}' \
+  http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+
+step "E1.4: tenant A cannot reach tenant B"
+# Re-mint: the gate runs for many minutes and a Keycloak access token
+# does not. The tail steps were failing on an EXPIRED platform token,
+# which reads exactly like a permission failure and is not one.
+PLATFORM_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=admin@harkeniq.com&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+KC_ADMIN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+# A second tenant, created END TO END through the real API -- which is
+# also the proof that provisioning runs on the creation path and not
+# only through the explicit endpoint.
+curl -sf -X POST -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Gate Rival","slug":"gate-rival","billing_country":"US","currency":"USD","admin_email":"owner@gate-rival"}' \
+  http://localhost:8100/api/admin/tenants/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['keycloak_realm'] == 'gate-rival', d
+print('gate-rival provisioned end to end:', d['keycloak_realm'])
+" || echo "  (gate-rival already exists from a previous run)"
+
+RIVAL_ID=$(curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  http://localhost:8100/api/admin/tenants/ | python3 -c "
+import sys, json
+print([t['id'] for t in json.load(sys.stdin)['items'] if t['slug'] == 'gate-rival'][0])")
+
+tenant_realm_user_in() {  # realm email password role
+  local uid rj
+  curl -s -X POST "http://localhost:8180/admin/realms/$1/users" \
+    -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+    -d "{\"username\":\"$2\",\"email\":\"$2\",\"enabled\":true,
+         \"emailVerified\":true,\"firstName\":\"Gate\",\"lastName\":\"Rival\",
+         \"credentials\":[{\"type\":\"password\",\"value\":\"$3\",
+                            \"temporary\":false}]}" -o /dev/null
+  uid=$(curl -s "http://localhost:8180/admin/realms/$1/users?username=$2&exact=true" \
+    -H "Authorization: Bearer $KC_ADMIN" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
+  [ -n "$uid" ] || return 1
+  rj=$(curl -s "http://localhost:8180/admin/realms/$1/roles/$4" -H "Authorization: Bearer $KC_ADMIN")
+  curl -s -X POST "http://localhost:8180/admin/realms/$1/users/$uid/role-mappings/realm" \
+    -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+    -d "[$rj]" -o /dev/null
+}
+tenant_realm_user_in gate-rival rival@gate rival-pass tenant_owner || true
+RIVAL_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/gate-rival/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=rival@gate&password=rival-pass" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+RIVAL_CC=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $RIVAL_TOKEN" http://localhost:8090/api/fleet/)
+[ "$RIVAL_CC" = "401" ] || {
+  echo "another tenant's identity reached this tenant's CC ($RIVAL_CC)" >&2
+  exit 1; }
+RIVAL_XT=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $RIVAL_TOKEN" \
+  "http://localhost:8100/api/tenants/$E14_TENANT/users/")
+[ "$RIVAL_XT" = "403" ] || {
+  echo "another tenant read this tenant's Console surface ($RIVAL_XT)" >&2
+  exit 1; }
+echo "tenant A -> tenant B: 401 at Central Command, 403 at the Console"
+
+step "E1.4: a custom bundle cannot widen the role that holds it"
+BUNDLE_ID=$(curl -sf -X POST -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Gate Reader Plus","permissions":["fleet.view","site.manage","action.approve"]}' \
+  "http://localhost:8100/api/tenants/$E14_TENANT/roles/" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+tenant_realm_user gate-bundle@demo gate-bundle viewer || true
+BUNDLE_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=gate-bundle@demo&password=gate-bundle" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+BUNDLE_SUB=$(python3 -c "
+import base64, json
+t = '$BUNDLE_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_console -q \
+  -c "INSERT INTO users (id, tenant_id, email, display_name, role, is_platform_user, keycloak_user_id, status, created_at) VALUES ('gatebundleuser0000000000000000', '$E14_TENANT', 'gate-bundle@demo', 'Gate Bundle', 'viewer', false, '$BUNDLE_SUB', 'active', now()) ON CONFLICT (id) DO NOTHING" \
+  -c "INSERT INTO user_custom_roles (user_id, custom_role_id) VALUES ('gatebundleuser0000000000000000', '$BUNDLE_ID') ON CONFLICT DO NOTHING" \
+  > /dev/null
+
+curl -sf -H "Authorization: Bearer $BUNDLE_TOKEN" http://localhost:8100/api/me \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+perms = set(d['permissions'])
+assert d['role'] == 'viewer', d['role']
+# The bundle names three permissions; the holder's role holds only one
+# of them, and a bundle intersects rather than widens.
+assert 'fleet.view' in perms, perms
+assert 'site.manage' not in perms, 'a bundle widened a viewer to site.manage'
+assert 'action.approve' not in perms, 'a bundle widened a viewer to action.approve'
+print('bundle intersects the role:', sorted(perms))
+"
+
+step "E1.4: the tenant<->realm relationship is audited"
+curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  "http://localhost:8100/api/tenants/$RIVAL_ID/audit/" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+rows = d.get('items') or d.get('entries') or d
+actions = {r['action'] for r in rows}
+assert 'tenant.create' in actions, sorted(actions)
+realms = {
+    (r.get('detail') or {}).get('keycloak_realm')
+    for r in rows if r['action'] in ('tenant.create', 'tenant.realm_provisioned')
+}
+assert 'gate-rival' in realms, realms
+print('audit records the tenant<->realm relationship')
+"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

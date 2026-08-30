@@ -174,3 +174,60 @@ class HealthChecker:
             checks=checks,
             details=details,
         )
+
+
+# -- Service mounting (E0.3, 2026-08-30) -----------------------------------
+#
+# The registry above shipped with R4-0 and had NO callers: nothing built
+# one, nothing incremented it, and no service exposed /metrics. All three
+# services had real /healthz, so the platform could say whether it was
+# alive and nothing about what it was doing.
+#
+# The helper below builds a registry PER APP rather than using the module
+# global, because two services sharing one process (every test run) would
+# otherwise share counters and report each other's traffic.
+
+
+def mount_metrics(app, service: str):
+    """Give a FastAPI app its own registry, a counting middleware, and /metrics.
+
+    Returns the registry so a service can register metrics of its own.
+
+    `/metrics` is unauthenticated, like `/healthz`, and carries only
+    service-level counters -- request totals, error totals, up, start
+    time. No tenant identifiers and no per-tenant series: a scrape
+    endpoint is not a place to leak who a customer is.
+    """
+    from fastapi import Request
+    from fastapi.responses import PlainTextResponse
+
+    registry = MetricsRegistry(service)
+    registry.counter("harkeniq_http_requests_total", "Total HTTP requests")
+    registry.counter("harkeniq_http_errors_total", "Total HTTP error responses")
+    registry.gauge("harkeniq_up", "Whether the service is running (1=up)")
+    registry.set_gauge("harkeniq_up", 1.0)
+    registry.gauge("harkeniq_start_time_seconds", "Service start time (unix)")
+    registry.set_gauge("harkeniq_start_time_seconds", time.time())
+    app.state.metrics = registry
+
+    @app.middleware("http")
+    async def _count_requests(request: Request, call_next):
+        # Counting happens here rather than at each route so a route added
+        # later cannot be silently unmeasured. /metrics counts itself,
+        # which is honest: a scrape is a request.
+        try:
+            response = await call_next(request)
+        except Exception:
+            registry.inc("harkeniq_http_requests_total")
+            registry.inc("harkeniq_http_errors_total")
+            raise
+        registry.inc("harkeniq_http_requests_total")
+        if response.status_code >= 500:
+            registry.inc("harkeniq_http_errors_total")
+        return response
+
+    @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
+    async def metrics() -> str:
+        return registry.export_text()
+
+    return registry

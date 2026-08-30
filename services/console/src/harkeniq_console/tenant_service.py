@@ -41,6 +41,18 @@ class TenantCreateRequest:
     admin_email: str = ""
 
 
+def _already_exists(exc: Exception) -> bool:
+    """Is this Keycloak error "the thing is already there"?
+
+    Provisioning is a reconciliation, so an object that already exists is
+    success, not failure -- but only that. Every other error still fails
+    the tenant closed.
+    """
+    if getattr(exc, "status_code", None) == 409:
+        return True
+    return "already exists" in str(exc).lower()
+
+
 class TenantService:
     def __init__(
         self,
@@ -55,6 +67,87 @@ class TenantService:
         self.users = UserRepo(session)
         self.audit = AuditRepo(session)
 
+    async def provision_realm(self, tenant, actor: str = "system") -> str:
+        """Create this tenant's identity boundary in Keycloak. E1.4.
+
+        realm -> the five tenant roles -> the console client -> the
+        recorded binding. Idempotent for a tenant that already has one, so
+        it is safe to call on an existing tenant that predates E1.4.
+
+        Raises TenantError on failure, and audits the failure: an identity
+        boundary that could not be built is an operational event somebody
+        has to see, not a warning in a log nobody reads.
+        """
+        if self.keycloak is None:
+            raise TenantError(
+                "no Keycloak admin client is configured", "keycloak_unconfigured"
+            )
+
+        # Reconcile against Keycloak's ACTUAL state, not against the
+        # recorded binding. Migration 0004 backfills a binding for every
+        # tenant created before E1.4 -- and those realms do not exist yet,
+        # so trusting the record would report "already provisioned" for a
+        # realm nobody can authenticate against. The database records the
+        # binding; Keycloak is the truth about whether it exists.
+        realm_name = tenant.keycloak_realm or tenant.slug
+        try:
+            try:
+                await self.keycloak.create_realm(realm_name)
+            except Exception as exc:
+                if not _already_exists(exc):
+                    raise
+                logger.info(
+                    "realm %r already exists; reconciling its roles and client",
+                    realm_name,
+                )
+            # ALWAYS reconcile the roles, whether the realm was just
+            # created or already existed. A realm that exists with no
+            # roles is what a part-way failure leaves behind, and it is
+            # indistinguishable from a healthy one unless this runs.
+            await self.keycloak.ensure_realm_roles(realm_name)
+            try:
+                await self.keycloak.create_client(
+                    realm_name, "harkeniq-console",
+                    ["http://localhost:8100/*", "http://localhost:5173/*"],
+                )
+            except Exception as exc:
+                if not _already_exists(exc):
+                    raise
+        except Exception as exc:
+            # Name the exception TYPE. An httpx timeout stringifies to the
+            # empty string, so "failed: " with nothing after it was an
+            # undiagnosable error -- which is its own defect.
+            reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            logger.error(
+                "identity provisioning failed for tenant %s: %s",
+                tenant.slug, reason,
+            )
+            await self.audit.append(
+                actor_id=None,
+                actor_email=actor,
+                action="tenant.realm_provision_failed",
+                subject_type="tenant",
+                subject_id=tenant.id,
+                tenant_id=tenant.id,
+                detail={"slug": tenant.slug, "error": reason},
+            )
+            raise TenantError(
+                f"Keycloak realm creation failed: {reason}", "keycloak_error"
+            )
+
+        if tenant.keycloak_realm != realm_name:
+            await self.tenants.update(tenant, keycloak_realm=realm_name)
+        await self.audit.append(
+            actor_id=None,
+            actor_email=actor,
+            action="tenant.realm_provisioned",
+            subject_type="tenant",
+            subject_id=tenant.id,
+            tenant_id=tenant.id,
+            detail={"slug": tenant.slug, "keycloak_realm": realm_name},
+        )
+        return realm_name
+
     async def create_tenant(
         self, req: TenantCreateRequest, created_by: str = "system",
     ) -> dict:
@@ -64,6 +157,22 @@ class TenantService:
         if existing:
             raise TenantError(f"slug '{req.slug}' already exists", "conflict")
 
+        # E1.4: a tenant without its identity boundary is not a tenant.
+        #
+        # This used to be `if self.keycloak:` and every production call
+        # site passed None, so the whole branch was skipped and the API
+        # returned 200 with keycloak_realm=null -- a tenant with no realm,
+        # no roles, no client and no owner, that nobody could ever sign in
+        # to, reported as created successfully. Refuse instead.
+        if self.keycloak is None:
+            raise TenantError(
+                "cannot create a tenant without a Keycloak admin client: "
+                "the tenant's realm, roles and owner are its identity "
+                "boundary, and a tenant nobody can authenticate into is "
+                "not a tenant",
+                "keycloak_unconfigured",
+            )
+
         # Create tenant row
         tenant = await self.tenants.create(
             name=req.name,
@@ -72,38 +181,31 @@ class TenantService:
             currency=req.currency,
         )
 
-        # Provision Keycloak realm
-        realm_name = None
-        if self.keycloak:
-            try:
-                realm_name = await self.keycloak.create_realm(req.slug)
-                await self.keycloak.create_client(
-                    realm_name, "harkeniq-console",
-                    [f"http://localhost:8100/*", f"http://localhost:5173/*"],
-                )
-            except Exception as exc:
-                logger.error("Keycloak realm creation failed: %s", exc)
-                raise TenantError(
-                    f"Keycloak realm creation failed: {exc}", "keycloak_error",
-                )
-
-        if realm_name:
-            await self.tenants.update(tenant, keycloak_realm=realm_name)
+        try:
+            realm_name = await self.provision_realm(tenant, actor=created_by)
+        except TenantError:
+            # Fail CLOSED: the tenant row goes with the realm it could not
+            # get. A half-provisioned tenant that reports success is the
+            # exact failure this slice exists to remove.
+            await self.session.rollback()
+            raise
 
         # Create owner user
         owner = None
         if req.admin_email:
             keycloak_user_id = None
-            if self.keycloak and realm_name:
-                try:
-                    keycloak_user_id = await self.keycloak.create_user(
-                        realm_name, req.admin_email,
-                    )
-                    await self.keycloak.assign_realm_role(
-                        realm_name, keycloak_user_id, "tenant_owner",
-                    )
-                except Exception as exc:
-                    logger.warning("Keycloak user creation failed: %s", exc)
+            try:
+                keycloak_user_id = await self.keycloak.create_user(
+                    realm_name, req.admin_email,
+                )
+                await self.keycloak.assign_realm_role(
+                    realm_name, keycloak_user_id, "tenant_owner",
+                )
+            except Exception as exc:
+                # The realm exists and the tenant is usable; an owner that
+                # could not be minted is recoverable by inviting one, so
+                # this warns rather than discarding the realm.
+                logger.warning("Keycloak user creation failed: %s", exc)
 
             owner = await self.users.create(
                 tenant_id=tenant.id,
@@ -128,6 +230,8 @@ class TenantService:
                 "plan": req.plan,
                 "node_commit": req.node_commit,
                 "admin_email": req.admin_email,
+                # E1.4: the tenant<->realm relationship, in the record.
+                "keycloak_realm": realm_name,
             },
         )
 

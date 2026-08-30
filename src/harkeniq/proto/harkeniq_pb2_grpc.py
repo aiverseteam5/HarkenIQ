@@ -446,6 +446,11 @@ class SiteManagerServiceStub:
                 request_serializer=harkeniq__pb2.SiteSkillInstall.SerializeToString,
                 response_deserializer=harkeniq__pb2.SiteSkillInstallAck.FromString,
                 _registered_method=True)
+        self.DispatchAction = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/DispatchAction',
+                request_serializer=harkeniq__pb2.ActionDispatch.SerializeToString,
+                response_deserializer=harkeniq__pb2.ActionDispatchAck.FromString,
+                _registered_method=True)
 
 
 class SiteManagerServiceServicer:
@@ -494,6 +499,17 @@ class SiteManagerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DispatchAction(self, request, context):
+        """A1: one-shot dispatch of a decided action to one device. The SM
+        queues it on the EXISTING directive transport; the node runs its
+        unchanged gate funnel. This verb delivers a decision, it does not
+        authorize one -- and it is the only CC->SM path an Operational
+        Agent's approved proposal takes.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SiteManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -526,6 +542,11 @@ def add_SiteManagerServiceServicer_to_server(servicer, server):
                     servicer.InstallSkill,
                     request_deserializer=harkeniq__pb2.SiteSkillInstall.FromString,
                     response_serializer=harkeniq__pb2.SiteSkillInstallAck.SerializeToString,
+            ),
+            'DispatchAction': grpc.unary_unary_rpc_method_handler(
+                    servicer.DispatchAction,
+                    request_deserializer=harkeniq__pb2.ActionDispatch.FromString,
+                    response_serializer=harkeniq__pb2.ActionDispatchAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -695,6 +716,33 @@ class SiteManagerService:
             '/harkeniq.v1.SiteManagerService/InstallSkill',
             harkeniq__pb2.SiteSkillInstall.SerializeToString,
             harkeniq__pb2.SiteSkillInstallAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DispatchAction(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/DispatchAction',
+            harkeniq__pb2.ActionDispatch.SerializeToString,
+            harkeniq__pb2.ActionDispatchAck.FromString,
             options,
             channel_credentials,
             insecure,

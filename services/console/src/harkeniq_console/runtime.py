@@ -29,6 +29,11 @@ class AppState:
     engine: object = None
     sessionmaker: object = None
     http_port: int = 0
+    # E1.4: the REAL Keycloak admin client. Before this it was never
+    # constructed anywhere -- `TenantService(session)` passed nothing, so
+    # `if self.keycloak:` was always false and no tenant realm was ever
+    # provisioned. Only the mock was ever instantiated, and only in tests.
+    keycloak_admin: object = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     # Set when an in-memory sqlite DSN was remapped to a temp file;
     # removed on shutdown.
@@ -52,7 +57,33 @@ async def make_state(config: ConsoleConfig) -> AppState:
     if dsn.startswith("sqlite"):
         await create_all(state.engine)
     state.sessionmaker = make_sessionmaker(state.engine)
+    state.keycloak_admin = _make_keycloak_admin(config)
     return state
+
+
+def _make_keycloak_admin(config):
+    """Build the admin client that provisions a tenant's identity boundary.
+
+    Returns None only in insecure/lab mode. In secure mode a missing
+    admin password is a configuration error the config validator already
+    refuses, so this either returns a working client or the process never
+    started -- which is what stops a tenant being created without the
+    realm its people sign in to.
+    """
+    from harkeniq_console.keycloak_admin import KeycloakAdminClient
+
+    if config.insecure and not config.keycloak_admin_password:
+        logger.warning(
+            "insecure mode with no Keycloak admin password: tenant realms "
+            "will NOT be provisioned, and tenant creation will refuse "
+            "rather than create a tenant nobody can sign in to"
+        )
+        return None
+    return KeycloakAdminClient(
+        keycloak_url=config.keycloak_url,
+        admin_user=config.keycloak_admin_user,
+        admin_password=config.keycloak_admin_password,
+    )
 
 
 async def seed_service_placement(state: AppState) -> None:

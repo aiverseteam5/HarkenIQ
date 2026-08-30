@@ -39,6 +39,150 @@ class Base(DeclarativeBase):
     pass
 
 
+class CCScopeGrant(Base):
+    """One scope grant: (principal, permission subset, scope ref). E1.2.
+
+    The whole authorization model. Ratified decision B keeps this
+    separate from `cc_org_units`: the tree says where a site sits, a row
+    here says who may reach it. A grant may REFERENCE an org unit, and a
+    unit's containment never implies a grant.
+
+    `permission_subset` is intersected with the principal's role
+    permissions, never unioned -- a grant can only narrow. NULL means
+    "the role's full set"; an empty list means "no permissions", which
+    is a different and deliberate statement.
+
+    Revocation is `revoked_at`, not a delete: an approval recorded under
+    this grant keeps a `scope_snapshot` that has to stay addressable.
+    """
+
+    __tablename__ = "cc_scope_grants"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: "user" (a Keycloak subject) | "agent" (cc_operational_agents.id)
+    principal_type: Mapped[str] = mapped_column(String(16), default="user")
+    principal_ref: Mapped[str] = mapped_column(String(128), index=True)
+    #: E1.4: the Keycloak realm this subject belongs to.
+    #:
+    #: A grant is a (realm, subject) fact, not a subject fact: Keycloak
+    #: subjects are realm-scoped, so the same id means nothing across
+    #: realms and a different id means the same person. Keyed on the
+    #: subject alone, moving a tenant to its own realm silently orphaned
+    #: EVERY grant -- under strict enforcement that locked the tenant out
+    #: completely, including the administrator who would have re-granted.
+    #:
+    #: Empty means "made before E1.4"; the resolver treats those as
+    #: belonging to the configured realm so an upgrade changes nothing.
+    realm: Mapped[str] = mapped_column(String(128), default="")
+    #: tenant | org_unit | site | device_class | device
+    scope_type: Mapped[str] = mapped_column(String(16))
+    scope_ref: Mapped[str] = mapped_column(String(128), default="")
+    permission_subset: Mapped[list | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
+    #: The role this grant narrows, as named by the grantor.
+    #:
+    #: NOT the authorization input: at resolve time the role comes from
+    #: the caller's own token, which is authoritative. This is recorded
+    #: so the L1 strict preflight can answer "would anybody still hold
+    #: role.manage at tenant scope" without enumerating a Keycloak realm
+    #: -- something Central Command deliberately cannot do (R-H5). A
+    #: preflight that had to guess the role would either block a
+    #: legitimate flip or pass one that locks the tenant out.
+    role: Mapped[str] = mapped_column(String(64), default="")
+    #: A Keycloak subject is 36 characters; see the E0.1 width invariant.
+    granted_by: Mapped[str] = mapped_column(String(255), default="")
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[str] = mapped_column(String(255), default="")
+    note: Mapped[str] = mapped_column(String(512), default="")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "principal_type", "principal_ref",
+            "scope_type", "scope_ref",
+            name="uq_scope_grant_principal_scope",
+        ),
+        Index("ix_scope_grants_principal", "tenant_id", "principal_ref"),
+    )
+
+
+class CCTenantSettings(Base):
+    """Per-tenant enforcement posture. E1.2.
+
+    Existing tenants land `legacy_open` because Central Command cannot
+    enumerate a realm's principals to backfill grants, and pretending
+    the absence of a grant were a decision would lock every one of them
+    out on upgrade. New tenants are born `strict`.
+    """
+
+    __tablename__ = "cc_tenant_settings"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_enforcement: Mapped[str] = mapped_column(
+        String(16), default="legacy_open"
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class CCOrgUnit(Base):
+    """One node of the tenant's own organizational tree (E1.1).
+
+    Containment, not authorization: this says where a site sits, never
+    who may reach it. `unit_type` is the customer's word for the level
+    -- region, cluster, circle, trust, territory -- deliberately a free
+    slug rather than an enum.
+
+    `path` is materialized as ``/id/id/id/`` with a trailing delimiter,
+    so a subtree is one prefix match that behaves the same on
+    PostgreSQL and sqlite, and so a sibling like `/u1/u70/` can never
+    match a scope over `/u1/u7/`.
+    """
+
+    __tablename__ = "cc_org_units"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("cc_org_units.id"), nullable=True, index=True
+    )
+    #: The customer's own word for this level, normalized to a slug.
+    unit_type: Mapped[str] = mapped_column(String(32), default="organization")
+    name: Mapped[str] = mapped_column(String(255))
+    #: Materialized ancestry, ids only, leading AND trailing delimiter.
+    #: 8 levels x (32 hex + 1 delimiter) + 1 = 265, so 512 is ample.
+    path: Mapped[str] = mapped_column(String(512), index=True)
+    #: 1 for a root unit. Denormalized from `path` for cheap bounds checks.
+    depth: Mapped[int] = mapped_column(Integer, default=1)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        # Two siblings may not share a name: an org chart with two
+        # "Cluster 7"s under one region is an operator trap.
+        UniqueConstraint("tenant_id", "parent_id", "name", name="uq_org_unit_sibling"),
+        Index("ix_org_units_tenant_path", "tenant_id", "path"),
+    )
+
+
 class CCSite(Base):
     __tablename__ = "cc_sites"
 
@@ -49,6 +193,13 @@ class CCSite(Base):
     sm_token: Mapped[str | None] = mapped_column(String(512), nullable=True)
     license_fingerprint: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
+    #: E1.1: the one organizational node this site hangs from. Nullable
+    #: only for the window between the migration creating the column and
+    #: the migration backfilling it; every site has a unit afterwards.
+    #: Containment only -- who may reach the site is a scope grant (E1.2).
+    org_unit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("cc_org_units.id"), nullable=True, index=True
+    )
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -113,6 +264,14 @@ class CCAuditLog(Base):
     subject: Mapped[str] = mapped_column(String(255), default="")
     tenant_id: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: E1.2: authorization/indexing metadata, DELIBERATELY OUTSIDE the
+    #: hash-chain payload (`AuditRepo._chain_payload` hashes ts, actor,
+    #: action, subject, tenant_id, detail -- and only those). Adding a
+    #: column the payload does not name leaves every existing chain
+    #: verifiable, which a test asserts rather than assumes. Null means
+    #: tenant-level, which is also what every pre-E1.2 row reads as:
+    #: the site was never recorded and cannot be invented now.
+    site_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
     # service, seq unique so racing appenders fail instead of forking.
     seq: Mapped[int | None] = mapped_column(nullable=True)
@@ -143,7 +302,12 @@ class CCApprovalGroup(Base):
     github_team: Mapped[str] = mapped_column(String(255), default="")
     required_count: Mapped[int] = mapped_column(Integer, default=1)
     escalation_chain: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
-    created_by: Mapped[str] = mapped_column(String(32), default="")
+    #: E0.1: widened from String(32). A Keycloak subject is a 36-character
+    #: UUID, so creating one of these failed on PostgreSQL with
+    #: StringDataRightTruncation and succeeded only on the sqlite used in
+    #: tests -- approval policies and groups were not merely unenforced,
+    #: they were uncreatable on a real deployment.
+    created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
@@ -157,8 +321,68 @@ class CCApprovalGroupMember(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     group_id: Mapped[str] = mapped_column(String(32), ForeignKey("cc_approval_groups.id"))
     user_email: Mapped[str] = mapped_column(String(320))
+    #: E0.1: Keycloak subject. Membership matches on this first and falls
+    #: back to the email, because an address change must not silently
+    #: lapse a person's approval authority.
+    principal_ref: Mapped[str] = mapped_column(String(128), default="")
     role: Mapped[str] = mapped_column(String(32), default="approver")
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCApprovalRecord(Base):
+    """One approver's decision on one subject (E0.1, 2026-08-30).
+
+    The approval ledger. Before this, `cc_approval_routes` carried a
+    single `decision` / `decided_by` / `decided_at` triple, so a policy
+    demanding two approvers was satisfied by one click and nothing in
+    the system could tell the difference. A decision is now a SET of
+    records and the route's column is a projection of them.
+
+    `unique(subject_type, subject_ref, approver_ref)` makes
+    duplicate-approver prevention a database guarantee rather than a
+    check that a later code path can forget.
+
+    `subject_type` carries both origins so the human path and the
+    Operational Agent path share one ledger, one policy and one
+    completion rule -- there is no second approval contract.
+    """
+
+    __tablename__ = "cc_approval_records"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: action | agent_proposal
+    subject_type: Mapped[str] = mapped_column(String(24))
+    subject_ref: Mapped[str] = mapped_column(String(64))
+    policy_id: Mapped[str] = mapped_column(String(32), default="")
+    #: Keycloak subject. Stable across email changes, unlike the address.
+    approver_ref: Mapped[str] = mapped_column(String(128))
+    approver_email: Mapped[str] = mapped_column(String(320), default="")
+    decision: Mapped[str] = mapped_column(String(16))  # approved | denied
+    #: Whether the approver's scope covered the subject at decision time.
+    #: E0.1 resolves tenant-wide for everyone; E1.2 makes it real without
+    #: touching this column or the code that writes it.
+    scope_ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: E1.2 / ratified L2: an approval is valid on the authority its
+    #: approver held AT THE TIME. A boolean cannot answer "what could
+    #: they reach when they decided?" a year later, so the values are
+    #: recorded, written once and never rewritten.
+    scope_snapshot: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    authority_snapshot: Mapped[dict | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
+    reason: Mapped[str] = mapped_column(String(512), default="")
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "subject_type", "subject_ref", "approver_ref",
+            name="uq_approval_record_subject_approver",
+        ),
+        Index("ix_approval_records_subject", "subject_type", "subject_ref"),
+    )
 
 
 class CCApprovalPolicy(Base):
@@ -171,7 +395,10 @@ class CCApprovalPolicy(Base):
     name: Mapped[str] = mapped_column(String(255))
     device_type: Mapped[str] = mapped_column(String(64), default="*")
     action_type: Mapped[str] = mapped_column(String(64), default="*")
-    risk_level: Mapped[str] = mapped_column(String(32), default="medium")
+    #: E0.1: "*" like the other two selectors. A Python-side default, so
+    #: no migration is needed; existing rows keep the value they were
+    #: given.
+    risk_level: Mapped[str] = mapped_column(String(32), default="*")
     time_window_json: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     approval_mode: Mapped[str] = mapped_column(String(32), default="require_approval")
     required_approvers: Mapped[int] = mapped_column(Integer, default=1)
@@ -179,7 +406,12 @@ class CCApprovalPolicy(Base):
         String(32), ForeignKey("cc_approval_groups.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(32), default="active")
-    created_by: Mapped[str] = mapped_column(String(32), default="")
+    #: E0.1: widened from String(32). A Keycloak subject is a 36-character
+    #: UUID, so creating one of these failed on PostgreSQL with
+    #: StringDataRightTruncation and succeeded only on the sqlite used in
+    #: tests -- approval policies and groups were not merely unenforced,
+    #: they were uncreatable on a real deployment.
+    created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -239,6 +471,12 @@ class CCOutcomeHistory(Base):
     model: Mapped[str] = mapped_column(String(128), default="")
     outcome: Mapped[str] = mapped_column(String(32))  # SUCCESS/PARTIAL/FAILURE/UNKNOWN/ROLLBACK
     fault_resolved: Mapped[bool | None] = mapped_column(nullable=True)
+    #: A1: who caused this execution. "op-agent:<id>@v<n>" for an
+    #: Operational Agent, "user:<email>" for a human-approved action,
+    #: empty for outcomes reported before attribution existed. Evidence
+    #: without an actor cannot answer "what did MY agent do", which is
+    #: half of what an operator needs before trusting one.
+    actor: Mapped[str] = mapped_column(String(255), default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -571,3 +809,180 @@ class CCSafetyState(Base):
     )
 
     __table_args__ = (Index("ix_cc_safety_tenant", "tenant_id"),)
+
+
+# ---------------------------------------------------------------------------
+# A0+A1: the Operational Agent — the product noun (2026-08-30)
+#
+# An Operational Agent is a DECLARATIVE BUNDLE over capabilities that
+# already exist: a name, a tenant, an explicit scope, bindings to
+# governed capabilities, and a policy that can only ever be a subset of
+# what the tenant itself is permitted. It is configuration, never a
+# runtime, and it holds no credential of its own (machine identity is
+# A3). Its attribution key is `op-agent:<id>@v<version>` per design doc
+# §6, which is why `version` lives on the row: an outcome must name the
+# exact configuration that proposed it, not whatever the bundle looks
+# like today.
+# ---------------------------------------------------------------------------
+
+
+class CCOperationalAgent(Base):
+    """A named, tenant-owned Operational Agent (A0).
+
+    Lifecycle: draft -> active -> paused -> retired. Only `active`
+    agents evaluate; activation is a human act and is audited. Nothing
+    here grants authority: an agent's proposal traverses exactly the
+    same RBAC, autonomy, approval, execution and audit path a human's
+    does, and the node funnel remains the only thing that authorizes
+    execution.
+    """
+
+    __tablename__ = "cc_operational_agents"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(String(512), default="")
+    #: draft | active | paused | retired
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    #: Bumped on every configuration change. Part of the attribution key,
+    #: so a proposal always names the configuration that produced it.
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    #: Ceiling the operator sets for THIS agent. The effective autonomy
+    #: is min(this, the tenant's configured level): an agent can be held
+    #: below the tenant ladder, never lifted above it.
+    autonomy_ceiling: Mapped[int] = mapped_column(Integer, default=0)
+    #: When true every proposal waits for a human even where the S5
+    #: contract would grant the class. A one-way tightening, never a
+    #: loosening.
+    require_approval_always: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: Cap on proposals this agent may create per UTC day. Cheap, honest
+    #: back-pressure on a misconfigured evaluator; not a budget (per-agent
+    #: budgets are A2).
+    max_proposals_per_day: Mapped[int] = mapped_column(Integer, default=25)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    activated_by: Mapped[str] = mapped_column(String(255), default="")
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_op_agent_tenant_name"),
+    )
+
+
+class CCAgentCapability(Base):
+    """A binding from an agent to a capability that already exists (A0).
+
+    This table REFERENCES capabilities; it never defines them. There is
+    no agent capability implementation anywhere in the platform, and
+    binding one confers no permission: the capability's own guard still
+    decides.
+
+    kind: read | action_class | skill
+      read         -> capability_ref is a CC read capability id
+                      ("attention", "autonomy", "incidents", "learning")
+      action_class -> capability_ref is an ActionType value
+      skill        -> capability_ref is a marketplace skill id
+    """
+
+    __tablename__ = "cc_agent_capabilities"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_operational_agents.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    capability_ref: Mapped[str] = mapped_column(String(128))
+    config: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "kind", "capability_ref", name="uq_agent_capability"
+        ),
+    )
+
+
+class CCAgentProposal(Base):
+    """A labelled, evidence-carrying proposal from an Operational Agent (A1).
+
+    The proposal is the agent's OUTPUT and the governance layer's INPUT.
+    It records what the agent observed, what it recommends, and the S5
+    disposition AT PROPOSAL TIME with the blocking conditions that
+    produced it — so a denial is explainable months later without
+    re-deriving a contract that has since changed.
+
+    A proposal authorizes nothing. `awaiting_approval` proposals appear
+    in the one approvals queue under `action.approve`; `blocked` ones
+    never dispatch and exist to be read.
+
+    status: proposed -> awaiting_approval -> approved -> dispatched
+                     -> completed | failed
+            proposed -> blocked          (governance refused it)
+            awaiting_approval -> denied  (a human refused it; final, D16)
+    """
+
+    __tablename__ = "cc_agent_proposals"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    #: Frozen attribution key: op-agent:<id>@v<n>. Stored, not derived,
+    #: so a later version bump cannot rewrite history.
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    agent_version: Mapped[int] = mapped_column(Integer, default=1)
+    site_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    device_agent_id: Mapped[str] = mapped_column(String(255), default="")
+    action_type: Mapped[str] = mapped_column(String(64))
+    params: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: Plain-language reason a human can act on.
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    #: What the agent read: attention driver + band, incident ids, CVEs,
+    #: outcome evidence, learned signals. Refs to existing records, not
+    #: a copy of them.
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: S5 disposition captured when the proposal was made.
+    disposition: Mapped[str] = mapped_column(String(32), default="")
+    disposition_reason: Mapped[str] = mapped_column(Text, default="")
+    blocking_conditions: Mapped[list | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
+    #: human_approval | autonomous_grant — the basis execution will claim.
+    authorization_basis: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(24), default="proposed")
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Idempotency key: one open proposal per (agent, device, action).
+    dedupe_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    directive_id: Mapped[str] = mapped_column(String(64), default="")
+    dispatch_reason: Mapped[str] = mapped_column(String(512), default="")
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    outcome: Mapped[str] = mapped_column(String(32), default="")
+    outcome_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+    __table_args__ = (
+        Index("ix_agent_proposals_tenant_status", "tenant_id", "status"),
+    )

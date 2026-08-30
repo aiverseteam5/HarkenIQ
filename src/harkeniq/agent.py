@@ -1178,7 +1178,13 @@ class Agent:
         )
         # QA-020: SM delivery is not a policy bypass — the same gate
         # chain (preconditions, stop switch, blast radius) applies here.
-        await self._execute_gated(action)
+        # A1: a directive carrying only an autonomy grant must still
+        # satisfy the lease; one carrying a named human's approval need
+        # not re-earn what the human already decided. An empty basis is
+        # legacy SM-authority work (firmware campaigns) and keeps its
+        # pre-A1 behaviour.
+        basis = getattr(directive, "authorization", "") or "human_approval"
+        await self._execute_gated(action, basis)
         outcome = action.outcome
         if outcome is None:
             return False, "no outcome recorded"
@@ -1214,8 +1220,19 @@ class Agent:
     # approval the action already carries; they gate autonomous
     # initiative, which does not exist yet (T3 loop is future work).
 
-    def _authorize_execution(self, action: Action) -> tuple[bool, str]:
-        """Run the gate chain for one approved action. (allowed, reason)."""
+    def _authorize_execution(
+        self, action: Action, authorization: str = "human_approval",
+    ) -> tuple[bool, str]:
+        """Run the gate chain for one decided action. (allowed, reason).
+
+        `authorization` names what the decision rests on. A1 makes this
+        load-bearing: work that carries a named human's approval may
+        proceed past an authorization-shaped lease verdict, because that
+        verdict gates autonomous INITIATIVE and a human already took the
+        initiative. Work that carries only the tenant's autonomy grant
+        may not: that is exactly the case the S5 error-budget drop-back
+        exists to stop.
+        """
         # Actions outside the configured allow list fall through to the
         # executor, whose refusal is the canonical R-X6 audit event.
         if (
@@ -1242,6 +1259,15 @@ class Agent:
             if verdict == "deny" and self.current_lease.is_fully_expired():
                 return False, "authorization lease fully expired"
             if verdict != "execute":
+                if authorization == "autonomous_grant":
+                    # No human decided this one. The lease is the whole
+                    # authorization, so its refusal is final: a class
+                    # dropped back by the error budget must stop running
+                    # unattended, which is the point of dropping it back.
+                    return False, (
+                        f"lease refuses autonomous {action.type.value}: "
+                        f"{verdict}"
+                    )
                 logger.info(
                     "Lease gate returned %r for %s; carried approval "
                     "satisfies it", verdict, action.type.value,
@@ -1334,8 +1360,17 @@ class Agent:
                 evidence_json=json.dumps({"reason": reason, "gate": "autonomy"}),
             )
 
-    async def _execute_gated(self, action: Action) -> None:
-        """Gate chain -> execute -> accounting -> deferred verification."""
+    async def _execute_gated(
+        self, action: Action, authorization: str = "human_approval",
+    ) -> None:
+        """Gate chain -> execute -> accounting -> deferred verification.
+
+        `authorization` is the basis the caller claims (A1). It never
+        relaxes a gate; it only decides whether an authorization-shaped
+        lease verdict is already satisfied. Every hard gate
+        (preconditions, stop switch, expired lease, blast radius)
+        refuses regardless of who asked.
+        """
         if self._last_device is None:
             # Preconditions need device state; a directive can arrive
             # before the first skill cycle. Best effort, fail-closed.
@@ -1343,7 +1378,7 @@ class Agent:
                 self._last_device = await self.protocol.poll_sensors()
             except Exception as e:
                 logger.warning("Pre-gate sensor poll failed: %s", e)
-        allowed, reason = self._authorize_execution(action)
+        allowed, reason = self._authorize_execution(action, authorization)
         if not allowed:
             await self._refuse_action(action, reason)
             return

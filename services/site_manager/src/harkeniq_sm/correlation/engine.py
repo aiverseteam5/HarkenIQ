@@ -39,29 +39,59 @@ class CorrelationEngine:
         self.suppression = suppression
         self._lock = asyncio.Lock()
 
+    async def _site_ids(self, session) -> list[str]:
+        """Every active site this Site Manager serves.
+
+        Bootstraps the configured site when there are none yet, so a
+        first boot still correlates.
+        """
+        from sqlalchemy import select
+
+        from harkeniq_sm.db.models import Site
+
+        rows = (
+            await session.execute(select(Site).where(Site.status == "active"))
+        ).scalars().all()
+        if rows:
+            return [r.id for r in rows]
+        site = await SiteRepo(session).get_or_create(self.config.site_name)
+        return [site.id]
+
     async def on_onset(
         self, device_id: str, subsystem: str, severity: str, onset_at: datetime
     ) -> None:
         """Ingest hook: consolidate the child, then correlate its subsystem."""
         async with self._lock:
             async with self.sessionmaker() as session:
-                site = await SiteRepo(session).get_or_create(self.config.site_name)
                 device = await DeviceRepo(session).get(device_id)
                 if device is None:
                     return
+                # E1.3: correlate inside the DEVICE'S OWN site, never the
+                # Site Manager's configured one. Two devices in different
+                # buildings failing at the same moment are a coincidence,
+                # not a shared cause -- and with two sites on one process
+                # the old code would have produced a shared-power incident
+                # spanning estates that share no power at all.
+                site_id = device.site_id
+                if not site_id:
+                    logger.warning(
+                        "device %s has no site; refusing to correlate it "
+                        "into a guessed one", device_id,
+                    )
+                    return
                 await self.incidents.ensure_device_incident(
-                    session, site.id, device, subsystem, severity, onset_at
+                    session, site_id, device, subsystem, severity, onset_at
                 )
                 if subsystem == "psu":
                     await rules.shared_power(
-                        session, self.config, site.id, self.incidents
+                        session, self.config, site_id, self.incidents
                     )
                 elif subsystem == "thermal":
                     await rules.rack_thermal(
-                        session, self.config, site.id, self.incidents
+                        session, self.config, site_id, self.incidents
                     )
                 await rules.batch_component(
-                    session, self.config, site.id, self.incidents,
+                    session, self.config, site_id, self.incidents,
                     datetime.now(timezone.utc),
                 )
                 await self._evaluate_suppression(
@@ -74,18 +104,25 @@ class CorrelationEngine:
         now = now or datetime.now(timezone.utc)
         async with self._lock:
             async with self.sessionmaker() as session:
-                site = await SiteRepo(session).get_or_create(self.config.site_name)
-                await rules.shared_power(session, self.config, site.id, self.incidents)
-                await rules.rack_thermal(session, self.config, site.id, self.incidents)
-                await rules.batch_component(
-                    session, self.config, site.id, self.incidents, now
-                )
-                await rules.network_ambiguity(
-                    session, self.config, site.id, self.incidents, now
-                )
-                await rules.tor_connectivity(
-                    session, self.config, site.id, self.incidents, now
-                )
+                # E1.3: one pass PER SITE. A single pass over a Site
+                # Manager serving several sites would let one site's
+                # devices form a quorum with another's.
+                for site_id in await self._site_ids(session):
+                    await rules.shared_power(
+                        session, self.config, site_id, self.incidents
+                    )
+                    await rules.rack_thermal(
+                        session, self.config, site_id, self.incidents
+                    )
+                    await rules.batch_component(
+                        session, self.config, site_id, self.incidents, now
+                    )
+                    await rules.network_ambiguity(
+                        session, self.config, site_id, self.incidents, now
+                    )
+                    await rules.tor_connectivity(
+                        session, self.config, site_id, self.incidents, now
+                    )
                 await self.incidents.resolve_recovered_children(session)
                 await self.incidents.resolve_recovered_ambiguities(session)
                 await self.incidents.auto_resolve_parents(session)

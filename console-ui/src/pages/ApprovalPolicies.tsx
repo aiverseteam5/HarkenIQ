@@ -123,14 +123,20 @@ const ACTION_TYPE_OPTIONS = [
 ];
 
 const RISK_LEVEL_OPTIONS = [
+  /* "All Risk Levels" was missing, so every policy the form created was
+     pinned to one risk band even when the operator wanted all of them --
+     the same trap the API default had. */
+  { value: "*", label: "All Risk Levels" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "critical", label: "Critical" },
 ];
 
+/* "auto_approve" is gone: Central Command refuses it (A15.7). Offering a
+   mode the server rejects is worse than not offering it — the operator
+   configures something, sees it fail, and learns nothing about why. */
 const APPROVAL_MODE_OPTIONS = [
-  { value: "auto_approve", label: "Auto Approve" },
   { value: "require_approval", label: "Require Approval" },
   { value: "escalate", label: "Escalate" },
 ];
@@ -143,18 +149,30 @@ const PERIOD_OPTIONS = [
 
 type PolicyTemplate = { label: string; fill: Partial<PolicyFormData> };
 
+/* E0.1 (A15.7): the "auto_approve" presets are retired. Unattended
+   execution is granted by the AUTONOMY CONTRACT, which requires evidence
+   and a human decision, never by an approval policy — a policy that
+   could skip the human would be a second, ungoverned path to autonomy
+   with no evidence bar, no budget, no drop-back and no fence for the
+   high-risk classes. Central Command now refuses the mode with a 400.
+   These templates set how MANY humans a class needs, which is what an
+   approval policy is actually for. */
 const POLICY_TEMPLATES: PolicyTemplate[] = [
   {
-    label: "Conservative",
+    label: "Single approver",
+    fill: { approval_mode: "require_approval", required_approvers: 1 },
+  },
+  {
+    label: "Dual authorization",
     fill: { approval_mode: "require_approval", required_approvers: 2 },
   },
   {
-    label: "Balanced",
-    fill: { approval_mode: "auto_approve", risk_level: "low", required_approvers: 1 },
-  },
-  {
-    label: "Aggressive",
-    fill: { approval_mode: "auto_approve", risk_level: "medium", required_approvers: 1 },
+    label: "Dual for medium risk",
+    fill: {
+      approval_mode: "require_approval",
+      risk_level: "medium",
+      required_approvers: 2,
+    },
   },
 ];
 
@@ -263,7 +281,7 @@ const emptyPolicyForm: PolicyFormData = {
   name: "",
   device_type: "*",
   action_type: "*",
-  risk_level: "low",
+  risk_level: "*",
   time_window: "",
   approval_mode: "require_approval",
   required_approvers: 1,

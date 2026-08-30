@@ -19,6 +19,7 @@ from harkeniq_sm.api import firmware_campaigns as firmware_campaigns_api
 from harkeniq_sm.api import domains as domains_api
 from harkeniq_sm.api import incidents as incidents_api
 from harkeniq_sm.api import site as site_api
+from harkeniq_sm.api import sites_admin as sites_admin_api
 from harkeniq_sm.api import skills as skills_api
 from harkeniq_sm.api.deps import require_site_token
 from harkeniq_sm.coverage import coverage_entry
@@ -29,12 +30,20 @@ def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Site Manager", version="0.1.0")
     app.state.sm = state
 
+    # E0.3: /metrics from the registry that shipped with R4-0 and had no
+    # callers. Mounted before the routers so the middleware sees every
+    # request, including the ones the routers reject.
+    from harkeniq.metrics import mount_metrics
+
+    mount_metrics(app, "site-manager")
+
     # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
     # partner incident can be traced across service logs.
     from harkeniq.logging_config import request_id_middleware
 
     app.add_middleware(request_id_middleware(app))
     app.include_router(site_api.router)
+    app.include_router(sites_admin_api.router)
     app.include_router(domains_api.router)
     app.include_router(devices_api.router)
     app.include_router(incidents_api.router)

@@ -38,6 +38,16 @@ message Directive {
   string tier = 8;
   string validation_state = 9;
   string issued_by = 10;         // e.g. "firmware-campaign:<id>" | "marketplace"
+  // A1: who this directive runs for, and on what basis. `actor` is the
+  // attribution key ("op-agent:<id>@v<n>" | "user:<email>"); it rides all
+  // the way to the outcome record so evidence keeps its actor.
+  string actor = 11;
+  // A1: "human_approval" carries a named human's decision;
+  // "autonomous_grant" carries only the tenant's autonomy contract, so the
+  // node must still satisfy its lease rather than treating the directive as
+  // pre-approved. Empty means legacy SM-authority work (firmware campaigns).
+  string authorization = 12;
+  string proposal_id = 13;       // A1: the CC proposal this settles
 }
 
 message DirectiveList {
@@ -110,6 +120,12 @@ message AgentRegistration {
   string resource_profile = 9;    // R3a: "constrained" | "standard" | "performance"
   string firmware_json = 10;      // R4-2: firmware inventory [{component,name,version}]
   string device_class = 11;       // R6: "server" (default when absent) | "switch"
+  // E1.3: the SITE-BOUND enrollment credential this device presents. The
+  // Site Manager resolves it to exactly one site; there is deliberately
+  // NO site_name field here, because a site an agent could name would be
+  // a claim rather than a fact, and correlation, blast radius, error
+  // budgets and (since E1.2) authority all resolve from it.
+  string enrollment_token = 12;
 }
 
 message RegistrationAck {
@@ -119,6 +135,10 @@ message RegistrationAck {
   bytes agent_certificate = 4;    // R3a: SM's signature over agent identity
   map<string, bytes> peer_keys = 5;      // R3b-2: agent_id -> public_key_pem
   bytes peer_keys_signature = 6;         // R3b-2: SM signature over canonical(peer_keys)
+  // E1.3: why a registration was refused. An agent that cannot prove its
+  // site does not get one, and it must be able to say so in its logs
+  // rather than retrying a malformed loop forever.
+  string reason = 7;
 }
 
 message ActionReport {
@@ -167,6 +187,31 @@ service SiteManagerService {
   // R5-2: CC pushes a marketplace skill to the site; the SM queues
   // skill_install directives its agents pick up on their next poll.
   rpc InstallSkill(SiteSkillInstall) returns (SiteSkillInstallAck);
+  // A1: one-shot dispatch of a decided action to one device. The SM
+  // queues it on the EXISTING directive transport; the node runs its
+  // unchanged gate funnel. This verb delivers a decision, it does not
+  // authorize one -- and it is the only CC->SM path an Operational
+  // Agent's approved proposal takes.
+  rpc DispatchAction(ActionDispatch) returns (ActionDispatchAck);
+}
+
+// A1: an approved (or contract-autonomous) action, dispatched CC -> SM.
+message ActionDispatch {
+  string tenant_id = 1;
+  string site_id = 2;
+  string device_agent_id = 3;    // fleet identity; SM resolves it to a device
+  string action_type = 4;        // an ActionType the node executor knows
+  string params_json = 5;
+  string actor = 6;              // "op-agent:<id>@v<n>" | "user:<email>"
+  string authorization = 7;      // "human_approval" | "autonomous_grant"
+  string decided_by = 8;         // the named human; empty when autonomous
+  string proposal_id = 9;        // the CC proposal this settles
+}
+
+message ActionDispatchAck {
+  bool accepted = 1;
+  string directive_id = 2;
+  string reason = 3;             // never empty when accepted is false
 }
 
 // R5-2: marketplace skill install (CC -> SM)
@@ -263,6 +308,7 @@ message FleetOutcome {
   string vendor = 6;
   string model = 7;
   int64 recorded_at_unix = 8;
+  string actor = 9;                // A1: attribution, "" when unattributed
 }
 
 // QA-033 feedback half: SM-generated candidate skills ride the snapshot
@@ -327,6 +373,12 @@ message FleetSnapshot {
   repeated FleetOutcome outcomes = 5;  // R3b-3: action outcomes for CC learning
   repeated CandidateSkill candidate_skills = 6;  // QA-033: R-C1 skill upflow
   FleetSafetyState safety = 7;         // S5: live autonomy safety state
+  // E0.2: did the Site Manager resolve the requested site? An unresolved
+  // site returns an EMPTY snapshot with a reason, never another site's
+  // data and never the whole Site Manager's. Central Command must not
+  // mistake this for "the site has no devices" and clear its cache.
+  bool site_resolved = 8;
+  string site_reason = 9;              // empty when resolved
 }
 
 message ApprovalRouteRequest {

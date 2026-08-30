@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import FleetPatternRepo, OutcomeHistoryRepo
 from harkeniq_cc.outcome_aggregator import OutcomeAggregator
@@ -27,12 +27,13 @@ async def outcome_metrics(
     vendor: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Aggregated action-outcome metrics grouped by (action_type, vendor,
     model), with per-site attribution. Backing data for the Console's
     vendor reliability comparison."""
     outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(
-        user.tenant_id
+        user.tenant_id, scope=scope
     )
     aggregator = OutcomeAggregator()
     aggregator.ingest(outcomes)

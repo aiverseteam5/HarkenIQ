@@ -80,6 +80,15 @@ export async function patchJson<T>(path: string, body: unknown): Promise<T> {
   return resp.json();
 }
 
+export async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const resp = await request(path, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
 export async function deleteJson(path: string): Promise<void> {
   await request(path, { method: "DELETE" });
 }

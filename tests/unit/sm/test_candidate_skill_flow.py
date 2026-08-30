@@ -109,15 +109,25 @@ class TestSnapshotUpflow:
         await ingest._generate_candidate_skill(
             "agent-1", "fan:Fan1A", "CRITICAL", _result(), _context(),
         )
+        # E0.2: a candidate belongs to the site of the device that
+        # produced it, and the snapshot is addressed by Central Command's
+        # site identity, so both the binding and the device must exist.
         async with db() as session:
-            session.add(Site(name="site-1"))
+            from harkeniq_sm.db.models import Device
+
+            site = Site(name="site-1", cc_site_id="cc-site-1")
+            session.add(site)
+            await session.flush()
+            session.add(Device(site_id=site.id, agent_id="agent-1"))
             await session.commit()
 
         config = SMConfig(insecure=True, site_name="site-1")
         servicer = SiteManagerServiceServicer(
             db, ApprovalService(db, config), config,
         )
-        request = harkeniq_pb2.FleetSnapshotRequest(tenant_id="t1", site_id="")
+        request = harkeniq_pb2.FleetSnapshotRequest(
+            tenant_id="t1", site_id="cc-site-1",
+        )
         snap = await servicer.GetFleetSnapshot(request, None)
         assert len(snap.candidate_skills) == 1
         cand = snap.candidate_skills[0]

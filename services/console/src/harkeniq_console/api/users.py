@@ -227,7 +227,11 @@ def _role_dict(r) -> dict:
 @roles_router.get("/")
 async def list_roles(
     tenant_id: str,
-    _user: UserContext = Depends(require_tenant_permission("role.manage")),
+    # A13/E0.3: a read was gated on a MUTATION permission, so an auditor
+    # (and anyone else who may see the user list) could not see which
+    # permission bundles exist in their own tenant. Creating, editing and
+    # deleting a role below are unchanged at role.manage.
+    _user: UserContext = Depends(require_tenant_permission("user.view")),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     items = await CustomRoleRepo(session).list_by_tenant(tenant_id)

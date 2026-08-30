@@ -31,7 +31,12 @@ DEFAULT_REALM_ROLES = [
     "viewer",
 ]
 
-_TIMEOUT = 2.0
+#: E1.4: 2.0s was too short for realm provisioning. Creating a realm and
+#: its five roles and its client is six sequential admin calls, and a
+#: Keycloak under load takes longer than that per call -- so provisioning
+#: failed with an httpx timeout, whose str() is EMPTY, producing
+#: "Keycloak realm creation failed: " with nothing after the colon.
+_TIMEOUT = 10.0
 _MAX_RETRIES = 1  # retry once on 5xx
 
 
@@ -186,18 +191,38 @@ class KeycloakAdminClient:
         )
         logger.info("realm '%s' created", tenant_slug)
 
-        # Provision default roles.
-        for role_name in DEFAULT_REALM_ROLES:
-            await self._request(
-                "POST", f"/admin/realms/{tenant_slug}/roles",
-                json={"name": role_name},
-                context=f"create role '{role_name}' in '{tenant_slug}'",
-            )
+        # Provision default roles. Idempotent, and reusable for a realm
+        # whose provisioning failed part-way through.
+        await self.ensure_realm_roles(tenant_slug)
         logger.info(
             "default roles provisioned in realm '%s': %s",
             tenant_slug, DEFAULT_REALM_ROLES,
         )
         return tenant_slug
+
+    async def ensure_realm_roles(self, realm: str) -> list[str]:
+        """Make sure the five tenant roles exist. Idempotent. E1.4.
+
+        Separate from `create_realm` on purpose: provisioning is six
+        sequential admin calls, and a failure part-way through leaves a
+        realm that exists with roles that do not. Treating "the realm
+        exists" as "the realm is provisioned" is how a tenant ends up
+        with a realm nobody can hold a role in -- which is exactly what
+        happened on the first live run.
+        """
+        created: list[str] = []
+        for role_name in DEFAULT_REALM_ROLES:
+            try:
+                await self._request(
+                    "POST", f"/admin/realms/{realm}/roles",
+                    json={"name": role_name},
+                    context=f"create role '{role_name}' in '{realm}'",
+                )
+                created.append(role_name)
+            except KeycloakError as exc:
+                if exc.status_code != 409:
+                    raise
+        return created
 
     # -- client management --------------------------------------------------
 
@@ -378,6 +403,14 @@ class MockKeycloakAdminClient:
         self._clients[tenant_slug] = {}
         self._realm_roles[tenant_slug] = list(DEFAULT_REALM_ROLES)
         return tenant_slug
+
+    async def ensure_realm_roles(self, realm: str) -> list[str]:  # noqa: D102
+        if realm not in self._realms:
+            raise KeycloakError(f"realm '{realm}' not found", status_code=404)
+        existing = set(self._realm_roles.setdefault(realm, []))
+        created = [r for r in DEFAULT_REALM_ROLES if r not in existing]
+        self._realm_roles[realm] = sorted(existing | set(DEFAULT_REALM_ROLES))
+        return created
 
     async def create_client(
         self,

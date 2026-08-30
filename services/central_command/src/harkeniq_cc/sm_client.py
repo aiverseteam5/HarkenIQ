@@ -208,6 +208,9 @@ class SMClient:
                     "vendor": oc.vendor,
                     "model": oc.model,
                     "recorded_at_unix": oc.recorded_at_unix,
+                    # A1: attribution survives the wire, so an outcome
+                    # can still name the Operational Agent that caused it.
+                    "actor": oc.actor,
                 })
             candidate_skills = []
             for cand in snap.candidate_skills:
@@ -266,6 +269,14 @@ class SMClient:
                 "outcomes": outcomes,
                 "candidate_skills": candidate_skills,
                 "safety": safety,
+                # E0.2: did the Site Manager resolve the site we asked
+                # for? An unresolved snapshot is EMPTY by design and must
+                # never be mistaken for "this site has no devices" -- the
+                # poller clears the fleet cache and infers incident
+                # resolution by absence, so that mistake would erase a
+                # site's fleet and close all of its incidents.
+                "site_resolved": snap.site_resolved,
+                "site_reason": snap.site_reason,
             }
 
     async def route_approval(
@@ -352,6 +363,50 @@ class SMClient:
             return {
                 "accepted": ack.accepted,
                 "queued": ack.queued,
+                "reason": ack.reason,
+            }
+
+    async def dispatch_action(
+        self,
+        sm_endpoint: str,
+        token: Optional[str],
+        *,
+        tenant_id: str,
+        site_id: str,
+        device_agent_id: str,
+        action_type: str,
+        params_json: str = "{}",
+        actor: str = "",
+        authorization: str = "",
+        decided_by: str = "",
+        proposal_id: str = "",
+    ) -> dict:
+        """A1: hand one decided action to the site that owns the device.
+
+        This delivers a decision Central Command already governed; it
+        does not make one and it authorizes nothing. The Site Manager
+        queues it on the existing directive transport and the node runs
+        its unchanged gate funnel, which can still refuse.
+        """
+        async with self._channel(sm_endpoint) as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            ack = await stub.DispatchAction(
+                harkeniq_pb2.ActionDispatch(
+                    tenant_id=tenant_id,
+                    site_id=site_id,
+                    device_agent_id=device_agent_id,
+                    action_type=action_type,
+                    params_json=params_json,
+                    actor=actor,
+                    authorization=authorization,
+                    decided_by=decided_by,
+                    proposal_id=proposal_id,
+                ),
+                metadata=_metadata(token),
+            )
+            return {
+                "accepted": ack.accepted,
+                "directive_id": ack.directive_id,
                 "reason": ack.reason,
             }
 

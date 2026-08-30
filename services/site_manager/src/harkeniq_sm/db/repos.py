@@ -40,6 +40,49 @@ class SiteRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_by_cc_id(self, cc_site_id: str) -> Optional[Site]:
+        """The site Central Command means. The authoritative resolution."""
+        if not cc_site_id:
+            return None
+        return (
+            await self.session.execute(
+                select(Site).where(Site.cc_site_id == cc_site_id)
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_name(self, name: str) -> Optional[Site]:
+        return (
+            await self.session.execute(select(Site).where(Site.name == name))
+        ).scalar_one_or_none()
+
+    async def bind(self, site: Site, cc_site_id: str) -> None:
+        """Attach Central Command's identity to this site.
+
+        Only ever called on an UNBOUND site. Rebinding a bound site is
+        refused at the RPC, because a registration that silently
+        re-pointed a site would move every device, incident and outcome
+        under it to a different tenant-plane identity without anyone
+        deciding to.
+        """
+        site.cc_site_id = cc_site_id
+        site.bound_at = utcnow()
+
+    async def unbind(self, site: Site) -> None:
+        """Break-glass: clear the binding so the next RegisterSite re-binds.
+
+        The audited recovery path for a Central Command that legitimately
+        changed its site ids (a restore from backup). Deliberately a
+        separate, explicit operation rather than a special case inside
+        registration.
+        """
+        site.cc_site_id = None
+        site.bound_at = None
+
+    async def list_all(self) -> Sequence[Site]:
+        return (
+            await self.session.execute(select(Site).order_by(Site.name))
+        ).scalars().all()
+
     async def get_or_create(self, name: str) -> Site:
         site = (
             await self.session.execute(select(Site).where(Site.name == name))
@@ -101,6 +144,21 @@ class DeviceRepo:
         if device is None:
             device = Device(site_id=site_id, agent_id=agent_id)
             self.session.add(device)
+        elif site_id and device.site_id and device.site_id != site_id:
+            # E1.3: a device does not move site by re-registering with a
+            # different credential.
+            #
+            # The upsert already happened not to rewrite `site_id`, so
+            # the outcome was right by accident. That is not enforcement:
+            # a silent no-op tells the operator nothing, and the ratified
+            # rule is that changing site is an EXPLICIT re-enrollment.
+            # So it is refused, loudly, with a reason.
+            raise ValueError(
+                f"device {agent_id!r} is already enrolled at another site. "
+                "Moving a device between sites is an explicit re-enrollment "
+                "(retire it at the old site, then enroll it at the new one), "
+                "not a re-registration with a different credential."
+            )
         device.agent_name = agent_name or device.agent_name
         device.vendor = vendor or device.vendor
         device.model = model or device.model
@@ -420,13 +478,19 @@ class IncidentRepo:
             )
         ).scalars().all()
 
-    async def list_open(self) -> Sequence[Incident]:
+    async def list_open(self, site_id: Optional[str] = None) -> Sequence[Incident]:
+        """Open incidents, optionally for ONE site.
+
+        E0.2: the fleet snapshot must pass a site. Sweep callers that
+        resolve each incident on its own device's state legitimately pass
+        None, because they decide per device and never compare across
+        sites.
+        """
+        stmt = select(Incident).where(Incident.status == "open")
+        if site_id is not None:
+            stmt = stmt.where(Incident.site_id == site_id)
         return (
-            await self.session.execute(
-                select(Incident)
-                .where(Incident.status == "open")
-                .order_by(Incident.opened_at)
-            )
+            await self.session.execute(stmt.order_by(Incident.opened_at))
         ).scalars().all()
 
     async def list_all(self) -> Sequence[Incident]:
@@ -459,13 +523,21 @@ class ActionRepo:
             )
         ).scalar_one_or_none()
 
-    async def list_by_status(self, status: str) -> Sequence[ActionRow]:
-        return (
-            await self.session.execute(
-                select(ActionRow)
-                .where(ActionRow.status == status)
-                .order_by(ActionRow.reported_at)
+    async def list_by_status(
+        self, status: str, site_id: Optional[str] = None
+    ) -> Sequence[ActionRow]:
+        """Actions in one state, optionally for ONE site.
+
+        E0.2: an action has no site column of its own, so the scope comes
+        through its device. The fleet snapshot must pass a site.
+        """
+        stmt = select(ActionRow).where(ActionRow.status == status)
+        if site_id is not None:
+            stmt = stmt.join(Device, Device.id == ActionRow.device_id).where(
+                Device.site_id == site_id
             )
+        return (
+            await self.session.execute(stmt.order_by(ActionRow.reported_at))
         ).scalars().all()
 
     async def list_all(self) -> Sequence[ActionRow]:
@@ -544,16 +616,22 @@ class ErrorBudgetRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def record(self, action_type: str, outcome: str) -> tuple[ErrorBudgetRow, bool]:
-        """Fold one outcome into this action type's budget.
+    async def record(
+        self, site_id: str, action_type: str, outcome: str
+    ) -> tuple[ErrorBudgetRow, bool]:
+        """Fold one outcome into this SITE's budget for this action type.
+
+        E0.2: per site. One site's failures must not withdraw another
+        site's autonomy, even when the same Site Manager executes for
+        both.
 
         Returns (row, newly_dropped_back).
         """
         from harkeniq_sm.knowledge import ErrorBudgetState
 
-        row = await self.session.get(ErrorBudgetRow, action_type)
+        row = await self.session.get(ErrorBudgetRow, (site_id, action_type))
         if row is None:
-            row = ErrorBudgetRow(action_type=action_type)
+            row = ErrorBudgetRow(site_id=site_id, action_type=action_type)
             self.session.add(row)
             await self.session.flush()
         state = ErrorBudgetState(
@@ -575,27 +653,41 @@ class ErrorBudgetRepo:
         await self.session.flush()
         return row, newly
 
-    async def list_all(self) -> Sequence[ErrorBudgetRow]:
+    async def list_all(self, site_id: Optional[str] = None) -> Sequence[ErrorBudgetRow]:
+        """Budgets, for one site when given. Callers that report a site's
+        safety state MUST pass one."""
+        stmt = select(ErrorBudgetRow)
+        if site_id is not None:
+            stmt = stmt.where(ErrorBudgetRow.site_id == site_id)
         return (
-            await self.session.execute(
-                select(ErrorBudgetRow).order_by(ErrorBudgetRow.action_type)
-            )
+            await self.session.execute(stmt.order_by(ErrorBudgetRow.action_type))
         ).scalars().all()
 
-    async def dropped_back_types(self) -> set[str]:
-        """Action types whose autonomy the error budget has withdrawn."""
+    async def dropped_back_types(self, site_id: str) -> set[str]:
+        """Action types whose autonomy this SITE's error budget withdrew.
+
+        `site_id` is required, not optional: every caller gates real
+        execution, and a default that spanned sites would withdraw
+        autonomy somewhere nobody decided about.
+        """
         rows = (
             await self.session.execute(
                 select(ErrorBudgetRow).where(
-                    ErrorBudgetRow.dropped_back == True  # noqa: E712
+                    ErrorBudgetRow.site_id == site_id,
+                    ErrorBudgetRow.dropped_back == True,  # noqa: E712
                 )
             )
         ).scalars().all()
         return {r.action_type for r in rows}
 
-    async def recover(self, action_type: str) -> bool:
-        """Operator lifts a drop-back: counters reset for a fresh period."""
-        row = await self.session.get(ErrorBudgetRow, action_type)
+    async def recover(self, site_id: str, action_type: str) -> bool:
+        """Operator lifts a drop-back at ONE site: counters reset.
+
+        E0.2: recovery is per site for the same reason withdrawal is.
+        Clearing a drop-back at every site the Site Manager serves would
+        restore autonomy where nobody looked at the failures.
+        """
+        row = await self.session.get(ErrorBudgetRow, (site_id, action_type))
         if row is None or not row.dropped_back:
             return False
         row.dropped_back = False
@@ -636,12 +728,23 @@ class AuditRepo:
         }
 
     async def append(
-        self, actor: str, action: str, subject: str = "", detail: Optional[dict] = None
+        self, actor: str, action: str, subject: str = "",
+        detail: Optional[dict] = None, site_id: Optional[str] = None,
     ) -> AuditLogRow:
+        """Append one entry to this Site Manager's hash chain.
+
+        E1.3: `site_id` is authorization/indexing metadata and is
+        DELIBERATELY absent from `_chain_payload`, exactly as CC's E1.2
+        column is. The chain hashes ts, actor, action, subject and detail
+        and nothing else, so recording a site neither changes an entry's
+        hash nor invalidates a chain written before this column existed.
+        A test asserts that rather than trusting it.
+        """
         from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
 
         row = AuditLogRow(
-            ts=utcnow(), actor=actor, action=action, subject=subject, detail=detail
+            ts=utcnow(), actor=actor, action=action, subject=subject,
+            detail=detail, site_id=site_id,
         )
         async with _audit_chain_lock:
             # R5-2: cross-replica serialization on PostgreSQL (held
@@ -780,12 +883,17 @@ class DirectiveRepo:
         tier: str = "",
         validation_state: str = "",
         issued_by: str = "",
+        actor: str = "",
+        authorization_basis: str = "",
+        proposal_id: str = "",
     ) -> DirectedDirective:
         directive = DirectedDirective(
             device_id=device_id, kind=kind, action_type=action_type,
             params=params, skill_id=skill_id, skill_version=skill_version,
             yaml_content=yaml_content, tier=tier,
             validation_state=validation_state, issued_by=issued_by,
+            actor=actor, authorization_basis=authorization_basis,
+            proposal_id=proposal_id,
         )
         self.session.add(directive)
         await self.session.flush()

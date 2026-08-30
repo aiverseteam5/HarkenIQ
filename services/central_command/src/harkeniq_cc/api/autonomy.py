@@ -29,16 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.autonomy import build_autonomy
-from harkeniq_cc.db.repos import (
-    ApprovalPolicyRepo,
-    AutonomyBudgetRepo,
-    LearnedSignalRepo,
-    OutcomeHistoryRepo,
-    SafetyStateRepo,
-    SiteRepo,
-    StopSwitchRepo,
-)
+from harkeniq_cc.governance import load_autonomy_contract
 
 router = APIRouter(prefix="/api/autonomy", tags=["autonomy"])
 
@@ -58,32 +49,12 @@ async def autonomy_contract(
     Every read below is tenant-scoped by its repository; `site_id`
     narrows within the tenant and can never widen beyond it.
     """
-    tenant_id = user.tenant_id
-
-    budgets = await AutonomyBudgetRepo(session).list_all(tenant_id)
-    stop_switch = await StopSwitchRepo(session).get(tenant_id)
-    outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
-    safety_rows = await SafetyStateRepo(session).list_for_tenant(tenant_id)
-    sites = await SiteRepo(session).list_all(tenant_id)
-    learned = await LearnedSignalRepo(session).list_active(tenant_id)
-    # Approval policies shape what "requires approval" actually means for
-    # a class. Read at fleet.view here even though managing them needs
-    # site.manage: knowing an action needs two approvers is posture, and
-    # the posture read-split (D2) is the whole point of this surface.
-    policies = await ApprovalPolicyRepo(session).list_all(tenant_id)
-
-    return build_autonomy(
-        tenant_id=tenant_id,
+    return await load_autonomy_contract(
+        session,
+        tenant_id=user.tenant_id,
         actor_id=f"user:{user.user_id}",
         actor_species="human",
         permissions=user.permissions,
-        budgets=budgets,
-        stop_switch=stop_switch,
-        outcomes=outcomes,
-        safety_rows=safety_rows,
-        sites=sites,
-        learned_signals=learned,
-        approval_policies=policies,
         site_id=site_id,
         action_type=action_type,
     )

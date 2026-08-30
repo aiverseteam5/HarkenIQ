@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from harkeniq_sm.api.deps import require_site_token
+from harkeniq_sm.api.site_scope import SiteScope, resolve_site
 from harkeniq_sm.db.repos import DeviceRepo, FirmwareCampaignRepo, SiteRepo
 from harkeniq_sm.firmware_orchestrator import FirmwareOrchestrator
 
@@ -40,7 +41,9 @@ def _orchestrator(state) -> FirmwareOrchestrator:
 
 
 @router.post("")
-async def create_campaign(request: Request, payload: dict = Body(...)) -> dict:
+async def create_campaign(request: Request, payload: dict = Body(...),
+    scope: SiteScope = Depends(resolve_site),
+) -> dict:
     state = request.app.state.sm
     agent_ids = payload.get("agent_ids", [])
     target_version = str(payload.get("target_version", ""))
@@ -49,7 +52,8 @@ async def create_campaign(request: Request, payload: dict = Body(...)) -> dict:
             status_code=400, detail="agent_ids and target_version are required"
         )
     async with state.sessionmaker() as session:
-        site = await SiteRepo(session).get_or_create(state.config.site_name)
+        # E1.3: a campaign targets one site's devices; the wave planner
+        # must never be handed targets from another estate.
         device_repo = DeviceRepo(session)
         device_ids = []
         for agent_id in agent_ids:
@@ -59,7 +63,7 @@ async def create_campaign(request: Request, payload: dict = Body(...)) -> dict:
                     status_code=404, detail=f"unknown agent {agent_id}"
                 )
             device_ids.append(device.id)
-        site_id = site.id
+        site_id = scope.id
         await session.commit()
     campaign_id = await _orchestrator(state).create_campaign(
         site_id=site_id,
@@ -78,11 +82,14 @@ async def create_campaign(request: Request, payload: dict = Body(...)) -> dict:
 
 
 @router.get("")
-async def list_campaigns(request: Request) -> dict:
+async def list_campaigns(request: Request,
+    scope: SiteScope = Depends(resolve_site),
+) -> dict:
     state = request.app.state.sm
     async with state.sessionmaker() as session:
-        site = await SiteRepo(session).get_or_create(state.config.site_name)
-        campaigns = await FirmwareCampaignRepo(session).list_for_site(site.id)
+        # E1.3: a campaign targets one site's devices; the wave planner
+        # must never be handed targets from another estate.
+        campaigns = await FirmwareCampaignRepo(session).list_for_site(scope.id)
         return {"campaigns": [_campaign_dict(c) for c in campaigns]}
 
 

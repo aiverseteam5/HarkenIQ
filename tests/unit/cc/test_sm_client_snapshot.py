@@ -22,6 +22,9 @@ from harkeniq_sm.db.models import ActionOutcomeRow, CandidateSkillRow, Site
 from harkeniq_sm.grpc_server import SiteManagerServiceServicer
 
 
+CC_SITE_ID = "cc-site-1"
+
+
 @pytest.fixture
 async def sm_wire():
     """Real SM servicer on a real insecure port, with seeded rows."""
@@ -29,7 +32,16 @@ async def sm_wire():
     await create_all(engine)
     db = make_sessionmaker(engine)
     async with db() as session:
-        session.add(Site(name="site-1"))
+        # E0.2: outcomes and candidates are scoped through the device that
+        # produced them, so the device has to exist and belong to the site
+        # the snapshot asks for. That is the point: an orphaned row can no
+        # longer ride any site's snapshot.
+        from harkeniq_sm.db.models import Device
+
+        site = Site(name="site-1", cc_site_id=CC_SITE_ID)
+        session.add(site)
+        await session.flush()
+        session.add(Device(id="dev-x", site_id=site.id, agent_id="agent-1"))
         session.add(ActionOutcomeRow(
             action_id="act-1", action_type="FAN_RESET", device_id="dev-x",
             outcome="SUCCESS", fault_resolved=True,
@@ -60,7 +72,7 @@ async def sm_wire():
 
 async def test_snapshot_dict_carries_outcomes_and_candidates(sm_wire):
     snapshot = await SMClient().get_fleet_snapshot(
-        sm_wire, "any-token", "t1", "",
+        sm_wire, "any-token", "t1", CC_SITE_ID,
     )
 
     outcomes = snapshot["outcomes"]

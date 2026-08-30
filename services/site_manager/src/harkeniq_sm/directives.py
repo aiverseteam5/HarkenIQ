@@ -38,17 +38,31 @@ class DirectiveService:
         action_type: str,
         params: Optional[dict] = None,
         issued_by: str = "",
+        actor: str = "",
+        authorization_basis: str = "",
+        proposal_id: str = "",
     ) -> str:
+        """Queue one directed action.
+
+        `actor` and `authorization` are A1 attribution: who this runs for
+        and on what basis. They are carried, never interpreted, here --
+        the node decides what an authorization basis entitles, because
+        the node owns the gate funnel.
+        """
         async with self._sessionmaker() as session:
             directive = await DirectiveRepo(session).enqueue(
                 device_id=device_id, kind="action",
                 action_type=action_type, params=params or {},
-                issued_by=issued_by,
+                issued_by=issued_by, actor=actor,
+                authorization_basis=authorization_basis,
+                proposal_id=proposal_id,
             )
             await AuditRepo(session).append(
-                issued_by or "sm", "directive.enqueue", directive.id,
+                actor or issued_by or "sm", "directive.enqueue", directive.id,
                 detail={"kind": "action", "action_type": action_type,
-                        "device_id": device_id},
+                        "device_id": device_id, "actor": actor,
+                        "authorization": authorization_basis,
+                        "proposal_id": proposal_id},
             )
             await session.commit()
             return directive.id
@@ -100,6 +114,9 @@ class DirectiveService:
                     tier=directive.tier,
                     validation_state=directive.validation_state,
                     issued_by=directive.issued_by,
+                    actor=directive.actor,
+                    authorization=directive.authorization_basis,
+                    proposal_id=directive.proposal_id,
                 ))
             await session.commit()
             return messages
@@ -122,9 +139,29 @@ class DirectiveService:
             if directive.status not in ("delivered", "pending"):
                 return False  # already settled
             await repo.complete(directive_id, success, detail)
+            # A1: a directed action that ran IS an execution, so it has
+            # to become evidence like any other. Before this only the
+            # node-proposed path wrote sm_action_outcomes, which left
+            # every firmware-campaign execution since R5-1 invisible to
+            # the error budget and to fleet learning.
+            if directive.kind == "action" and directive.action_type:
+                from harkeniq_sm.outcomes import record_action_outcome
+
+                await record_action_outcome(
+                    session,
+                    device_id=directive.device_id,
+                    action_id=f"directive:{directive_id}",
+                    action_type=directive.action_type,
+                    result="SUCCESS" if success else "FAILURE",
+                    actor=directive.actor,
+                )
             await AuditRepo(session).append(
-                f"agent:{agent_id}", "directive.result", directive_id,
-                detail={"success": success, "detail": detail[:200]},
+                directive.actor or f"agent:{agent_id}", "directive.result",
+                directive_id,
+                detail={"success": success, "detail": detail[:200],
+                        "action_type": directive.action_type,
+                        "authorization": directive.authorization_basis,
+                        "proposal_id": directive.proposal_id},
             )
             await session.commit()
             return True

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.api.warranty import warranty_dict
 from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo, WarrantyRepo
@@ -44,6 +44,7 @@ async def list_devices(
     search: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """List devices across all sites, paginated and filtered."""
     devices, total = await FleetCacheRepo(session).list_filtered(
@@ -54,6 +55,7 @@ async def list_devices(
         search=search,
         page=page,
         page_size=page_size,
+        scope=scope,
     )
     # R4-2 P15: bulk-attach warranty status for the dashboard table
     warranty_map = await WarrantyRepo(session).get_map(
@@ -83,12 +85,15 @@ async def list_devices(
 async def fleet_summary(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """KPI aggregates across the tenant's fleet."""
     cache = FleetCacheRepo(session)
-    by_health = await cache.count_by_health(user.tenant_id)
+    by_health = await cache.count_by_health(user.tenant_id, scope=scope)
     total = sum(by_health.values())
-    sites_count = await SiteRepo(session).count(user.tenant_id)
+    # The summary counts what the CALLER may see. A total that included
+    # sites they cannot reach would leak the size of the rest of the fleet.
+    sites_count = len(await SiteRepo(session).list_all(user.tenant_id, scope=scope))
 
     # S4: real open incidents, not the critical-health proxy this used to
     # count. The two differ: a correlated fault is ONE incident across many
@@ -97,7 +102,7 @@ async def fleet_summary(
 
     incidents_open = len(
         await IncidentRepo(session).list_incidents(
-            user.tenant_id, status="open", limit=1000,
+            user.tenant_id, status="open", limit=1000, scope=scope,
         )
     )
 
@@ -123,6 +128,7 @@ async def get_device(
     device_id: str,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Device detail with warranty (R4-2 P15).
 
@@ -137,6 +143,12 @@ async def get_device(
         raise HTTPException(status_code=404, detail="device not found")
     site = await session.get(CCSite, row.site_id)
     if site is None or site.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="device not found")
+    # E1.2 layer 2 on a single object. 404, not 403: a 403 would confirm
+    # the device exists, which is itself a leak across a scope boundary.
+    if not scope.covers_device(
+        row.agent_id, row.site_id, row.device_class or "server"
+    ):
         raise HTTPException(status_code=404, detail="device not found")
     warranty = (
         await WarrantyRepo(session).get_map(

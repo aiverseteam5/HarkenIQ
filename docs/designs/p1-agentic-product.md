@@ -69,7 +69,7 @@ the Console proxy. Agent/MCP readiness refers to the future consumer surface
 | Firmware campaigns (waves, halt, rollback) | SM `/api/firmware-campaigns/*` | site · site token | campaign-level human · chained | ✗ / **✗ no CC path** / status-read later / later | proto RPCs | **wiring → S6 CC mediation, WHOLE flow (D6)** |
 | Sites | `/api/sites` · CC | tenant · fleet.view (register site.manage) | — · register chained | filter facet (**S1**) / ✓ / read / read | — | **S1 landed**; site rollup consumes it in S2 |
 | Skill distribution (marketplace → node) | Console→CC `InstallSkill`→SM directives→node | tenant · skill.install | marketplace review · chained | ✓ / ✓ / A1 reuses / later | — | existing (R5-1/R5-2 proven) |
-| Operational Agent (the product noun) | — | tenant · interim site.manage; agent.manage at A2 (matrix review first) | activation human · chained | ✗ / ✗ / — / — | A0 tables | **missing → A0+A1 thesis slice** |
+| Operational Agent (the product noun) | **`/api/operational-agents/*` · CC (A0+A1)** | tenant · reads fleet.view, writes interim site.manage; agent.manage at A2 (matrix review first) | activation human · chained | **✓ (A0+A1)** / ✓ / **is the consumer** / later | S5 contract | **A0+A1 landed**: bundle + scope + bindings + lifecycle (CC 0008), CC-resident evaluator, labelled proposals into the ONE approval queue, `DispatchAction` CC→SM onto the existing directive transport, attribution through to `cc_outcome_history` |
 | Machine identity (service accounts) | — (API keys inert; page retired in P0) | tenant · role bundle ≤ ceiling | — · species-labeled | — | Keycloak client credentials | **missing → A3**; remove api-keys routers then |
 | MCP adapter | — | tenant · caller's token | same as API · same | — | A3, A4 | **missing (by design) → A5 Tier-1 (5 read tools), A6 Tier-2** |
 | NL intent compiler | — | — · zero authority | human approves the compiled form | — | A2 (+A7 prompt/schema) | missing → A7; reuses `LLMProvider` |
@@ -233,8 +233,12 @@ Recorded per Vinod's S5 sequencing call (2026-08-29): these are deferred
 capabilities that stay on the roadmap as candidates for the Operational
 Agent's capability registry — not silent drops.
 
-- **The 9 unmapped action classes.** A10.4 maps 5 of the platform's 14
-  action types. Four are structurally fenced (risk `high`: FIRMWARE_UPDATE,
+- **The 9 unmapped action classes.** *(A0+A1, 2026-08-30: the APPROVAL
+  half is closed — an unmapped class now reads as "always needs a named
+  human" rather than "forbidden", so an agent may propose it and a person
+  may approve it. What remains open is the AUTONOMY half: whether any of
+  them should ever run unattended, which is still the product decision
+  below.)* A10.4 maps 5 of the platform's 14 action types. Four are structurally fenced (risk `high`: FIRMWARE_UPDATE,
   FIRMWARE_ROLLBACK, INTERFACE_RESET, INTERFACE_DISABLE). The remaining
   nine — IDENTIFY_LED and COLLECT_DIAGNOSTICS (risk `none`), FAN_RESET,
   CLEAR_COUNTERS, INTERFACE_ENABLE (risk `low`), and the rest — are
@@ -391,3 +395,867 @@ a running system. S5 folds every terminal outcome at
 `propose` (drop back to Approve — not `deny`, since the action is still
 the right one). Automatic demotion is a ratified safety property; it is
 now real.
+
+---
+
+## 13. A0+A1 — the named Operational Agent (landed 2026-08-30)
+
+The product noun becomes an object. An **Operational Agent** is a
+declarative bundle over capabilities that already exist:
+
+```
+identity      a named, versioned, tenant-owned row; attribution key
+              op-agent:<id>@v<n> (design §6), frozen onto every proposal
+scope         explicit site / device_class / device rows. No rows, no
+              devices: "everything by default" is structurally impossible
+capabilities  REFERENCES to governed capabilities (action classes from the
+              executor's own ACTION_RISK, reads from the CC surfaces).
+              Nothing here defines a capability
+policy        a ceiling that can only ever TIGHTEN the tenant's own
+```
+
+It is configuration, never a runtime. It holds no credential (machine
+identity is A3), it has no API a human lacks, and it reaches nothing its
+bundle does not name.
+
+### Where the decision path lives, and why
+
+Ratified by Vinod: **CC-resident evaluator**. The agent's whole
+contribution is evidence a device cannot see — fleet-wide outcome rates,
+learned signals, cross-site patterns, the autonomy contract, live safety
+state, incident diagnosis. All of it is composed at Central Command by
+pure functions a browser, an MCP tool and a service account read
+identically. An agent anywhere else would re-derive those joins and drift
+from what the operator sees.
+
+So the agent **evaluates at CC and executes at the Site Manager**. SM
+remains the execution boundary; the node funnel remains the only thing
+that authorizes an action. At A3 the evaluator becomes a credentialed
+external caller reading the same contracts through the same guards, and
+nothing in `operational_agent.py` has to change — that is the test of
+whether the seam is real.
+
+### The chain, hop by hop
+
+```
+create -> scope -> bind -> ACTIVATE (human, audited, refuses an agent
+                                     that could see or do nothing)
+       │
+evaluate   attention (same ranking the operator sees) + autonomy contract
+           + learned signals, filtered by scope and bindings
+       │
+propose    cc_agent_proposals: rationale, evidence refs, the S5
+           disposition AT PROPOSAL TIME and the conditions that produced it
+       │
+govern     denied            -> blocked, recorded with the reason
+           requires_approval -> the SAME /api/approvals queue, same
+                                action.approve, same audit vocabulary
+           autonomous        -> dispatched, decided_by "autonomy:level-N"
+       │
+dispatch   DispatchAction (CC->SM, same channel and site token as
+           RouteApproval) -> DirectiveService.enqueue_action
+       │
+execute    node _execute_gated, unchanged, and still able to refuse
+       │
+attribute  sm_action_outcomes(actor) -> error budget -> FleetOutcome(actor)
+           -> cc_outcome_history(actor) -> S5 evidence -> next proposal
+```
+
+### The one new authorization rule
+
+A directive now carries `authorization_basis`. `human_approval` may
+proceed past an authorization-shaped lease verdict, because that verdict
+gates autonomous *initiative* and a human already took it.
+`autonomous_grant` may not: the lease is the whole authorization, so its
+refusal is final. **Without this, the S5 error-budget drop-back could not
+stop an agent**, which is the only thing it exists to do. Every hard gate
+(preconditions, stop switch, expired lease, blast radius) refuses both,
+as it always did.
+
+### Corrections this slice made to its own model
+
+* **`not_budget_mapped` is about autonomy, not permission.** The first
+  implementation read it as "forbidden", which silently removed
+  IDENTIFY_LED, COLLECT_DIAGNOSTICS and FAN_RESET — most of the low-risk
+  work worth delegating — from anything an agent could ever ask for. It
+  now means "always needs a named human", which is what it is. This
+  closes the §11 "9 unmapped action classes" gap for the *approval* path
+  without widening any autonomy boundary: nothing became autonomous.
+* **A tenant stop switch denies every class, mapped or not.** Proposing
+  into a stopped tenant would spend a human's decision on work the node
+  refuses anyway (A10.3).
+
+### The defect it found
+
+**Directed actions produced no outcome record at all.**
+`_run_directed_action` built its `Action` outside the queue that
+`_sync_actions` reports from, and `DirectiveService.report_result` wrote
+only an audit row. So no `sm_action_outcomes`, no `FleetOutcome`, no
+`cc_outcome_history`, no error-budget accounting: **every
+firmware-campaign execution since R5-1 was invisible to learning and to
+the error budget.** Same shape as the S5 `KnowledgeBase` find and QA-042
+— a declared mechanism with no writer on one of its paths. One shared
+writer now serves both paths (`harkeniq_sm/outcomes.py`).
+
+### Invariants (tests, and again at the compose gate)
+
+1. An agent's disposition is the tenant's, only ever narrower. An agent
+   with ceiling 3 against a tenant at level 0 is granted nothing.
+2. A fenced (`high`-risk) class stays denied for every agent at every
+   ceiling; those classes keep their own approval paths.
+3. Scope fails closed. No scope rows means no devices, never all of them.
+4. A bundle may only reference capabilities that already exist; an
+   unknown action class or read is refused at write time.
+5. Activation is a human act and refuses an agent that could see nothing
+   or propose nothing.
+6. One approval queue, one permission, one audit vocabulary. There is no
+   agent execution surface on the agent router (asserted as a 404).
+7. Denial is final (D16); the dedupe key stops a re-proposal.
+8. An outcome with no matching agent proposal stays unattributed rather
+   than being claimed.
+
+### Deliberately deferred (not dropped)
+
+Per-agent budgets, validation/simulation and the full activation gate
+(A2, per §7C); machine identity and the service-account swap (A3); MCP
+(A5/A6); the natural-language builder (A7 — the `catalogue` endpoint is
+the shape it will compile into). Event-driven evaluation stays on the
+roadmap; A1 evaluates on a cadence.
+
+### Also fixed here
+
+The Approvals page decided actions by the approval-route row id rather
+than the `action_id` its endpoint takes, sent `{ids, decision:"approve"}`
+against a `{action_ids, decision:"approved"}` contract, and rendered five
+fields Central Command has never sent. The one queue this slice unifies
+had to work before an agent could use it.
+
+---
+
+## 14. E0.1 — the approval policy binds (landed 2026-08-30)
+
+First slice of the **Enterprise Governance Foundation** (E0 + E1 +
+Capability Registry), ratified 2026-08-30. Spec amendment **A15**.
+
+### What was wrong
+
+`cc_approval_policies` has carried `approval_mode`, `required_approvers`
+and a group link since R2b. The Console has full CRUD for it. The S5
+autonomy contract faithfully reports it. **No code path consulted it
+when a decision was made** — `ApprovalPolicyRepo` had exactly two
+readers, the governance composer (for display) and its own CRUD router.
+A tenant could configure dual authorization and receive single
+authorization, silently. Fourth instance of the declared-with-no-caller
+pattern after `KnowledgeBase` (S5), fleet outcome dictification (QA-042)
+and directed-action outcomes (A0+A1).
+
+### The shape of the fix
+
+A decision is now a **set**, not a field. `cc_approval_records` holds one
+row per approver per subject (CC migration **0009**);
+`cc_approval_routes.decision` remains as a projection for compatibility.
+`unique(subject_type, subject_ref, approver_ref)` makes duplicate-approver
+prevention a database guarantee rather than a check a later path can
+forget.
+
+Judgement lives in the pure `harkeniq_cc/approval_policy.py`: policy
+resolution (most specific active match on action type, then device type,
+then risk; deterministic ties), required count, group membership, and
+the completion rule. Enforcement lives in the shared decision function
+both origins already called, so a node action and an Operational Agent
+proposal cannot diverge — there is one implementation.
+
+### Three defects the slice found beyond its own
+
+* **`auto_approve` would have been an autonomy bypass.** The Console
+  shipped policy presets using it. While policies were unenforced the
+  mode was inert; enforcing it as written would have made a single policy
+  row a second, ungoverned path to unattended execution — no evidence
+  bar, no budget, no error-budget drop-back, and no fence for the
+  risk-`high` classes that `never_budget_grantable` refuses at every
+  autonomy level. **Refused on write, coerced on read (A15.7).** The
+  autonomy contract stays the one governed answer to "may this run
+  without a human." Presets and the mode option retired from the UI.
+* **Approval policies could not be created at all on PostgreSQL.**
+  `created_by` was `String(32)` while a Keycloak subject is a
+  36-character UUID, so every create raised
+  `StringDataRightTruncation` on a real deployment and succeeded only on
+  the sqlite used in tests. Widened to 255 on policies and groups. Found
+  by running the slice on the live stack. Guarded by a new model
+  invariant test over identity-column widths, because sqlite ignores
+  VARCHAR length and no insert-based test can catch this class — second
+  instance after QA-040.
+* **A policy created as "dual approval for everything" governed
+  medium-risk actions only.** `risk_level` defaulted to `"medium"` while
+  `action_type` and `device_type` defaulted to `"*"`. All three selectors
+  now default to the wildcard, and the Console form gained the
+  "All Risk Levels" option it never had.
+
+### Proven on the live stack, two real Keycloak identities
+
+`auto_approve` refused with 400 · a dual policy binds three pending items
+across both origins · `operator1` approves and it records 1 of 2 without
+executing · the same person is refused 409 · `admin` approves and it
+decides, dispatches, and returns a real directive id · the ledger names
+both approvers individually · one approval plus one denial is denied,
+because a denial is terminal · one audit entry per approver and the chain
+still verifies.
+
+2683 → 2737 tests.
+
+### Left for the next slices
+
+Approver scope (`scope_ok` is written and enforced, resolving tenant-wide
+until grants exist) is delivered by **E1.2** without touching any
+approval code.
+
+The declared-but-unread sweep for this surface, so nothing here is
+mistaken for working: `approval_mode: "escalate"`,
+`CCApprovalPolicy.time_window_json`, `CCApprovalGroup.escalation_chain`,
+`slack_channel` and `github_team`. None is read by any runtime path. The
+first three are governance and belong to **A2**, where escalation is
+designed; the last two are notification integrations and belong with the
+outbound-integration work that OQ-3 assigned to R3 and that has never
+been built. They are left in place rather than removed because each names
+a real product capability, and removing the column would be mistaking
+"not built" for "not part of the product".
+
+---
+
+## 15. E0.2 — authoritative site identity (landed 2026-08-30)
+
+Second slice of the Enterprise Governance Foundation. Spec amendment
+**A16**. Hard prerequisite for E1.3.
+
+### What was wrong — six leaks, not one
+
+The review reported a single "return all devices" fallback. Tracing the
+runtime found six paths, and the two worst were destructive rather than
+merely leaky:
+
+| # | Data | Before | Severity |
+|---|---|---|---|
+| 1 | devices | matched CC's id against the SM's own PK, missed, **fell back to every device** | leak |
+| 2 | incidents | `list_open()` — no site filter at all | leak |
+| 3 | pending actions | `list_by_status("pending")` — no site filter | leak |
+| 4 | outcomes | no filter, **and set `reported_to_cc`** | **data loss** |
+| 5 | candidate skills | no filter, **and set `reported_to_cc`** | **data loss** |
+| 6 | usage | counted the whole Site Manager, labelled with one site | **billing** |
+
+4 and 5 mean one site's poll consumed another site's evidence, so that
+site never received it: fleet learning silently starved. 6 reaches
+invoices.
+
+### The binding
+
+`sites.cc_site_id` (unique) is persisted at `RegisterSite` and is the
+only resolution path. Registration is idempotent under the same
+identity, allows a rename, creates a second site alongside the first,
+and **refuses** to re-point a bound site — audited as
+`site.bind_refused`. Recovery is the audited unbind at the site-token
+API, requiring the site name as a typed confirmation and a reason.
+
+An unresolved site returns an empty snapshot carrying
+`site_resolved=false` and a reason (additive proto fields). Central
+Command's poller **skips ingest** on that: ingesting it would clear the
+site's fleet cache and, through D3 absence inference, resolve every one
+of its incidents. It re-registers instead, which is also how an existing
+deployment crosses the upgrade with no adoption guesswork at the Site
+Manager.
+
+### Error budgets became per site
+
+Keyed `(site_id, action_type)`. Withdrawal, recovery, the dispatch gate
+and the lease an agent receives are all resolved from the device's own
+site. The Site Manager stays the execution and safety boundary; what is
+per-site is the evidence and the withdrawal it justifies. The migration
+carries existing drop-backs onto the site rather than dropping them,
+because losing a withdrawal would restore autonomy nobody reviewed.
+
+### Proven on real PostgreSQL, two sites on one Site Manager
+
+Upgrade self-healed: the poller logged the unresolved site, skipped
+ingest, re-registered, bound. Migration carried `SEL_CLEAR`'s drop-back
+onto the site. Site A saw only its device and incidents, Site B only
+its own, symmetrically. Polling A consumed **only** A's outcome and left
+B's unreported; polling B then received exactly its own. Each site
+metered 1 node, not 2; an unbound site metered 0. A conflicting
+re-registration was refused and changed nothing. The unbind produced
+`site.bound` / `site.bound` / `site.unbound` on a chain that still
+verifies, and CC re-bound the site automatically afterwards.
+
+2737 → 2772 tests.
+
+### Deliberately not in this slice
+
+The write path that lets an **agent** declare its site is E1.3 (additive
+`AgentRegistration.site`, per-request site resolution replacing
+`config.site_name` at its ~14 call sites, correlation looping per site).
+E0.2 owns the read path and the identity; it proves that no read can
+leak before the write path can create the situation.
+
+---
+
+## 16. E0.3 — observability, auditor reads, and one inert declaration (landed 2026-08-30)
+
+Third and final slice of E0. No new spec amendment: this implements A13
+(auditor scope) and applies D2's existing posture read-split
+consistently. Nothing ratified changed.
+
+### `/metrics`
+
+`MetricsRegistry`, with Prometheus text export, shipped with R4-0 and had
+**zero callers**. All three services had real `/healthz`, so the platform
+could say it was alive and nothing about what it was doing.
+
+Mounted on Central Command, Site Manager and Console, with a **request
+counting middleware** — mounting an endpoint that always reports zero
+would be the same declared-with-no-writer pattern E0 exists to remove, so
+the counter is asserted to move. The registry is per app rather than the
+module global: two services in one process (every test run) would
+otherwise report each other's traffic. Unauthenticated like `/healthz`,
+carrying only service counters and no tenant identifiers.
+
+### A13 auditor read gates
+
+Three reads were gated on permissions the auditor never holds, so the
+ratified "read-only everything" scope was not real:
+
+| Read | Was | Now |
+|---|---|---|
+| `GET /api/tenants/{id}/roles/` (Console) | `role.manage` | `user.view` |
+| `GET /api/approvals/`, `/history`, `/{id}/records` | `action.approve` | `action.approve` **or** `audit.view` |
+| `GET /api/policies/`, `/groups`, `/groups/{id}` | `site.manage` | `fleet.view` |
+
+No permission was invented — the vocabulary is unchanged. A new
+`require_any_permission` guard admits either of two personas to a read
+they need for different reasons (an operator works the queue; an auditor
+reads the R-C3 evidence), and is deliberately read-only: an `any-of` gate
+on a write would be exactly the broadening D2 forbids. The policy
+read-split matches what S1 already did for autonomy budgets, whose own
+comment says posture must be visible to the people living under it.
+**A viewer still cannot read approval evidence** — they hold neither
+permission — and every mutation is asserted to have stayed put.
+
+### The inert skill binding
+
+A0 accepted `kind: "skill"`, rendered it in the UI, **validated nothing
+about it**, and wired it to nothing: no skill installed, no directive
+queued, no device changed. Making it real needs four things that do not
+exist — a Console endpoint serving a skill's YAML by id (today it is
+exposed only through the marketplace-*installs* feed), a CC fetch path,
+per-device targeting on `InstallSkill` (it fans out to every device on
+the site), and an install-on-activation trigger. That is A2's binding and
+deployment work.
+
+So the kind is refused, with a reason that names A2 and tells the
+operator what they can bind today. `KIND_SKILL` stays defined with the
+four missing pieces written down. Deferred, not discarded.
+
+### Proven on the live stack
+
+`/metrics` on all three services with counters that move (site-manager
+3→5, central-command 2→4, console 4→6). A real Keycloak auditor read
+approvals, history, policies, groups, audit, fleet, incidents and
+autonomy — all 200 — and was refused every mutation, including approving
+an action and creating an agent. A skill binding was refused with the
+reason naming A2.
+
+**Honest limit on one item.** The Console role-bundle gate is proven by
+test but **cannot be exercised on this stack**: the Console honours
+tenant roles only from a *tenant* realm, and the demo runs a single
+platform realm, so no tenant persona reaches the Console there at all.
+That is the ratified A11/A12 separation behaving correctly plus the
+already-recorded TODOS item "SPA realm discovery", which **E1.4** owns.
+Not a gap in this change, and not claimed as live-proven.
+
+2772 → 2808 tests.
+
+## 17. E1.1 — the generic organizational tree (landed 2026-08-30)
+
+The first slice of the Enterprise Governance Foundation, and deliberately
+the one with no authorization effect at all. A tenant describes its own
+structure — regions, clusters, circles, trusts, territories, availability
+zones — and attaches each site to exactly one node of it.
+
+### The distinction this slice exists to protect
+
+**Containment is not authorization** (ratified decision B). The tree says
+where a site sits; a scope grant says who may reach it. E1.2 introduces
+`cc_scope_grants`, and a grant will happen to reference an org unit the
+way it could reference a site — but nothing in E1.1 resolves, widens or
+implies permission, and nothing later may make it do so. An org-chart
+edit must never be a privilege change. The compose gate asserts this
+directly: moving a site between units leaves `/api/autonomy` byte
+identical.
+
+**Containment is not blast radius.** The Site Manager's rack and
+fault-domain model is untouched. A power domain is a physical fact about
+which devices die together; an org unit is an administrative fact about
+who owns them. Conflating them would let an org-chart edit change what an
+action is allowed to touch.
+
+### What landed
+
+| Object | Shape |
+|---|---|
+| `cc_org_units` | id · tenant_id · parent_id · unit_type · name · **path** · depth · sort_order · created/updated by/at |
+| `cc_sites.org_unit_id` | FK, nullable through the migration, backfilled by it |
+| `harkeniq_cc/org_tree.py` | pure: path composition, subtree expansion, depth bound, cycle refusal, move rewriting, display assembly |
+| `OrgUnitRepo` | every query conjoined with `tenant_id`; subtree is one `startswith(path, autoescape=True)` |
+| `/api/org-units/*` + `PUT /api/sites/{id}/org-unit` | reads `site.view`, mutations `site.manage` — no new permission |
+| Console `Organization` page | one new proxy prefix, same pattern as `autonomy` and `operational-agents` |
+| CC migration **0010** | guarded and idempotent; backfills one root per tenant |
+
+### Why a materialized path rather than a recursive CTE
+
+A subtree is one prefix match, which behaves identically on PostgreSQL
+and on the sqlite the unit tests run against. A recursive CTE would have
+diverged between them, and E1.2's scope resolver stands on this query —
+the place where a divergence would become an authorization bug rather
+than a display bug. `tests/integration/test_e1_prefix_equivalence.py`
+runs the same query on both engines and asserts identical results.
+
+### The trailing delimiter, stated accurately
+
+Paths are `/id/id/id/` with a **trailing** delimiter, so `/u1/u7/` does
+not prefix-match the sibling `/u1/u70/`.
+
+Worth being precise about what this buys today: ids are `uuid4().hex`,
+always 32 lowercase hex characters, and two ids of equal width cannot be
+strict prefixes of one another — so on current data the sibling trap
+**cannot arise at all**. That is a property of the id generator, not of
+the query. The trailing delimiter makes the query correct *without
+depending on it*: if a future import ever admitted a shorter or
+variable-width id, the prefix match would still be right. The integration
+test proves exactly that case by inserting deliberately short ids.
+
+Hex ids also mean `/`, `%` and `_` cannot occur inside a segment, so the
+delimiter cannot be forged and LIKE's wildcards cannot be smuggled in
+through a unit name. `autoescape=True` holds the line regardless, and a
+test forces a poisoned `/%/` row in to prove it.
+
+### Rules, and where they are enforced
+
+All server-side; the Console renders refusals rather than preventing
+them, because hiding a button is never an authorization boundary.
+
+- **Depth bounded at 8.** A move checks the whole subtree's height, not
+  just the dragged node: a three-level subtree cannot land under a
+  level-7 parent.
+- **Cycles refused.** A destination whose path starts with the moving
+  node's own path is rejected.
+- **Sibling names unique** per (tenant, parent), a database constraint
+  as well as a check.
+- **Delete refuses** while a unit holds children or sites. Cascading
+  would orphan sites silently, and at E1.2 an orphaned site is one nobody
+  can be granted.
+- **A move rewrites every descendant path in one transaction**, audited
+  with both the old and the new path.
+- **`unit_type` is a free slug, never an enum** — the customer's own word
+  for the level, which is what decision A rejected a hard-coded
+  Region/Cluster model in favour of.
+
+### Backward compatibility
+
+Nothing reads `org_unit_id` in E1.1. The compatibility promise is
+asserted rather than trusted: tests confirm the fleet read and the
+autonomy contract are byte identical before and after a tree is built and
+a site attached, and that creating a tree changes no site field.
+
+### Live proof (real PostgreSQL, real Keycloak)
+
+Migration 0010 applied on the running stack and backfilled the demo
+tenant's two E0.2 sites under one root. Over HTTP: a four-level tree
+built with correct paths and depths; a re-parent moved Hall A's whole
+branch and rewrote its path and breadcrumb; a cycle refused 400; a
+depth-9 insert refused 400; a delete of a unit holding a site refused 409
+with the site still attached; auditor read 200 / write 403; operator read
+403 (no `site.view`); no token 401; the audit chain carries
+`org_unit.created` / `moved` / `site_attached` / `deleted` and still
+verifies.
+
+## 18. E1.2 — scoped RBAC (landed 2026-08-30)
+
+Central Command had exactly one authorization question — does this role
+hold this permission — and no answer at all to "over which objects".
+E1.2 is that second answer, for humans and for Operational Agents,
+through one resolver.
+
+### The model
+
+```
+principal -> grant(s) -> permission subset -> scope refs
+          -> resolved authorization -> target-object check
+```
+
+Two questions, deliberately different, asked in different places:
+
+- **"Could this actor ever possess this permission?"** — the route
+  guard. All 68 `require_permission` sites unchanged.
+- **"Does this actor possess it over THIS target?"** — the repository
+  read filter, the object gate, and the approval gate.
+
+They cannot be the same question because `permission_subset` is **per
+grant**: a principal may hold `site.manage` over Cluster A1 and read-only
+over Region B, so there is no single set of permissions that is true
+everywhere. That is why `UserContext` gains nothing and why scope arrives
+through a separate `get_scope` dependency — and it is what vindicates the
+ratified "do not add scope to the decorators".
+
+### What landed
+
+| Object | Shape |
+|---|---|
+| `cc_scope_grants` | principal_type (user\|agent) · principal_ref · scope_type · scope_ref · permission_subset · role · expires_at · revoked_at |
+| `cc_tenant_settings` | `legacy_open` \| `strict`, per tenant |
+| `cc_approval_records` | `+scope_snapshot` `+authority_snapshot` (L2) |
+| `cc_audit_log` | `+site_id`, **outside the hash payload** |
+| `cc_agent_scopes` | **migrated in and dropped** |
+| `harkeniq_cc/scope.py` | pure resolver: `resolve()`, `ResolvedScope`, `preflight_strict()` |
+| `/api/scope-grants/*`, `/api/tenant-settings/scope-enforcement` | grant administration and the L1 flip |
+| Console `Access Scope` page | one new proxy prefix pair |
+| CC migration **0011** | guarded, idempotent, seeds `legacy_open` |
+
+### Five scope types, not three
+
+The ratified list named tenant, org-unit and site, then "any other scope
+already supported by the product". The repository answered that clause:
+`cc_agent_scopes` supported **site, device_class and device**. Dropping
+the last two in the merge would have taken reach away from every agent
+shipped in A0, so the unified vocabulary is five, and `org_unit` is
+**added** to what an agent may be bound to — which is what lets a region
+owner build an agent for their own region at all.
+
+### Invariants, and where each is enforced
+
+- **A subset only narrows.** `effective_permissions` is
+  `role & subset`, computed once in the resolver. A subset naming a
+  permission the role lacks grants nothing, and the grant API refuses it
+  at write time with a readable reason rather than silently reducing it.
+- **Grants do not union into authority.** Coverage and permission are
+  checked on the **same grant**, so a grant covering the target but
+  lacking the permission never borrows it from one that has it
+  elsewhere. `may_ever()` exists for the fail-fast and is never
+  consulted by `permits()`.
+- **Ancestors are visible, never authoritative.**
+  `contextual_unit_ids` is a separate field and no decision method reads
+  it. The test that proves this empties the authority fields, leaves the
+  ancestors in place, and asserts the scope decides nothing.
+- **Read authority is not mutation authority.** The twelve
+  tenant-governance tables have no site dimension: they are readable at
+  permission level (a cluster manager must be able to read *why* they
+  are blocked — that is the S5 contract's whole point) and mutable only
+  at tenant scope.
+- **Delegation cannot exceed the delegator.** Both for human grants and
+  for agent bindings, checked per requested scope row.
+
+### Two defects the slice found in its own work
+
+**The delegation ceiling had no effective caller.** Agent creation was
+first gated on *tenant* scope, which meant the ceiling could only ever
+cap a tenant-wide creator — who can delegate anything. It was the
+declared-with-no-caller shape this codebase keeps producing. The gate is
+now object-level per requested scope row, so a region owner can build a
+region agent and nobody can build one reaching past themselves. Proven
+live both ways.
+
+**The strict preflight would have locked out a grantless tenant.** Under
+`legacy_open` a principal with no grants resolves tenant-wide — that is
+what keeps upgrades working — and the preflight would have counted that
+synthesized grant as evidence of an administrator, passed, and left
+every principal with nothing. `Grant.synthesized` now marks it and the
+preflight refuses to count it.
+
+### The audit column, precisely
+
+`AuditRepo._chain_payload` hashes `ts, actor, action, subject,
+tenant_id, detail` and only those. `site_id` sits outside it, so every
+chain written before E1.2 still verifies — asserted three ways: the
+payload keys are pinned, a chain written without sites is extended with
+scoped entries and re-verified, and two rows differing only by site are
+shown to hash identically.
+
+Honest limit: historical rows cannot be backfilled, because the site was
+never recorded. They read as tenant-level and are visible only to a
+tenant-scope holder. A scoped principal therefore sees *less* audit than
+before E1.2; that is the correction, not a regression, and an auditor
+holds tenant scope and loses nothing.
+
+### The executable matrix
+
+Ten personas against 68 endpoints is 680 cells, so the matrix is
+executed rather than maintained:
+
+1. `ROUTE_CONTRACT` declares each route's permission and one of four
+   scope treatments. The only hand-written part.
+2. A **route-contract test** walks the live route table; an `/api` route
+   with no declaration **fails the suite**.
+3. A **generated persona sweep** derives every expected outcome from the
+   declaration and drives the real ASGI app.
+
+No test asserts that a UI hid anything.
+
+### Personas are roles plus grants, never new roles
+
+"Region Manager" and "Cluster Manager" are `site_admin` with an
+org-unit grant. The permission vocabulary is fixed at 24 permissions and
+7 roles (spec §4); adding roles would fork it and make every future
+organizational level a schema change. A test asserts no route demands a
+permission outside the fixed vocabulary.
+
+### Site Manager is untouched
+
+SM authenticates with a site/service identity and remains the execution
+and safety boundary. There is no second authorization resolver inside
+it, and E1.2 adds no SM migration.
+
+### Live proof (real PostgreSQL, real Keycloak, six identities)
+
+Migration 0011 applied, the live A0 agent's site scope carried into
+`cc_scope_grants`, `cc_agent_scopes` dropped, `legacy_open` seeded, and
+the audit chain verified before and after.
+
+On the acceptance tenant (Region A → Cluster A1 → site-1, site-b;
+Region B → Cluster B1 → site-3), under **strict**:
+
+| Persona | Reads | Refused |
+|---|---|---|
+| Tenant owner | all 3 sites, 3 devices | — |
+| Region manager (`site_admin` + Region A) | site-1, site-b | site-3 |
+| Cluster manager (`site_admin` + Cluster A1) | site-1, site-b | sibling A2 invisible (404); Region A readable but mutation 403; site-3 404; policy mutation 403; site register 403 |
+| Site admin (`site_admin` + site-1 + site-3) | **site-1 and site-3, across different ancestors** | site-2 |
+| Operator (`operator` + site-1) | site-1 | approving a `BMC_RESET` at site-b — 403 at layer 4 |
+| Auditor (`auditor` + tenant) | all 3 | every mutation |
+| Cluster-scoped auditor | **6 audit entries, one site** | the other sites' entries (tenant auditor sees 105) |
+| Platform super admin, no grant | surface 200, **sees nothing** | every mutation |
+
+Plus: a subset naming `role.manage` for an `operator` refused 400; a
+region owner granting Region B / site-3 / tenant all 403; an agent bound
+inside the region 201 and one reaching site-3 403 with the ceiling's own
+message; no token 401; another realm's token 401; chain valid at 113.
+
+## 19. E1.3 — one Site Manager, many sites (landed 2026-08-30)
+
+E0.2 made every Central Command-facing **read** resolve to one
+authoritative site. Every **write**, and all twenty of the Site
+Manager's own endpoints, still resolved a single name from its config
+file. E1.3 is the other half.
+
+### The defect this slice existed to fix
+
+**An agent never said which site it was at.** `AgentRegistration`
+carried eleven fields and no site; `Ingest.register()` resolved
+`config.site_name` and memoized the row id on the instance
+(`self._site_id`, a process-lifetime cache of "the one site"). Two sites
+on one Site Manager would have put **every device from both into one
+site row** — and the E0.2 reads would then have scoped perfectly to a set
+that was already wrong.
+
+### Ratified D1 — site identity is authoritative, not agent-declared
+
+The Site Manager issues a site-bound, revocable enrollment credential;
+an agent presents it; the Site Manager resolves it to exactly one site
+and persists the binding.
+
+A `site_name` field on the registration message would have been the
+smaller change and the wrong one: with one Site Manager token shared by
+every agent, a declared site is a **claim** any agent could make about
+any site, and correlation, blast radius, error budgets, metering and
+(since E1.2) both human and agent authority all resolve from it.
+
+- `site_enrollment_tokens` — hash only, so a leaked database yields no
+  usable credential; the secret is shown exactly once.
+- Unique `token_hash`: one secret can never resolve to two sites. The
+  ambiguity is removed by the database, not by a check.
+- Unknown, revoked, expired, or naming an inactive site → **refused**,
+  and the refusal is audited. A device that cannot prove its site does
+  not get one.
+- No credential on a **multi-site** Site Manager → refused. On a
+  **single-site** one → the one site, so an existing deployment upgrades
+  without re-enrolling its fleet.
+- **Changing site is an explicit re-enrollment.** The upsert already
+  happened not to rewrite `site_id`, so the outcome was right by
+  accident; a silent no-op is not enforcement, so it is now refused with
+  a reason.
+
+### Ratified D2 — the site is the normal operational safety boundary
+
+Three distinct halts, and they are not interchangeable:
+
+| Halt | Reaches | Set by |
+|---|---|---|
+| `tenant` | every site this Site Manager serves | pushed from Central Command |
+| `site` | one site; the others keep running | an operator, per site |
+| `site_manager` | every site, as an emergency | an operator, with a typed confirmation |
+
+Lifting the emergency halt does **not** resume a site an operator
+stopped separately.
+
+**The pre-E1.3 switch was an in-memory boolean.** It was neither per site
+nor persisted, so an operator could halt a site, the process could
+restart, and autonomy would silently resume with nothing in the record
+saying it had ever stopped. A stop switch that forgets is worse than no
+stop switch, because it is trusted. `sm_stop_switches` fixes both at
+once.
+
+### The governed execution decision
+
+`execution_permitted()` takes ten inputs and refuses unless every one of
+them fails to object:
+
+```
+tenant stop + site stop + SM emergency halt + agent scope + permission
+  + capability + autonomy + lease + preconditions + blast radius
+```
+
+An input **nobody supplied** is treated as *not yet evaluated and
+therefore refusing* — an unevaluated governing input must never read as
+consent. That default is what makes "an autonomy level is a ceiling,
+never unconditional execution authority" structural: autonomy is one
+input, evaluated seventh, and it can only ever fail to object.
+
+### Correlation, the correctness risk
+
+`on_onset` now correlates inside the **device's own** site and refuses to
+correlate a device that has none; `sweep` runs once **per site**. Left
+alone, two sites on one process would have produced a shared-power
+incident spanning estates that share no power at all.
+
+### Migration 0009
+
+`site_enrollment_tokens`, `sm_stop_switches`, and `site_id` on
+`agent_identities`, `sm_candidate_skills` and `audit_log`. The audit
+column sits **outside** `_chain_payload`, exactly as CC's E1.2 column
+does, so every chain written before it still verifies. The six
+site-anchored tables needed nothing (E0.2 built them) and the nine
+device-anchored ones reach a site through a total join. Backfill is
+unambiguous by construction: a pre-E1.3 Site Manager has exactly one
+site.
+
+### No second authorization model
+
+The Site Manager still authenticates with a site/service identity. The
+new site resolver answers *which site is this request about*, never *who
+may ask*. A test asserts over the **import graph** that no
+`harkeniq_sm` module references `harkeniq_cc` — the boundary as a fact,
+not a convention.
+
+### Live proof (two Site Manager processes, real PostgreSQL)
+
+SM-01 serves site-1 and site-b; SM-02 serves site-c, each with its own
+database.
+
+- Credentials are site-bound and distinct; **0 rows hold a raw secret**.
+- Registration lands each agent at its credential's site; re-registering
+  with another site's credential is **refused** and the device stays put.
+- Unknown credential → refused, **0 device rows created**; no credential
+  on a 2-site Site Manager → refused, naming why.
+- `AgentRegistration` has **no `site_name` and no `site_id` field**.
+- An unnamed read on a multi-site Site Manager → **400** naming both
+  sites; named reads return only their own; a site it does not serve →
+  404; a single-site Site Manager still answers unasked.
+- Stopping site-1 left site-b running; **the halt survived a restart**;
+  the emergency halt stopped both and required the typed confirmation;
+  lifting it left site-1's own halt standing.
+- SM-02 answered `site_resolved=false` with a reason for both site-1 and
+  site-b, and returned **0 devices** — never broadened.
+- Both audit chains verify with `site_id` recorded.
+
+## 20. E1.4 — the tenant realm boundary, made real (landed 2026-08-30)
+
+### The finding
+
+`TenantService(session)` was constructed at **all four** of its API call
+sites with no `keycloak_admin` argument. The parameter defaults to
+`None`, so `if self.keycloak:` was **always false**, and
+`KeycloakAdminClient` — four hundred lines shipped in R2b that create a
+realm, provision five roles, register a client, mint an owner and retry
+on 5xx — was never instantiated anywhere outside its own module. Only
+`MockKeycloakAdminClient` was, and only in tests, which is exactly why
+the tests passed.
+
+Creating a tenant therefore returned **200 with `keycloak_realm: null`**:
+no realm, no roles, no client, no owner in Keycloak, and nothing saying
+so. Verified live before the fix — both tenants NULL, and Keycloak
+holding only `master` and `harkeniq-platform`.
+
+**Eighth instance** of this codebase's house failure. The others were a
+table, a rule, a column. This was an entire subsystem.
+
+### What followed from it
+
+Central Command was pinned to `harkeniq-platform` because that was the
+only realm there was, so a platform identity carrying `site_admin`
+received tenant operational permissions. The three tenant roles it used
+only existed there because **E1.2's gate needed them and I created them
+in the platform realm** — the only way to exercise E1.2 live, and not
+the shape the product ships.
+
+### What landed
+
+| Change | Effect |
+|---|---|
+| `AppState.keycloak_admin` + `get_keycloak_admin` | the real client is constructed and injected at all four call sites |
+| `create_tenant` fails closed | no client, or a Keycloak error, and the tenant row is rolled back — never a 200 with a null realm |
+| `provision_realm()` | reusable and idempotent; the path for tenants that predate E1.4 |
+| `POST /tenants/{id}/provision-realm` | there was otherwise no way to give a realm to a tenant that already exists |
+| Console migration **0004** | unique index on `keycloak_realm`, NULL backfilled to the slug |
+| `_resolve_tenant_id` reads `keycloak_realm` | the slug leaves the identity path entirely |
+| `HARKEN_CC_KEYCLOAK_REALM: tenant-demo` | Central Command serves its tenant's realm |
+| CC config refuses the platform realm | the misconfiguration is unbootable in secure mode, not merely wrong |
+| CC migration **0012** — `cc_scope_grants.realm` | see below |
+| Bundles intersect the role | see below |
+
+### Three defects the slice found on the way
+
+**A realm migration silently orphaned every scope grant.** Keycloak
+subjects are realm-scoped, so a grant keyed on the subject alone means
+nothing after a realm change. Moving the demo onto its own realm left
+every grant naming a platform-realm subject: under strict enforcement
+**the tenant was locked out completely**, including the administrator who
+would have re-granted. A grant is a `(realm, subject)` fact, so
+`cc_scope_grants.realm` records it, the resolver ignores foreign-realm
+grants (a grant from another realm authorizing here would be a
+cross-realm authorization bug), and the enforcement read reports
+`grants_for_this_realm`, `stale_grants_from_other_realms` and
+`locked_out` — because a silent lockout looks exactly like
+correctly-configured strict enforcement.
+
+**A custom bundle could widen a role.** `has_permission` OR-ed bundle
+grants with the role, and `effective_permissions` filtered only against
+the global vocabulary — so a bundle naming `tenant.manage` handed it to a
+viewer. Bundles now **intersect** the holder's role, which is E1.2's
+`permission_subset` rule applied to the same idea: a bundle re-shapes
+authority within a role and can only ever remove.
+
+**Provisioning had a 2-second timeout and an unreadable error.** Realm,
+five roles and a client are six sequential admin calls; the first live
+run timed out part-way, and an `httpx` timeout stringifies to the empty
+string, producing `"Keycloak realm creation failed: "` with nothing after
+the colon. The timeout is 10s and errors name the exception type. The
+part-way failure also proved that treating "the realm exists" as "the
+realm is provisioned" is wrong: `ensure_realm_roles` reconciles roles
+independently, and it healed the half-provisioned realm on the next call.
+
+### Live proof
+
+`tenant-rival` created **through the real API**: realm, five roles,
+console client, owner minted, binding recorded, `tenant.create` and
+`tenant.realm_provisioned` audited. `tenant-demo` provisioned through the
+explicit endpoint. Platform realm stripped to `platform_super_admin` and
+`platform_support` only.
+
+- Platform identity → Console platform surface **200**; → tenant Central
+  Command **401** at validation.
+- Tenant identities → Central Command **200**, then E1.2 scope decides.
+- **The E1.2 matrix re-run on the tenant realm is identical**: owner 3
+  sites, region 2, cluster 2, operator 1, auditor 3; ancestor readable
+  and its mutation 403; out-of-scope site 404; tenant governance
+  read 200 / mutate 403; subset widening 400; auditor mutation 403.
+- Rival → demo Central Command **401**; → demo Console **403** "tenant
+  scope mismatch"; demo owner → rival Console **403**, own **200**.
+- A `master`-realm token **401** at both services.
+- A real bundle on a real tenant-realm user: names `fleet.view`,
+  `site.manage`, `action.approve`; the viewer holding it gets
+  **`fleet.view` only**. E0.3's "test-proven only" gap is closed.

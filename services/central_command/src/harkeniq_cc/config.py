@@ -26,6 +26,12 @@ class CCConfig:
     # Browser-facing issuer base (QA-005); empty = same as keycloak_url.
     keycloak_public_url: str = ""
     keycloak_realm: str = ""
+    #: E1.4: the PLATFORM realm's name, so Central Command can recognise
+    #: being pointed at it. CC serves ONE tenant (spec §3) and must
+    #: validate against that tenant's own realm; pinned to the platform
+    #: realm it would accept vendor-staff identities as tenant operators,
+    #: which is the boundary E1.4 exists to close.
+    platform_realm: str = "harkeniq-platform"
     keycloak_client_id: str = "harkeniq-cc"
     console_url: str = ""
     # QA-018: CA bundle for TLS to Site Managers; empty = plaintext (lab).
@@ -40,6 +46,11 @@ class CCConfig:
     pattern_detect_interval_s: float = 300.0
     # R5-2: marketplace install sync (Console pull -> SM push)
     marketplace_sync_interval_s: float = 300.0
+    # A1: Operational Agent evaluation cadence. Deliberately slower than
+    # the fleet poll: an agent must reason over state the poller has
+    # already refreshed, and proposing faster than the evidence changes
+    # would only produce duplicates the dedupe key throws away.
+    agent_evaluate_interval_s: float = 120.0
     # R4-2 P15: warranty enrichment (Dell TechDirect; empty = disabled)
     dell_api_client_id: str = ""
     dell_api_client_secret: str = ""
@@ -53,6 +64,24 @@ class CCConfig:
             errors.append("tenant_id is required (or set insecure for lab use)")
         if not 0 < self.http_port < 65536:
             errors.append(f"http_port must be 1-65535, got {self.http_port}")
+        # E1.4: Central Command serves ONE tenant and must validate against
+        # that tenant's own realm. Pinned to the platform realm it accepts
+        # vendor-staff identities carrying tenant roles as tenant
+        # operators -- the exact boundary this slice closes. Refused at
+        # startup rather than left as a live misconfiguration, because a
+        # deployment that boots wrong looks identical to one that is right.
+        if (
+            not self.insecure
+            and self.keycloak_realm
+            and self.platform_realm
+            and self.keycloak_realm == self.platform_realm
+        ):
+            errors.append(
+                f"keycloak_realm is the PLATFORM realm ({self.platform_realm!r}): "
+                "Central Command serves one tenant and must validate against "
+                "that tenant's own realm, or a platform identity becomes a "
+                "tenant operator"
+            )
         return errors
 
 
@@ -64,6 +93,7 @@ _ENV_MAP = {
     "HARKEN_CC_KEYCLOAK_URL": "keycloak_url",
     "HARKEN_CC_KEYCLOAK_PUBLIC_URL": "keycloak_public_url",
     "HARKEN_CC_KEYCLOAK_REALM": "keycloak_realm",
+    "HARKEN_CC_PLATFORM_REALM": "platform_realm",
     "HARKEN_CC_KEYCLOAK_CLIENT_ID": "keycloak_client_id",
     "HARKEN_CC_CONSOLE_URL": "console_url",
     "HARKEN_CC_SM_TLS_CA": "sm_tls_ca",
@@ -74,6 +104,7 @@ _ENV_MAP = {
     "HARKEN_CC_SITE_POLL_INTERVAL_S": "site_poll_interval_s",
     "HARKEN_CC_PATTERN_DETECT_INTERVAL_S": "pattern_detect_interval_s",
     "HARKEN_CC_MARKETPLACE_SYNC_INTERVAL_S": "marketplace_sync_interval_s",
+    "HARKEN_CC_AGENT_EVALUATE_INTERVAL_S": "agent_evaluate_interval_s",
     "HARKEN_CC_DELL_API_CLIENT_ID": "dell_api_client_id",
     "HARKEN_CC_DELL_API_CLIENT_SECRET": "dell_api_client_secret",
     "HARKEN_CC_WARRANTY_REFRESH_INTERVAL_S": "warranty_refresh_interval_s",

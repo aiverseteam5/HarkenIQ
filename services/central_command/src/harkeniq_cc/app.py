@@ -14,7 +14,10 @@ from harkeniq_cc.api import audit as audit_api
 from harkeniq_cc.api import firmware as firmware_api
 from harkeniq_cc.api import fleet as fleet_api
 from harkeniq_cc.api import learning as learning_api
+from harkeniq_cc.api import org_units as org_units_api
+from harkeniq_cc.api import scope_grants as scope_grants_api
 from harkeniq_cc.api import outcomes as outcomes_api
+from harkeniq_cc.api import operational_agents as operational_agents_api
 from harkeniq_cc.api import policies as policies_api
 from harkeniq_cc.api import attention as attention_api
 from harkeniq_cc.api import autonomy as autonomy_api
@@ -27,6 +30,13 @@ from harkeniq_cc.api import warranty as warranty_api
 def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Central Command", version="0.1.0")
     app.state.cc = state
+
+    # E0.3: /metrics from the registry that shipped with R4-0 and had no
+    # callers. Mounted before the routers so the middleware sees every
+    # request, including the ones the routers reject.
+    from harkeniq.metrics import mount_metrics
+
+    mount_metrics(app, "central-command")
 
     # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
     # partner incident can be traced across service logs.
@@ -60,6 +70,10 @@ def create_app(state) -> FastAPI:
     app.include_router(incidents_api.router)
     app.include_router(learning_api.router)
     app.include_router(autonomy_api.router)
+    app.include_router(operational_agents_api.router)
+    app.include_router(org_units_api.router)
+    app.include_router(scope_grants_api.router)
+    app.include_router(scope_grants_api.settings_router)
 
     # QA-010: a hardcoded ok reported healthy while the database had no
     # schema. Real probe via the R4-0 HealthChecker (same pattern as SM).

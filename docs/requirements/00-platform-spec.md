@@ -925,3 +925,143 @@ change control before merge.
    its UI display on the approver page, and regression tests pinning both
    halves (re-request allowed after deny; history present in the queue).
    Nothing else.
+
+### A15 — 2026-08-30 — Approval policy is enforced at decision time (decided: Vinod)
+
+**Trigger.** The pre-S6 architecture review found that
+`cc_approval_policies` has carried `approval_mode`, `required_approvers`
+and a group link since R2b, that the Console has full CRUD for it, and
+that the S5 autonomy contract faithfully reports it — while **no code
+path consulted it when a decision was made**. A tenant could configure
+dual authorization and receive single authorization, silently. This
+amendment writes down what §4 always intended, so the enforcement point
+is named and cannot drift again.
+
+**A15.1 — A decision is a set, not a field.** An approval or denial is
+recorded per approver in `cc_approval_records`. `cc_approval_routes`
+retains `decision` / `decided_by` / `decided_at` as a projection of that
+set for compatibility; the ledger is the truth.
+
+**A15.2 — The governing policy is the most specific active match** on
+`(action_type, device_type, risk_level)`, with `*` as the wildcard on
+each. Action type outweighs device type, which outweighs risk, so a rule
+written for one action class always beats a broader rule that happens to
+share its risk band. Ties break deterministically. **No policy configured
+means one approver**, which is the behaviour every existing tenant has.
+
+**A15.3 — An approver decides a subject once.** Enforced by
+`unique(subject_type, subject_ref, approver_ref)` in the database, so it
+cannot be lost to a later code path. A second decision from the same
+person is refused with 409, never counted twice.
+
+**A15.4 — A denial is terminal** (consistent with D16) and outranks any
+number of approvals. An approver who objects cannot be outvoted by
+colleagues deciding faster.
+
+**A15.5 — Group membership, when a group is bound**, is matched on the
+Keycloak subject first and falls back to the email address, so a rename
+cannot silently lapse someone's approval authority.
+
+**A15.6 — Each approval is audited individually**, not only the outcome.
+Auditing only the outcome would make a two-approver decision
+indistinguishable from a one-approver decision in the record that exists
+to prove it. `GET /api/approvals/{id}/records` is the read.
+
+**A15.7 — `approval_mode: "auto_approve"` is refused.** It is rejected on
+write and coerced to `require_approval` on read. Reasoning: while
+policies were unenforced the mode was inert; enforcing it as written
+would make a single policy row a second, ungoverned path to unattended
+execution — no evidence bar, no budget, no error-budget drop-back, and no
+fence for the risk-`high` classes that `never_budget_grantable` refuses
+at **every** autonomy level (A10.4, S5). **The tenant's autonomy contract
+remains the one governed answer to "may this run without a human."**
+Raising an action class's autonomy level is how it earns that, and only a
+human can do it. The Console policy preset offering the mode is a
+pre-S5 artifact and is retired.
+
+**A15.8 — One contract, both origins.** Node-proposed actions and
+Operational Agent proposals resolve the same policy, write the same
+ledger and obey the same completion rule. There is no second approval
+contract and no origin-specific exception.
+
+**A15.9 — Approval still never overrides a safety gate** (unchanged,
+A10.3). A fully approved action runs the unchanged node funnel and can
+still be refused there.
+
+**Approver scope** — an approval counting only within the approver's
+authorized scope — is specified here as the intended end state and is
+delivered by E1.2, which introduces scope grants. Until then every
+approver's authority is tenant-wide, which is today's behaviour stated
+explicitly rather than left implicit; the column and the check exist from
+E0.1 so the later slice changes no approval code.
+
+### A16 — 2026-08-30 — Site identity is authoritative; a Site Manager may serve many sites (decided: Vinod)
+
+**Trigger.** The pre-S6 architecture review found that `RegisterSite`
+received Central Command's `site_id` and discarded it, so CC's site id
+and the Site Manager's own primary key were different id spaces that
+never matched. Every site-scoped read then widened, silently, to the
+whole Site Manager. Harmless while one Site Manager served one site;
+a cross-site leak the moment that changed.
+
+**A16.1 — Cardinality.** §3's "a Site belongs to exactly one tenant and
+hosts one Site Manager" becomes: **a Site Manager serves one or more
+sites, and a site is served by exactly one ACTIVE Site Manager.** §1's
+L2 line "one per site" reads "one per site group". A site moves between
+Site Managers by being retired at the first before it is bound at the
+second.
+
+**A16.2 — The binding is authoritative and is never overwritten.**
+Central Command assigns the site id; the Site Manager persists it
+(`sites.cc_site_id`, unique). A registration naming a site already bound
+to a different identity is **refused**, and the refusal is audited.
+Re-registration under the same identity is idempotent; a rename is a
+label change and keeps the binding.
+
+**A16.3 — No fallback may broaden scope.** An unresolved site returns an
+explicit **empty** result with a stated reason, on both
+`GetFleetSnapshot` and `GetUsageSnapshot`. Central Command must not
+mistake that for "the site has no devices": its poller skips ingest
+entirely, because ingesting an empty snapshot would clear the site's
+fleet cache and, through D3 absence inference, resolve every one of its
+incidents.
+
+**A16.4 — Every site-scoped read is scoped.** Devices, incidents,
+pending actions, action outcomes and candidate skills. The outcome and
+candidate reads carry a `reported_to_cc` watermark, so an unscoped query
+did not merely show another site's rows, it **consumed** them and that
+site never received its own evidence. Rows without a device, and
+therefore without a site, ride no snapshot at all.
+
+**A16.5 — Correlation stays strictly per site.** Unchanged and
+restated: every correlation rule takes a site id, and a Site Manager
+serving several sites never correlates across them. Incident resolution
+helpers that decide per device on that device's own state are
+unaffected, because they compare nothing across sites.
+
+**A16.6 — Error budgets are per site.** `sm_error_budgets` is keyed
+`(site_id, action_type)`. The Site Manager remains the execution and
+safety boundary; what is per-site is the **evidence** and the autonomy
+withdrawal it justifies. A failure pattern at one site must not reduce
+another site's autonomy, and recovery lifts one site's drop-back only.
+The lease an agent receives is gated by that agent's own site.
+
+**A16.7 — Metering is per site.** `GetUsageSnapshot` counts the
+requested site's devices. It previously returned the whole Site
+Manager's count labelled with one site id, which on a multi-site Site
+Manager would have billed every site for the entire fleet. An unresolved
+site meters zero.
+
+**A16.8 — Break-glass rebind.** Recovery from a legitimately changed
+Central Command identity (a restore from backup) is an explicit,
+audited unbind at the Site Manager's site-token API, requiring the
+site name as a typed confirmation and a stated reason. Registration
+itself never overwrites. Unbinding clears only the tenant-plane
+identity; devices, incidents, actions and outcomes stay exactly where
+they are, and until the site is re-bound its snapshot is empty.
+
+**A16.9 — The Site Manager's trust boundary is unchanged.** The site
+token authorizes the Site Manager, which remains the execution and
+safety boundary for every site it serves. Per-site authority for people
+and agents is enforced at Central Command and arrives with E1.2. No
+second authorization model is introduced here.

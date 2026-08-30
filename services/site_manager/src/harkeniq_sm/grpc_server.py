@@ -28,7 +28,16 @@ from harkeniq_sm.auth import BearerTokenInterceptor
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.coverage import observation_state, worst_health
 from harkeniq_sm.db.models import Device, DeviceSubsystemState
-from harkeniq_sm.db.repos import ActionRepo, DeviceRepo, IncidentRepo, SiteRepo, StatusRepo
+from harkeniq_sm.enrollment import EnrollmentError, EnrollmentService
+from harkeniq_sm.stopswitch import SCOPE_TENANT, StopSwitchService
+from harkeniq_sm.db.repos import (
+    ActionRepo,
+    AuditRepo,
+    DeviceRepo,
+    IncidentRepo,
+    SiteRepo,
+    StatusRepo,
+)
 from harkeniq_sm.ingest import IngestService
 
 logger = logging.getLogger("harkeniq.sm.grpc")
@@ -38,26 +47,131 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
     def __init__(
         self, ingest: IngestService, approvals=None, identity_service=None,
         directives=None, autonomy=None, suppression=None,
+        enrollment=None, stopswitch=None,
     ) -> None:
         self.ingest = ingest
+        # E1.3: site resolution and the per-site halt. Constructed by the
+        # runtime; defaulted here so every existing test double still works.
+        # Defaulted from the ingest service so every existing test double
+        # keeps working; `ingest=None` is a legitimate construction in the
+        # auth-only tests, so neither default may assume it is present.
+        self.enrollment = enrollment or (
+            EnrollmentService(ingest.sessionmaker, ingest.config)
+            if ingest is not None else None
+        )
+        self.stopswitch = stopswitch or (
+            StopSwitchService(ingest.sessionmaker) if ingest is not None else None
+        )
         self.approvals = approvals  # attached by the approvals phase
         self.identity_service = identity_service  # R3a: AgentIdentityService
         self.directives = directives  # R5: DirectiveService
         self.autonomy = autonomy  # QA-021: SMAutonomyEnforcer
         self.suppression = suppression  # QA-021: SuppressionEngine
 
+    async def _agent_site_halted(self, agent_id: str):
+        """Is a halt in force for this agent's own site? (E1.3)
+
+        Returns True when halted, so the lease carries the same shape it
+        always did. Falls back to the enforcer's in-memory flag only when
+        the device's site cannot be resolved -- never to "not halted".
+        """
+        if self.stopswitch is None:
+            # Not configured (a test double, or a deployment that predates
+            # E1.3). Fall back to the enforcer's flag, which is the
+            # pre-E1.3 behaviour -- absent machinery is not a halt.
+            return self.autonomy.stop_switch_active
+        try:
+            async with self.ingest.sessionmaker() as session:
+                device = await DeviceRepo(session).get_by_agent_id(agent_id)
+                if device is None or not device.site_id:
+                    return self.autonomy.stop_switch_active
+                halt = await self.stopswitch.state_for(session, device.site_id)
+                # The persisted halts, OR the in-memory flag: a Site
+                # Manager mid-upgrade may still be carrying one.
+                return halt.halted or self.autonomy.stop_switch_active
+        except Exception:
+            logger.exception("could not resolve the halt for %s", agent_id)
+            # A safety state that cannot be READ is a halt. This is the
+            # one place failing closed is right: an error here means we
+            # do not know whether an operator has stopped this site.
+            return True
+
+    async def _resolve_enrollment(self, request):
+        """Which site is this device at? Authoritatively (E1.3)."""
+        async with self.ingest.sessionmaker() as session:
+            enrollment = await self.enrollment.resolve(
+                session, getattr(request, "enrollment_token", "")
+            )
+            if not enrollment.legacy_single_site:
+                # Record the use, and the binding, on the same commit as
+                # the resolution so a refused registration leaves nothing.
+                await AuditRepo(session).append(
+                    actor=f"agent:{request.agent_id}",
+                    action="agent.enrolled",
+                    subject=request.agent_id,
+                    site_id=enrollment.site_id,
+                    detail={
+                        "site_name": enrollment.site_name,
+                        "token_id": enrollment.token_id,
+                    },
+                )
+            await session.commit()
+        return enrollment
+
+    async def _audit_enrollment_refusal(self, agent_id: str, exc) -> None:
+        """A refused enrollment is a security event; it goes in the chain."""
+        try:
+            async with self.ingest.sessionmaker() as session:
+                await AuditRepo(session).append(
+                    actor=f"agent:{agent_id}",
+                    action="agent.enrollment_refused",
+                    subject=agent_id,
+                    detail={"code": exc.code, "reason": exc.reason},
+                )
+                await session.commit()
+        except Exception:  # pragma: no cover - auditing must not mask refusal
+            logger.exception("could not audit an enrollment refusal")
+
     async def RegisterAgent(self, request, context):
-        site_name = await self.ingest.register(
-            agent_id=request.agent_id,
-            agent_name=request.agent_name,
-            vendor=request.vendor,
-            model=request.model,
-            service_tag=request.service_tag,
-            bmc_location_json=request.bmc_location_json,
-            peers=list(request.peers),
-            firmware_json=request.firmware_json,
-            device_class=request.device_class,
-        )
+        # E1.3, ratified D1: the site comes from the device's SITE-BOUND
+        # enrollment credential, never from a field the agent fills in.
+        # An agent that cannot prove its site does not get one.
+        try:
+            enrollment = await self._resolve_enrollment(request)
+        except EnrollmentError as exc:
+            logger.warning(
+                "RegisterAgent refused for %s: %s", request.agent_id, exc.reason
+            )
+            await self._audit_enrollment_refusal(request.agent_id, exc)
+            return harkeniq_pb2.RegistrationAck(
+                accepted=False, reason=exc.reason
+            )
+
+        try:
+            site_name = await self.ingest.register(
+                site_id=enrollment.site_id,
+                site_name=enrollment.site_name,
+                agent_id=request.agent_id,
+                agent_name=request.agent_name,
+                vendor=request.vendor,
+                model=request.model,
+                service_tag=request.service_tag,
+                bmc_location_json=request.bmc_location_json,
+                peers=list(request.peers),
+                firmware_json=request.firmware_json,
+                device_class=request.device_class,
+            )
+        except ValueError as exc:
+            # E1.3: the device is enrolled at another site. Refused with a
+            # reason rather than silently left where it was.
+            logger.warning(
+                "RegisterAgent refused for %s: %s", request.agent_id, exc
+            )
+            await self._audit_enrollment_refusal(
+                request.agent_id,
+                type("E", (), {"code": "site_conflict", "reason": str(exc)})(),
+            )
+            return harkeniq_pb2.RegistrationAck(accepted=False, reason=str(exc))
 
         # R3a: if agent sent a public key, register identity and issue cert
         sm_public_key_pem = b""
@@ -71,6 +185,7 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                         agent_id=request.agent_id,
                         public_key_pem=bytes(request.public_key_pem),
                         site_name=site_name,
+                        site_id=enrollment.site_id,
                     )
                 )
             except ValueError as e:
@@ -127,12 +242,22 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                     # "propose" — drop back to Approve, exactly the A2.2
                     # semantic. Not "deny": the action is still the right
                     # one, it just no longer runs without a human.
+                    # E0.2: the drop-back that gates THIS agent is its own
+                    # site's. A failure pattern at another site the Site
+                    # Manager serves must not reduce this agent's autonomy.
                     async with self.ingest.sessionmaker() as budget_session:
                         from harkeniq_sm.db.repos import ErrorBudgetRepo
 
-                        dropped = await ErrorBudgetRepo(
+                        agent_device = await DeviceRepo(
                             budget_session
-                        ).dropped_back_types()
+                        ).get_by_agent_id(request.agent_id)
+                        dropped = (
+                            await ErrorBudgetRepo(
+                                budget_session
+                            ).dropped_back_types(agent_device.site_id)
+                            if agent_device is not None and agent_device.site_id
+                            else set()
+                        )
                     for action_type in dropped:
                         if action_type in budgets:
                             budgets[action_type] = 0
@@ -145,7 +270,12 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                         "action_classes": classes,
                         "budget_remaining": budgets,
                         "risk_ceiling": ceiling,
-                        "stop_switch": self.autonomy.stop_switch_active,
+                        # E1.3: the halt in force for THIS AGENT'S site
+                        # (tenant, site or Site Manager-wide), not one
+                        # boolean shared by every site on the process.
+                        "stop_switch": await self._agent_site_halted(
+                            request.agent_id
+                        ),
                     }
                 if self.suppression is not None:
                     kwargs["suppression_domains"] = (
@@ -258,8 +388,13 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         autonomy=None,
         ingest=None,
         suppression=None,
+        stopswitch=None,
     ) -> None:
         self.sessionmaker = sessionmaker
+        # E1.3: the per-site halt. Defaulted from the sessionmaker so a
+        # servicer built without one still resolves halts rather than
+        # falling back to a Site Manager-wide boolean.
+        self.stopswitch = stopswitch or StopSwitchService(sessionmaker)
         self.approvals = approvals
         self.config = config
         self.directives = directives  # R5-2: skill installs from CC
@@ -307,6 +442,120 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         )
         return harkeniq_pb2.SiteSkillInstallAck(accepted=True, queued=queued)
 
+    async def DispatchAction(self, request, context):
+        """A1: queue one decided action for a device on this site.
+
+        This verb DELIVERS a decision; it does not make one. Central
+        Command has already established the actor, the permission and
+        the approval (or the tenant's autonomy grant); the node still
+        runs its unchanged gate funnel and can refuse. The Site Manager's
+        job here is the two things only it can do: resolve the device,
+        and refuse work that its own live safety state already forbids.
+        """
+        if self.directives is None:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason="directive transport not configured"
+            )
+        action_type = (request.action_type or "").strip().upper()
+        if not action_type:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason="action_type is required"
+            )
+        # An action class the executor does not implement must never be
+        # queued: it would sit as a directive nothing can ever settle.
+        from harkeniq.models import ActionType
+
+        try:
+            ActionType(action_type)
+        except ValueError:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False,
+                reason=f"unknown action type {action_type!r}",
+            )
+        try:
+            params = json.loads(request.params_json or "{}")
+            if not isinstance(params, dict):
+                raise ValueError("params_json must be an object")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason=f"unparseable params_json: {exc}"
+            )
+
+        async with self.sessionmaker() as session:
+            device = await DeviceRepo(session).get_by_agent_id(
+                request.device_agent_id
+            )
+            device_id = device.id if device else None
+            # E0.2: the device's own site governs its safety state.
+            device_site_id = device.site_id if device else ""
+        if device_id is None:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False,
+                reason=f"device {request.device_agent_id!r} is not known at this site",
+            )
+
+        # Safety belongs to the site, so the site enforces it here rather
+        # than trusting the caller's snapshot of it. The node re-checks
+        # everything again; this refusal just avoids queueing work that
+        # is already known to be refused.
+        #
+        # E1.3: THIS DEVICE'S OWN SITE decides. A halt at another site
+        # this Site Manager happens to serve must not stop this one, and
+        # a halt at this one must not be escapable by the process serving
+        # others -- which is exactly what a single Site Manager-wide
+        # boolean would have done in both directions.
+        if self.stopswitch is not None and device_site_id:
+            async with self.sessionmaker() as session:
+                halt = await self.stopswitch.state_for(session, device_site_id)
+            if halt.halted:
+                return harkeniq_pb2.ActionDispatchAck(
+                    accepted=False, reason=halt.reason
+                )
+
+        if self.autonomy is not None:
+            # The enforcer's in-memory flag still counts. A Site Manager
+            # mid-upgrade may be carrying one that has not been persisted
+            # yet, and a halt that is live in the process must never be
+            # escapable just because it is not in the table.
+            if self.autonomy.stop_switch_active:
+                return harkeniq_pb2.ActionDispatchAck(
+                    accepted=False, reason="a stop switch is active"
+                )
+            if request.authorization == "autonomous_grant":
+                async with self.sessionmaker() as session:
+                    from harkeniq_sm.db.repos import ErrorBudgetRepo
+
+                    # E0.2: this site's withdrawal, not the Site Manager's.
+                    dropped = await ErrorBudgetRepo(session).dropped_back_types(
+                        device_site_id
+                    )
+                if action_type in dropped:
+                    return harkeniq_pb2.ActionDispatchAck(
+                        accepted=False,
+                        reason=(
+                            f"autonomy for {action_type} was withdrawn by the "
+                            f"error budget; a human decision is required"
+                        ),
+                    )
+
+        directive_id = await self.directives.enqueue_action(
+            device_id=device_id,
+            action_type=action_type,
+            params=params,
+            issued_by=request.decided_by or request.actor or "central-command",
+            actor=request.actor,
+            authorization_basis=request.authorization,
+            proposal_id=request.proposal_id,
+        )
+        logger.info(
+            "DispatchAction %s on %s for %s (%s) -> directive %s",
+            action_type, request.device_agent_id, request.actor or "unattributed",
+            request.authorization or "sm_authority", directive_id,
+        )
+        return harkeniq_pb2.ActionDispatchAck(
+            accepted=True, directive_id=directive_id
+        )
+
     async def RegisterSite(self, request, context):
         if not request.license_key_fingerprint:
             return harkeniq_pb2.SiteRegistrationAck(
@@ -340,26 +589,129 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 accepted=False,
                 reason="license fingerprint mismatch",
             )
-        logger.info(
-            "Site registration from CC: tenant=%s site=%s name=%s cc=%s",
-            request.tenant_id, request.site_id, request.site_name,
-            request.cc_endpoint,
-        )
+        # E0.2: persist the AUTHORITATIVE identity. Before this the id was
+        # logged and discarded, so CC's site id and the SM's own primary
+        # key were different id spaces that never matched -- and every
+        # site-scoped read silently widened to the whole Site Manager.
+        if not request.site_id:
+            return harkeniq_pb2.SiteRegistrationAck(
+                accepted=False,
+                reason=(
+                    "site_id is required: a site that cannot be identified "
+                    "cannot be scoped"
+                ),
+            )
+        if not request.site_name:
+            return harkeniq_pb2.SiteRegistrationAck(
+                accepted=False, reason="site_name is required",
+            )
+
+        async with self.sessionmaker() as session:
+            repo = SiteRepo(session)
+            audit = AuditRepo(session)
+            bound = await repo.get_by_cc_id(request.site_id)
+            if bound is not None:
+                # Idempotent re-registration. A rename at CC is a label
+                # change and is allowed; the binding itself is untouched.
+                if bound.name != request.site_name:
+                    if await repo.get_by_name(request.site_name) is not None:
+                        return harkeniq_pb2.SiteRegistrationAck(
+                            accepted=False,
+                            reason=(
+                                f"cannot rename site to {request.site_name!r}: "
+                                f"another site here already has that name"
+                            ),
+                        )
+                    previous, bound.name = bound.name, request.site_name
+                    await audit.append(
+                        "central-command", "site.renamed", bound.id,
+                        detail={"from": previous, "to": request.site_name,
+                                "cc_site_id": request.site_id},
+                    )
+                    await session.commit()
+                logger.info(
+                    "RegisterSite: already bound cc_site=%s -> site=%s",
+                    request.site_id, bound.id,
+                )
+                return harkeniq_pb2.SiteRegistrationAck(
+                    accepted=True, site_token=self.config.site_token,
+                )
+
+            existing = await repo.get_by_name(request.site_name)
+            if existing is not None and existing.cc_site_id:
+                # FAIL CLOSED. Re-pointing a bound site would move every
+                # device, incident and outcome under it to a different
+                # tenant-plane identity without anyone deciding to. The
+                # audited unbind on the break-glass API is the recovery.
+                logger.warning(
+                    "RegisterSite refused: site %r is bound to cc_site=%s, "
+                    "registration offered cc_site=%s",
+                    request.site_name, existing.cc_site_id, request.site_id,
+                )
+                await audit.append(
+                    "central-command", "site.bind_refused", existing.id,
+                    detail={"site_name": request.site_name,
+                            "bound_to": existing.cc_site_id,
+                            "offered": request.site_id},
+                )
+                await session.commit()
+                return harkeniq_pb2.SiteRegistrationAck(
+                    accepted=False,
+                    reason=(
+                        f"site {request.site_name!r} is already bound to a "
+                        f"different Central Command site identity; unbind it "
+                        f"explicitly before re-registering"
+                    ),
+                )
+
+            site = existing or await repo.get_or_create(request.site_name)
+            await repo.bind(site, request.site_id)
+            await audit.append(
+                "central-command", "site.bound", site.id,
+                detail={"site_name": site.name, "cc_site_id": request.site_id,
+                        "tenant_id": request.tenant_id,
+                        "cc_endpoint": request.cc_endpoint},
+            )
+            await session.commit()
+            logger.info(
+                "RegisterSite: bound cc_site=%s -> site=%s (%s)",
+                request.site_id, site.id, site.name,
+            )
+
         return harkeniq_pb2.SiteRegistrationAck(
             accepted=True,
             site_token=self.config.site_token,
         )
 
     async def GetFleetSnapshot(self, request, context):
+        """One site's fleet, and never another's.
+
+        E0.2: every read below is scoped to the resolved site. There is
+        no fallback. Before this the device query missed (CC's site id
+        and the SM's primary key are different id spaces) and fell back
+        to every device, while incidents, pending actions, outcomes and
+        candidate skills were never scoped at all -- and the outcome and
+        candidate watermarks meant one site's poll CONSUMED another
+        site's rows, which was data loss, not just leakage.
+        """
         async with self.sessionmaker() as session:
-            devices = await DeviceRepo(session).list_for_site(request.site_id)
-            # If no devices found by site_id, fall back to listing all devices
-            # (lab/test environments may not have matching site_ids).
-            if not devices:
-                all_devs = (
-                    await session.execute(select(Device).order_by(Device.agent_name))
-                ).scalars().all()
-                devices = all_devs
+            site = await SiteRepo(session).get_by_cc_id(request.site_id)
+            if site is None or site.status != "active":
+                # Explicit, safe, empty. Never broaden scope to answer.
+                reason = (
+                    f"no active site bound to Central Command site id "
+                    f"{request.site_id!r} at this Site Manager"
+                    if site is None else
+                    f"site {site.name!r} is {site.status}"
+                )
+                logger.warning("GetFleetSnapshot unresolved: %s", reason)
+                return harkeniq_pb2.FleetSnapshot(
+                    snapshot_at_unix=int(time.time()),
+                    site_resolved=False,
+                    site_reason=reason,
+                )
+
+            devices = await DeviceRepo(session).list_for_site(site.id)
 
             fleet_devices = []
             for device in devices:
@@ -401,8 +753,8 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     )
                 )
 
-            # Open incidents
-            open_incidents = await IncidentRepo(session).list_open()
+            # Open incidents -- this site's only.
+            open_incidents = await IncidentRepo(session).list_open(site_id=site.id)
             fleet_incidents = []
             for inc in open_incidents:
                 # Resolve device_agent_id from device_id
@@ -436,8 +788,10 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     )
                 )
 
-            # Pending actions
-            pending_actions = await ActionRepo(session).list_by_status("pending")
+            # Pending actions -- scoped through the device that owns them.
+            pending_actions = await ActionRepo(session).list_by_status(
+                "pending", site_id=site.id,
+            )
             fleet_actions = []
             for act in pending_actions:
                 dev = await DeviceRepo(session).get(act.device_id)
@@ -465,11 +819,19 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             fleet_outcomes = []
             try:
                 from harkeniq_sm.db.models import ActionOutcomeRow
+                # E0.2: scoped through the device. The watermark below
+                # MARKS these rows reported, so an unscoped query did not
+                # merely show another site's outcomes -- it consumed
+                # them, and that site never received its own evidence.
                 unreported = (
                     await session.execute(
-                        select(ActionOutcomeRow).where(
-                            ActionOutcomeRow.reported_to_cc == False  # noqa: E712
-                        ).limit(100)
+                        select(ActionOutcomeRow)
+                        .join(Device, Device.id == ActionOutcomeRow.device_id)
+                        .where(
+                            ActionOutcomeRow.reported_to_cc == False,  # noqa: E712
+                            Device.site_id == site.id,
+                        )
+                        .limit(100)
                     )
                 ).scalars().all()
                 for oc in unreported:
@@ -485,6 +847,10 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                             vendor=dev.vendor if dev else "",
                             model=dev.model if dev else "",
                             recorded_at_unix=_ts(oc.recorded_at),
+                            # A1: attribution rides the evidence path, so
+                            # an execution is still attributable once it
+                            # has become a number in a success rate.
+                            actor=oc.actor or "",
                         )
                     )
                     oc.reported_to_cc = True
@@ -499,11 +865,21 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 import json as _json
 
                 from harkeniq_sm.db.models import CandidateSkillRow
+                # E0.2: `source_device` is the agent id that produced the
+                # candidate, so the site comes from that device. Same
+                # consuming-watermark problem as outcomes above.
                 unreported_cands = (
                     await session.execute(
-                        select(CandidateSkillRow).where(
-                            CandidateSkillRow.reported_to_cc == False  # noqa: E712
-                        ).limit(20)
+                        select(CandidateSkillRow)
+                        .join(
+                            Device,
+                            Device.agent_id == CandidateSkillRow.source_device,
+                        )
+                        .where(
+                            CandidateSkillRow.reported_to_cc == False,  # noqa: E712
+                            Device.site_id == site.id,
+                        )
+                        .limit(20)
                     )
                 ).scalars().all()
                 for cand in unreported_cands:
@@ -529,7 +905,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             # `reported=False` — CC then shows the site as NOT REPORTING,
             # which is the honest answer. An unobserved safety state must
             # never round down to "safe".
-            safety = await self._safety_state(session)
+            safety = await self._safety_state(session, site.id)
 
         return harkeniq_pb2.FleetSnapshot(
             devices=fleet_devices,
@@ -539,10 +915,20 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             outcomes=fleet_outcomes,
             candidate_skills=candidate_skills,
             safety=safety,
+            site_resolved=True,
+            site_reason="",
         )
 
-    async def _safety_state(self, session) -> "harkeniq_pb2.FleetSafetyState":
-        """Compose FleetSafetyState from the live enforcer + persisted budgets."""
+    async def _safety_state(
+        self, session, site_id: str
+    ) -> "harkeniq_pb2.FleetSafetyState":
+        """Compose FleetSafetyState for ONE site.
+
+        E0.2: error budgets are per site, so a class withdrawn by one
+        site's failures is not reported as withdrawn at another. The
+        stop switch and suppression remain Site Manager wide, because
+        those are properties of the execution boundary itself.
+        """
         try:
             from harkeniq_sm.db.repos import ErrorBudgetRepo
 
@@ -562,7 +948,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     ))
 
             budgets = []
-            for row in await ErrorBudgetRepo(session).list_all():
+            for row in await ErrorBudgetRepo(session).list_all(site_id=site_id):
                 budgets.append(harkeniq_pb2.ActionErrorBudget(
                     action_type=row.action_type,
                     success_count=row.success_count or 0,
@@ -616,18 +1002,47 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             )
 
     async def GetUsageSnapshot(self, request, context):
+        """Metered node count for ONE site.
+
+        E0.2: this counted every device the Site Manager knows and
+        returned the total labelled with the requested site id, so a Site
+        Manager serving several sites would have billed each of them the
+        full fleet. Metering feeds the ledger and invoices, which makes
+        an unscoped count a commercial error, not only a display one.
+
+        An unresolved site returns zero, never a total.
+        """
         async with self.sessionmaker() as session:
-            # Count unique devices
-            node_count_result = await session.execute(
-                select(func.count(Device.id))
-            )
-            node_count = node_count_result.scalar() or 0
+            site = await SiteRepo(session).get_by_cc_id(request.site_id)
+            if site is None:
+                logger.warning(
+                    "GetUsageSnapshot for unbound cc_site=%s: reporting zero",
+                    request.site_id,
+                )
+                return harkeniq_pb2.UsageSnapshot(
+                    tenant_id=request.tenant_id,
+                    site_id=request.site_id,
+                    date=request.date,
+                    node_count=0,
+                )
+
+            node_count = (
+                await session.execute(
+                    select(func.count(Device.id)).where(Device.site_id == site.id)
+                )
+            ).scalar() or 0
 
             # Agent versions from AgentStatus.last_state (placeholder: version
-            # info isn't yet tracked per-agent; return state distribution instead)
+            # info isn't yet tracked per-agent; return state distribution
+            # instead), scoped to this site's devices.
+            site_device_ids = {
+                d.id for d in await DeviceRepo(session).list_for_site(site.id)
+            }
             agent_versions: dict[str, int] = {}
             statuses = await StatusRepo(session).list_all()
             for s in statuses:
+                if s.device_id not in site_device_ids:
+                    continue
                 ver = s.last_state or "unknown"
                 agent_versions[ver] = agent_versions.get(ver, 0) + 1
 
@@ -706,6 +1121,18 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     self.autonomy.activate_stop_switch(by)
                 else:
                     self.autonomy.deactivate_stop_switch(by)
+                # E1.3: a stop pushed from Central Command is the TENANT
+                # stop. It reaches every site this Site Manager serves,
+                # and it is persisted so a restart cannot silently resume
+                # what an operator halted.
+                if self.stopswitch is not None:
+                    async with self.sessionmaker() as session:
+                        await self.stopswitch.set_halt(
+                            session, scope=SCOPE_TENANT, site_id=None,
+                            active=desired, actor=by,
+                            reason="pushed by Central Command",
+                        )
+                        await session.commit()
                 async with self.sessionmaker() as session:
                     from harkeniq_sm.db.repos import AuditRepo
                     await AuditRepo(session).append(
