@@ -638,3 +638,63 @@ class TestBackwardCompatibility:
             )
             after = (await client.get("/api/fleet/")).json()
             assert after == before
+
+
+class TestEveryTenantGetsARoot:
+    """E1.1 promised every site a canonical organizational path.
+
+    Migration 0010's backfill delivered that for tenants that existed
+    WHEN IT RAN. A tenant created afterwards -- or one whose first site
+    arrives later -- had no root at all, so its tree read was empty and
+    its sites belonged nowhere. Found by the compose gate on a fresh
+    stack, where the migration runs before any tenant exists.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_tenant_has_no_root_until_one_is_ensured(self):
+        from harkeniq_cc.db.repos import OrgUnitRepo
+
+        client, sessionmaker, _ = await _stack()
+        body = (await client.get("/api/org-units/")).json()
+        assert body["tree"] == []
+
+        async with sessionmaker() as session:
+            repo = OrgUnitRepo(session)
+            root = await repo.ensure_root(TENANT, created_by="test")
+            await session.commit()
+            assert root.depth == 1 and root.path == f"/{root.id}/"
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_ensure_root_is_idempotent(self):
+        from harkeniq_cc.db.repos import OrgUnitRepo
+
+        _, sessionmaker, _ = await _stack()
+        async with sessionmaker() as session:
+            repo = OrgUnitRepo(session)
+            first = await repo.ensure_root(TENANT)
+            await session.commit()
+        async with sessionmaker() as session:
+            again = await OrgUnitRepo(sessionmaker and session).ensure_root(TENANT)
+            assert again.id == first.id
+
+    @pytest.mark.asyncio
+    async def test_registering_a_site_gives_it_a_path(self):
+        """The promise, end to end: a site registered on a fresh tenant
+        has an organizational path without anybody building a tree."""
+        from harkeniq_cc.db.repos import OrgUnitRepo, SiteRepo
+
+        client, sessionmaker, _ = await _stack()
+        async with sessionmaker() as session:
+            root = await OrgUnitRepo(session).ensure_root(TENANT)
+            site = CCSite(
+                tenant_id=TENANT, site_name="fresh", sm_endpoint="sm:1",
+                sm_token="t", org_unit_id=root.id,
+            )
+            session.add(site)
+            await session.commit()
+
+        async with client:
+            body = (await client.get("/api/org-units/")).json()
+            assert len(body["tree"]) == 1
+            assert body["tree"][0]["site_count"] == 1

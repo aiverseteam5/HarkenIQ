@@ -409,6 +409,27 @@ async def _decide_agent_proposal(
                     await repo.mark_dispatched(
                         proposal, result.get("directive_id", ""),
                     )
+                    # A human approval dispatches HERE, synchronously, so
+                    # the background loop that normally writes this event
+                    # never sees the proposal. Without it the chain reads
+                    # created -> settled with the dispatch invisible, and
+                    # "the whole chain is reconstructable from the audit
+                    # chain" stops being true for every human-approved
+                    # agent action. Found by the compose gate.
+                    await AuditRepo(session).append(
+                        actor=proposal.actor,
+                        action="agent_proposal.dispatched",
+                        subject=proposal.id,
+                        tenant_id=user.tenant_id,
+                        site_id=proposal.site_id,
+                        detail={
+                            "directive_id": result.get("directive_id", ""),
+                            "authorization": "human_approval",
+                            "decided_by": decided_by,
+                            "action_type": proposal.action_type,
+                            "device_agent_id": proposal.device_agent_id,
+                        },
+                    )
                     delivery = {
                         "accepted": True,
                         "delivered": True,

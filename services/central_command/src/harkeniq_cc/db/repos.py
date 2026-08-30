@@ -275,6 +275,37 @@ class OrgUnitRepo:
             sa_delete(CCOrgUnit).where(CCOrgUnit.id == unit.id)
         )
 
+    async def ensure_root(self, tenant_id: str, created_by: str = "") -> CCOrgUnit:
+        """The tenant's root organizational unit, creating it if absent.
+
+        E1.1 promised every site a canonical organizational path, and
+        migration 0010's backfill delivered that for every tenant that
+        existed WHEN IT RAN. A tenant created afterwards -- or one whose
+        first site arrives later -- had no root at all, so its tree read
+        was empty and its sites had no path. Found by the compose gate on
+        a fresh stack, where the migration runs before any tenant exists.
+        """
+        from harkeniq_cc.org_tree import compose_path
+
+        roots = await self.list_roots(tenant_id)
+        if roots:
+            return roots[0]
+        unit = CCOrgUnit(
+            tenant_id=tenant_id,
+            parent_id=None,
+            unit_type="organization",
+            name=tenant_id,
+            path="",
+            depth=1,
+            created_by=created_by or "system",
+            updated_by=created_by or "system",
+        )
+        self.session.add(unit)
+        await self.session.flush()
+        unit.path = compose_path(None, unit.id)
+        await self.session.flush()
+        return unit
+
     async def site_counts(self, tenant_id: str) -> dict[str, int]:
         rows = (
             await self.session.execute(

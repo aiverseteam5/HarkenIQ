@@ -407,3 +407,33 @@ class TestTheGovernanceHolds:
         assert queue["node_total"] == 1
         assert queue["agent_total"] == 1
         await client.aclose()
+
+
+class TestTheDispatchIsAlwaysAudited:
+    """A human approval dispatches synchronously in the approval path, so
+    the background loop that normally writes `agent_proposal.dispatched`
+    never sees the proposal. Without the event the audit chain reads
+    created -> settled with the dispatch invisible, and "the whole chain
+    is reconstructable" stops being true for every human-approved agent
+    action. Found by the compose gate."""
+
+    def test_the_approval_path_writes_the_dispatch_event(self):
+        import inspect
+
+        from harkeniq_cc.api import approvals
+
+        source = inspect.getsource(approvals._decide_agent_proposal)
+        assert 'action="agent_proposal.dispatched"' in source, (
+            "the synchronous dispatch path does not audit the dispatch"
+        )
+
+    def test_both_dispatch_paths_write_the_same_event(self):
+        import inspect
+
+        from harkeniq_cc import agent_runtime
+        from harkeniq_cc.api import approvals
+
+        loop = inspect.getsource(agent_runtime.dispatch_decided)
+        sync = inspect.getsource(approvals._decide_agent_proposal)
+        for source in (loop, sync):
+            assert 'action="agent_proposal.dispatched"' in source

@@ -40,7 +40,7 @@ bash ../../scripts/seed-demo.sh
 
 step "Agent registered and observed at SM"
 wait_for "SM device observed" 120 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/devices | grep -q '\"observation\": *\"observed\"\\|observed'"
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/devices?site=site-1 | grep -q '\"observation\": *\"observed\"\\|observed'"
 
 # E1.4: Central Command validates against the TENANT'S realm now, so
 # every CC-facing token below must come from tenant-demo. The platform
@@ -205,7 +205,19 @@ curl -sfL -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8100/api/t/$TENANT_ID/fleet/summary" | grep -q total_nodes
 
 step "Placement is fail-closed: an unregistered tenant is refused, not defaulted"
-UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+# E1.4: a TENANT identity is refused at the scope check before placement
+# is ever resolved -- 403, because a tenant may not probe another
+# tenant's id at all. That is stricter than the platform path, so it is
+# asserted first and separately.
+UNREG_TENANT=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/does-not-exist/fleet/summary")
+[ "$UNREG_TENANT" = "403" ] || {
+  echo "a tenant identity probing another tenant returned $UNREG_TENANT, want 403" >&2
+  exit 1; }
+
+# The PLACEMENT branch itself needs a caller that gets past the scope
+# check, which is the platform plane.
+UNREG=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PLATFORM_TOKEN" \
   "http://localhost:8100/api/t/does-not-exist/fleet/summary")
 # Refusal semantics differ across the PR stack this gate rides on: with
 # the tenant-existence check in tenant_scope (navigation slice) an unknown
@@ -216,18 +228,22 @@ case "$UNREG" in 404|503) : ;; *) echo "unknown tenant returned $UNREG, want 404
 
 step "Fail-closed for a REAL tenant with no placement (the 503 branch itself)"
 DARK_ID=$(curl -sf -X POST "http://localhost:8100/api/admin/tenants/" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" -H "Content-Type: application/json" \
   -d '{"name": "Gate Dark Tenant", "slug": "gate-dark", "billing_country": "US",
        "currency": "USD", "plan": "observe", "node_commit": 1,
        "admin_email": "dark@gate.example"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" ) || \
-  DARK_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $TOKEN" gate-dark)
-DARK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+  DARK_ID=$(lookup_tenant_id "http://localhost:8100" "Authorization: Bearer $PLATFORM_TOKEN" gate-dark)
+# The 503 is about PLACEMENT, so it needs a caller who reaches placement
+# resolution -- the platform plane. A tenant identity is refused earlier,
+# at the scope check, which the step above asserts separately.
+DARK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PLATFORM_TOKEN" \
   "http://localhost:8100/api/t/$DARK_ID/fleet/summary")
 [ "$DARK" = "503" ] || { echo "placement-less tenant returned $DARK, want 503" >&2; exit 1; }
-# Known gate limitation (documented, not hidden): the scenario runs on a
-# platform_super_admin token whose break-glass bypasses membership and the
-# support-access gate; those paths are pinned by the unit suite, not here.
+# E1.4 narrowed this: the scenario now runs on a TENANT-realm identity, so
+# the tenant-plane path is genuinely exercised rather than ridden over by
+# a platform break-glass. Platform-plane calls are explicitly marked with
+# $PLATFORM_TOKEN, and there are only a handful.
 
 step "Auth is real: no token / garbage token are rejected"
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/fleet/)" = "401" ]
@@ -241,7 +257,7 @@ curl -skf -X POST https://localhost:9000/test/inject-fault \
 
 step "Agent detects -> SM opens the incident"
 wait_for "fan incident open" 120 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents?site=site-1 | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
 
 step "Action proposed at the SM"
 # Select the PENDING action, never actions[0]. The stack's volumes survive
@@ -250,7 +266,7 @@ step "Action proposed at the SM"
 # then times out the C2 step below for a reason unrelated to the code
 # under test (observed 2026-08-29). Wait for and pick a genuinely pending one.
 pending_action_id() {
-  curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
+  curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions?site=site-1 \
     | python3 -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a.get('status')=='pending'), ''))"
 }
 have_pending_action() { [ -n "$(pending_action_id)" ]; }
@@ -259,45 +275,20 @@ wait_for "pending action" 120 have_pending_action
 ACTION=$(pending_action_id)
 [ -n "$ACTION" ] || { echo "no pending action at SM" >&2; exit 1; }
 
-step "Seed an OPERATOR (P0 2026-08-29): the role that was locked out of CC"
+step "Seed an OPERATOR: the role that was locked out of CC"
 # C1's proof at runtime: before the RBAC repair, CC granted non-admins
-# only the literal "view" — an operator 403ed on every route including
-# approvals, so this persona could not function at all. Create the role
-# and a user via the Keycloak admin API (idempotent: 409s tolerated).
+# only the literal "view" -- an operator 403ed on every route including
+# approvals, so this persona could not function at all.
+#
+# E1.4: the operator lives in the TENANT realm now. This used to create
+# the role and the user in the PLATFORM realm, which is exactly the
+# boundary E1.4 closes -- and it ran AFTER the step asserting the
+# platform realm holds no tenant operational role, quietly putting one
+# back. `tenant_realm_user` created this persona at the top of the gate.
 KC_ADMIN_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/master/protocol/openid-connect/token" \
   -d "grant_type=password&client_id=admin-cli&username=admin&password=${HARKENIQ_KC_ADMIN_PASSWORD:-admin}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-curl -s -o /dev/null -X POST \
-  "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name": "operator"}'
-curl -s -o /dev/null -X POST \
-  "http://localhost:8180/admin/realms/harkeniq-platform/users" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"username": "operator1@harkeniq.com", "email": "operator1@harkeniq.com",
-       "firstName": "Gate", "lastName": "Operator",
-       "enabled": true, "emailVerified": true,
-       "credentials": [{"type": "password", "value": "operator", "temporary": false}]}'
-OP_UID=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/users?username=operator1@harkeniq.com" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-# Keycloak's declarative user profile queues VERIFY_PROFILE on users
-# created without a full profile, and "Account is not fully set up" then
-# refuses the password grant. Clear required actions idempotently so a
-# rerun (or a partial earlier run) always converges to a usable operator.
-curl -s -o /dev/null -X PUT \
-  "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"firstName": "Gate", "lastName": "Operator",
-       "email": "operator1@harkeniq.com", "emailVerified": true,
-       "enabled": true, "requiredActions": []}'
-OP_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/operator" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN")
-curl -s -o /dev/null -X POST \
-  "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID/role-mappings/realm" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d "[$OP_ROLE]"
 OP_TOKEN=$(tenant_token gate-op@demo gate-op)
 
 step "CC RBAC is real: operator reads fleet (200), cannot read audit (403)"
@@ -381,14 +372,14 @@ step "OPERATOR approves through CC -> RouteApproval -> SM records the decision"
 RESULT=$(curl -s -X POST -H "Authorization: Bearer $OP_TOKEN" \
   "http://localhost:8090/api/approvals/$ACTION/approve")
 echo "$RESULT" | grep -q '"decision": *"approved"'
-echo "$RESULT" | grep -q 'operator1@harkeniq.com'
+echo "$RESULT" | grep -q 'gate-op@demo'
 wait_for "SM action approved" 60 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q '\"status\": *\"approved\"\\|approved'"
+  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions?site=site-1 | grep -q '\"status\": *\"approved\"\\|approved'"
 
 step "S4: the diagnosis reaches the tenant surface, with its provenance"
 # The whole point of S4: before it, the LLM explanation stopped at the Site
 # Manager and the tenant could see WHAT was wrong but never WHY.
-SM_INC=$(curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/incidents)
+SM_INC=$(curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/incidents?site=site-1)
 echo "$SM_INC" | python3 -c "import sys,json; d=json.load(sys.stdin); print('SM incidents:', len(d))"
 wait_for "incident at CC" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/incidents/ | grep -q incident_id"
@@ -641,16 +632,16 @@ SITE_B=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
 echo "site B = $SITE_B"
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
   "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
-                        device_class, first_seen_at, last_seen_at)
+                        service_tag, device_class, first_seen_at, last_seen_at)
    SELECT 'gatedevb00000000000000000000000', s.id, 'gate-agent-b', 'b1',
-          'Dell', 'R750', 'server', now(), now()
+          'Dell', 'R750', 'GATEB1', 'server', now(), now()
    FROM sites s WHERE s.cc_site_id = '$SITE_B'
    ON CONFLICT (id) DO NOTHING"
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
   "INSERT INTO incidents (id, site_id, kind, status, device_id, subsystem,
-                          title, opened_at, last_seen_at)
+                          title, confidence, inferred, opened_at)
    SELECT 'gateincb00000000000000000000000', s.id, 'device', 'open',
-          'gatedevb00000000000000000000000', 'psu', 'site B only', now(), now()
+          'gatedevb00000000000000000000000', 'psu', 'site B only', 1.0, false, now()
    FROM sites s WHERE s.cc_site_id = '$SITE_B'
    ON CONFLICT (id) DO NOTHING"
 
@@ -748,7 +739,7 @@ POLICY_ID=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
 # re-propose). This one is governed by the dual policy.
 curl -skf -X POST https://localhost:9000/test/inject-fault \
   -H 'Content-Type: application/json' \
-  -d '{"fault_type":"psu","target":"PSU1","params":{"health":"Critical"}}' \
+  -d '{"fault_type":"psu","target":"PS1","params":{"health":"Critical","redundancy_health":"Critical"}}' \
   > /dev/null
 wait_for "a second agent proposal under the dual policy" 300 bash -c \
   "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/approvals/ \
@@ -823,27 +814,9 @@ done
 step "E0.3: an auditor can read the evidence, and still change nothing"
 # A13 ratified read-only-everything for the auditor. Approval evidence
 # and approval posture were gated on permissions the auditor never holds.
-AUD_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/auditor" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null) || AUD_ROLE=""
-if [ -z "$AUD_ROLE" ]; then
-  curl -sf -X POST "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
-    -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-    -d '{"name":"auditor"}' > /dev/null
-  AUD_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/auditor" \
-    -H "Authorization: Bearer $KC_ADMIN_TOKEN")
-fi
-curl -s -X POST "http://localhost:8180/admin/realms/harkeniq-platform/users" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"username":"auditor1@harkeniq.com","email":"auditor1@harkeniq.com",
-       "enabled":true,"emailVerified":true,
-       "credentials":[{"type":"password","value":"auditor","temporary":false}]}' \
-  > /dev/null
-AUD_UID=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/users?username=auditor1@harkeniq.com" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-curl -s -X POST "http://localhost:8180/admin/realms/harkeniq-platform/users/$AUD_UID/role-mappings/realm" \
-  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d "[$AUD_ROLE]" > /dev/null
+# E1.4: the auditor lives in the TENANT realm. This used to create the
+# auditor ROLE in the platform realm on demand, putting back the very
+# thing the platform-realm assertion had just checked was absent.
 AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
 
 for _p in "approvals/" "approvals/history" "policies/" "policies/groups" "audit/"; do
@@ -1037,6 +1010,17 @@ curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
 
 step "E1.4: tenant A cannot reach tenant B"
+# Re-mint: the gate runs for many minutes and a Keycloak access token
+# does not. The tail steps were failing on an EXPIRED platform token,
+# which reads exactly like a permission failure and is not one.
+PLATFORM_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=admin@harkeniq.com&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+KC_ADMIN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 # A second tenant, created END TO END through the real API -- which is
 # also the proof that provisioning runs on the creation path and not
 # only through the explicit endpoint.

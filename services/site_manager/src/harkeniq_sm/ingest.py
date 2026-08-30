@@ -55,6 +55,23 @@ class IngestService:
         # when the LLM is enabled). None = generation off.
         self.skill_generator = None
 
+    async def _site_for_device(self, session, agent_id: str) -> str:
+        """The site of an ALREADY-REGISTERED device. E1.3.
+
+        Heartbeats and verdicts come from a device that enrolled earlier,
+        and its site is a fact on its own row -- there is nothing to
+        resolve and nothing to guess. Sending these through `_site()`
+        made a multi-site Site Manager refuse every heartbeat, which
+        stopped verdicts, onsets, incidents and therefore proposals: the
+        compose gate caught it as a silence rather than an error.
+        """
+        device = await DeviceRepo(session).get_by_agent_id(agent_id)
+        if device is not None and device.site_id:
+            return device.site_id
+        # Not registered yet. Fall back to the unambiguous single site,
+        # which still refuses to guess when there is more than one.
+        return await self._site(session)
+
     async def _site(self, session) -> str:
         """The site for callers that legitimately have only one.
 
@@ -150,7 +167,7 @@ class IngestService:
         now = datetime.now(timezone.utc)
         onsets: list[tuple[str, str, str, datetime]] = []
         async with self.sessionmaker() as session:
-            site_id = await self._site(session)
+            site_id = await self._site_for_device(session, agent_id)
             device = await DeviceRepo(session).upsert_registration(
                 site_id=site_id, agent_id=agent_id, agent_name=agent_name
             )
@@ -189,7 +206,7 @@ class IngestService:
         subsystem = sensor_id.split(":", 1)[0]
         onsets: list[tuple[str, str, str, datetime]] = []
         async with self.sessionmaker() as session:
-            site_id = await self._site(session)
+            site_id = await self._site_for_device(session, agent_id)
             device = await DeviceRepo(session).upsert_registration(
                 site_id=site_id, agent_id=agent_id
             )

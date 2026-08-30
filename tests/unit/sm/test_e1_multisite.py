@@ -740,3 +740,61 @@ class TestASiteChangeIsExplicit:
         assert "site_name" not in fields
         assert "site_id" not in fields
         assert "enrollment_token" in fields
+
+
+class TestAlreadyRegisteredDevicesResolveTheirOwnSite:
+    """E1.3 regression, found by the compose gate.
+
+    Heartbeats and verdicts come from a device that enrolled earlier, so
+    its site is a fact on its own row. Sending them through the
+    ambiguity-refusing resolver made a multi-site Site Manager throw on
+    every heartbeat -- which stopped verdicts, onsets, incidents and
+    therefore proposals. It surfaced as silence, not as an error.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_heartbeat_from_a_registered_device_is_not_ambiguous(
+        self, db
+    ):
+        from harkeniq_sm.ingest import IngestService
+
+        ids = await _sites(db, "alpha", "beta")
+        ingest = IngestService(db, _config())
+        await ingest.register(agent_id="node-a", site_id=ids["alpha"],
+                              site_name="alpha")
+
+        # Two sites: `_site` refuses, and it should never be consulted.
+        async with db() as session:
+            resolved = await ingest._site_for_device(session, "node-a")
+        assert resolved == ids["alpha"]
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_and_verdict_do_not_raise_on_a_multi_site_sm(
+        self, db
+    ):
+        from harkeniq_sm.ingest import IngestService
+
+        ids = await _sites(db, "alpha", "beta")
+        ingest = IngestService(db, _config())
+        await ingest.register(agent_id="node-a", site_id=ids["alpha"],
+                              site_name="alpha")
+
+        await ingest.heartbeat(
+            agent_id="node-a", agent_name="a", state="ok",
+            health_summary={}, peer_status={},
+        )
+        async with db() as session:
+            from harkeniq_sm.db.repos import DeviceRepo
+
+            device = await DeviceRepo(session).get_by_agent_id("node-a")
+            assert device.site_id == ids["alpha"], "the heartbeat moved it"
+
+    @pytest.mark.asyncio
+    async def test_an_unregistered_device_still_refuses_to_be_guessed(self, db):
+        from harkeniq_sm.ingest import IngestService
+
+        await _sites(db, "alpha", "beta")
+        ingest = IngestService(db, _config())
+        async with db() as session:
+            with pytest.raises(ValueError):
+                await ingest._site_for_device(session, "never-enrolled")

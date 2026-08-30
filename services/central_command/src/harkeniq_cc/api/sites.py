@@ -81,6 +81,14 @@ async def register_site(
             )
         fingerprint = lic.fingerprint
 
+    # E1.1: every site gets a canonical organizational path. The 0010
+    # backfill covered tenants that existed when it ran; a site
+    # registered afterwards needs the root ensured here, or the tenant's
+    # tree is empty and its sites belong nowhere.
+    root = await OrgUnitRepo(session).ensure_root(
+        user.tenant_id, created_by=user.user_id
+    )
+
     repo = SiteRepo(session)
     existing = await repo.get_by_name(user.tenant_id, body.site_name)
     if existing is not None and existing.sm_token:
@@ -97,6 +105,13 @@ async def register_site(
         sm_endpoint=body.sm_endpoint,
         license_fingerprint=fingerprint,
     )
+
+    # Attach the site to the tenant's root unless it already has a path.
+    # Containment only: this says where the site sits, never who may
+    # reach it (ratified decision B).
+    if not site.org_unit_id:
+        site.org_unit_id = root.id
+        await session.flush()
 
     # Attempt SM registration via gRPC
     sm_result = {"accepted": False, "site_token": "", "reason": "not attempted"}
