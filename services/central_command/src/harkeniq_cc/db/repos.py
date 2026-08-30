@@ -20,6 +20,7 @@ from harkeniq_cc.db.models import (
     CCApprovalGroup,
     CCApprovalGroupMember,
     CCApprovalPolicy,
+    CCApprovalRecord,
     CCApprovalRoute,
     CCAuditLog,
     CCAutonomyBudget,
@@ -592,7 +593,7 @@ class ApprovalPolicyRepo:
         created_by: str,
         device_type: str = "*",
         action_type: str = "*",
-        risk_level: str = "medium",
+        risk_level: str = "*",
         time_window_json: Optional[dict] = None,
         approval_mode: str = "require_approval",
         required_approvers: int = 1,
@@ -699,10 +700,19 @@ class ApprovalGroupRepo:
         ).scalars().all()
 
     async def add_member(
-        self, group_id: str, user_email: str, role: str = "approver"
+        self, group_id: str, user_email: str, role: str = "approver",
+        principal_ref: str = "",
     ) -> CCApprovalGroupMember:
+        """Add an approver. `principal_ref` is the Keycloak subject.
+
+        E0.1: membership matches on the subject first and falls back to
+        the email, so an address change cannot silently lapse someone's
+        approval authority. The email stays as the display name and as
+        the match for memberships added before subjects were recorded.
+        """
         row = CCApprovalGroupMember(
             group_id=group_id, user_email=user_email, role=role,
+            principal_ref=principal_ref,
         )
         self.session.add(row)
         await self.session.flush()
@@ -1785,3 +1795,91 @@ class AgentProposalRepo:
         proposal.status = "completed" if outcome == "SUCCESS" else "failed"
         proposal.outcome = outcome
         proposal.outcome_at = utcnow()
+
+
+class ApprovalRecordRepo:
+    """E0.1: the per-approver approval ledger.
+
+    The route's `decision` column is a projection of these rows; these
+    rows are the truth. Both origins (node actions and Operational Agent
+    proposals) write here, keyed by `subject_type`.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_for_subject(
+        self, subject_type: str, subject_ref: str
+    ) -> Sequence[CCApprovalRecord]:
+        return (
+            await self.session.execute(
+                select(CCApprovalRecord)
+                .where(
+                    CCApprovalRecord.subject_type == subject_type,
+                    CCApprovalRecord.subject_ref == subject_ref,
+                )
+                .order_by(CCApprovalRecord.decided_at)
+            )
+        ).scalars().all()
+
+    async def get_by_approver(
+        self, subject_type: str, subject_ref: str, approver_ref: str
+    ) -> Optional[CCApprovalRecord]:
+        return (
+            await self.session.execute(
+                select(CCApprovalRecord).where(
+                    CCApprovalRecord.subject_type == subject_type,
+                    CCApprovalRecord.subject_ref == subject_ref,
+                    CCApprovalRecord.approver_ref == approver_ref,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def record(
+        self,
+        *,
+        tenant_id: str,
+        subject_type: str,
+        subject_ref: str,
+        approver_ref: str,
+        approver_email: str,
+        decision: str,
+        policy_id: str = "",
+        scope_ok: bool = True,
+        reason: str = "",
+    ) -> CCApprovalRecord:
+        row = CCApprovalRecord(
+            tenant_id=tenant_id,
+            subject_type=subject_type,
+            subject_ref=subject_ref,
+            approver_ref=approver_ref,
+            approver_email=approver_email,
+            decision=decision,
+            policy_id=policy_id,
+            scope_ok=scope_ok,
+            reason=reason[:512],
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def map_for_subjects(
+        self, subject_type: str, subject_refs: Sequence[str]
+    ) -> dict[str, list[CCApprovalRecord]]:
+        """Records for many subjects at once, so a queue page is one query."""
+        if not subject_refs:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(CCApprovalRecord)
+                .where(
+                    CCApprovalRecord.subject_type == subject_type,
+                    CCApprovalRecord.subject_ref.in_(list(subject_refs)),
+                )
+                .order_by(CCApprovalRecord.decided_at)
+            )
+        ).scalars().all()
+        out: dict[str, list[CCApprovalRecord]] = {}
+        for row in rows:
+            out.setdefault(row.subject_ref, []).append(row)
+        return out

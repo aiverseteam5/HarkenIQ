@@ -265,6 +265,26 @@ export interface AgentProposal {
   created_at: string | null;
 }
 
+/** How many humans this subject needs, and how many it has (E0.1).
+ *
+ * A second approver has no way to know they are needed unless the queue
+ * says so, which is why this rides every item rather than living behind
+ * a detail view. */
+export interface ApprovalProgress {
+  state: "pending" | "approved" | "denied";
+  required: number;
+  received: number;
+  remaining: number;
+  approvers: { approver: string; decided_at: string | null }[];
+  denied_by: string | null;
+  denied_reason: string;
+  policy_id: string | null;
+  policy_name: string;
+  mode: string;
+  group_id: string | null;
+  group_name: string;
+}
+
 /** One item in the single approval queue.
  *
  * A1: `origin` says who asked. The permission, the decision endpoint and
@@ -284,6 +304,7 @@ export interface ApprovalAction {
   decided_at: string | null;
   routed_at: string | null;
   delivered_at: string | null;
+  approval?: ApprovalProgress;
   proposal?: AgentProposal;
 }
 

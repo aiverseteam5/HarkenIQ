@@ -1,4 +1,28 @@
-"""Approvals API: action routing and decision endpoints."""
+"""Approvals API: one queue, one contract, one decision.
+
+Every action waiting on a human arrives here whoever asked for it -- a
+node proposed it, or an Operational Agent did -- and is decided on the
+same route, under the same `action.approve` permission, against the same
+policy, into the same ledger.
+
+E0.1 (2026-08-30) made the policy bind. `cc_approval_policies` has
+carried `approval_mode`, `required_approvers` and a group link since R2b;
+nothing consulted them at decision time, so a tenant could configure dual
+authorization and get single authorization silently. A decision is now a
+SET of `cc_approval_records` and the route's `decision` column is a
+projection of that set.
+
+Four rules, applied identically to both origins:
+
+  * the governing policy is the most specific active match on
+    (action_type, device_type, risk), ties broken deterministically;
+  * an approver may decide a subject once -- the database enforces it;
+  * when a group is bound, the approver must belong to it;
+  * a denial is terminal (D16) and outranks any number of approvals.
+
+Approval still never overrides a safety gate (A10.3): a fully approved
+action runs the unchanged node funnel and can still be refused there.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +35,26 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
+from harkeniq_cc.approval_policy import (
+    DECISION_APPROVED,
+    DECISION_DENIED,
+    STATE_APPROVED,
+    STATE_DENIED,
+    SUBJECT_ACTION,
+    SUBJECT_AGENT_PROPOSAL,
+    approval_block,
+    is_member,
+    required_approvers,
+    resolve_policy,
+)
 from harkeniq_cc.auth import UserContext
+from harkeniq_cc.autonomy import action_risk_map
 from harkeniq_cc.db.repos import (
     AgentProposalRepo,
+    ApprovalGroupRepo,
+    FleetCacheRepo,
+    ApprovalPolicyRepo,
+    ApprovalRecordRepo,
     ApprovalRouteRepo,
     AuditRepo,
     SiteRepo,
@@ -89,6 +130,144 @@ class BatchDecisionRequest(BaseModel):
     decision: str  # "approved" or "denied"
 
 
+class ApprovalIncomplete(Exception):
+    """Raised when a decision is recorded but the subject is not yet decided.
+
+    Not an error: it is the normal outcome of the first approval under a
+    two-approver policy. Carries the progress payload so the caller can
+    answer honestly instead of pretending nothing happened.
+    """
+
+    def __init__(self, block: dict) -> None:
+        super().__init__("awaiting further approvals")
+        self.block = block
+
+
+async def _governing_policy(
+    session: AsyncSession, tenant_id: str, action_type: str, device_agent_id: str,
+):
+    """(policy, group, members) for this action class, or (None, None, []).
+
+    `device_type` comes from the fleet cache's device class when the
+    device is known; an unknown device simply does not match a
+    device-scoped policy, which is the conservative direction.
+    """
+    policies = await ApprovalPolicyRepo(session).list_all(tenant_id)
+    device_type = ""
+    if device_agent_id:
+        device = await FleetCacheRepo(session).get_by_agent_id(device_agent_id)
+        if device is not None:
+            device_type = device.device_class or ""
+    risk = action_risk_map().get((action_type or "").upper(), "")
+    policy = resolve_policy(
+        policies, action_type=action_type, device_type=device_type, risk=risk,
+    )
+    group = None
+    members: list = []
+    group_id = getattr(policy, "group_id", None) if policy is not None else None
+    if group_id:
+        repo = ApprovalGroupRepo(session)
+        group = await repo.get_by_id(group_id)
+        if group is not None and group.tenant_id != tenant_id:
+            # A policy pointing at another tenant's group is a
+            # misconfiguration, not an authorization path.
+            group = None
+        if group is not None:
+            members = list(await repo.list_members(group.id))
+    return policy, group, members
+
+
+async def _record_and_evaluate(
+    session: AsyncSession,
+    *,
+    user: UserContext,
+    tenant_id: str,
+    subject_type: str,
+    subject_ref: str,
+    action_type: str,
+    device_agent_id: str,
+    site_id: str,
+    decision: str,
+) -> dict:
+    """Apply the policy to one approver's decision. Returns the progress block.
+
+    Raises HTTPException for a refusal the approver must see (duplicate,
+    out of scope, not in the required group) and ApprovalIncomplete when
+    the decision was validly recorded but the subject still needs more.
+    """
+    policy, group, members = await _governing_policy(
+        session, tenant_id, action_type, device_agent_id,
+    )
+    records_repo = ApprovalRecordRepo(session)
+
+    # An approver decides a subject once. The unique constraint is the
+    # real guarantee; this check exists to answer with 409 rather than a
+    # database error.
+    existing = await records_repo.get_by_approver(
+        subject_type, subject_ref, user.user_id,
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"you already {existing.decision} this action; a second "
+                f"decision from the same approver does not count twice"
+            ),
+        )
+
+    if group is not None and not is_member(members, user.user_id, user.email or ""):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"this action class requires an approver from the "
+                f"{group.name!r} group"
+            ),
+        )
+
+    # E1.2 fills this in. Until scope grants exist every approver's
+    # authority is tenant-wide, which is exactly today's behaviour --
+    # stated here rather than left implicit so the seam is visible.
+    scope_ok = True
+
+    await records_repo.record(
+        tenant_id=tenant_id,
+        subject_type=subject_type,
+        subject_ref=subject_ref,
+        approver_ref=user.user_id,
+        approver_email=user.email or user.user_id,
+        decision=decision,
+        policy_id=getattr(policy, "id", "") or "",
+        scope_ok=scope_ok,
+    )
+    # Every approval is audited individually. Auditing only the outcome
+    # would make a two-approver decision indistinguishable from a
+    # one-approver decision in the record that is supposed to prove it.
+    await AuditRepo(session).append(
+        actor=user.email or user.user_id,
+        action=f"approval.{decision}",
+        subject=subject_ref,
+        tenant_id=tenant_id,
+        detail={
+            "subject_type": subject_type,
+            "action_type": action_type,
+            "device_agent_id": device_agent_id,
+            "site_id": site_id,
+            "policy_id": getattr(policy, "id", None),
+            "group_id": getattr(group, "id", None),
+            "scope_ok": scope_ok,
+        },
+    )
+
+    records = await records_repo.list_for_subject(subject_type, subject_ref)
+    block = approval_block(policy, group, records)
+    if block["state"] not in (STATE_APPROVED, STATE_DENIED):
+        # Valid, recorded, and not yet enough. Commit so the approval is
+        # durable even though nothing executes.
+        await session.commit()
+        raise ApprovalIncomplete(block)
+    return block
+
+
 async def _decide_agent_proposal(
     proposal_id: str,
     decision: str,
@@ -118,6 +297,22 @@ async def _decide_agent_proposal(
             detail=f"proposal already {proposal.status}",
         )
     decided_by = user.email or user.user_id
+
+    # E0.1: the SAME policy, ledger and completion rule a node action
+    # gets. An agent's request earns no easier path to a decision.
+    block = await _record_and_evaluate(
+        session,
+        user=user,
+        tenant_id=user.tenant_id,
+        subject_type=SUBJECT_AGENT_PROPOSAL,
+        subject_ref=proposal.id,
+        action_type=proposal.action_type,
+        device_agent_id=proposal.device_agent_id,
+        site_id=proposal.site_id,
+        decision=decision,
+    )
+    if block["state"] == STATE_DENIED:
+        decision = DECISION_DENIED
     await repo.decide(proposal, decision, decided_by)
 
     delivery = {"accepted": False, "delivered": False, "reason": "not attempted"}
@@ -199,6 +394,7 @@ async def _decide_agent_proposal(
         "decision": decision,
         "decided_by": decided_by,
         "delivery": delivery,
+        "approval": block,
         "proposal": _proposal_item(proposal)["proposal"],
     }
 
@@ -235,6 +431,23 @@ async def _route_decision(
     # QA-006: attribution uses the authenticated identity, preferring
     # the human-readable email from the validated JWT.
     decided_by = user.email or user.user_id
+
+    # E0.1: the configured policy decides how many approvers this needs
+    # and who may be one. Raises ApprovalIncomplete when this approval is
+    # valid but the subject is still short.
+    block = await _record_and_evaluate(
+        session,
+        user=user,
+        tenant_id=user.tenant_id,
+        subject_type=SUBJECT_ACTION,
+        subject_ref=action_id,
+        action_type=route.action_type,
+        device_agent_id=route.device_agent_id,
+        site_id=route.site_id,
+        decision=decision,
+    )
+    if block["state"] == STATE_DENIED:
+        decision = DECISION_DENIED
     await repo.update_decision(route, decision, decided_by)
 
     # Route to the SM via gRPC
@@ -271,11 +484,51 @@ async def _route_decision(
 
     return {
         "action_id": action_id,
+        "origin": "node",
         "decision": decision,
         "decided_by": decided_by,
         "delivery": delivery,
+        "approval": block,
         "route": _route_dict(route),
     }
+
+
+async def _attach_approval_progress(
+    session: AsyncSession, tenant_id: str, items: list[dict]
+) -> None:
+    """Add the `approval` block to each queue item. Two queries, not N."""
+    if not items:
+        return
+    repo = ApprovalRecordRepo(session)
+    by_subject: dict[str, list] = {}
+    for subject_type in (SUBJECT_ACTION, SUBJECT_AGENT_PROPOSAL):
+        refs = [
+            i["action_id"] for i in items
+            if (i["origin"] == "agent") == (subject_type == SUBJECT_AGENT_PROPOSAL)
+        ]
+        by_subject.update(await repo.map_for_subjects(subject_type, refs))
+
+    policies = await ApprovalPolicyRepo(session).list_all(tenant_id)
+    groups = {g.id: g for g in await ApprovalGroupRepo(session).list_all(tenant_id)}
+    risks = action_risk_map()
+    # The listing must resolve the SAME policy the decision will, or the
+    # queue would promise one approver while the decision demands two.
+    # One bulk read rather than a lookup per row.
+    device_classes = {
+        d.agent_id: (d.device_class or "")
+        for d in await FleetCacheRepo(session).list_all(tenant_id)
+    }
+    for item in items:
+        policy = resolve_policy(
+            policies,
+            action_type=item.get("action_type", ""),
+            device_type=device_classes.get(item.get("device_agent_id", ""), ""),
+            risk=risks.get((item.get("action_type") or "").upper(), ""),
+        )
+        group = groups.get(getattr(policy, "group_id", None) or "")
+        item["approval"] = approval_block(
+            policy, group, by_subject.get(item["action_id"], []),
+        )
 
 
 @router.get(
@@ -308,6 +561,11 @@ async def list_pending(
     items = (
         [_proposal_item(p) for p in proposals] if page == 1 else []
     ) + [_route_dict(r) for r in routes]
+
+    # E0.1: every item says how many approvals it needs and how many it
+    # has. An operator must be able to see "1 of 2" before deciding,
+    # otherwise a second approver has no way to know they are needed.
+    await _attach_approval_progress(session, user.tenant_id, items)
     return {
         "actions": items,
         "page": page,
@@ -329,8 +587,26 @@ async def approve_action(
     session: AsyncSession = Depends(get_session),
     state=Depends(get_cc_state),
 ) -> dict:
-    """Approve a pending action and route the decision to the SM."""
-    return await _route_decision(action_id, "approved", user, session, state)
+    """Record this approval; decide and dispatch when the policy is satisfied.
+
+    Under a multi-approver policy the first approval is recorded and the
+    action stays pending -- the response says how many more are needed,
+    rather than reporting a success that did not happen.
+    """
+    try:
+        return await _route_decision(action_id, DECISION_APPROVED, user, session, state)
+    except ApprovalIncomplete as pending:
+        return {
+            "action_id": action_id,
+            "decision": None,
+            "recorded": True,
+            "decided_by": user.email or user.user_id,
+            "approval": pending.block,
+            "detail": (
+                f"approval recorded; {pending.block['remaining']} more "
+                f"approver(s) required before this runs"
+            ),
+        }
 
 
 @router.post(
@@ -343,8 +619,12 @@ async def deny_action(
     session: AsyncSession = Depends(get_session),
     state=Depends(get_cc_state),
 ) -> dict:
-    """Deny a pending action and route the decision to the SM."""
-    return await _route_decision(action_id, "denied", user, session, state)
+    """Deny a pending action. A single denial is terminal (D16).
+
+    Denial never waits for a quorum: an approver who objects cannot be
+    outvoted by colleagues clicking faster.
+    """
+    return await _route_decision(action_id, DECISION_DENIED, user, session, state)
 
 
 @router.post(
@@ -370,6 +650,15 @@ async def batch_decide(
                 action_id, body.decision, user, session, state
             )
             results.append({"action_id": action_id, "ok": True, "detail": result})
+        except ApprovalIncomplete as pending:
+            # Recorded, not yet decided. Reporting this as a failure would
+            # be wrong; reporting it as done would be worse.
+            results.append({
+                "action_id": action_id,
+                "ok": True,
+                "pending": True,
+                "detail": pending.block,
+            })
         except HTTPException as exc:
             results.append(
                 {"action_id": action_id, "ok": False, "detail": exc.detail}
@@ -396,10 +685,59 @@ async def approval_history(
     routes, total = await ApprovalRouteRepo(session).list_history_paginated(
         user.tenant_id, page=page, page_size=page_size,
     )
+    items = [_route_dict(r) for r in routes]
+    await _attach_approval_progress(session, user.tenant_id, items)
     return {
-        "actions": [_route_dict(r) for r in routes],
+        "actions": items,
         "page": page,
         "page_size": page_size,
         "total": total,
         "tenant_id": user.tenant_id,
+    }
+
+
+@router.get(
+    "/{action_id}/records",
+    dependencies=[Depends(require_permission("action.approve"))],
+)
+async def approval_records(
+    action_id: str,
+    user: UserContext = Depends(require_permission("action.approve")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Every individual approval or denial recorded against this subject.
+
+    The evidence R-C3 promises: not "who decided" but who each approver
+    was, what they decided, and when. Works for both origins -- the
+    subject is a node action id or an agent proposal id.
+    """
+    repo = ApprovalRecordRepo(session)
+    records = list(await repo.list_for_subject(SUBJECT_ACTION, action_id))
+    subject_type = SUBJECT_ACTION
+    if not records:
+        records = list(
+            await repo.list_for_subject(SUBJECT_AGENT_PROPOSAL, action_id)
+        )
+        if records:
+            subject_type = SUBJECT_AGENT_PROPOSAL
+    # Tenant isolation: records carry their own tenant, so a subject from
+    # another tenant reads as empty rather than leaking its approvers.
+    records = [r for r in records if r.tenant_id == user.tenant_id]
+    return {
+        "subject_type": subject_type,
+        "subject_ref": action_id,
+        "tenant_id": user.tenant_id,
+        "records": [
+            {
+                "approver": r.approver_email or r.approver_ref,
+                "approver_ref": r.approver_ref,
+                "decision": r.decision,
+                "policy_id": r.policy_id or None,
+                "scope_ok": r.scope_ok,
+                "reason": r.reason,
+                "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+            }
+            for r in records
+        ],
+        "total": len(records),
     }

@@ -78,6 +78,16 @@ const cardHeaderRow: CSSProperties = {
   gap: "0.5rem",
 };
 
+const approvalBlockStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "0.25rem",
+  padding: "0.5rem 0.75rem",
+  borderRadius: "var(--radius-md, 6px)",
+  background: "var(--bg-subtle, rgba(127,127,127,0.08))",
+  borderLeft: "3px solid var(--warning, #b45309)",
+};
+
 const agentBlockStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -553,6 +563,30 @@ export default function ApprovalQueue() {
                       <span>Waiting since</span>
                       <span>{formatDate(action.routed_at ?? "")}</span>
                     </div>
+
+                    {/* E0.1: how many humans this needs, and who has
+                        already decided. Without this a second approver
+                        cannot tell they are required. */}
+                    {action.approval && action.approval.required > 1 ? (
+                      <div style={approvalBlockStyle}>
+                        <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
+                          {action.approval.received} of {action.approval.required} approvals
+                          {action.approval.policy_name
+                            ? ` \u00b7 ${action.approval.policy_name}`
+                            : ""}
+                        </div>
+                        {action.approval.approvers.length > 0 ? (
+                          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                            Approved by {action.approval.approvers.map((a) => a.approver).join(", ")}
+                          </div>
+                        ) : null}
+                        {action.approval.group_name ? (
+                          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                            Approvers must be in {action.approval.group_name}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {/* A1: an agent has to say what it saw and why. A
                         request with no rationale is not reviewable, so

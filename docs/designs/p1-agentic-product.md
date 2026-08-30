@@ -529,3 +529,93 @@ than the `action_id` its endpoint takes, sent `{ids, decision:"approve"}`
 against a `{action_ids, decision:"approved"}` contract, and rendered five
 fields Central Command has never sent. The one queue this slice unifies
 had to work before an agent could use it.
+
+---
+
+## 14. E0.1 — the approval policy binds (landed 2026-08-30)
+
+First slice of the **Enterprise Governance Foundation** (E0 + E1 +
+Capability Registry), ratified 2026-08-30. Spec amendment **A15**.
+
+### What was wrong
+
+`cc_approval_policies` has carried `approval_mode`, `required_approvers`
+and a group link since R2b. The Console has full CRUD for it. The S5
+autonomy contract faithfully reports it. **No code path consulted it
+when a decision was made** — `ApprovalPolicyRepo` had exactly two
+readers, the governance composer (for display) and its own CRUD router.
+A tenant could configure dual authorization and receive single
+authorization, silently. Fourth instance of the declared-with-no-caller
+pattern after `KnowledgeBase` (S5), fleet outcome dictification (QA-042)
+and directed-action outcomes (A0+A1).
+
+### The shape of the fix
+
+A decision is now a **set**, not a field. `cc_approval_records` holds one
+row per approver per subject (CC migration **0009**);
+`cc_approval_routes.decision` remains as a projection for compatibility.
+`unique(subject_type, subject_ref, approver_ref)` makes duplicate-approver
+prevention a database guarantee rather than a check a later path can
+forget.
+
+Judgement lives in the pure `harkeniq_cc/approval_policy.py`: policy
+resolution (most specific active match on action type, then device type,
+then risk; deterministic ties), required count, group membership, and
+the completion rule. Enforcement lives in the shared decision function
+both origins already called, so a node action and an Operational Agent
+proposal cannot diverge — there is one implementation.
+
+### Three defects the slice found beyond its own
+
+* **`auto_approve` would have been an autonomy bypass.** The Console
+  shipped policy presets using it. While policies were unenforced the
+  mode was inert; enforcing it as written would have made a single policy
+  row a second, ungoverned path to unattended execution — no evidence
+  bar, no budget, no error-budget drop-back, and no fence for the
+  risk-`high` classes that `never_budget_grantable` refuses at every
+  autonomy level. **Refused on write, coerced on read (A15.7).** The
+  autonomy contract stays the one governed answer to "may this run
+  without a human." Presets and the mode option retired from the UI.
+* **Approval policies could not be created at all on PostgreSQL.**
+  `created_by` was `String(32)` while a Keycloak subject is a
+  36-character UUID, so every create raised
+  `StringDataRightTruncation` on a real deployment and succeeded only on
+  the sqlite used in tests. Widened to 255 on policies and groups. Found
+  by running the slice on the live stack. Guarded by a new model
+  invariant test over identity-column widths, because sqlite ignores
+  VARCHAR length and no insert-based test can catch this class — second
+  instance after QA-040.
+* **A policy created as "dual approval for everything" governed
+  medium-risk actions only.** `risk_level` defaulted to `"medium"` while
+  `action_type` and `device_type` defaulted to `"*"`. All three selectors
+  now default to the wildcard, and the Console form gained the
+  "All Risk Levels" option it never had.
+
+### Proven on the live stack, two real Keycloak identities
+
+`auto_approve` refused with 400 · a dual policy binds three pending items
+across both origins · `operator1` approves and it records 1 of 2 without
+executing · the same person is refused 409 · `admin` approves and it
+decides, dispatches, and returns a real directive id · the ledger names
+both approvers individually · one approval plus one denial is denied,
+because a denial is terminal · one audit entry per approver and the chain
+still verifies.
+
+2683 → 2737 tests.
+
+### Left for the next slices
+
+Approver scope (`scope_ok` is written and enforced, resolving tenant-wide
+until grants exist) is delivered by **E1.2** without touching any
+approval code.
+
+The declared-but-unread sweep for this surface, so nothing here is
+mistaken for working: `approval_mode: "escalate"`,
+`CCApprovalPolicy.time_window_json`, `CCApprovalGroup.escalation_chain`,
+`slack_channel` and `github_team`. None is read by any runtime path. The
+first three are governance and belong to **A2**, where escalation is
+designed; the last two are notification integrations and belong with the
+outbound-integration work that OQ-3 assigned to R3 and that has never
+been built. They are left in place rather than removed because each names
+a real product capability, and removing the column would be mistaking
+"not built" for "not part of the product".

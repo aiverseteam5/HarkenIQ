@@ -143,7 +143,12 @@ class CCApprovalGroup(Base):
     github_team: Mapped[str] = mapped_column(String(255), default="")
     required_count: Mapped[int] = mapped_column(Integer, default=1)
     escalation_chain: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
-    created_by: Mapped[str] = mapped_column(String(32), default="")
+    #: E0.1: widened from String(32). A Keycloak subject is a 36-character
+    #: UUID, so creating one of these failed on PostgreSQL with
+    #: StringDataRightTruncation and succeeded only on the sqlite used in
+    #: tests -- approval policies and groups were not merely unenforced,
+    #: they were uncreatable on a real deployment.
+    created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
@@ -157,8 +162,60 @@ class CCApprovalGroupMember(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     group_id: Mapped[str] = mapped_column(String(32), ForeignKey("cc_approval_groups.id"))
     user_email: Mapped[str] = mapped_column(String(320))
+    #: E0.1: Keycloak subject. Membership matches on this first and falls
+    #: back to the email, because an address change must not silently
+    #: lapse a person's approval authority.
+    principal_ref: Mapped[str] = mapped_column(String(128), default="")
     role: Mapped[str] = mapped_column(String(32), default="approver")
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CCApprovalRecord(Base):
+    """One approver's decision on one subject (E0.1, 2026-08-30).
+
+    The approval ledger. Before this, `cc_approval_routes` carried a
+    single `decision` / `decided_by` / `decided_at` triple, so a policy
+    demanding two approvers was satisfied by one click and nothing in
+    the system could tell the difference. A decision is now a SET of
+    records and the route's column is a projection of them.
+
+    `unique(subject_type, subject_ref, approver_ref)` makes
+    duplicate-approver prevention a database guarantee rather than a
+    check that a later code path can forget.
+
+    `subject_type` carries both origins so the human path and the
+    Operational Agent path share one ledger, one policy and one
+    completion rule -- there is no second approval contract.
+    """
+
+    __tablename__ = "cc_approval_records"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: action | agent_proposal
+    subject_type: Mapped[str] = mapped_column(String(24))
+    subject_ref: Mapped[str] = mapped_column(String(64))
+    policy_id: Mapped[str] = mapped_column(String(32), default="")
+    #: Keycloak subject. Stable across email changes, unlike the address.
+    approver_ref: Mapped[str] = mapped_column(String(128))
+    approver_email: Mapped[str] = mapped_column(String(320), default="")
+    decision: Mapped[str] = mapped_column(String(16))  # approved | denied
+    #: Whether the approver's scope covered the subject at decision time.
+    #: E0.1 resolves tenant-wide for everyone; E1.2 makes it real without
+    #: touching this column or the code that writes it.
+    scope_ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    reason: Mapped[str] = mapped_column(String(512), default="")
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "subject_type", "subject_ref", "approver_ref",
+            name="uq_approval_record_subject_approver",
+        ),
+        Index("ix_approval_records_subject", "subject_type", "subject_ref"),
+    )
 
 
 class CCApprovalPolicy(Base):
@@ -171,7 +228,10 @@ class CCApprovalPolicy(Base):
     name: Mapped[str] = mapped_column(String(255))
     device_type: Mapped[str] = mapped_column(String(64), default="*")
     action_type: Mapped[str] = mapped_column(String(64), default="*")
-    risk_level: Mapped[str] = mapped_column(String(32), default="medium")
+    #: E0.1: "*" like the other two selectors. A Python-side default, so
+    #: no migration is needed; existing rows keep the value they were
+    #: given.
+    risk_level: Mapped[str] = mapped_column(String(32), default="*")
     time_window_json: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     approval_mode: Mapped[str] = mapped_column(String(32), default="require_approval")
     required_approvers: Mapped[int] = mapped_column(Integer, default=1)
@@ -179,7 +239,12 @@ class CCApprovalPolicy(Base):
         String(32), ForeignKey("cc_approval_groups.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(32), default="active")
-    created_by: Mapped[str] = mapped_column(String(32), default="")
+    #: E0.1: widened from String(32). A Keycloak subject is a 36-character
+    #: UUID, so creating one of these failed on PostgreSQL with
+    #: StringDataRightTruncation and succeeded only on the sqlite used in
+    #: tests -- approval policies and groups were not merely unenforced,
+    #: they were uncreatable on a real deployment.
+    created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

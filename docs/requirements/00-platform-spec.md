@@ -925,3 +925,72 @@ change control before merge.
    its UI display on the approver page, and regression tests pinning both
    halves (re-request allowed after deny; history present in the queue).
    Nothing else.
+
+### A15 — 2026-08-30 — Approval policy is enforced at decision time (decided: Vinod)
+
+**Trigger.** The pre-S6 architecture review found that
+`cc_approval_policies` has carried `approval_mode`, `required_approvers`
+and a group link since R2b, that the Console has full CRUD for it, and
+that the S5 autonomy contract faithfully reports it — while **no code
+path consulted it when a decision was made**. A tenant could configure
+dual authorization and receive single authorization, silently. This
+amendment writes down what §4 always intended, so the enforcement point
+is named and cannot drift again.
+
+**A15.1 — A decision is a set, not a field.** An approval or denial is
+recorded per approver in `cc_approval_records`. `cc_approval_routes`
+retains `decision` / `decided_by` / `decided_at` as a projection of that
+set for compatibility; the ledger is the truth.
+
+**A15.2 — The governing policy is the most specific active match** on
+`(action_type, device_type, risk_level)`, with `*` as the wildcard on
+each. Action type outweighs device type, which outweighs risk, so a rule
+written for one action class always beats a broader rule that happens to
+share its risk band. Ties break deterministically. **No policy configured
+means one approver**, which is the behaviour every existing tenant has.
+
+**A15.3 — An approver decides a subject once.** Enforced by
+`unique(subject_type, subject_ref, approver_ref)` in the database, so it
+cannot be lost to a later code path. A second decision from the same
+person is refused with 409, never counted twice.
+
+**A15.4 — A denial is terminal** (consistent with D16) and outranks any
+number of approvals. An approver who objects cannot be outvoted by
+colleagues deciding faster.
+
+**A15.5 — Group membership, when a group is bound**, is matched on the
+Keycloak subject first and falls back to the email address, so a rename
+cannot silently lapse someone's approval authority.
+
+**A15.6 — Each approval is audited individually**, not only the outcome.
+Auditing only the outcome would make a two-approver decision
+indistinguishable from a one-approver decision in the record that exists
+to prove it. `GET /api/approvals/{id}/records` is the read.
+
+**A15.7 — `approval_mode: "auto_approve"` is refused.** It is rejected on
+write and coerced to `require_approval` on read. Reasoning: while
+policies were unenforced the mode was inert; enforcing it as written
+would make a single policy row a second, ungoverned path to unattended
+execution — no evidence bar, no budget, no error-budget drop-back, and no
+fence for the risk-`high` classes that `never_budget_grantable` refuses
+at **every** autonomy level (A10.4, S5). **The tenant's autonomy contract
+remains the one governed answer to "may this run without a human."**
+Raising an action class's autonomy level is how it earns that, and only a
+human can do it. The Console policy preset offering the mode is a
+pre-S5 artifact and is retired.
+
+**A15.8 — One contract, both origins.** Node-proposed actions and
+Operational Agent proposals resolve the same policy, write the same
+ledger and obey the same completion rule. There is no second approval
+contract and no origin-specific exception.
+
+**A15.9 — Approval still never overrides a safety gate** (unchanged,
+A10.3). A fully approved action runs the unchanged node funnel and can
+still be refused there.
+
+**Approver scope** — an approval counting only within the approver's
+authorized scope — is specified here as the intended end state and is
+delivered by E1.2, which introduces scope grants. Until then every
+approver's authority is tenant-wide, which is today's behaviour stated
+explicitly rather than left implicit; the column and the check exist from
+E0.1 so the later slice changes no approval code.

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
+from harkeniq_cc.approval_policy import MODE_AUTO_APPROVE
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     ApprovalGroupRepo,
@@ -30,7 +31,12 @@ class PolicyCreateRequest(BaseModel):
     name: str
     device_type: str = "*"
     action_type: str = "*"
-    risk_level: str = "medium"
+    # E0.1: was "medium", while the other two selectors defaulted to "*".
+    # A policy created as "dual approval for everything" therefore
+    # governed medium-risk actions ONLY, silently. Found on the live
+    # stack: a dual policy for COLLECT_DIAGNOSTICS (risk "none") matched
+    # nothing. All three selectors now default to the wildcard.
+    risk_level: str = "*"
     time_window_json: Optional[dict] = None
     approval_mode: str = "require_approval"
     required_approvers: int = 1
@@ -68,6 +74,9 @@ class GroupUpdateRequest(BaseModel):
 class GroupMemberRequest(BaseModel):
     email: str
     role: str = "approver"
+    #: Keycloak subject. Optional: a membership added by email alone
+    #: still matches, it just cannot survive an address change.
+    principal_ref: str = ""
 
 
 class BudgetCreateRequest(BaseModel):
@@ -153,6 +162,32 @@ async def list_policies(
     }
 
 
+def _reject_auto_approve(mode: Optional[str]) -> None:
+    """E0.1: `auto_approve` is not a policy this platform will store.
+
+    While approval policies were unenforced this mode was inert. Enforcing
+    it as written would make one policy row a second, ungoverned path to
+    unattended execution: no evidence bar, no budget, no error-budget
+    drop-back, and no fence for the risk-`high` classes that
+    `never_budget_grantable` refuses at EVERY autonomy level.
+
+    The tenant's autonomy contract is the one governed answer to "may
+    this run without a human". Raising the autonomy level is how a class
+    earns that, and only a human can do it.
+    """
+    if mode is not None and mode.lower() == MODE_AUTO_APPROVE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "approval_mode 'auto_approve' is refused: unattended "
+                "execution is granted by the autonomy contract, which "
+                "requires evidence and a human decision, not by an "
+                "approval policy. Raise the tenant's autonomy level for "
+                "this action class instead."
+            ),
+        )
+
+
 @router.post(
     "/",
     dependencies=[Depends(require_permission("site.manage"))],
@@ -163,6 +198,7 @@ async def create_policy(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create an approval policy."""
+    _reject_auto_approve(body.approval_mode)
     policy = await ApprovalPolicyRepo(session).create(
         tenant_id=user.tenant_id,
         name=body.name,
@@ -197,6 +233,7 @@ async def update_policy(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Update an approval policy."""
+    _reject_auto_approve(body.approval_mode)
     repo = ApprovalPolicyRepo(session)
     policy = await repo.get_by_id(policy_id)
     if policy is None or policy.tenant_id != user.tenant_id:
@@ -315,7 +352,12 @@ async def get_group(
     members = await repo.list_members(group_id)
     payload = _group_dict(group)
     payload["members"] = [
-        {"id": m.id, "email": m.user_email, "role": m.role} for m in members
+        {
+            "id": m.id, "email": m.user_email, "role": m.role,
+            "principal_ref": m.principal_ref or "",
+            "subject_bound": bool(m.principal_ref),
+        }
+        for m in members
     ]
     payload["members_count"] = len(members)
     return payload
@@ -336,7 +378,10 @@ async def add_group_member(
     group = await repo.get_by_id(group_id)
     if group is None or group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="group not found")
-    member = await repo.add_member(group_id, body.email, body.role)
+    member = await repo.add_member(
+        group_id, body.email, body.role,
+        principal_ref=getattr(body, "principal_ref", "") or "",
+    )
     await AuditRepo(session).append(
         actor=user.user_id,
         action="group.member.add",

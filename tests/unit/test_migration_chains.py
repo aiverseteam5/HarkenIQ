@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0008"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0009"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0007"),
 }
 
@@ -95,8 +95,10 @@ class TestFreshDatabase:
         assert {
             "cc_operational_agents", "cc_agent_scopes",
             "cc_agent_capabilities", "cc_agent_proposals",
+            "cc_approval_records",
         } <= _tables(db)
         assert "actor" in _columns(db, "cc_outcome_history")
+        assert "principal_ref" in _columns(db, "cc_approval_group_members")
 
     def test_sm_chain_reaches_head(self, tmp_path):
         db = tmp_path / "sm.db"
@@ -110,6 +112,24 @@ class TestFreshDatabase:
 
 class TestExistingDatabase:
     """The production path: a database that predates this slice."""
+
+    def test_cc_upgrade_from_0008(self, tmp_path):
+        """E0.1's ledger lands on a database that predates it."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("drop table cc_approval_records")
+        con.execute(
+            "alter table cc_approval_group_members drop column principal_ref"
+        )
+        con.execute("update alembic_version set version_num='0008'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0009"
+        assert "cc_approval_records" in _tables(db)
+        assert "principal_ref" in _columns(db, "cc_approval_group_members")
 
     def test_cc_upgrade_from_0007(self, tmp_path):
         db = tmp_path / "cc.db"
@@ -136,7 +156,10 @@ class TestExistingDatabase:
         con.close()
 
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0008"
+        # Reaches HEAD from a legacy stamp, not merely the next revision:
+        # every guarded migration between here and head must be a no-op
+        # on the objects that already exist.
+        assert _version(db) == SERVICES["cc"][2]
         assert "cc_operational_agents" in _tables(db)
         assert "actor" in _columns(db, "cc_outcome_history")
 

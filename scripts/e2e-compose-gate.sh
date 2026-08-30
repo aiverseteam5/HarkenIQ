@@ -479,6 +479,84 @@ curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verif
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
     "http://localhost:8090/api/operational-agents/$AGENT_ID/execute")" = "404" ]
 
+step "E0.1: a configured approval policy actually binds"
+# The defect this closes: cc_approval_policies has carried
+# required_approvers since R2b and nothing consulted it, so a tenant
+# could configure dual authorization and get single authorization.
+# Runs AFTER the A0+A1 step so there is a live agent to propose with.
+
+# auto_approve is refused: unattended execution is granted by the autonomy
+# contract, which needs evidence and a human, never by an approval policy.
+AUTO_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"gate-auto","approval_mode":"auto_approve"}' \
+  http://localhost:8090/api/policies/)
+[ "$AUTO_CODE" = "400" ] || {
+  echo "auto_approve policy accepted ($AUTO_CODE), want 400" >&2; exit 1; }
+
+POLICY_ID=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"gate-dual","action_type":"COLLECT_DIAGNOSTICS",
+       "required_approvers":2}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+
+# A second, different fault opens a new incident, so the agent proposes
+# again (its dedupe key names the condition, so the same fault would not
+# re-propose). This one is governed by the dual policy.
+curl -skf -X POST https://localhost:9000/test/inject-fault \
+  -H 'Content-Type: application/json' \
+  -d '{"fault_type":"psu","target":"PSU1","params":{"health":"Critical"}}' \
+  > /dev/null
+wait_for "a second agent proposal under the dual policy" 300 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/approvals/ \
+   | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if [a for a in d['actions'] if a['origin']=='agent' and a['approval']['required']==2] else 1)\""
+DUAL_ID=$(curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/approvals/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print([a for a in d['actions']
+       if a['origin'] == 'agent' and a['approval']['required'] == 2][0]['action_id'])")
+
+step "E0.1: one approval records and does NOT execute"
+curl -sf -X POST -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("recorded") is True, d
+assert d.get("decision") is None, "one approval must not decide under a dual policy"
+assert d["approval"]["required"] == 2 and d["approval"]["received"] == 1
+print("1 of 2 recorded; nothing executed")
+'
+# The same person cannot be both approvers.
+DUP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/approve")
+[ "$DUP" = "409" ] || { echo "duplicate approver returned $DUP, want 409" >&2; exit 1; }
+
+step "E0.1: a second, different approver completes it"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["decision"] == "approved", d
+assert d["approval"]["received"] == 2, d["approval"]
+print("2 of 2 -> decided; delivered:", d["delivery"].get("delivered"))
+'
+# Each approval is individually auditable: the evidence R-C3 promises.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$DUAL_ID/records" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["total"] == 2, d
+approvers = {r["approver"] for r in d["records"]}
+assert len(approvers) == 2, "two DISTINCT approvers must be recorded"
+print("approval ledger:", ", ".join(sorted(approvers)))
+'
+# Leave the tenant as we found it: a stale rule must not govern a re-run.
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$POLICY_ID" > /dev/null
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 
