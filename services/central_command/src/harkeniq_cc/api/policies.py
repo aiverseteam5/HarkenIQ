@@ -440,10 +440,15 @@ async def delete_group(
 
 @router.get(
     "/autonomy",
-    dependencies=[Depends(require_permission("site.manage"))],
+    # S1 2026-08-29 (decision D2): POSTURE IS READABLE BY EVERY TENANT
+    # ROLE. The trust ladder must be visible to the people living under
+    # it — operators and viewers see what the system may do autonomously;
+    # only site.manage may change it (the POST/DELETE below are
+    # unchanged, and D2 forbids broadening mutation permissions).
+    dependencies=[Depends(require_permission("fleet.view"))],
 )
 async def list_autonomy_budgets(
-    user: UserContext = Depends(require_permission("site.manage")),
+    user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List autonomy budgets for the tenant."""

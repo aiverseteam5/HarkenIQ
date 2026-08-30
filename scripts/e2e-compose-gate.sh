@@ -105,10 +105,20 @@ wait_for "fan incident open" 120 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/incidents | grep -q '\"subsystem\": *\"fan\"\\|fan CRITICAL'"
 
 step "Action proposed at the SM"
-wait_for "pending action" 120 bash -c \
-  "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q COLLECT_DIAGNOSTICS"
-ACTION=$(curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+# Select the PENDING action, never actions[0]. The stack's volumes survive
+# between gate runs, so index 0 is whatever the LAST run left behind — an
+# already-approved action that never appears in CC's pending queue, which
+# then times out the C2 step below for a reason unrelated to the code
+# under test (observed 2026-08-29). Wait for and pick a genuinely pending one.
+pending_action_id() {
+  curl -s -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/actions \
+    | python3 -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a.get('status')=='pending'), ''))"
+}
+have_pending_action() { [ -n "$(pending_action_id)" ]; }
+
+wait_for "pending action" 120 have_pending_action
+ACTION=$(pending_action_id)
+[ -n "$ACTION" ] || { echo "no pending action at SM" >&2; exit 1; }
 
 step "Seed an OPERATOR (P0 2026-08-29): the role that was locked out of CC"
 # C1's proof at runtime: before the RBAC repair, CC granted non-admins
@@ -158,6 +168,74 @@ step "CC RBAC is real: operator reads fleet (200), cannot read audit (403)"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/)" = "200" ]
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/audit/)" = "403" ]
 
+step "S1: the trust ladder is VISIBLE to an operator, and still immutable (D2)"
+# Posture reads opened to fleet.view so the people living under the ladder
+# can see it; mutation stayed at site.manage. Both halves asserted.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/autonomy)" = "200" ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/stop-switch)" = "200" ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/stop-switch)" = "403" ]
+
+step "S1: the surfaces the Tenant Console now renders are reachable THROUGH the proxy"
+# Each of these had a live endpoint and no consumer before S1. The proxy
+# path is the one the browser actually uses, so assert it, not CC direct.
+for _p in learning/candidates learning/cycles learning/signals predictive/risk \
+          firmware/exposure audit/verify attention incidents; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8100/api/t/$TENANT_ID/$_p")
+  [ "$code" = "200" ] || { echo "proxy path $_p returned $code, want 200" >&2; exit 1; }
+done
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8100/api/t/$TENANT_ID/audit/verify" | grep -q '"valid": *true'
+
+step "S2: the attention capability answers with site attribution and evidence"
+# The contract a future agent consumes, proven on the real stack: every
+# ranked item must carry the site it belongs to, or a site-scoped caller
+# cannot tell which rows are its own.
+ATT=$(curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/)
+echo "$ATT" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert "items" in d and "sites" in d and "summary" in d, "attention contract shape"
+for i in d["items"]:
+    assert "site_id" in i and i["site_id"], "every item must carry site attribution"
+    assert "rank" in i and "band" in i and "reasons" in i, "ranking + explanation"
+    assert "recommended_next" in i and "capability" in i["recommended_next"]
+    assert "confidence" in i and "basis" in i["confidence"], "data sufficiency"
+print("attention OK:", len(d["items"]), "ranked,", len(d["sites"]), "sites")
+'
+# Read-only: the capability names next steps, it never performs them.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/)" = "405" ]
+
+step "S3: the learning substrate is DURABLE, not process memory"
+# The learning ledger and the knowledge it produced must live in the
+# database, so a restart cannot erase what the fleet learned. Assert the
+# tables exist and are the ones attention reads.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT to_regclass('cc_learning_cycles'), to_regclass('cc_learned_signals')" \
+  | grep -q "cc_learning_cycles|cc_learned_signals"
+# Learned signals are knowledge, never authority: no write verb exists.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/learning/signals)" = "405" ]
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/learning/signals \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert "signals" in d, "learned-signal contract shape"
+for s in d["signals"]:
+    assert s["scope_type"] in ("cohort", "site"), "scope must be evidence-bound"
+    assert s["statement"] and s["source_pattern_id"], "knowledge traces to a pattern"
+print("learned signals OK:", len(d["signals"]))
+'
+# Attention must expose the learned-signal slot, so yesterdays learning has
+# a path into tomorrows answer even before any pattern has been detected.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/attention/ \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for i in d["items"]:
+    assert "learned_signals" in i["evidence"], "attention consumes learned knowledge"
+print("attention<-learning wired OK")
+'
+
 step "CC ingested the pending action (C2: the approvals hop is wired)"
 # Fleet poll interval is 30s in this stack; the route must appear at CC.
 wait_for "approval route at CC" 120 bash -c \
@@ -170,6 +248,71 @@ echo "$RESULT" | grep -q '"decision": *"approved"'
 echo "$RESULT" | grep -q 'operator1@harkeniq.com'
 wait_for "SM action approved" 60 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/actions | grep -q '\"status\": *\"approved\"\\|approved'"
+
+step "S4: the diagnosis reaches the tenant surface, with its provenance"
+# The whole point of S4: before it, the LLM explanation stopped at the Site
+# Manager and the tenant could see WHAT was wrong but never WHY.
+SM_INC=$(curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/incidents)
+echo "$SM_INC" | python3 -c "import sys,json; d=json.load(sys.stdin); print('SM incidents:', len(d))"
+wait_for "incident at CC" 120 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/incidents/ | grep -q incident_id"
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/incidents/ | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert "incidents" in d, "incident contract shape"
+for i in d["incidents"]:
+    assert i["incident_id"] and i["site_id"], "tenant/site attribution"
+    assert "is_parent" in i and "children" in i, "correlation hierarchy preserved"
+    diag = i.get("diagnosis")
+    if diag:
+        # Provenance is a security property: a future agent reading this is
+        # itself a language model, and this text came from device telemetry.
+        assert diag["origin"], "diagnosis must name its origin"
+        assert diag["trust"] in ("untrusted_generated", "deterministic")
+        assert "generated" in diag, "model-authored fields must be grouped"
+print("incidents OK:", len(d["incidents"]), "| explained:", d["diagnosed"])
+'
+# Read-only: incidents are a record, not a control surface.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/incidents/)" = "405" ]
+# The pseudo-incident placeholder is gone, not left to disagree with truth.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/incidents)" = "404" ]
+
+step "S5: the autonomy contract is served, and it fences what it must"
+# Read at fleet.view (D2's read-split): the people living under the trust
+# ladder must be able to see it. The operator persona is used deliberately.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["contract_version"], "contract must be versioned for its consumers"
+for key in ("actor", "scope", "posture", "safety_state", "action_classes"):
+    assert key in d, f"missing contract section: {key}"
+by = {c["action_type"]: c for c in d["action_classes"]}
+# Every action the executor can run must be governed by a row here; a
+# class missing from the contract is a class nobody governs.
+assert len(by) >= 14, f"only {len(by)} action classes"
+# The boundary. No level, and no amount of evidence, may ever make these
+# autonomous through an autonomy budget.
+for at in ("FIRMWARE_UPDATE", "FIRMWARE_ROLLBACK", "INTERFACE_RESET",
+           "INTERFACE_DISABLE"):
+    assert by[at]["never_budget_grantable"] is True, at
+    assert by[at]["disposition"] == "denied", at
+# Every class states WHY it is where it is, and what would move it.
+for at, c in by.items():
+    assert c["disposition_reason"], f"{at} has no reason"
+    assert c["advancement"]["statement"], f"{at} has no advancement line"
+    assert "evidence" in c and "safety" in c
+print("autonomy OK:", len(by), "classes | level:",
+      d["posture"]["configured_level"],
+      "| safety reported:", d["safety_state"]["reported"])
+'
+# The contract is READ-ONLY. Every autonomy mutation stays on
+# /api/policies/* at site.manage; S5 added no second control path.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/autonomy/)" = "405" ]
+# Safety state must actually have travelled SM -> CC, not defaulted.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_safety_state WHERE reported = true" \
+  | grep -qv '^0$'
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

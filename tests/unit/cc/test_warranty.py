@@ -281,7 +281,18 @@ class TestWarrantyAPI:
         r = await client.get("/api/fleet/nonexistent-id")
         assert r.status_code == 404
 
-    async def test_incident_routes_not_shadowed(self, client):
+    async def test_pseudo_incident_routes_are_retired(self, client):
+        """S4: /api/fleet/incidents synthesised "incidents" from
+        critical-health devices. Real incidents now live at /api/incidents,
+        carrying their diagnosis and correlation hierarchy, so the
+        placeholder is gone rather than left to disagree with the truth.
+
+        `incidents` now falls through to /api/fleet/{device_id} and 404s as
+        an unknown device id — the route is not shadowing anything real.
+        """
         r = await client.get("/api/fleet/incidents")
-        assert r.status_code == 200
-        assert "incidents" in r.json()
+        assert r.status_code == 404
+
+        real = await client.get("/api/incidents/")
+        assert real.status_code == 200
+        assert "incidents" in real.json()

@@ -29,9 +29,15 @@ export const ROUTE_ACCESS: Record<string, AccessRule> = {
   // Fleet — fleet.view is held by every tenant role including viewer.
   "/dashboard": { perm: "fleet.view" },
   "/fleet": { perm: "fleet.view" },
+  // S2: read-only intelligence, same read grade as the fleet it ranks.
+  "/risk": { perm: "fleet.view" },
+  // S3: read-only view of what the fleet learned.
+  "/learning": { perm: "fleet.view" },
   "/reliability": { perm: "fleet.view" },
   // Auditor and viewer may read the queue; the page gates the approve and
   // deny buttons on action.approve separately.
+  // S4: real incidents with their diagnosis.
+  "/incidents": { perm: "incident.view" },
   "/approvals": { perm: "incident.view" },
   "/agents": { perm: "fleet.view" },
 

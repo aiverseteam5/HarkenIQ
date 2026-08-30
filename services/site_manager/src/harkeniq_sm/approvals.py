@@ -136,14 +136,29 @@ class ApprovalService:
         if existing is not None:
             return  # idempotent retry of a terminal report
         success = bool((outcome or {}).get("success", agent_status == "COMPLETED"))
+        result = "SUCCESS" if success else "FAILURE"
         session.add(ActionOutcomeRow(
             action_id=request.action_id,
             action_type=request.type,
             device_id=device_id,
-            outcome="SUCCESS" if success else "FAILURE",
+            outcome=result,
             fault_resolved=(outcome or {}).get("fault_resolved"),
             post_state=outcome if isinstance(outcome, dict) else None,
         ))
+        # S5: fold the outcome into the A2.2 error budget. Before this the
+        # drop-back model existed only in a class nothing constructed, so a
+        # class could fail repeatedly and keep its autonomy. Demotion is
+        # automatic and needs no human; only a human ever promotes.
+        from harkeniq_sm.db.repos import ErrorBudgetRepo
+
+        _, newly_dropped = await ErrorBudgetRepo(session).record(
+            request.type, result,
+        )
+        if newly_dropped:
+            logger.warning(
+                "Error budget drop-back for %s: autonomy withdrawn until an "
+                "operator reviews the failures", request.type,
+            )
 
     @staticmethod
     def _initial_status(agent_status: str) -> str:

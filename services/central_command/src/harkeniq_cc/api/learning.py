@@ -10,9 +10,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
+from harkeniq_cc.api.deps import get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.db.repos import CandidateSkillRepo
+from harkeniq_cc.db.repos import (
+    CandidateSkillRepo,
+    LearnedSignalRepo,
+    LearningCycleRepo,
+)
 
 router = APIRouter(prefix="/api/learning", tags=["learning"])
 
@@ -50,21 +54,19 @@ async def list_candidates(
 
 @router.get("/cycles")
 async def list_cycles(
+    status: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
-    state=Depends(get_cc_state),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """R-C1 learning cycles from the live intelligence engine.
+    """R-C1 learning cycles, from the DURABLE ledger (S3).
 
-    Cycles are in-process state (they reset with the loop's aggregation
-    cursor on restart, by design — see intelligence.py); candidate rows
-    are the durable record.
+    These used to be read from the intelligence engine's in-process
+    tracker, so the record of what the fleet learned vanished on restart.
+    The tracker is still the live working set; `cc_learning_cycles` is the
+    ledger, written at the end of every detection pass.
     """
-    engine = getattr(state, "intelligence", None)
-    if engine is None:
-        return {"cycles": [], "promotions": []}
-    tracker = engine.feedback
-    cycles = list(tracker.get_active_cycles()) + list(
-        tracker.get_completed_cycles()
+    rows = await LearningCycleRepo(session).list_cycles(
+        user.tenant_id, status=status,
     )
     return {
         "cycles": [
@@ -75,14 +77,65 @@ async def list_cycles(
                 "skill_id": c.skill_id,
                 "sites_distributed": c.sites_distributed,
                 "devices_applied": c.devices_applied,
-                "outcomes_before": c.outcomes_before,
-                "outcomes_after": c.outcomes_after,
+                "outcomes_before": c.outcomes_before or {},
+                "outcomes_after": c.outcomes_after or {},
                 "improvement_pct": c.improvement_pct,
-                "promoted": c.promoted,
-                "started_at": c.started_at,
-                "completed_at": c.completed_at,
+                # Recommended is not promoted: promotion stays governed by
+                # the marketplace human review path.
+                "promotion_recommended": c.promotion_recommended,
+                "status": c.status,
+                "started_at": c.started_at.isoformat() if c.started_at else None,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                "completed_at": (
+                    c.completed_at.isoformat() if c.completed_at else None
+                ),
             }
-            for c in cycles
+            for c in rows
         ],
-        "promotions": tracker.promotions,
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.get("/signals")
+async def list_signals(
+    scope_type: str | None = None,
+    scope_ref: str | None = None,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Durable learned signals — the knowledge the loop produced (S3).
+
+    This is the contract a future Operational Agent consumes as evidence:
+    "this cohort/site exhibits X, historical outcomes show Y, confidence Z".
+    It is knowledge, not authority: nothing here permits an action, and
+    every consumer still passes through the governed capability path.
+    """
+    rows = await LearnedSignalRepo(session).list_active(
+        user.tenant_id, scope_type=scope_type, scope_ref=scope_ref,
+    )
+    return {
+        "signals": [
+            {
+                "signal_key": s.signal_key,
+                "scope_type": s.scope_type,
+                "scope_ref": s.scope_ref,
+                "action_type": s.action_type,
+                "vendor": s.vendor,
+                "model": s.model,
+                "statement": s.statement,
+                "evidence": s.evidence or {},
+                "confidence": s.confidence,
+                "observation_count": s.observation_count,
+                "source_pattern_id": s.source_pattern_id,
+                "source_cycle_id": s.source_cycle_id,
+                "first_observed_at": (
+                    s.first_observed_at.isoformat() if s.first_observed_at else None
+                ),
+                "last_confirmed_at": (
+                    s.last_confirmed_at.isoformat() if s.last_confirmed_at else None
+                ),
+            }
+            for s in rows
+        ],
+        "tenant_id": user.tenant_id,
     }

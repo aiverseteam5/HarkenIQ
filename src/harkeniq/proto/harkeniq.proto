@@ -228,6 +228,19 @@ message FleetIncident {
   string device_agent_id = 5;
   string subsystem = 6;
   int64 opened_at_unix = 7;
+  // S4: the diagnosis rides the snapshot. Before this, the LLM explanation
+  // stopped at the Site Manager, so the tenant surface could show that
+  // something was wrong but never why. All additive tags; older agents and
+  // SMs simply leave them empty.
+  string parent_incident_id = 8;   // correlation parentage; "" for a parent
+  double confidence = 9;           // SM's correlation confidence
+  bool inferred = 10;              // domain was inferred, not confirmed (A1.1)
+  string correlation_meta_json = 11;
+  // The reasoning result stored on the incident: {provider, summary,
+  // confidence, evidence_cited, reasoning_steps, suggested_action,
+  // similar_past_incidents}. LLM-authored when provider == "llm", which is
+  // why consumers must treat it as generated content, never instruction.
+  string explanation_json = 12;
 }
 
 message FleetAction {
@@ -265,6 +278,47 @@ message CandidateSkill {
   int32 dry_run_matches = 8;
 }
 
+// S5: live autonomy SAFETY STATE at the site. Before this, suppression
+// and error-budget drop-back existed only inside the Site Manager and
+// were reachable only through its site-token break-glass API, so neither
+// the tenant operator nor any future agent could see that a class had
+// been demoted automatically. Safety state is a governance INPUT, not
+// page decoration: an actor must be able to evaluate the same state
+// before it acts. All additive; an older SM leaves it empty and CC
+// reports the site as not-reporting rather than as safe.
+message SuppressedDomain {
+  string domain_id = 1;
+  string event_family = 2;
+  string trigger_reason = 3;     // direct_dependency | statistical_threshold | ...
+  int32 device_count = 4;
+  int64 triggered_at_unix = 5;
+  int64 all_clear_at_unix = 6;   // 0 when devices are not yet all healthy
+}
+
+message ActionErrorBudget {
+  string action_type = 1;
+  int32 success_count = 2;
+  int32 failure_count = 3;
+  int32 total_count = 4;
+  double min_success_rate = 5;
+  bool dropped_back = 6;         // autonomy withdrawn automatically (A2.2)
+  int64 dropped_back_at_unix = 7;
+}
+
+message SiteBudgetRemaining {
+  string action_type = 1;
+  int32 remaining = 2;           // -1 = unlimited
+}
+
+message FleetSafetyState {
+  bool reported = 1;             // false => this SM cannot vouch for state
+  int64 as_of_unix = 2;
+  bool sm_stop_switch = 3;       // site-local stop switch (SM break-glass)
+  repeated SuppressedDomain suppressions = 4;
+  repeated ActionErrorBudget error_budgets = 5;
+  repeated SiteBudgetRemaining site_budgets = 6;
+}
+
 message FleetSnapshot {
   repeated FleetDevice devices = 1;
   repeated FleetIncident incidents = 2;
@@ -272,6 +326,7 @@ message FleetSnapshot {
   int64 snapshot_at_unix = 4;
   repeated FleetOutcome outcomes = 5;  // R3b-3: action outcomes for CC learning
   repeated CandidateSkill candidate_skills = 6;  // QA-033: R-C1 skill upflow
+  FleetSafetyState safety = 7;         // S5: live autonomy safety state
 }
 
 message ApprovalRouteRequest {

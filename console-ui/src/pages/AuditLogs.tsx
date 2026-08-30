@@ -23,6 +23,13 @@ interface AuditEntry {
   detail: Record<string, unknown> | null;
 }
 
+interface ChainVerification {
+  valid: boolean;
+  length: number;
+  first_bad_seq: number | null;
+  error: string | null;
+}
+
 /* ── Styles ───────────────────────────────────────── */
 
 const detailRow: CSSProperties = {
@@ -36,6 +43,20 @@ const jsonBlock: CSSProperties = {
   fontSize: "0.75rem", fontFamily: "var(--font-mono, monospace)", whiteSpace: "pre-wrap",
   maxHeight: 300, overflow: "auto", marginTop: "0.75rem",
 };
+
+function chainBanner(valid: boolean | null): CSSProperties {
+  const tone =
+    valid === true ? "var(--status-ok, #2E7D32)"
+      : valid === false ? "var(--status-critical, #B3372E)"
+        : "var(--border-light)";
+  return {
+    display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap",
+    padding: "0.625rem 0.875rem", marginBottom: "1rem",
+    background: "var(--bg-card)", border: "1px solid var(--border-light)",
+    borderLeft: `3px solid ${tone}`, borderRadius: "var(--radius-md)",
+    fontSize: "0.8125rem",
+  };
+}
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -65,6 +86,11 @@ export default function AuditLogs() {
   });
   const [selected, setSelected] = useState<AuditEntry | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  /* S1 2026-08-29: the chain-verify endpoints existed at every service with
+     no UI consumer. Proof is a product feature (PRD principle 6) — say it
+     on the page instead of leaving it to curl. */
+  const [chain, setChain] = useState<ChainVerification | null>(null);
+  const [chainState, setChainState] = useState<"loading" | "ok" | "unavailable">("loading");
 
   const { tenantId = "" } = useParams<{ tenantId: string }>();
 
@@ -101,6 +127,23 @@ export default function AuditLogs() {
 
   useEffect(() => { void fetchLogs(); }, [fetchLogs]);
 
+  const verifyChain = useCallback(async () => {
+    setChainState("loading");
+    try {
+      // The TENANT's own operational chain, at Central Command, through the
+      // placement-resolved proxy. (The Console's platform chain has its own
+      // super-admin verify endpoint and is not this page's subject.)
+      const res = await getJson<ChainVerification>(`/api/t/${tenantId}/audit/verify`);
+      setChain(res);
+      setChainState("ok");
+    } catch {
+      setChain(null);
+      setChainState("unavailable");
+    }
+  }, [tenantId]);
+
+  useEffect(() => { void verifyChain(); }, [verifyChain]);
+
   const handleExport = useCallback((format: "csv" | "json") => {
     const params = new URLSearchParams();
     params.set("format", format);
@@ -128,6 +171,37 @@ export default function AuditLogs() {
           { label: "Export JSON", onClick: () => handleExport("json"), variant: "default" as const },
         ]}
       />
+
+      {/* Chain integrity: the tenant's Central Command audit chain. A red
+          state here is a compliance event, not a cosmetic one. */}
+      <div style={chainBanner(chainState === "ok" && chain ? chain.valid : null)}>
+        {/* Name the chain. The table below lists the Console's governance
+            events; this verifies the OPERATIONAL chain at Central Command.
+            Claiming otherwise would be the exact class of untruth P0
+            removed from this product. */}
+        <span style={{ fontWeight: 600 }}>
+          {chainState === "loading" && "Verifying operational audit chain..."}
+          {chainState === "unavailable" && "Operational chain: verification unavailable"}
+          {chainState === "ok" && chain?.valid && "Operational audit chain verified"}
+          {chainState === "ok" && chain && !chain.valid && "OPERATIONAL AUDIT CHAIN BROKEN"}
+        </span>
+        <span style={{ color: "var(--text-secondary)" }}>
+          {chainState === "ok" && chain?.valid &&
+            `Central Command · ${chain.length} entries, cryptographically linked`}
+          {chainState === "ok" && chain && !chain.valid &&
+            `Central Command · first bad entry #${chain.first_bad_seq ?? "?"}${chain.error ? ` — ${chain.error}` : ""}`}
+          {chainState === "unavailable" &&
+            "Central Command did not answer. The governance entries below are still readable."}
+        </span>
+        <button
+          className="btn btn-sm"
+          style={{ marginLeft: "auto" }}
+          onClick={() => void verifyChain()}
+          disabled={chainState === "loading"}
+        >
+          Re-verify
+        </button>
+      </div>
 
       <FilterBar
         filters={filterDefs}

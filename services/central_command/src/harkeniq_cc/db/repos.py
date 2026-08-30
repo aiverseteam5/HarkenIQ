@@ -7,7 +7,7 @@ so multi-table updates remain atomic.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select
@@ -24,7 +24,11 @@ from harkeniq_cc.db.models import (
     CCCveEntry,
     CCFleetCache,
     CCFleetPattern,
+    CCIncident,
+    CCLearnedSignal,
+    CCLearningCycle,
     CCOutcomeHistory,
+    CCSafetyState,
     CCSite,
     CCSkillDelivery,
     CCStopSwitch,
@@ -1162,5 +1166,271 @@ class SkillDeliveryRepo:
         return (
             await self.session.execute(
                 select(CCSkillDelivery).order_by(CCSkillDelivery.delivered_at)
+            )
+        ).scalars().all()
+
+
+class LearningCycleRepo:
+    """Durable ledger of R-C1 learning cycles (S3)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, tenant_id: str, entry) -> CCLearningCycle:
+        """Persist a tracker cycle. Idempotent on cycle_id, so the loop can
+        write the same cycle on every pass as it advances."""
+        row = await self.session.get(CCLearningCycle, entry.cycle_id)
+        if row is None:
+            row = CCLearningCycle(cycle_id=entry.cycle_id, tenant_id=tenant_id)
+            self.session.add(row)
+            if entry.started_at:
+                row.started_at = datetime.fromtimestamp(
+                    entry.started_at, tz=timezone.utc
+                )
+        row.tenant_id = tenant_id or row.tenant_id
+        row.pattern_id = entry.pattern_id
+        row.pattern_type = entry.pattern_type
+        row.skill_id = entry.skill_id
+        row.sites_distributed = entry.sites_distributed
+        row.devices_applied = entry.devices_applied
+        row.outcomes_before = dict(entry.outcomes_before or {})
+        row.outcomes_after = dict(entry.outcomes_after or {})
+        row.improvement_pct = entry.improvement_pct
+        row.promotion_recommended = bool(entry.promoted)
+        row.updated_at = utcnow()
+        if entry.completed_at:
+            row.completed_at = datetime.fromtimestamp(
+                entry.completed_at, tz=timezone.utc
+            )
+            row.status = "closed"
+        elif entry.promoted:
+            row.status = "promotion_recommended"
+        elif entry.skill_id:
+            row.status = "measuring"
+        else:
+            row.status = "open"
+        await self.session.flush()
+        return row
+
+    async def list_cycles(
+        self, tenant_id: str, status: Optional[str] = None, limit: int = 200,
+    ) -> Sequence[CCLearningCycle]:
+        stmt = select(CCLearningCycle).where(
+            CCLearningCycle.tenant_id == tenant_id
+        )
+        if status:
+            stmt = stmt.where(CCLearningCycle.status == status)
+        stmt = stmt.order_by(CCLearningCycle.started_at.desc()).limit(limit)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def get(self, cycle_id: str) -> Optional[CCLearningCycle]:
+        return await self.session.get(CCLearningCycle, cycle_id)
+
+
+class LearnedSignalRepo:
+    """Durable knowledge derived from patterns (S3).
+
+    Upsert on (tenant, signal_key): re-detecting the same relationship
+    REFRESHES the knowledge and bumps its observation count rather than
+    accumulating duplicates.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, tenant_id: str, signal: dict, cycle_id: Optional[str] = None,
+    ) -> CCLearnedSignal:
+        existing = (
+            await self.session.execute(
+                select(CCLearnedSignal)
+                .where(CCLearnedSignal.tenant_id == tenant_id)
+                .where(CCLearnedSignal.signal_key == signal["signal_key"])
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = CCLearnedSignal(
+                tenant_id=tenant_id, signal_key=signal["signal_key"],
+            )
+            self.session.add(existing)
+        else:
+            existing.observation_count += 1
+        existing.scope_type = signal["scope_type"]
+        existing.scope_ref = signal["scope_ref"]
+        existing.action_type = signal["action_type"]
+        existing.vendor = signal.get("vendor", "")
+        existing.model = signal.get("model", "")
+        existing.statement = signal["statement"][:512]
+        existing.evidence = dict(signal.get("evidence") or {})
+        existing.confidence = signal["confidence"]
+        existing.source_pattern_id = signal.get("source_pattern_id", "")
+        if cycle_id:
+            existing.source_cycle_id = cycle_id
+        existing.status = "active"
+        existing.last_confirmed_at = utcnow()
+        await self.session.flush()
+        return existing
+
+    async def list_active(
+        self, tenant_id: str, scope_type: Optional[str] = None,
+        scope_ref: Optional[str] = None, limit: int = 500,
+    ) -> Sequence[CCLearnedSignal]:
+        stmt = (
+            select(CCLearnedSignal)
+            .where(CCLearnedSignal.tenant_id == tenant_id)
+            .where(CCLearnedSignal.status == "active")
+        )
+        if scope_type:
+            stmt = stmt.where(CCLearnedSignal.scope_type == scope_type)
+        if scope_ref:
+            stmt = stmt.where(CCLearnedSignal.scope_ref == scope_ref)
+        stmt = stmt.order_by(CCLearnedSignal.confidence.desc()).limit(limit)
+        return (await self.session.execute(stmt)).scalars().all()
+
+
+class SafetyStateRepo:
+    """Live autonomy safety state per site (S5).
+
+    Replace-on-poll, like the fleet cache: safety state is a CURRENT
+    reading, and a stale row read as current would be worse than none.
+    A poll that carried no safety state writes `reported=False` rather
+    than leaving yesterday's row to look like today's truth.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, tenant_id: str, site_id: str, safety: dict,
+    ) -> CCSafetyState:
+        row = await self.session.get(CCSafetyState, site_id)
+        if row is None:
+            row = CCSafetyState(site_id=site_id)
+            self.session.add(row)
+        row.tenant_id = tenant_id
+        row.reported = bool(safety.get("reported"))
+        as_of = safety.get("as_of_unix") or 0
+        row.as_of = (
+            datetime.fromtimestamp(as_of, tz=timezone.utc) if as_of else None
+        )
+        row.sm_stop_switch = bool(safety.get("sm_stop_switch"))
+        row.suppressions = safety.get("suppressions") or []
+        row.error_budgets = safety.get("error_budgets") or []
+        row.site_budgets = safety.get("site_budgets") or {}
+        row.ingested_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        return row
+
+    async def list_for_tenant(self, tenant_id: str) -> Sequence[CCSafetyState]:
+        return (
+            await self.session.execute(
+                select(CCSafetyState)
+                .where(CCSafetyState.tenant_id == tenant_id)
+                .order_by(CCSafetyState.site_id)
+            )
+        ).scalars().all()
+
+
+class IncidentRepo:
+    """Real incidents projected from Site Manager snapshots (S4)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, tenant_id: str, site_id: str, inc: dict) -> CCIncident:
+        """Idempotent on incident_id; refreshes diagnosis on every poll.
+
+        The diagnosis can arrive AFTER the incident opens (the LLM enriches
+        asynchronously at the site), so a later poll legitimately carries an
+        explanation the first one did not.
+        """
+        row = await self.session.get(CCIncident, inc["incident_id"])
+        if row is None:
+            row = CCIncident(
+                incident_id=inc["incident_id"], tenant_id=tenant_id,
+            )
+            self.session.add(row)
+        row.tenant_id = tenant_id or row.tenant_id
+        row.site_id = site_id
+        row.kind = inc.get("kind", "")
+        row.status = inc.get("status", "open")
+        row.title = (inc.get("title") or "")[:512]
+        row.device_agent_id = inc.get("device_agent_id", "")
+        row.subsystem = inc.get("subsystem", "")
+        row.parent_incident_id = inc.get("parent_incident_id") or None
+        row.confidence = inc.get("confidence", 0.0)
+        row.inferred = bool(inc.get("inferred", False))
+        if inc.get("correlation_meta"):
+            row.correlation_meta = dict(inc["correlation_meta"])
+        if inc.get("explanation"):
+            row.explanation = dict(inc["explanation"])
+        opened = inc.get("opened_at_unix")
+        if opened:
+            row.opened_at = datetime.fromtimestamp(opened, tz=timezone.utc)
+        row.last_seen_at = utcnow()
+        # Reappearing after an inferred resolution means it never really
+        # cleared; reopen rather than leaving a stale resolved row.
+        row.resolved_at = None
+        row.status = inc.get("status", "open")
+        await self.session.flush()
+        return row
+
+    async def resolve_absent(
+        self, tenant_id: str, site_id: str, present_ids: set[str],
+    ) -> int:
+        """D3 absence-inference: an open incident missing from this site's
+        snapshot has cleared at the site, so mark it resolved here.
+
+        Scoped to ONE site: another site's incidents are absent from this
+        snapshot for the obvious reason and must not be resolved by it.
+        """
+        rows = (
+            await self.session.execute(
+                select(CCIncident)
+                .where(CCIncident.tenant_id == tenant_id)
+                .where(CCIncident.site_id == site_id)
+                .where(CCIncident.status == "open")
+            )
+        ).scalars().all()
+        resolved = 0
+        for row in rows:
+            if row.incident_id not in present_ids:
+                row.status = "resolved"
+                row.resolved_at = utcnow()
+                resolved += 1
+        if resolved:
+            await self.session.flush()
+        return resolved
+
+    async def list_incidents(
+        self, tenant_id: str, status: Optional[str] = "open",
+        site_id: Optional[str] = None, device_agent_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> Sequence[CCIncident]:
+        stmt = select(CCIncident).where(CCIncident.tenant_id == tenant_id)
+        if status:
+            stmt = stmt.where(CCIncident.status == status)
+        if site_id:
+            stmt = stmt.where(CCIncident.site_id == site_id)
+        if device_agent_id:
+            stmt = stmt.where(CCIncident.device_agent_id == device_agent_id)
+        stmt = stmt.order_by(CCIncident.opened_at.desc().nullslast()).limit(limit)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def get(self, tenant_id: str, incident_id: str) -> Optional[CCIncident]:
+        row = await self.session.get(CCIncident, incident_id)
+        if row is None or row.tenant_id != tenant_id:
+            return None
+        return row
+
+    async def children_of(
+        self, tenant_id: str, parent_id: str,
+    ) -> Sequence[CCIncident]:
+        return (
+            await self.session.execute(
+                select(CCIncident)
+                .where(CCIncident.tenant_id == tenant_id)
+                .where(CCIncident.parent_incident_id == parent_id)
+                .order_by(CCIncident.opened_at)
             )
         ).scalars().all()

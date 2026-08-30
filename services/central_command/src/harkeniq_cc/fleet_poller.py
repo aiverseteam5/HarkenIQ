@@ -77,6 +77,23 @@ async def fleet_poll_loop(state) -> None:
                             snapshot.get("pending_actions", []),
                         )
 
+                        # S4: real incidents, with their diagnosis, replace
+                        # the critical-health pseudo-incidents.
+                        await _ingest_incidents(
+                            session, state.config.tenant_id, site.id,
+                            snapshot.get("incidents", []),
+                        )
+
+                        # S5: live autonomy safety state. Written on every
+                        # poll INCLUDING when the site reported none, so a
+                        # stale row can never pass for a current reading.
+                        from harkeniq_cc.db.repos import SafetyStateRepo
+
+                        await SafetyStateRepo(session).upsert(
+                            state.config.tenant_id, site.id,
+                            snapshot.get("safety") or {"reported": False},
+                        )
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
 
@@ -178,6 +195,32 @@ async def _ingest_pending_actions(
         logger.info(
             "Approval routes reconciled for site %s: %d new, %d superseded",
             site_id, created, superseded,
+        )
+
+
+async def _ingest_incidents(
+    session, tenant_id: str, site_id: str, incidents: list[dict],
+) -> None:
+    """Persist the site's open incidents; infer resolution by absence (D3).
+
+    The snapshot carries only OPEN incidents, so anything previously open
+    at this site and missing now has cleared there. Resolution is inferred,
+    never explained — a reason needs its own evidence and is deferred.
+    """
+    from harkeniq_cc.db.repos import IncidentRepo
+
+    repo = IncidentRepo(session)
+    present: set[str] = set()
+    for inc in incidents:
+        if not inc.get("incident_id"):
+            continue
+        present.add(inc["incident_id"])
+        await repo.upsert(tenant_id, site_id, inc)
+    resolved = await repo.resolve_absent(tenant_id, site_id, present)
+    if incidents or resolved:
+        logger.info(
+            "Incidents for site %s: %d open, %d inferred resolved",
+            site_id, len(present), resolved,
         )
 
 

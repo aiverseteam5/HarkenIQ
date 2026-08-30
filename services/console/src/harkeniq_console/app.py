@@ -100,6 +100,20 @@ def create_app(state) -> FastAPI:
     _CC_PREFIXES = (
         "fleet", "approvals", "agents", "policies", "outcomes",
         "predictive", "warranty", "firmware", "sites", "audit",
+        # S1 2026-08-29: /api/learning/* was unreachable from the product —
+        # the R-C1 loop ran headless with no consumer (final assessment).
+        "learning",
+        # S2 2026-08-29: the attention capability (ranked risk + evidence +
+        # next governed capability). One contract, many consumers; the
+        # Console is the first of them.
+        "attention",
+        # S4 2026-08-29: real incidents with their diagnosis.
+        "incidents",
+        # S5 2026-08-29: the governed decision boundary for action —
+        # what may run without a human, on what evidence, under what
+        # live safety state. Read-only; every mutation stays on the
+        # existing /api/policies/* routes at site.manage.
+        "autonomy",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

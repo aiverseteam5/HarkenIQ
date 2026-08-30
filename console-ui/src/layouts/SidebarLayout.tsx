@@ -49,11 +49,20 @@ const TENANT_NAV: SidebarSection[] = [
   {
     label: "Fleet",
     items: [
-      { key: "/dashboard", label: "Dashboard", icon: "\u25A6" },
+      { key: "/dashboard", label: "Overview", icon: "\u25A6" },
+      { key: "/incidents", label: "Incidents", icon: "\u26A1" },
       { key: "/fleet", label: "Fleet Overview", icon: "\u2318" },
+      { key: "/risk", label: "Risk & Exposure", icon: "\u26a0" },
+      { key: "/learning", label: "Learning", icon: "\u2726" },
       { key: "/reliability", label: "Vendor Reliability", icon: "\u2696" },
       { key: "/approvals", label: "Approvals", icon: "\u2714" },
-      { key: "/agents", label: "Agents", icon: "\u2699" },
+      // S5: the governed decision boundary for action. Sits next to
+      // Approvals because it answers the question one step earlier \u2014
+      // what needs an approval at all.
+      { key: "/autonomy", label: "Autonomy", icon: "\u2696" },
+      // S1: named for what it lists. "Agents" is reserved for the
+      // operational-agent surface (A0+), so the two never blur.
+      { key: "/agents", label: "Harken Nodes", icon: "\u2699" },
     ],
   },
   {

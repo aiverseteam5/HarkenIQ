@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from harkeniq_sm.api.deps import require_site_token
-from harkeniq_sm.db.repos import AuditRepo
+from harkeniq_sm.db.repos import AuditRepo, ErrorBudgetRepo
 
 router = APIRouter(
     prefix="/api/autonomy", dependencies=[Depends(require_site_token)]
@@ -42,7 +42,52 @@ async def autonomy_state(request: Request) -> dict:
     engine = getattr(request.app.state.sm, "suppression", None)
     if engine is not None:
         result["suppression"] = engine.get_state()
+    # S5: the persisted A2.2 error budgets. Same state Central Command
+    # now reads over the fleet snapshot; this is the break-glass view.
+    state = request.app.state.sm
+    async with state.sessionmaker() as session:
+        result["error_budgets"] = [
+            {
+                "action_type": r.action_type,
+                "success_count": r.success_count,
+                "failure_count": r.failure_count,
+                "total_count": r.total_count,
+                "min_success_rate": r.min_success_rate,
+                "dropped_back": r.dropped_back,
+                "dropped_back_at": (
+                    r.dropped_back_at.isoformat() if r.dropped_back_at else None
+                ),
+            }
+            for r in await ErrorBudgetRepo(session).list_all()
+        ]
     return result
+
+
+@router.post("/error-budget/{action_type}/recover")
+async def recover_error_budget(
+    request: Request, action_type: str, body: ActorBody,
+) -> dict:
+    """Operator reviews the failures and restores autonomy for a class.
+
+    Recovery lives here, at the site, because it is the counterpart of a
+    demotion the Site Manager made. A tenant-plane control for it is a
+    named capability-registry candidate (design doc S11), not something
+    S5 invents a second CC->SM command path for.
+    """
+    state = request.app.state.sm
+    async with state.sessionmaker() as session:
+        if not await ErrorBudgetRepo(session).recover(action_type):
+            raise HTTPException(
+                status_code=404, detail="action type not dropped back",
+            )
+        await AuditRepo(session).append(
+            actor=body.actor,
+            action="error_budget.recover",
+            subject=f"action:{action_type}",
+            detail={"source": "sm.api"},
+        )
+        await session.commit()
+    return {"recovered": action_type}
 
 
 @router.post("/stop-switch")

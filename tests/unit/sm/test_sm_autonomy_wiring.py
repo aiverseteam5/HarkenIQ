@@ -156,6 +156,149 @@ class TestHeartbeatLease:
         assert lease.suppression_domains == ["dom-1"]
 
 
+class TestErrorBudgetDropBackHasTeeth:
+    """S5: automatic demotion must change what the agent may do.
+
+    R3a ratified the drop-back model but nothing consulted it at runtime,
+    so a class could fail repeatedly and keep its autonomy. The lease is
+    where that has to bite — and it must bite as PROPOSE, not DENY: the
+    action is still the right one, it just no longer runs unattended.
+    """
+
+    async def test_dropped_back_class_drops_to_propose(self, lease_env, db):
+        from harkeniq_sm.db.repos import ErrorBudgetRepo
+        from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE
+
+        lease_env["autonomy"].update_policy([
+            {"action_type": "SEL_CLEAR", "max_per_window": 5,
+             "window_seconds": 3600, "risk_level": "low"},
+        ])
+        lease = await _heartbeat_lease(lease_env)
+        assert lease.allows_action("SEL_CLEAR", "low", True) == "execute"
+
+        async with db() as session:
+            repo = ErrorBudgetRepo(session)
+            for _ in range(MIN_OUTCOMES_TO_JUDGE):
+                await repo.record("SEL_CLEAR", "FAILURE")
+            await session.commit()
+
+        lease = await _heartbeat_lease(lease_env)
+        assert lease.budget_remaining["SEL_CLEAR"] == 0
+        assert lease.allows_action("SEL_CLEAR", "low", True) == "propose"
+        # The class is still granted — demotion is not revocation.
+        assert "SEL_CLEAR" in lease.action_classes
+
+    async def test_a_healthy_class_is_untouched(self, lease_env, db):
+        from harkeniq_sm.db.repos import ErrorBudgetRepo
+        from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE
+
+        lease_env["autonomy"].update_policy([
+            {"action_type": "SEL_CLEAR", "max_per_window": 5,
+             "window_seconds": 3600, "risk_level": "low"},
+            {"action_type": "BMC_RESET", "max_per_window": 5,
+             "window_seconds": 3600, "risk_level": "low"},
+        ])
+        async with db() as session:
+            repo = ErrorBudgetRepo(session)
+            for _ in range(MIN_OUTCOMES_TO_JUDGE):
+                await repo.record("SEL_CLEAR", "FAILURE")
+            await session.commit()
+
+        lease = await _heartbeat_lease(lease_env)
+        assert lease.allows_action("SEL_CLEAR", "low", True) == "propose"
+        assert lease.allows_action("BMC_RESET", "low", True) == "execute"
+
+    async def test_recovery_restores_the_lease(self, lease_env, db):
+        from harkeniq_sm.db.repos import ErrorBudgetRepo
+        from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE
+
+        lease_env["autonomy"].update_policy([
+            {"action_type": "SEL_CLEAR", "max_per_window": 5,
+             "window_seconds": 3600, "risk_level": "low"},
+        ])
+        async with db() as session:
+            repo = ErrorBudgetRepo(session)
+            for _ in range(MIN_OUTCOMES_TO_JUDGE):
+                await repo.record("SEL_CLEAR", "FAILURE")
+            await session.commit()
+        assert (await _heartbeat_lease(lease_env)).allows_action(
+            "SEL_CLEAR", "low", True
+        ) == "propose"
+
+        async with db() as session:
+            assert await ErrorBudgetRepo(session).recover("SEL_CLEAR") is True
+            await session.commit()
+        assert (await _heartbeat_lease(lease_env)).allows_action(
+            "SEL_CLEAR", "low", True
+        ) == "execute"
+
+
+class TestOutcomeReportFoldsTheErrorBudget:
+    """The one place SM learns a terminal result must feed the budget."""
+
+    async def test_repeated_failures_demote_the_class(self, db):
+        from harkeniq_sm.approvals import ApprovalService
+        from harkeniq_sm.db.repos import ErrorBudgetRepo
+        from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE
+
+        config = _config()
+        approvals = ApprovalService(db, config)
+        servicer = AgentServiceServicer(
+            IngestService(db, config), approvals=approvals,
+        )
+        await servicer.RegisterAgent(
+            harkeniq_pb2.AgentRegistration(
+                agent_id="agent-eb", agent_name="srv-eb",
+                vendor="Dell", model="R750",
+            ),
+            None,
+        )
+        for i in range(MIN_OUTCOMES_TO_JUDGE):
+            await servicer.ReportAction(
+                harkeniq_pb2.ActionReport(
+                    agent_id="agent-eb", action_id=f"act-{i}",
+                    type="SEL_CLEAR", status="FAILED",
+                    outcome_json='{"success": false}',
+                ),
+                None,
+            )
+        async with db() as session:
+            rows = await ErrorBudgetRepo(session).list_all()
+            assert [r.action_type for r in rows] == ["SEL_CLEAR"]
+            assert rows[0].total_count == MIN_OUTCOMES_TO_JUDGE
+            assert rows[0].dropped_back is True
+
+    async def test_successes_leave_autonomy_intact(self, db):
+        from harkeniq_sm.approvals import ApprovalService
+        from harkeniq_sm.db.repos import ErrorBudgetRepo
+        from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE
+
+        config = _config()
+        servicer = AgentServiceServicer(
+            IngestService(db, config), approvals=ApprovalService(db, config),
+        )
+        await servicer.RegisterAgent(
+            harkeniq_pb2.AgentRegistration(
+                agent_id="agent-ok", agent_name="srv-ok",
+                vendor="Dell", model="R750",
+            ),
+            None,
+        )
+        for i in range(MIN_OUTCOMES_TO_JUDGE * 2):
+            await servicer.ReportAction(
+                harkeniq_pb2.ActionReport(
+                    agent_id="agent-ok", action_id=f"ok-{i}",
+                    type="BMC_RESET", status="COMPLETED",
+                    outcome_json='{"success": true}',
+                ),
+                None,
+            )
+        async with db() as session:
+            rows = await ErrorBudgetRepo(session).list_all()
+            assert rows[0].dropped_back is False
+            assert rows[0].success_count == MIN_OUTCOMES_TO_JUDGE * 2
+
+
 class TestCompletedActionsDrawBudget:
     async def test_report_action_records_execution(self, db):
         from harkeniq_sm.approvals import ApprovalService
