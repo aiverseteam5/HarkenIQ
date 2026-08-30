@@ -40,6 +40,49 @@ class SiteRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_by_cc_id(self, cc_site_id: str) -> Optional[Site]:
+        """The site Central Command means. The authoritative resolution."""
+        if not cc_site_id:
+            return None
+        return (
+            await self.session.execute(
+                select(Site).where(Site.cc_site_id == cc_site_id)
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_name(self, name: str) -> Optional[Site]:
+        return (
+            await self.session.execute(select(Site).where(Site.name == name))
+        ).scalar_one_or_none()
+
+    async def bind(self, site: Site, cc_site_id: str) -> None:
+        """Attach Central Command's identity to this site.
+
+        Only ever called on an UNBOUND site. Rebinding a bound site is
+        refused at the RPC, because a registration that silently
+        re-pointed a site would move every device, incident and outcome
+        under it to a different tenant-plane identity without anyone
+        deciding to.
+        """
+        site.cc_site_id = cc_site_id
+        site.bound_at = utcnow()
+
+    async def unbind(self, site: Site) -> None:
+        """Break-glass: clear the binding so the next RegisterSite re-binds.
+
+        The audited recovery path for a Central Command that legitimately
+        changed its site ids (a restore from backup). Deliberately a
+        separate, explicit operation rather than a special case inside
+        registration.
+        """
+        site.cc_site_id = None
+        site.bound_at = None
+
+    async def list_all(self) -> Sequence[Site]:
+        return (
+            await self.session.execute(select(Site).order_by(Site.name))
+        ).scalars().all()
+
     async def get_or_create(self, name: str) -> Site:
         site = (
             await self.session.execute(select(Site).where(Site.name == name))
@@ -420,13 +463,19 @@ class IncidentRepo:
             )
         ).scalars().all()
 
-    async def list_open(self) -> Sequence[Incident]:
+    async def list_open(self, site_id: Optional[str] = None) -> Sequence[Incident]:
+        """Open incidents, optionally for ONE site.
+
+        E0.2: the fleet snapshot must pass a site. Sweep callers that
+        resolve each incident on its own device's state legitimately pass
+        None, because they decide per device and never compare across
+        sites.
+        """
+        stmt = select(Incident).where(Incident.status == "open")
+        if site_id is not None:
+            stmt = stmt.where(Incident.site_id == site_id)
         return (
-            await self.session.execute(
-                select(Incident)
-                .where(Incident.status == "open")
-                .order_by(Incident.opened_at)
-            )
+            await self.session.execute(stmt.order_by(Incident.opened_at))
         ).scalars().all()
 
     async def list_all(self) -> Sequence[Incident]:
@@ -459,13 +508,21 @@ class ActionRepo:
             )
         ).scalar_one_or_none()
 
-    async def list_by_status(self, status: str) -> Sequence[ActionRow]:
-        return (
-            await self.session.execute(
-                select(ActionRow)
-                .where(ActionRow.status == status)
-                .order_by(ActionRow.reported_at)
+    async def list_by_status(
+        self, status: str, site_id: Optional[str] = None
+    ) -> Sequence[ActionRow]:
+        """Actions in one state, optionally for ONE site.
+
+        E0.2: an action has no site column of its own, so the scope comes
+        through its device. The fleet snapshot must pass a site.
+        """
+        stmt = select(ActionRow).where(ActionRow.status == status)
+        if site_id is not None:
+            stmt = stmt.join(Device, Device.id == ActionRow.device_id).where(
+                Device.site_id == site_id
             )
+        return (
+            await self.session.execute(stmt.order_by(ActionRow.reported_at))
         ).scalars().all()
 
     async def list_all(self) -> Sequence[ActionRow]:
@@ -544,16 +601,22 @@ class ErrorBudgetRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def record(self, action_type: str, outcome: str) -> tuple[ErrorBudgetRow, bool]:
-        """Fold one outcome into this action type's budget.
+    async def record(
+        self, site_id: str, action_type: str, outcome: str
+    ) -> tuple[ErrorBudgetRow, bool]:
+        """Fold one outcome into this SITE's budget for this action type.
+
+        E0.2: per site. One site's failures must not withdraw another
+        site's autonomy, even when the same Site Manager executes for
+        both.
 
         Returns (row, newly_dropped_back).
         """
         from harkeniq_sm.knowledge import ErrorBudgetState
 
-        row = await self.session.get(ErrorBudgetRow, action_type)
+        row = await self.session.get(ErrorBudgetRow, (site_id, action_type))
         if row is None:
-            row = ErrorBudgetRow(action_type=action_type)
+            row = ErrorBudgetRow(site_id=site_id, action_type=action_type)
             self.session.add(row)
             await self.session.flush()
         state = ErrorBudgetState(
@@ -575,27 +638,41 @@ class ErrorBudgetRepo:
         await self.session.flush()
         return row, newly
 
-    async def list_all(self) -> Sequence[ErrorBudgetRow]:
+    async def list_all(self, site_id: Optional[str] = None) -> Sequence[ErrorBudgetRow]:
+        """Budgets, for one site when given. Callers that report a site's
+        safety state MUST pass one."""
+        stmt = select(ErrorBudgetRow)
+        if site_id is not None:
+            stmt = stmt.where(ErrorBudgetRow.site_id == site_id)
         return (
-            await self.session.execute(
-                select(ErrorBudgetRow).order_by(ErrorBudgetRow.action_type)
-            )
+            await self.session.execute(stmt.order_by(ErrorBudgetRow.action_type))
         ).scalars().all()
 
-    async def dropped_back_types(self) -> set[str]:
-        """Action types whose autonomy the error budget has withdrawn."""
+    async def dropped_back_types(self, site_id: str) -> set[str]:
+        """Action types whose autonomy this SITE's error budget withdrew.
+
+        `site_id` is required, not optional: every caller gates real
+        execution, and a default that spanned sites would withdraw
+        autonomy somewhere nobody decided about.
+        """
         rows = (
             await self.session.execute(
                 select(ErrorBudgetRow).where(
-                    ErrorBudgetRow.dropped_back == True  # noqa: E712
+                    ErrorBudgetRow.site_id == site_id,
+                    ErrorBudgetRow.dropped_back == True,  # noqa: E712
                 )
             )
         ).scalars().all()
         return {r.action_type for r in rows}
 
-    async def recover(self, action_type: str) -> bool:
-        """Operator lifts a drop-back: counters reset for a fresh period."""
-        row = await self.session.get(ErrorBudgetRow, action_type)
+    async def recover(self, site_id: str, action_type: str) -> bool:
+        """Operator lifts a drop-back at ONE site: counters reset.
+
+        E0.2: recovery is per site for the same reason withdrawal is.
+        Clearing a drop-back at every site the Site Manager serves would
+        restore autonomy where nobody looked at the failures.
+        """
+        row = await self.session.get(ErrorBudgetRow, (site_id, action_type))
         if row is None or not row.dropped_back:
             return False
         row.dropped_back = False

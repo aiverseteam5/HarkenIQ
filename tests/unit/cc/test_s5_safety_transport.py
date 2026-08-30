@@ -35,18 +35,25 @@ from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE
 from harkeniq_sm.suppression import SuppressionEngine, SuppressionState
 
 
+CC_SITE_ID = "cc-site-1"
+
+
 async def _sm_stack(*, with_safety: bool = True):
     engine = make_engine("sqlite+aiosqlite:///:memory:")
     await create_all(engine)
     db = make_sessionmaker(engine)
     async with db() as session:
-        session.add(Site(name="site-1"))
+        # E0.2: the snapshot is addressed by Central Command's site
+        # identity, and error budgets belong to a site.
+        site = Site(name="site-1", cc_site_id=CC_SITE_ID)
+        session.add(site)
+        await session.flush()
         if with_safety:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "FAILURE")
+                await repo.record(site.id, "SEL_CLEAR", "FAILURE")
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("BMC_RESET", "SUCCESS")
+                await repo.record(site.id, "BMC_RESET", "SUCCESS")
         await session.commit()
 
     config = SMConfig(insecure=True, site_name="site-1")
@@ -82,7 +89,7 @@ async def test_safety_state_reaches_the_client_dict():
     endpoint, server, engine = await _sm_stack()
     try:
         snapshot = await SMClient().get_fleet_snapshot(
-            endpoint, "any-token", "t1", "",
+            endpoint, "any-token", "t1", CC_SITE_ID,
         )
         safety = snapshot["safety"]
         assert safety["reported"] is True
@@ -109,7 +116,7 @@ async def test_an_sm_with_no_safety_machinery_reports_unknown_not_safe():
     endpoint, server, engine = await _sm_stack(with_safety=False)
     try:
         snapshot = await SMClient().get_fleet_snapshot(
-            endpoint, "any-token", "t1", "",
+            endpoint, "any-token", "t1", CC_SITE_ID,
         )
         safety = snapshot["safety"]
         # `reported` is True (the SM answered) but it vouches for nothing.
@@ -129,7 +136,7 @@ async def test_cc_persists_what_it_received():
     cc_db = cc_make_sessionmaker(cc_engine)
     try:
         snapshot = await SMClient().get_fleet_snapshot(
-            endpoint, "any-token", "t1", "",
+            endpoint, "any-token", "t1", CC_SITE_ID,
         )
         async with cc_db() as session:
             await SafetyStateRepo(session).upsert("t1", "site-a", snapshot["safety"])

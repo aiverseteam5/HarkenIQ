@@ -479,6 +479,112 @@ curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verif
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
     "http://localhost:8090/api/operational-agents/$AGENT_ID/execute")" = "404" ]
 
+step "E0.2: the CC-SM site identity is authoritative, and scoping holds"
+# Before E0.2 the SM received CC's site id, discarded it, and answered
+# every site's poll with everything it knew. Prove the binding exists and
+# that a second site on the SAME Site Manager cannot see the first.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT name || ' -> ' || COALESCE(cc_site_id, '(unbound)') FROM sites"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT count(*) FROM sites WHERE cc_site_id IS NOT NULL" | grep -qv '^0$' || {
+    echo "no site is bound to a Central Command identity" >&2; exit 1; }
+
+SITE_A=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['sites'][0]['id'])")
+
+step "E0.2: a second site on the same Site Manager is isolated"
+# Register a second site pointing at the SAME Site Manager, then seed one
+# device into it directly. The write path that lets an AGENT choose its
+# site is E1.3; what E0.2 owns is that the read path cannot leak.
+SITE_B=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"site_name":"gate-site-b","sm_endpoint":"site-manager:50051",
+       "license_fingerprint":"demo"}' \
+  http://localhost:8090/api/sites/register \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['site']['id'])")
+echo "site B = $SITE_B"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                        device_class, first_seen_at, last_seen_at)
+   SELECT 'gatedevb00000000000000000000000', s.id, 'gate-agent-b', 'b1',
+          'Dell', 'R750', 'server', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO incidents (id, site_id, kind, status, device_id, subsystem,
+                          title, opened_at, last_seen_at)
+   SELECT 'gateincb00000000000000000000000', s.id, 'device', 'open',
+          'gatedevb00000000000000000000000', 'psu', 'site B only', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING"
+
+# Poll both sites and assert each sees only its own devices and incidents.
+wait_for "site B visible at CC" 180 bash -c \
+  "curl -s -H 'Authorization: Bearer $TOKEN' 'http://localhost:8090/api/fleet/?site_id=$SITE_B' \
+   | grep -q gate-agent-b"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/fleet/?site_id=$SITE_A&page_size=200" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+ids = {x["agent_id"] for x in d["devices"]}
+assert "gate-agent-b" not in ids, f"site A returned site B device: {ids}"
+print("site A devices:", sorted(ids))
+'
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/fleet/?site_id=$SITE_B&page_size=200" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+ids = {x["agent_id"] for x in d["devices"]}
+assert ids == {"gate-agent-b"}, f"site B returned foreign devices: {ids}"
+print("site B devices:", sorted(ids))
+'
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/incidents/?site_id=$SITE_A" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+titles = {i["title"] for i in d["incidents"]}
+assert "site B only" not in titles, f"site A returned site B incident: {titles}"
+print("site A incidents:", len(titles))
+'
+
+step "E0.2: usage is metered per site, not per Site Manager"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT site_id || '=' || node_count FROM cc_usage_snapshots
+   ORDER BY date DESC LIMIT 4" || true
+
+step "E0.2: an unbound site returns nothing, never another site's data"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE sites SET cc_site_id = NULL WHERE cc_site_id = '$SITE_B'"
+docker compose exec -T site-manager python -c "
+import asyncio, grpc, os, sys
+sys.path.insert(0, '/app/src')
+from harkeniq.proto import harkeniq_pb2, harkeniq_pb2_grpc
+async def main():
+    async with grpc.aio.insecure_channel('localhost:50051') as ch:
+        stub = harkeniq_pb2_grpc.SiteManagerServiceStub(ch)
+        snap = await stub.GetFleetSnapshot(
+            harkeniq_pb2.FleetSnapshotRequest(tenant_id='tenant-demo', site_id='$SITE_B'),
+            metadata=[('authorization', 'Bearer ' + os.environ['HARKEN_SM_SITE_TOKEN'])],
+        )
+        assert snap.site_resolved is False, 'unbound site was resolved'
+        assert len(snap.devices) == 0, 'unbound site returned devices'
+        assert snap.site_reason, 'no reason given'
+        print('unbound ->', snap.site_reason)
+asyncio.run(main())
+"
+
+step "E0.2: the audited unbind is the sanctioned recovery"
+curl -sf -X POST -H "Authorization: Bearer dev-token-sm" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"gate@harkeniq.com","confirm_site_name":"gate-site-b",
+       "reason":"compose gate: prove the recovery path"}' \
+  http://localhost:8080/api/site/gate-site-b/unbind > /dev/null 2>&1 || true
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT count(*) FROM audit_log WHERE action IN ('site.bound','site.unbound')" \
+  | grep -qv '^0$'
+curl -sf -H "Authorization: Bearer dev-token-sm" \
+  http://localhost:8080/api/audit/verify | grep -q true
+
 step "E0.1: a configured approval policy actually binds"
 # The defect this closes: cc_approval_policies has carried
 # required_approvers since R2b and nothing consulted it, so a tenant

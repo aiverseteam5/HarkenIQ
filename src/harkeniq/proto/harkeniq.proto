@@ -363,6 +363,12 @@ message FleetSnapshot {
   repeated FleetOutcome outcomes = 5;  // R3b-3: action outcomes for CC learning
   repeated CandidateSkill candidate_skills = 6;  // QA-033: R-C1 skill upflow
   FleetSafetyState safety = 7;         // S5: live autonomy safety state
+  // E0.2: did the Site Manager resolve the requested site? An unresolved
+  // site returns an EMPTY snapshot with a reason, never another site's
+  // data and never the whole Site Manager's. Central Command must not
+  // mistake this for "the site has no devices" and clear its cache.
+  bool site_resolved = 8;
+  string site_reason = 9;              // empty when resolved
 }
 
 message ApprovalRouteRequest {

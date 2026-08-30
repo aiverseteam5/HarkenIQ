@@ -61,6 +61,19 @@ class TestMakeStateWiring:
                 os.unlink(state.tmp_db_path)
 
 
+async def _site_id(db) -> str:
+    """The site the registered agent's device belongs to.
+
+    E0.2: error budgets are per site, so a test that seeds failures must
+    say which site's evidence it is seeding.
+    """
+    from harkeniq_sm.db.repos import SiteRepo
+
+    async with db() as session:
+        site = await SiteRepo(session).get_by_name("site-1")
+        return site.id
+
+
 @pytest.fixture
 async def lease_env(db):
     """Agent servicer with identity + enforcer + suppression, plus a
@@ -176,10 +189,11 @@ class TestErrorBudgetDropBackHasTeeth:
         lease = await _heartbeat_lease(lease_env)
         assert lease.allows_action("SEL_CLEAR", "low", True) == "execute"
 
+        site_id = await _site_id(db)
         async with db() as session:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "FAILURE")
+                await repo.record(site_id, "SEL_CLEAR", "FAILURE")
             await session.commit()
 
         lease = await _heartbeat_lease(lease_env)
@@ -198,10 +212,11 @@ class TestErrorBudgetDropBackHasTeeth:
             {"action_type": "BMC_RESET", "max_per_window": 5,
              "window_seconds": 3600, "risk_level": "low"},
         ])
+        site_id = await _site_id(db)
         async with db() as session:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "FAILURE")
+                await repo.record(site_id, "SEL_CLEAR", "FAILURE")
             await session.commit()
 
         lease = await _heartbeat_lease(lease_env)
@@ -216,17 +231,20 @@ class TestErrorBudgetDropBackHasTeeth:
             {"action_type": "SEL_CLEAR", "max_per_window": 5,
              "window_seconds": 3600, "risk_level": "low"},
         ])
+        site_id = await _site_id(db)
         async with db() as session:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "FAILURE")
+                await repo.record(site_id, "SEL_CLEAR", "FAILURE")
             await session.commit()
         assert (await _heartbeat_lease(lease_env)).allows_action(
             "SEL_CLEAR", "low", True
         ) == "propose"
 
         async with db() as session:
-            assert await ErrorBudgetRepo(session).recover("SEL_CLEAR") is True
+            assert await ErrorBudgetRepo(session).recover(
+                await _site_id(db), "SEL_CLEAR",
+            ) is True
             await session.commit()
         assert (await _heartbeat_lease(lease_env)).allows_action(
             "SEL_CLEAR", "low", True

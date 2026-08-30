@@ -43,10 +43,36 @@ class Base(DeclarativeBase):
 
 
 class Site(Base):
+    """A site this Site Manager serves.
+
+    E0.2: one Site Manager may serve several sites, and a site belongs to
+    exactly one active Site Manager. `cc_site_id` is the AUTHORITATIVE
+    identity, assigned by Central Command and persisted here at
+    RegisterSite. Before E0.2 it was received and discarded, so CC's site
+    id and the SM's own primary key were different id spaces that never
+    matched, and every site-scoped read silently widened to the whole
+    Site Manager.
+
+    The binding is never overwritten by a registration. Recovery from a
+    genuinely changed CC identity goes through the audited unbind on the
+    SM's break-glass API.
+    """
+
     __tablename__ = "sites"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    #: Central Command's site id. Unique: two sites can never bind to one
+    #: CC identity, which is what makes resolution unambiguous.
+    cc_site_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, unique=True
+    )
+    #: active | retired. A site moves between Site Managers by being
+    #: retired here before it is bound there.
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    bound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -302,10 +328,23 @@ class ActionOutcomeRow(Base):
 
 
 class ErrorBudgetRow(Base):
-    """R3b-1 C8: persisted error budget state."""
+    """Persisted A2.2 error budget state, per site per action class.
+
+    R3b-1 C8 declared it; S5 gave it a writer and a caller. E0.2 gave it
+    a SITE: the key was `action_type` alone, so on a Site Manager serving
+    several sites a failure pattern at one site would have withdrawn
+    autonomy at every other site it serves. Autonomy is earned on
+    evidence, and one site's evidence is not another's.
+
+    The Site Manager remains the execution and safety boundary; what is
+    per-site is the EVIDENCE and the withdrawal it justifies.
+    """
 
     __tablename__ = "sm_error_budgets"
 
+    site_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("sites.id"), primary_key=True
+    )
     action_type: Mapped[str] = mapped_column(String(64), primary_key=True)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)

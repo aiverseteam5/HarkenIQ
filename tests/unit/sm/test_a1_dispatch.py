@@ -48,9 +48,15 @@ def _config(**overrides):
     return SMConfig(**defaults)
 
 
-async def _seed_device(db, agent_id="agent-1"):
+SITE_CC_ID = "cc-site-1"
+
+
+async def _seed_device(db, agent_id="agent-1", site_name="site-1",
+                       cc_site_id=SITE_CC_ID):
     async with db() as session:
-        site = await SiteRepo(session).get_or_create("site-1")
+        site = await SiteRepo(session).get_or_create(site_name)
+        # E0.2: a site is addressed by Central Command's identity.
+        site.cc_site_id = site.cc_site_id or cc_site_id
         device = await DeviceRepo(session).upsert_registration(
             site_id=site.id, agent_id=agent_id, vendor="dell",
         )
@@ -149,7 +155,9 @@ class TestDispatchAction:
         port, _, _, db = served
         await _seed_device(db)
         async with db() as session:
+            site = await SiteRepo(session).get_by_name("site-1")
             session.add(ErrorBudgetRow(
+                site_id=site.id,
                 action_type="SEL_CLEAR", success_count=2, failure_count=18,
                 total_count=20, dropped_back=True,
             ))
@@ -163,7 +171,9 @@ class TestDispatchAction:
         port, _, _, db = served
         await _seed_device(db)
         async with db() as session:
+            site = await SiteRepo(session).get_by_name("site-1")
             session.add(ErrorBudgetRow(
+                site_id=site.id,
                 action_type="SEL_CLEAR", success_count=2, failure_count=18,
                 total_count=20, dropped_back=True,
             ))
@@ -228,7 +238,8 @@ class TestDirectedWorkBecomesEvidence:
             await svc.poll("agent-1")
             await svc.report_result("agent-1", directive_id, False, "boom")
         async with db() as session:
-            dropped = await ErrorBudgetRepo(session).dropped_back_types()
+            site = await SiteRepo(session).get_by_name("site-1")
+            dropped = await ErrorBudgetRepo(session).dropped_back_types(site.id)
         assert "SEL_CLEAR" in dropped
 
     async def test_skill_installs_do_not_fabricate_an_action_outcome(self, db):
@@ -260,7 +271,10 @@ class TestDirectedWorkBecomesEvidence:
             db, ApprovalService(db, config), config,
         )
         snapshot = await sm_servicer.GetFleetSnapshot(
-            harkeniq_pb2.FleetSnapshotRequest(tenant_id="t1"), None,
+            harkeniq_pb2.FleetSnapshotRequest(
+                tenant_id="t1", site_id=SITE_CC_ID,
+            ),
+            None,
         )
         assert len(snapshot.outcomes) == 1
         assert snapshot.outcomes[0].actor == AGENT_ACTOR

@@ -22,10 +22,22 @@ from harkeniq_sm.db.repos import ErrorBudgetRepo
 from harkeniq_sm.knowledge import MIN_OUTCOMES_TO_JUDGE, ErrorBudgetState
 
 
+#: E0.2: budgets are keyed (site_id, action_type). Every persistence test
+#: below seeds one site and works within it; the cross-SITE properties are
+#: pinned separately in tests/unit/sm/test_e0_site_isolation.py.
+SITE = "site-under-test"
+
+
 async def _sessionmaker():
+    from harkeniq_sm.db.models import Site
+
     engine = make_engine("sqlite+aiosqlite:///:memory:")
     await create_all(engine)
-    return make_sessionmaker(engine)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        session.add(Site(id=SITE, name="site-under-test"))
+        await session.commit()
+    return sessionmaker
 
 
 class TestTheDecision:
@@ -75,7 +87,7 @@ class TestPersistence:
         sessionmaker = await _sessionmaker()
         async with sessionmaker() as session:
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await ErrorBudgetRepo(session).record("SEL_CLEAR", "FAILURE")
+                await ErrorBudgetRepo(session).record(SITE, "SEL_CLEAR", "FAILURE")
             await session.commit()
         async with sessionmaker() as session:
             rows = await ErrorBudgetRepo(session).list_all()
@@ -91,11 +103,11 @@ class TestPersistence:
         async with sessionmaker() as session:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "FAILURE")
+                await repo.record(SITE, "SEL_CLEAR", "FAILURE")
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("BMC_RESET", "SUCCESS")
+                await repo.record(SITE, "BMC_RESET", "SUCCESS")
             await session.commit()
-            assert await repo.dropped_back_types() == {"SEL_CLEAR"}
+            assert await repo.dropped_back_types(SITE) == {"SEL_CLEAR"}
 
     @pytest.mark.asyncio
     async def test_recovery_is_an_explicit_human_act(self):
@@ -103,19 +115,19 @@ class TestPersistence:
         async with sessionmaker() as session:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "FAILURE")
+                await repo.record(SITE, "SEL_CLEAR", "FAILURE")
             await session.commit()
-            assert await repo.recover("SEL_CLEAR") is True
+            assert await repo.recover(SITE, "SEL_CLEAR") is True
             await session.commit()
             row = (await repo.list_all())[0]
             assert row.dropped_back is False
             # Counters reset so the class is judged on a fresh period, not
             # on the failures the operator just reviewed.
             assert row.total_count == 0
-            assert await repo.dropped_back_types() == set()
+            assert await repo.dropped_back_types(SITE) == set()
             # Recovering something that never dropped back is a no-op.
-            assert await repo.recover("SEL_CLEAR") is False
-            assert await repo.recover("NEVER_SEEN") is False
+            assert await repo.recover(SITE, "SEL_CLEAR") is False
+            assert await repo.recover(SITE, "NEVER_SEEN") is False
 
     @pytest.mark.asyncio
     async def test_case_is_normalised(self):
@@ -123,6 +135,6 @@ class TestPersistence:
         async with sessionmaker() as session:
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
-                await repo.record("SEL_CLEAR", "failure")
+                await repo.record(SITE, "SEL_CLEAR", "failure")
             await session.commit()
-            assert await repo.dropped_back_types() == {"SEL_CLEAR"}
+            assert await repo.dropped_back_types(SITE) == {"SEL_CLEAR"}

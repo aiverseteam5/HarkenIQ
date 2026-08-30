@@ -70,12 +70,30 @@ async def record_action_outcome(
 
     # S5: fold the outcome into the A2.2 error budget. Demotion is
     # automatic and needs no human; only a human ever promotes.
+    #
+    # E0.2: the budget is per SITE, resolved from the device that ran the
+    # action. A device with no site cannot contribute evidence to one --
+    # it is dropped rather than attributed to an arbitrary site, because
+    # a mis-attributed failure withdraws autonomy somewhere real.
+    from harkeniq_sm.db.models import Device
     from harkeniq_sm.db.repos import ErrorBudgetRepo
 
-    _, newly_dropped = await ErrorBudgetRepo(session).record(action_type, result)
+    device = await session.get(Device, device_id)
+    if device is None or not device.site_id:
+        logger.warning(
+            "Outcome for %s on unknown device %s: recorded, but it cannot "
+            "be attributed to a site's error budget",
+            action_type, device_id,
+        )
+        return False
+
+    _, newly_dropped = await ErrorBudgetRepo(session).record(
+        device.site_id, action_type, result,
+    )
     if newly_dropped:
         logger.warning(
-            "Error budget drop-back for %s: autonomy withdrawn until an "
-            "operator reviews the failures", action_type,
+            "Error budget drop-back for %s at site %s: autonomy withdrawn "
+            "until an operator reviews the failures",
+            action_type, device.site_id,
         )
     return newly_dropped

@@ -269,6 +269,14 @@ class SMClient:
                 "outcomes": outcomes,
                 "candidate_skills": candidate_skills,
                 "safety": safety,
+                # E0.2: did the Site Manager resolve the site we asked
+                # for? An unresolved snapshot is EMPTY by design and must
+                # never be mistaken for "this site has no devices" -- the
+                # poller clears the fleet cache and infers incident
+                # resolution by absence, so that mistake would erase a
+                # site's fleet and close all of its incidents.
+                "site_resolved": snap.site_resolved,
+                "site_reason": snap.site_reason,
             }
 
     async def route_approval(

@@ -36,7 +36,10 @@ async def sm_env(db):
     )
 
     async with db() as session:
-        site = Site(name="site-1")
+        # E0.2: a site is resolved by Central Command's identity, not by
+        # the Site Manager's own primary key. Bind it the way
+        # RegisterSite now does.
+        site = Site(name="site-1", cc_site_id="cc-site-1")
         session.add(site)
         await session.flush()
         site_id = site.id
@@ -95,6 +98,7 @@ async def sm_env(db):
         "config": config,
         "approvals": approvals,
         "site_id": site_id,
+        "cc_site_id": "cc-site-1",
         "dev1_id": dev1_id,
         "dev2_id": dev2_id,
         "incident_id": incident_id,
@@ -179,7 +183,7 @@ class TestGetFleetSnapshot:
     async def test_devices_returned(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
-            tenant_id="t1", site_id=sm_env["site_id"],
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
         )
         snap = await servicer.GetFleetSnapshot(request, None)
         assert len(snap.devices) == 2
@@ -190,7 +194,7 @@ class TestGetFleetSnapshot:
     async def test_device_fields(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
-            tenant_id="t1", site_id=sm_env["site_id"],
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
         )
         snap = await servicer.GetFleetSnapshot(request, None)
         dev1 = next(d for d in snap.devices if d.agent_id == "agent-1")
@@ -201,7 +205,7 @@ class TestGetFleetSnapshot:
     async def test_health_rollup(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
-            tenant_id="t1", site_id=sm_env["site_id"],
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
         )
         snap = await servicer.GetFleetSnapshot(request, None)
         dev1 = next(d for d in snap.devices if d.agent_id == "agent-1")
@@ -211,7 +215,7 @@ class TestGetFleetSnapshot:
     async def test_incidents_returned(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
-            tenant_id="t1", site_id=sm_env["site_id"],
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
         )
         snap = await servicer.GetFleetSnapshot(request, None)
         assert len(snap.incidents) == 1
@@ -222,7 +226,7 @@ class TestGetFleetSnapshot:
     async def test_pending_actions_returned(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
-            tenant_id="t1", site_id=sm_env["site_id"],
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
         )
         snap = await servicer.GetFleetSnapshot(request, None)
         assert len(snap.pending_actions) == 1
@@ -233,20 +237,40 @@ class TestGetFleetSnapshot:
     async def test_snapshot_timestamp(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
-            tenant_id="t1", site_id=sm_env["site_id"],
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
         )
         snap = await servicer.GetFleetSnapshot(request, None)
         assert snap.snapshot_at_unix > 0
 
-    async def test_fallback_all_devices(self, sm_env):
-        """When site_id doesn't match, falls back to listing all devices."""
+    async def test_an_unresolved_site_returns_nothing_with_a_reason(self, sm_env):
+        """E0.2: this test previously asserted the OPPOSITE.
+
+        An unmatched site used to fall through to "list all devices",
+        which was harmless only while one Site Manager served one site.
+        It is now an explicit, empty, reasoned refusal -- the scope is
+        never broadened to produce an answer.
+        """
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.FleetSnapshotRequest(
             tenant_id="t1", site_id="nonexistent-site-id",
         )
         snap = await servicer.GetFleetSnapshot(request, None)
-        # Should fall back and return all devices
-        assert len(snap.devices) == 2
+        assert snap.site_resolved is False
+        assert "nonexistent-site-id" in snap.site_reason
+        assert len(snap.devices) == 0
+        assert len(snap.incidents) == 0
+        assert len(snap.pending_actions) == 0
+        assert len(snap.outcomes) == 0
+        assert len(snap.candidate_skills) == 0
+
+    async def test_a_resolved_site_says_so(self, sm_env):
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.FleetSnapshotRequest(
+            tenant_id="t1", site_id=sm_env["cc_site_id"],
+        )
+        snap = await servicer.GetFleetSnapshot(request, None)
+        assert snap.site_resolved is True
+        assert snap.site_reason == ""
 
 
 class TestRouteApproval:
@@ -301,14 +325,25 @@ class TestRouteApproval:
 
 
 class TestGetUsageSnapshot:
-    async def test_returns_node_count(self, sm_env):
+    async def test_returns_node_count_for_the_requested_site(self, sm_env):
         servicer = sm_env["servicer"]
         request = harkeniq_pb2.UsageSnapshotRequest(
-            tenant_id="t1", site_id="s1", date="2026-08-20",
+            tenant_id="t1", site_id=sm_env["cc_site_id"], date="2026-08-20",
         )
         snap = await servicer.GetUsageSnapshot(request, None)
-        # We seeded 2 devices
+        # Two devices, both at this site.
         assert snap.node_count == 2
+
+    async def test_an_unbound_site_meters_zero_not_the_whole_fleet(self, sm_env):
+        """E0.2: this counted every device the Site Manager knows and
+        labelled the total with whatever site was asked for. Metering
+        feeds invoices, so an unscoped count is a commercial error."""
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.UsageSnapshotRequest(
+            tenant_id="t1", site_id="not-a-bound-site", date="2026-08-20",
+        )
+        snap = await servicer.GetUsageSnapshot(request, None)
+        assert snap.node_count == 0
 
 
 class TestPushPolicy:

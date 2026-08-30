@@ -28,7 +28,14 @@ from harkeniq_sm.auth import BearerTokenInterceptor
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.coverage import observation_state, worst_health
 from harkeniq_sm.db.models import Device, DeviceSubsystemState
-from harkeniq_sm.db.repos import ActionRepo, DeviceRepo, IncidentRepo, SiteRepo, StatusRepo
+from harkeniq_sm.db.repos import (
+    ActionRepo,
+    AuditRepo,
+    DeviceRepo,
+    IncidentRepo,
+    SiteRepo,
+    StatusRepo,
+)
 from harkeniq_sm.ingest import IngestService
 
 logger = logging.getLogger("harkeniq.sm.grpc")
@@ -127,12 +134,22 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                     # "propose" — drop back to Approve, exactly the A2.2
                     # semantic. Not "deny": the action is still the right
                     # one, it just no longer runs without a human.
+                    # E0.2: the drop-back that gates THIS agent is its own
+                    # site's. A failure pattern at another site the Site
+                    # Manager serves must not reduce this agent's autonomy.
                     async with self.ingest.sessionmaker() as budget_session:
                         from harkeniq_sm.db.repos import ErrorBudgetRepo
 
-                        dropped = await ErrorBudgetRepo(
+                        agent_device = await DeviceRepo(
                             budget_session
-                        ).dropped_back_types()
+                        ).get_by_agent_id(request.agent_id)
+                        dropped = (
+                            await ErrorBudgetRepo(
+                                budget_session
+                            ).dropped_back_types(agent_device.site_id)
+                            if agent_device is not None and agent_device.site_id
+                            else set()
+                        )
                     for action_type in dropped:
                         if action_type in budgets:
                             budgets[action_type] = 0
@@ -351,6 +368,8 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 request.device_agent_id
             )
             device_id = device.id if device else None
+            # E0.2: the device's own site governs its safety state.
+            device_site_id = device.site_id if device else ""
         if device_id is None:
             return harkeniq_pb2.ActionDispatchAck(
                 accepted=False,
@@ -370,7 +389,10 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 async with self.sessionmaker() as session:
                     from harkeniq_sm.db.repos import ErrorBudgetRepo
 
-                    dropped = await ErrorBudgetRepo(session).dropped_back_types()
+                    # E0.2: this site's withdrawal, not the Site Manager's.
+                    dropped = await ErrorBudgetRepo(session).dropped_back_types(
+                        device_site_id
+                    )
                 if action_type in dropped:
                     return harkeniq_pb2.ActionDispatchAck(
                         accepted=False,
@@ -431,26 +453,129 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 accepted=False,
                 reason="license fingerprint mismatch",
             )
-        logger.info(
-            "Site registration from CC: tenant=%s site=%s name=%s cc=%s",
-            request.tenant_id, request.site_id, request.site_name,
-            request.cc_endpoint,
-        )
+        # E0.2: persist the AUTHORITATIVE identity. Before this the id was
+        # logged and discarded, so CC's site id and the SM's own primary
+        # key were different id spaces that never matched -- and every
+        # site-scoped read silently widened to the whole Site Manager.
+        if not request.site_id:
+            return harkeniq_pb2.SiteRegistrationAck(
+                accepted=False,
+                reason=(
+                    "site_id is required: a site that cannot be identified "
+                    "cannot be scoped"
+                ),
+            )
+        if not request.site_name:
+            return harkeniq_pb2.SiteRegistrationAck(
+                accepted=False, reason="site_name is required",
+            )
+
+        async with self.sessionmaker() as session:
+            repo = SiteRepo(session)
+            audit = AuditRepo(session)
+            bound = await repo.get_by_cc_id(request.site_id)
+            if bound is not None:
+                # Idempotent re-registration. A rename at CC is a label
+                # change and is allowed; the binding itself is untouched.
+                if bound.name != request.site_name:
+                    if await repo.get_by_name(request.site_name) is not None:
+                        return harkeniq_pb2.SiteRegistrationAck(
+                            accepted=False,
+                            reason=(
+                                f"cannot rename site to {request.site_name!r}: "
+                                f"another site here already has that name"
+                            ),
+                        )
+                    previous, bound.name = bound.name, request.site_name
+                    await audit.append(
+                        "central-command", "site.renamed", bound.id,
+                        detail={"from": previous, "to": request.site_name,
+                                "cc_site_id": request.site_id},
+                    )
+                    await session.commit()
+                logger.info(
+                    "RegisterSite: already bound cc_site=%s -> site=%s",
+                    request.site_id, bound.id,
+                )
+                return harkeniq_pb2.SiteRegistrationAck(
+                    accepted=True, site_token=self.config.site_token,
+                )
+
+            existing = await repo.get_by_name(request.site_name)
+            if existing is not None and existing.cc_site_id:
+                # FAIL CLOSED. Re-pointing a bound site would move every
+                # device, incident and outcome under it to a different
+                # tenant-plane identity without anyone deciding to. The
+                # audited unbind on the break-glass API is the recovery.
+                logger.warning(
+                    "RegisterSite refused: site %r is bound to cc_site=%s, "
+                    "registration offered cc_site=%s",
+                    request.site_name, existing.cc_site_id, request.site_id,
+                )
+                await audit.append(
+                    "central-command", "site.bind_refused", existing.id,
+                    detail={"site_name": request.site_name,
+                            "bound_to": existing.cc_site_id,
+                            "offered": request.site_id},
+                )
+                await session.commit()
+                return harkeniq_pb2.SiteRegistrationAck(
+                    accepted=False,
+                    reason=(
+                        f"site {request.site_name!r} is already bound to a "
+                        f"different Central Command site identity; unbind it "
+                        f"explicitly before re-registering"
+                    ),
+                )
+
+            site = existing or await repo.get_or_create(request.site_name)
+            await repo.bind(site, request.site_id)
+            await audit.append(
+                "central-command", "site.bound", site.id,
+                detail={"site_name": site.name, "cc_site_id": request.site_id,
+                        "tenant_id": request.tenant_id,
+                        "cc_endpoint": request.cc_endpoint},
+            )
+            await session.commit()
+            logger.info(
+                "RegisterSite: bound cc_site=%s -> site=%s (%s)",
+                request.site_id, site.id, site.name,
+            )
+
         return harkeniq_pb2.SiteRegistrationAck(
             accepted=True,
             site_token=self.config.site_token,
         )
 
     async def GetFleetSnapshot(self, request, context):
+        """One site's fleet, and never another's.
+
+        E0.2: every read below is scoped to the resolved site. There is
+        no fallback. Before this the device query missed (CC's site id
+        and the SM's primary key are different id spaces) and fell back
+        to every device, while incidents, pending actions, outcomes and
+        candidate skills were never scoped at all -- and the outcome and
+        candidate watermarks meant one site's poll CONSUMED another
+        site's rows, which was data loss, not just leakage.
+        """
         async with self.sessionmaker() as session:
-            devices = await DeviceRepo(session).list_for_site(request.site_id)
-            # If no devices found by site_id, fall back to listing all devices
-            # (lab/test environments may not have matching site_ids).
-            if not devices:
-                all_devs = (
-                    await session.execute(select(Device).order_by(Device.agent_name))
-                ).scalars().all()
-                devices = all_devs
+            site = await SiteRepo(session).get_by_cc_id(request.site_id)
+            if site is None or site.status != "active":
+                # Explicit, safe, empty. Never broaden scope to answer.
+                reason = (
+                    f"no active site bound to Central Command site id "
+                    f"{request.site_id!r} at this Site Manager"
+                    if site is None else
+                    f"site {site.name!r} is {site.status}"
+                )
+                logger.warning("GetFleetSnapshot unresolved: %s", reason)
+                return harkeniq_pb2.FleetSnapshot(
+                    snapshot_at_unix=int(time.time()),
+                    site_resolved=False,
+                    site_reason=reason,
+                )
+
+            devices = await DeviceRepo(session).list_for_site(site.id)
 
             fleet_devices = []
             for device in devices:
@@ -492,8 +617,8 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     )
                 )
 
-            # Open incidents
-            open_incidents = await IncidentRepo(session).list_open()
+            # Open incidents -- this site's only.
+            open_incidents = await IncidentRepo(session).list_open(site_id=site.id)
             fleet_incidents = []
             for inc in open_incidents:
                 # Resolve device_agent_id from device_id
@@ -527,8 +652,10 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     )
                 )
 
-            # Pending actions
-            pending_actions = await ActionRepo(session).list_by_status("pending")
+            # Pending actions -- scoped through the device that owns them.
+            pending_actions = await ActionRepo(session).list_by_status(
+                "pending", site_id=site.id,
+            )
             fleet_actions = []
             for act in pending_actions:
                 dev = await DeviceRepo(session).get(act.device_id)
@@ -556,11 +683,19 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             fleet_outcomes = []
             try:
                 from harkeniq_sm.db.models import ActionOutcomeRow
+                # E0.2: scoped through the device. The watermark below
+                # MARKS these rows reported, so an unscoped query did not
+                # merely show another site's outcomes -- it consumed
+                # them, and that site never received its own evidence.
                 unreported = (
                     await session.execute(
-                        select(ActionOutcomeRow).where(
-                            ActionOutcomeRow.reported_to_cc == False  # noqa: E712
-                        ).limit(100)
+                        select(ActionOutcomeRow)
+                        .join(Device, Device.id == ActionOutcomeRow.device_id)
+                        .where(
+                            ActionOutcomeRow.reported_to_cc == False,  # noqa: E712
+                            Device.site_id == site.id,
+                        )
+                        .limit(100)
                     )
                 ).scalars().all()
                 for oc in unreported:
@@ -594,11 +729,21 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 import json as _json
 
                 from harkeniq_sm.db.models import CandidateSkillRow
+                # E0.2: `source_device` is the agent id that produced the
+                # candidate, so the site comes from that device. Same
+                # consuming-watermark problem as outcomes above.
                 unreported_cands = (
                     await session.execute(
-                        select(CandidateSkillRow).where(
-                            CandidateSkillRow.reported_to_cc == False  # noqa: E712
-                        ).limit(20)
+                        select(CandidateSkillRow)
+                        .join(
+                            Device,
+                            Device.agent_id == CandidateSkillRow.source_device,
+                        )
+                        .where(
+                            CandidateSkillRow.reported_to_cc == False,  # noqa: E712
+                            Device.site_id == site.id,
+                        )
+                        .limit(20)
                     )
                 ).scalars().all()
                 for cand in unreported_cands:
@@ -624,7 +769,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             # `reported=False` — CC then shows the site as NOT REPORTING,
             # which is the honest answer. An unobserved safety state must
             # never round down to "safe".
-            safety = await self._safety_state(session)
+            safety = await self._safety_state(session, site.id)
 
         return harkeniq_pb2.FleetSnapshot(
             devices=fleet_devices,
@@ -634,10 +779,20 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             outcomes=fleet_outcomes,
             candidate_skills=candidate_skills,
             safety=safety,
+            site_resolved=True,
+            site_reason="",
         )
 
-    async def _safety_state(self, session) -> "harkeniq_pb2.FleetSafetyState":
-        """Compose FleetSafetyState from the live enforcer + persisted budgets."""
+    async def _safety_state(
+        self, session, site_id: str
+    ) -> "harkeniq_pb2.FleetSafetyState":
+        """Compose FleetSafetyState for ONE site.
+
+        E0.2: error budgets are per site, so a class withdrawn by one
+        site's failures is not reported as withdrawn at another. The
+        stop switch and suppression remain Site Manager wide, because
+        those are properties of the execution boundary itself.
+        """
         try:
             from harkeniq_sm.db.repos import ErrorBudgetRepo
 
@@ -657,7 +812,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                     ))
 
             budgets = []
-            for row in await ErrorBudgetRepo(session).list_all():
+            for row in await ErrorBudgetRepo(session).list_all(site_id=site_id):
                 budgets.append(harkeniq_pb2.ActionErrorBudget(
                     action_type=row.action_type,
                     success_count=row.success_count or 0,
@@ -711,18 +866,47 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             )
 
     async def GetUsageSnapshot(self, request, context):
+        """Metered node count for ONE site.
+
+        E0.2: this counted every device the Site Manager knows and
+        returned the total labelled with the requested site id, so a Site
+        Manager serving several sites would have billed each of them the
+        full fleet. Metering feeds the ledger and invoices, which makes
+        an unscoped count a commercial error, not only a display one.
+
+        An unresolved site returns zero, never a total.
+        """
         async with self.sessionmaker() as session:
-            # Count unique devices
-            node_count_result = await session.execute(
-                select(func.count(Device.id))
-            )
-            node_count = node_count_result.scalar() or 0
+            site = await SiteRepo(session).get_by_cc_id(request.site_id)
+            if site is None:
+                logger.warning(
+                    "GetUsageSnapshot for unbound cc_site=%s: reporting zero",
+                    request.site_id,
+                )
+                return harkeniq_pb2.UsageSnapshot(
+                    tenant_id=request.tenant_id,
+                    site_id=request.site_id,
+                    date=request.date,
+                    node_count=0,
+                )
+
+            node_count = (
+                await session.execute(
+                    select(func.count(Device.id)).where(Device.site_id == site.id)
+                )
+            ).scalar() or 0
 
             # Agent versions from AgentStatus.last_state (placeholder: version
-            # info isn't yet tracked per-agent; return state distribution instead)
+            # info isn't yet tracked per-agent; return state distribution
+            # instead), scoped to this site's devices.
+            site_device_ids = {
+                d.id for d in await DeviceRepo(session).list_for_site(site.id)
+            }
             agent_versions: dict[str, int] = {}
             statuses = await StatusRepo(session).list_all()
             for s in statuses:
+                if s.device_id not in site_device_ids:
+                    continue
                 ver = s.last_state or "unknown"
                 agent_versions[ver] = agent_versions.get(ver, 0) + 1
 

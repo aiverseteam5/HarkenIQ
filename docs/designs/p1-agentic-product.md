@@ -619,3 +619,77 @@ outbound-integration work that OQ-3 assigned to R3 and that has never
 been built. They are left in place rather than removed because each names
 a real product capability, and removing the column would be mistaking
 "not built" for "not part of the product".
+
+---
+
+## 15. E0.2 — authoritative site identity (landed 2026-08-30)
+
+Second slice of the Enterprise Governance Foundation. Spec amendment
+**A16**. Hard prerequisite for E1.3.
+
+### What was wrong — six leaks, not one
+
+The review reported a single "return all devices" fallback. Tracing the
+runtime found six paths, and the two worst were destructive rather than
+merely leaky:
+
+| # | Data | Before | Severity |
+|---|---|---|---|
+| 1 | devices | matched CC's id against the SM's own PK, missed, **fell back to every device** | leak |
+| 2 | incidents | `list_open()` — no site filter at all | leak |
+| 3 | pending actions | `list_by_status("pending")` — no site filter | leak |
+| 4 | outcomes | no filter, **and set `reported_to_cc`** | **data loss** |
+| 5 | candidate skills | no filter, **and set `reported_to_cc`** | **data loss** |
+| 6 | usage | counted the whole Site Manager, labelled with one site | **billing** |
+
+4 and 5 mean one site's poll consumed another site's evidence, so that
+site never received it: fleet learning silently starved. 6 reaches
+invoices.
+
+### The binding
+
+`sites.cc_site_id` (unique) is persisted at `RegisterSite` and is the
+only resolution path. Registration is idempotent under the same
+identity, allows a rename, creates a second site alongside the first,
+and **refuses** to re-point a bound site — audited as
+`site.bind_refused`. Recovery is the audited unbind at the site-token
+API, requiring the site name as a typed confirmation and a reason.
+
+An unresolved site returns an empty snapshot carrying
+`site_resolved=false` and a reason (additive proto fields). Central
+Command's poller **skips ingest** on that: ingesting it would clear the
+site's fleet cache and, through D3 absence inference, resolve every one
+of its incidents. It re-registers instead, which is also how an existing
+deployment crosses the upgrade with no adoption guesswork at the Site
+Manager.
+
+### Error budgets became per site
+
+Keyed `(site_id, action_type)`. Withdrawal, recovery, the dispatch gate
+and the lease an agent receives are all resolved from the device's own
+site. The Site Manager stays the execution and safety boundary; what is
+per-site is the evidence and the withdrawal it justifies. The migration
+carries existing drop-backs onto the site rather than dropping them,
+because losing a withdrawal would restore autonomy nobody reviewed.
+
+### Proven on real PostgreSQL, two sites on one Site Manager
+
+Upgrade self-healed: the poller logged the unresolved site, skipped
+ingest, re-registered, bound. Migration carried `SEL_CLEAR`'s drop-back
+onto the site. Site A saw only its device and incidents, Site B only
+its own, symmetrically. Polling A consumed **only** A's outcome and left
+B's unreported; polling B then received exactly its own. Each site
+metered 1 node, not 2; an unbound site metered 0. A conflicting
+re-registration was refused and changed nothing. The unbind produced
+`site.bound` / `site.bound` / `site.unbound` on a chain that still
+verifies, and CC re-bound the site automatically afterwards.
+
+2737 → 2772 tests.
+
+### Deliberately not in this slice
+
+The write path that lets an **agent** declare its site is E1.3 (additive
+`AgentRegistration.site`, per-request site resolution replacing
+`config.site_name` at its ~14 call sites, correlation looping per site).
+E0.2 owns the read path and the identity; it proves that no read can
+leak before the write path can create the situation.

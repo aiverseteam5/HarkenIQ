@@ -994,3 +994,74 @@ delivered by E1.2, which introduces scope grants. Until then every
 approver's authority is tenant-wide, which is today's behaviour stated
 explicitly rather than left implicit; the column and the check exist from
 E0.1 so the later slice changes no approval code.
+
+### A16 — 2026-08-30 — Site identity is authoritative; a Site Manager may serve many sites (decided: Vinod)
+
+**Trigger.** The pre-S6 architecture review found that `RegisterSite`
+received Central Command's `site_id` and discarded it, so CC's site id
+and the Site Manager's own primary key were different id spaces that
+never matched. Every site-scoped read then widened, silently, to the
+whole Site Manager. Harmless while one Site Manager served one site;
+a cross-site leak the moment that changed.
+
+**A16.1 — Cardinality.** §3's "a Site belongs to exactly one tenant and
+hosts one Site Manager" becomes: **a Site Manager serves one or more
+sites, and a site is served by exactly one ACTIVE Site Manager.** §1's
+L2 line "one per site" reads "one per site group". A site moves between
+Site Managers by being retired at the first before it is bound at the
+second.
+
+**A16.2 — The binding is authoritative and is never overwritten.**
+Central Command assigns the site id; the Site Manager persists it
+(`sites.cc_site_id`, unique). A registration naming a site already bound
+to a different identity is **refused**, and the refusal is audited.
+Re-registration under the same identity is idempotent; a rename is a
+label change and keeps the binding.
+
+**A16.3 — No fallback may broaden scope.** An unresolved site returns an
+explicit **empty** result with a stated reason, on both
+`GetFleetSnapshot` and `GetUsageSnapshot`. Central Command must not
+mistake that for "the site has no devices": its poller skips ingest
+entirely, because ingesting an empty snapshot would clear the site's
+fleet cache and, through D3 absence inference, resolve every one of its
+incidents.
+
+**A16.4 — Every site-scoped read is scoped.** Devices, incidents,
+pending actions, action outcomes and candidate skills. The outcome and
+candidate reads carry a `reported_to_cc` watermark, so an unscoped query
+did not merely show another site's rows, it **consumed** them and that
+site never received its own evidence. Rows without a device, and
+therefore without a site, ride no snapshot at all.
+
+**A16.5 — Correlation stays strictly per site.** Unchanged and
+restated: every correlation rule takes a site id, and a Site Manager
+serving several sites never correlates across them. Incident resolution
+helpers that decide per device on that device's own state are
+unaffected, because they compare nothing across sites.
+
+**A16.6 — Error budgets are per site.** `sm_error_budgets` is keyed
+`(site_id, action_type)`. The Site Manager remains the execution and
+safety boundary; what is per-site is the **evidence** and the autonomy
+withdrawal it justifies. A failure pattern at one site must not reduce
+another site's autonomy, and recovery lifts one site's drop-back only.
+The lease an agent receives is gated by that agent's own site.
+
+**A16.7 — Metering is per site.** `GetUsageSnapshot` counts the
+requested site's devices. It previously returned the whole Site
+Manager's count labelled with one site id, which on a multi-site Site
+Manager would have billed every site for the entire fleet. An unresolved
+site meters zero.
+
+**A16.8 — Break-glass rebind.** Recovery from a legitimately changed
+Central Command identity (a restore from backup) is an explicit,
+audited unbind at the Site Manager's site-token API, requiring the
+site name as a typed confirmation and a stated reason. Registration
+itself never overwrites. Unbinding clears only the tenant-plane
+identity; devices, incidents, actions and outcomes stay exactly where
+they are, and until the site is re-bound its snapshot is empty.
+
+**A16.9 — The Site Manager's trust boundary is unchanged.** The site
+token authorizes the Site Manager, which remains the execution and
+safety boundary for every site it serves. Per-site authority for people
+and agents is enforced at Central Command and arrives with E1.2. No
+second authorization model is introduced here.

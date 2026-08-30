@@ -27,7 +27,7 @@ REPO = Path(__file__).parents[2]
 
 SERVICES = {
     "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0009"),
-    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0007"),
+    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0008"),
 }
 
 
@@ -108,6 +108,9 @@ class TestFreshDatabase:
             db, "sm_directives"
         )
         assert "actor" in _columns(db, "sm_action_outcomes")
+        # E0.2: the authoritative site identity and per-site budgets.
+        assert {"cc_site_id", "status", "bound_at"} <= _columns(db, "sites")
+        assert "site_id" in _columns(db, "sm_error_budgets")
 
 
 class TestExistingDatabase:
@@ -163,6 +166,44 @@ class TestExistingDatabase:
         assert "cc_operational_agents" in _tables(db)
         assert "actor" in _columns(db, "cc_outcome_history")
 
+    def test_sm_upgrade_from_0007_preserves_drop_backs(self, tmp_path):
+        """E0.2 rekeys sm_error_budgets. A withdrawal that is lost would
+        restore autonomy nobody reviewed, so the backfill must carry it."""
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        # Rebuild the pre-E0.2 shape with one site and one dropped-back row.
+        con.execute("drop table sm_error_budgets")
+        con.execute(
+            "create table sm_error_budgets (action_type text primary key, "
+            "success_count integer, failure_count integer, total_count integer, "
+            "min_success_rate real, dropped_back boolean, "
+            "dropped_back_at datetime, updated_at datetime)"
+        )
+        con.execute(
+            "insert into sm_error_budgets values "
+            "('SEL_CLEAR', 1, 19, 20, 0.95, 1, null, null)"
+        )
+        con.execute(
+            "insert into sites (id, name, status, created_at) "
+            "values ('s1', 'alpha', 'active', '2026-08-30 00:00:00')"
+        )
+        con.execute("update alembic_version set version_num='0007'")
+        con.commit()
+        con.close()
+
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        try:
+            rows = con.execute(
+                "select site_id, action_type, dropped_back from sm_error_budgets"
+            ).fetchall()
+        finally:
+            con.close()
+        assert rows == [("s1", "SEL_CLEAR", 1)], (
+            "the drop-back was not carried onto the site"
+        )
+
     def test_sm_upgrade_from_0006(self, tmp_path):
         db = tmp_path / "sm.db"
         _alembic("sm", db, "upgrade", "head")
@@ -176,7 +217,9 @@ class TestExistingDatabase:
         con.close()
 
         _alembic("sm", db, "upgrade", "head")
-        assert _version(db) == "0007"
+        # Reaches HEAD from a legacy stamp: every guarded migration in
+        # between must be a no-op on objects that already exist.
+        assert _version(db) == SERVICES["sm"][2]
         assert {"actor", "authorization_basis", "proposal_id"} <= _columns(
             db, "sm_directives"
         )
