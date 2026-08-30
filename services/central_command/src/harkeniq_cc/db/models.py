@@ -39,6 +39,91 @@ class Base(DeclarativeBase):
     pass
 
 
+class CCScopeGrant(Base):
+    """One scope grant: (principal, permission subset, scope ref). E1.2.
+
+    The whole authorization model. Ratified decision B keeps this
+    separate from `cc_org_units`: the tree says where a site sits, a row
+    here says who may reach it. A grant may REFERENCE an org unit, and a
+    unit's containment never implies a grant.
+
+    `permission_subset` is intersected with the principal's role
+    permissions, never unioned -- a grant can only narrow. NULL means
+    "the role's full set"; an empty list means "no permissions", which
+    is a different and deliberate statement.
+
+    Revocation is `revoked_at`, not a delete: an approval recorded under
+    this grant keeps a `scope_snapshot` that has to stay addressable.
+    """
+
+    __tablename__ = "cc_scope_grants"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: "user" (a Keycloak subject) | "agent" (cc_operational_agents.id)
+    principal_type: Mapped[str] = mapped_column(String(16), default="user")
+    principal_ref: Mapped[str] = mapped_column(String(128), index=True)
+    #: tenant | org_unit | site | device_class | device
+    scope_type: Mapped[str] = mapped_column(String(16))
+    scope_ref: Mapped[str] = mapped_column(String(128), default="")
+    permission_subset: Mapped[list | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
+    #: The role this grant narrows, as named by the grantor.
+    #:
+    #: NOT the authorization input: at resolve time the role comes from
+    #: the caller's own token, which is authoritative. This is recorded
+    #: so the L1 strict preflight can answer "would anybody still hold
+    #: role.manage at tenant scope" without enumerating a Keycloak realm
+    #: -- something Central Command deliberately cannot do (R-H5). A
+    #: preflight that had to guess the role would either block a
+    #: legitimate flip or pass one that locks the tenant out.
+    role: Mapped[str] = mapped_column(String(64), default="")
+    #: A Keycloak subject is 36 characters; see the E0.1 width invariant.
+    granted_by: Mapped[str] = mapped_column(String(255), default="")
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[str] = mapped_column(String(255), default="")
+    note: Mapped[str] = mapped_column(String(512), default="")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "principal_type", "principal_ref",
+            "scope_type", "scope_ref",
+            name="uq_scope_grant_principal_scope",
+        ),
+        Index("ix_scope_grants_principal", "tenant_id", "principal_ref"),
+    )
+
+
+class CCTenantSettings(Base):
+    """Per-tenant enforcement posture. E1.2.
+
+    Existing tenants land `legacy_open` because Central Command cannot
+    enumerate a realm's principals to backfill grants, and pretending
+    the absence of a grant were a decision would lock every one of them
+    out on upgrade. New tenants are born `strict`.
+    """
+
+    __tablename__ = "cc_tenant_settings"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_enforcement: Mapped[str] = mapped_column(
+        String(16), default="legacy_open"
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class CCOrgUnit(Base):
     """One node of the tenant's own organizational tree (E1.1).
 
@@ -167,6 +252,14 @@ class CCAuditLog(Base):
     subject: Mapped[str] = mapped_column(String(255), default="")
     tenant_id: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: E1.2: authorization/indexing metadata, DELIBERATELY OUTSIDE the
+    #: hash-chain payload (`AuditRepo._chain_payload` hashes ts, actor,
+    #: action, subject, tenant_id, detail -- and only those). Adding a
+    #: column the payload does not name leaves every existing chain
+    #: verifiable, which a test asserts rather than assumes. Null means
+    #: tenant-level, which is also what every pre-E1.2 row reads as:
+    #: the site was never recorded and cannot be invented now.
+    site_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
     # service, seq unique so racing appenders fail instead of forking.
     seq: Mapped[int | None] = mapped_column(nullable=True)
@@ -258,6 +351,14 @@ class CCApprovalRecord(Base):
     #: E0.1 resolves tenant-wide for everyone; E1.2 makes it real without
     #: touching this column or the code that writes it.
     scope_ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: E1.2 / ratified L2: an approval is valid on the authority its
+    #: approver held AT THE TIME. A boolean cannot answer "what could
+    #: they reach when they decided?" a year later, so the values are
+    #: recorded, written once and never rewritten.
+    scope_snapshot: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    authority_snapshot: Mapped[dict | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
     reason: Mapped[str] = mapped_column(String(512), default="")
     decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
@@ -765,39 +866,6 @@ class CCOperationalAgent(Base):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_op_agent_tenant_name"),
-    )
-
-
-class CCAgentScope(Base):
-    """One explicit scope grant for an agent (A0).
-
-    Scope is a set of rows, never a wildcard: an agent with no scope
-    rows sees NOTHING. "Everything by default" is the failure mode this
-    table exists to make impossible.
-
-    scope_type: site | device_class | device
-      site         -> scope_ref is a cc_sites.id
-      device_class -> scope_ref is "server" | "switch"
-      device       -> scope_ref is a device agent_id
-    """
-
-    __tablename__ = "cc_agent_scopes"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    agent_id: Mapped[str] = mapped_column(
-        ForeignKey("cc_operational_agents.id", ondelete="CASCADE"), index=True
-    )
-    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
-    scope_type: Mapped[str] = mapped_column(String(16))
-    scope_ref: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "agent_id", "scope_type", "scope_ref", name="uq_agent_scope"
-        ),
     )
 
 

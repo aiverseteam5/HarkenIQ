@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import delete as sa_delete, false as sa_false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
     CCOrgUnit,
     CCAgentCapability,
     CCAgentProposal,
-    CCAgentScope,
+    CCScopeGrant,
+    CCTenantSettings,
     CCApprovalGroup,
     CCApprovalGroupMember,
     CCApprovalPolicy,
@@ -42,6 +43,52 @@ from harkeniq_cc.db.models import (
     CCWarranty,
     utcnow,
 )
+
+
+def scope_sites(column, scope) -> Any:
+    """A SQLAlchemy condition restricting `column` to the caller's sites.
+
+    E1.2 layer 2, applied in the repository so no handler and no browser
+    can be the thing that decided. Three cases and no fourth:
+
+    * `scope is None`   -- an internal caller (a poller, the evaluator).
+      No user is asking, so there is nothing to scope to.
+    * tenant-wide       -- no condition; the caller reaches every site.
+    * anything else     -- ``site_id IN (...)``, and an EMPTY scope
+      yields ``false()``, not "no filter". Fail closed is the whole
+      point: an unscoped principal under strict mode must read nothing.
+    """
+    if scope is None or getattr(scope, "tenant_wide", False):
+        return None
+    site_ids = sorted(getattr(scope, "site_ids", ()) or ())
+    if not site_ids:
+        return sa_false()
+    return column.in_(site_ids)
+
+
+def _audit_scoped(stmt, scope):
+    """Scope an audit read (E1.2).
+
+    `cc_audit_log.site_id` is nullable and pre-E1.2 rows have no site --
+    it was never recorded and cannot be invented now. A NULL site is
+    therefore TENANT-LEVEL and visible only to a tenant-scope holder;
+    a scoped principal sees the entries for their own sites and nothing
+    else. That is fail-closed, and it means a scoped principal now sees
+    LESS audit than before E1.2, which is the correction rather than a
+    regression. An auditor holds tenant scope and loses nothing.
+    """
+    if scope is None or getattr(scope, "tenant_wide", False):
+        return stmt
+    site_ids = sorted(getattr(scope, "site_ids", ()) or ())
+    if not site_ids:
+        return stmt.where(sa_false())
+    return stmt.where(CCAuditLog.site_id.in_(site_ids))
+
+
+def apply_scope(stmt, column, scope):
+    """Conjoin `scope_sites` onto a statement when it applies."""
+    condition = scope_sites(column, scope)
+    return stmt if condition is None else stmt.where(condition)
 
 
 class OrgUnitRepo:
@@ -288,13 +335,12 @@ class SiteRepo:
             )
         ).scalar_one_or_none()
 
-    async def list_all(self, tenant_id: str) -> Sequence[CCSite]:
+    async def list_all(self, tenant_id: str, scope=None) -> Sequence[CCSite]:
+        stmt = apply_scope(
+            select(CCSite).where(CCSite.tenant_id == tenant_id), CCSite.id, scope
+        )
         return (
-            await self.session.execute(
-                select(CCSite)
-                .where(CCSite.tenant_id == tenant_id)
-                .order_by(CCSite.site_name)
-            )
+            await self.session.execute(stmt.order_by(CCSite.site_name))
         ).scalars().all()
 
     async def upsert(
@@ -386,14 +432,18 @@ class FleetCacheRepo:
             )
         ).scalars().all()
 
-    async def list_all(self, tenant_id: str) -> Sequence[CCFleetCache]:
+    async def list_all(
+        self, tenant_id: str, scope=None
+    ) -> Sequence[CCFleetCache]:
+        stmt = apply_scope(
+            select(CCFleetCache)
+            .join(CCSite, CCSite.id == CCFleetCache.site_id)
+            .where(CCSite.tenant_id == tenant_id),
+            CCFleetCache.site_id,
+            scope,
+        )
         return (
-            await self.session.execute(
-                select(CCFleetCache)
-                .join(CCSite, CCSite.id == CCFleetCache.site_id)
-                .where(CCSite.tenant_id == tenant_id)
-                .order_by(CCFleetCache.agent_name)
-            )
+            await self.session.execute(stmt.order_by(CCFleetCache.agent_name))
         ).scalars().all()
 
     async def list_filtered(
@@ -405,17 +455,24 @@ class FleetCacheRepo:
         search: Optional[str] = None,
         page: int = 1,
         page_size: int = 50,
+        scope=None,
     ) -> tuple[Sequence[CCFleetCache], int]:
         """Return paginated devices with total count, optionally filtered."""
-        stmt = (
+        stmt = apply_scope(
             select(CCFleetCache)
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
-            .where(CCSite.tenant_id == tenant_id)
+            .where(CCSite.tenant_id == tenant_id),
+            CCFleetCache.site_id,
+            scope,
         )
-        count_stmt = (
+        # The COUNT is scoped too: a total that counted rows the caller
+        # cannot see would leak the size of the rest of the fleet.
+        count_stmt = apply_scope(
             select(func.count(CCFleetCache.id))
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
-            .where(CCSite.tenant_id == tenant_id)
+            .where(CCSite.tenant_id == tenant_id),
+            CCFleetCache.site_id,
+            scope,
         )
         if site_id:
             stmt = stmt.where(CCFleetCache.site_id == site_id)
@@ -451,22 +508,27 @@ class FleetCacheRepo:
             )
         ).scalar_one_or_none()
 
-    async def count_by_health(self, tenant_id: str) -> dict[str, int]:
-        """Return {health_status: count} for all devices in the tenant."""
-        stmt = (
+    async def count_by_health(self, tenant_id: str, scope=None) -> dict[str, int]:
+        """Return {health_status: count} for the devices the caller may see."""
+        stmt = apply_scope(
             select(CCFleetCache.health, func.count(CCFleetCache.id))
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
-            .where(CCSite.tenant_id == tenant_id)
-            .group_by(CCFleetCache.health)
-        )
+            .where(CCSite.tenant_id == tenant_id),
+            CCFleetCache.site_id,
+            scope,
+        ).group_by(CCFleetCache.health)
         rows = (await self.session.execute(stmt)).all()
         return {row[0]: row[1] for row in rows}
 
-    async def count_total(self, tenant_id: str) -> int:
+    async def count_total(self, tenant_id: str, scope=None) -> int:
         result = await self.session.execute(
-            select(func.count(CCFleetCache.id))
-            .join(CCSite, CCSite.id == CCFleetCache.site_id)
-            .where(CCSite.tenant_id == tenant_id)
+            apply_scope(
+                select(func.count(CCFleetCache.id))
+                .join(CCSite, CCSite.id == CCFleetCache.site_id)
+                .where(CCSite.tenant_id == tenant_id),
+                CCFleetCache.site_id,
+                scope,
+            )
         )
         return result.scalar() or 0
 
@@ -511,25 +573,31 @@ class ApprovalRouteRepo:
             )
         ).scalar_one_or_none()
 
-    async def list_pending(self, tenant_id: str) -> Sequence[CCApprovalRoute]:
-        return (
-            await self.session.execute(
-                select(CCApprovalRoute)
-                .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
-                .where(CCSite.tenant_id == tenant_id)
-                .where(CCApprovalRoute.decision.is_(None))
-                .order_by(CCApprovalRoute.routed_at)
-            )
-        ).scalars().all()
-
-    async def list_pending_paginated(
-        self, tenant_id: str, page: int = 1, page_size: int = 50,
-    ) -> tuple[Sequence[CCApprovalRoute], int]:
-        base = (
+    async def list_pending(
+        self, tenant_id: str, scope=None
+    ) -> Sequence[CCApprovalRoute]:
+        stmt = apply_scope(
             select(CCApprovalRoute)
             .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
             .where(CCSite.tenant_id == tenant_id)
-            .where(CCApprovalRoute.decision.is_(None))
+            .where(CCApprovalRoute.decision.is_(None)),
+            CCApprovalRoute.site_id,
+            scope,
+        )
+        return (
+            await self.session.execute(stmt.order_by(CCApprovalRoute.routed_at))
+        ).scalars().all()
+
+    async def list_pending_paginated(
+        self, tenant_id: str, page: int = 1, page_size: int = 50, scope=None,
+    ) -> tuple[Sequence[CCApprovalRoute], int]:
+        base = apply_scope(
+            select(CCApprovalRoute)
+            .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
+            .where(CCSite.tenant_id == tenant_id)
+            .where(CCApprovalRoute.decision.is_(None)),
+            CCApprovalRoute.site_id,
+            scope,
         )
         total = (
             await self.session.execute(
@@ -545,25 +613,33 @@ class ApprovalRouteRepo:
         ).scalars().all()
         return rows, total
 
-    async def list_history(self, tenant_id: str) -> Sequence[CCApprovalRoute]:
+    async def list_history(
+        self, tenant_id: str, scope=None
+    ) -> Sequence[CCApprovalRoute]:
+        stmt = apply_scope(
+            select(CCApprovalRoute)
+            .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
+            .where(CCSite.tenant_id == tenant_id)
+            .where(CCApprovalRoute.decision.isnot(None)),
+            CCApprovalRoute.site_id,
+            scope,
+        )
         return (
             await self.session.execute(
-                select(CCApprovalRoute)
-                .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
-                .where(CCSite.tenant_id == tenant_id)
-                .where(CCApprovalRoute.decision.isnot(None))
-                .order_by(CCApprovalRoute.decided_at.desc())
+                stmt.order_by(CCApprovalRoute.decided_at.desc())
             )
         ).scalars().all()
 
     async def list_history_paginated(
-        self, tenant_id: str, page: int = 1, page_size: int = 50,
+        self, tenant_id: str, page: int = 1, page_size: int = 50, scope=None,
     ) -> tuple[Sequence[CCApprovalRoute], int]:
-        base = (
+        base = apply_scope(
             select(CCApprovalRoute)
             .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
             .where(CCSite.tenant_id == tenant_id)
-            .where(CCApprovalRoute.decision.isnot(None))
+            .where(CCApprovalRoute.decision.isnot(None)),
+            CCApprovalRoute.site_id,
+            scope,
         )
         total = (
             await self.session.execute(
@@ -661,6 +737,177 @@ class UsageSnapshotRepo:
 _audit_chain_lock = asyncio.Lock()
 
 
+class ScopeGrantRepo:
+    """Reads and writes on `cc_scope_grants` (E1.2).
+
+    One table, two principal kinds. Revocation is a timestamp, never a
+    delete: an approval recorded under a grant keeps a `scope_snapshot`
+    that has to stay addressable afterwards.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_for_principal(
+        self, tenant_id: str, principal_ref: str,
+        principal_type: str = "user", include_revoked: bool = False,
+    ) -> Sequence[CCScopeGrant]:
+        stmt = select(CCScopeGrant).where(
+            CCScopeGrant.tenant_id == tenant_id,
+            CCScopeGrant.principal_type == principal_type,
+            CCScopeGrant.principal_ref == principal_ref,
+        )
+        if not include_revoked:
+            stmt = stmt.where(CCScopeGrant.revoked_at.is_(None))
+        return (
+            await self.session.execute(
+                stmt.order_by(CCScopeGrant.scope_type, CCScopeGrant.scope_ref)
+            )
+        ).scalars().all()
+
+    async def list_all(
+        self, tenant_id: str, *, principal_type: str = "",
+        include_revoked: bool = False,
+    ) -> Sequence[CCScopeGrant]:
+        stmt = select(CCScopeGrant).where(CCScopeGrant.tenant_id == tenant_id)
+        if principal_type:
+            stmt = stmt.where(CCScopeGrant.principal_type == principal_type)
+        if not include_revoked:
+            stmt = stmt.where(CCScopeGrant.revoked_at.is_(None))
+        return (
+            await self.session.execute(
+                stmt.order_by(
+                    CCScopeGrant.principal_ref,
+                    CCScopeGrant.scope_type,
+                    CCScopeGrant.scope_ref,
+                )
+            )
+        ).scalars().all()
+
+    async def get(self, tenant_id: str, grant_id: str) -> Optional[CCScopeGrant]:
+        return (
+            await self.session.execute(
+                select(CCScopeGrant).where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.id == grant_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def grant(
+        self,
+        *,
+        tenant_id: str,
+        principal_type: str,
+        principal_ref: str,
+        scope_type: str,
+        scope_ref: str = "",
+        permission_subset: Optional[list] = None,
+        role: str = "",
+        granted_by: str = "",
+        expires_at: Optional[datetime] = None,
+        note: str = "",
+    ) -> CCScopeGrant:
+        """Create, or revive a previously revoked identical grant.
+
+        The unique constraint is on the identity of the grant, so
+        re-granting after a revocation reuses the row rather than
+        colliding with its own history.
+        """
+        existing = (
+            await self.session.execute(
+                select(CCScopeGrant).where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.principal_type == principal_type,
+                    CCScopeGrant.principal_ref == principal_ref,
+                    CCScopeGrant.scope_type == scope_type,
+                    CCScopeGrant.scope_ref == scope_ref,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.revoked_at = None
+            existing.revoked_by = ""
+            existing.permission_subset = permission_subset
+            existing.role = role
+            existing.granted_by = granted_by
+            existing.granted_at = utcnow()
+            existing.expires_at = expires_at
+            existing.note = note
+            await self.session.flush()
+            return existing
+
+        row = CCScopeGrant(
+            tenant_id=tenant_id,
+            principal_type=principal_type,
+            principal_ref=principal_ref,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
+            permission_subset=permission_subset,
+            role=role,
+            granted_by=granted_by,
+            expires_at=expires_at,
+            note=note,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def revoke(self, grant: CCScopeGrant, revoked_by: str) -> CCScopeGrant:
+        grant.revoked_at = utcnow()
+        grant.revoked_by = revoked_by
+        await self.session.flush()
+        return grant
+
+    async def distinct_principals(
+        self, tenant_id: str, principal_type: str = "user"
+    ) -> Sequence[str]:
+        rows = (
+            await self.session.execute(
+                select(CCScopeGrant.principal_ref)
+                .where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.principal_type == principal_type,
+                    CCScopeGrant.revoked_at.is_(None),
+                )
+                .distinct()
+            )
+        ).all()
+        return [r[0] for r in rows]
+
+
+class TenantSettingsRepo:
+    """Per-tenant enforcement posture (E1.2)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, tenant_id: str) -> Optional[CCTenantSettings]:
+        return await self.session.get(CCTenantSettings, tenant_id)
+
+    async def enforcement(self, tenant_id: str) -> str:
+        """The posture, defaulting to legacy_open for an unseen tenant.
+
+        An unseen tenant is one that predates E1.2 or has never been
+        configured; treating that as strict would lock out a working
+        deployment on upgrade.
+        """
+        row = await self.get(tenant_id)
+        return row.scope_enforcement if row else "legacy_open"
+
+    async def set_enforcement(
+        self, tenant_id: str, mode: str, updated_by: str
+    ) -> CCTenantSettings:
+        row = await self.get(tenant_id)
+        if row is None:
+            row = CCTenantSettings(tenant_id=tenant_id)
+            self.session.add(row)
+        row.scope_enforcement = mode
+        row.updated_by = updated_by
+        await self.session.flush()
+        return row
+
+
 class AuditRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -696,7 +943,17 @@ class AuditRepo:
         subject: str = "",
         tenant_id: str = "",
         detail: Optional[dict] = None,
+        site_id: Optional[str] = None,
     ) -> CCAuditLog:
+        """Append one entry to the tenant's hash chain.
+
+        E1.2: `site_id` is authorization/indexing metadata and is
+        DELIBERATELY absent from `_chain_payload`. The chain hashes ts,
+        actor, action, subject, tenant_id and detail -- and only those --
+        so recording a site neither changes an entry's hash nor
+        invalidates any chain written before this column existed. A test
+        asserts that rather than trusting it.
+        """
         from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
 
         row = CCAuditLog(
@@ -706,6 +963,7 @@ class AuditRepo:
             subject=subject,
             tenant_id=tenant_id,
             detail=detail,
+            site_id=site_id,
         )
         async with _audit_chain_lock:
             # R5-2: cross-replica serialization on PostgreSQL (held
@@ -753,10 +1011,10 @@ class AuditRepo:
         date_to: Optional[datetime] = None,
         page: int = 1,
         page_size: int = 50,
+        scope=None,
     ) -> Sequence[CCAuditLog]:
-        stmt = (
-            select(CCAuditLog)
-            .where(CCAuditLog.tenant_id == tenant_id)
+        stmt = _audit_scoped(
+            select(CCAuditLog).where(CCAuditLog.tenant_id == tenant_id), scope
         )
         if actor is not None:
             stmt = stmt.where(CCAuditLog.actor == actor)
@@ -773,6 +1031,7 @@ class AuditRepo:
     async def count_filtered(
         self,
         tenant_id: str,
+        scope=None,
         actor: Optional[str] = None,
         action: Optional[str] = None,
         date_from: Optional[datetime] = None,
@@ -780,8 +1039,11 @@ class AuditRepo:
     ) -> int:
         """True total for the same filter — P0 2026-08-29: the audit list
         endpoint reported the current page length as "total"."""
-        stmt = select(func.count(CCAuditLog.id)).where(
-            CCAuditLog.tenant_id == tenant_id
+        stmt = _audit_scoped(
+            select(func.count(CCAuditLog.id)).where(
+                CCAuditLog.tenant_id == tenant_id
+            ),
+            scope,
         )
         if actor is not None:
             stmt = stmt.where(CCAuditLog.actor == actor)
@@ -1050,19 +1312,22 @@ class OutcomeHistoryRepo:
         tenant_id: str,
         since: Optional[datetime] = None,
         limit: int = 10000,
+        scope=None,
     ) -> list[dict]:
         """Outcome rows as aggregator-ready dicts (site_id included).
 
         Tenant scoping goes through cc_sites: an outcome belongs to the
-        tenant that owns the site it was polled from.
+        tenant that owns the site it was polled from. E1.2 narrows that
+        further to the caller's own sites; `scope=None` is the internal
+        caller (the IntelligenceEngine), which is fleet-wide by design.
         """
-        stmt = (
+        stmt = apply_scope(
             select(CCOutcomeHistory)
             .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
-            .where(CCSite.tenant_id == tenant_id)
-            .order_by(CCOutcomeHistory.ingested_at)
-            .limit(limit)
-        )
+            .where(CCSite.tenant_id == tenant_id),
+            CCOutcomeHistory.site_id,
+            scope,
+        ).order_by(CCOutcomeHistory.ingested_at).limit(limit)
         if since is not None:
             stmt = stmt.where(CCOutcomeHistory.ingested_at > since)
         rows = (await self.session.execute(stmt)).scalars().all()
@@ -1653,8 +1918,13 @@ class IncidentRepo:
         self, tenant_id: str, status: Optional[str] = "open",
         site_id: Optional[str] = None, device_agent_id: Optional[str] = None,
         limit: int = 200,
+        scope=None,
     ) -> Sequence[CCIncident]:
-        stmt = select(CCIncident).where(CCIncident.tenant_id == tenant_id)
+        stmt = apply_scope(
+            select(CCIncident).where(CCIncident.tenant_id == tenant_id),
+            CCIncident.site_id,
+            scope,
+        )
         if status:
             stmt = stmt.where(CCIncident.status == status)
         if site_id:
@@ -1779,23 +2049,42 @@ class OperationalAgentRepo:
         agent.last_evaluated_at = utcnow()
 
     # -- scope -----------------------------------------------------------
-    async def list_scopes(self, agent_id: str) -> Sequence[CCAgentScope]:
+    async def list_scopes(self, agent_id: str) -> Sequence[CCScopeGrant]:
+        """An agent's scope rows -- from the ONE grant table (E1.2).
+
+        `cc_agent_scopes` migrated into `cc_scope_grants` as
+        `principal_type="agent"`. Callers are unchanged because a grant
+        row carries the same `scope_type` / `scope_ref` the agent rows
+        did; what changed is that humans and agents now resolve through
+        the same resolver over the same table.
+        """
         return (
             await self.session.execute(
-                select(CCAgentScope)
-                .where(CCAgentScope.agent_id == agent_id)
-                .order_by(CCAgentScope.scope_type, CCAgentScope.scope_ref)
+                select(CCScopeGrant)
+                .where(
+                    CCScopeGrant.principal_type == "agent",
+                    CCScopeGrant.principal_ref == agent_id,
+                    CCScopeGrant.revoked_at.is_(None),
+                )
+                .order_by(CCScopeGrant.scope_type, CCScopeGrant.scope_ref)
             )
         ).scalars().all()
 
     async def add_scope(
-        self, *, agent_id: str, tenant_id: str, scope_type: str, scope_ref: str
-    ) -> CCAgentScope:
-        row = CCAgentScope(
-            agent_id=agent_id,
+        self, *, agent_id: str, tenant_id: str, scope_type: str, scope_ref: str,
+        granted_by: str = "",
+    ) -> CCScopeGrant:
+        row = CCScopeGrant(
             tenant_id=tenant_id,
+            principal_type="agent",
+            principal_ref=agent_id,
             scope_type=scope_type,
             scope_ref=scope_ref,
+            # An agent's authority is its A0 capability bindings, not a
+            # permission set; the grant carries WHERE, the bindings
+            # carry WHAT. NULL keeps the resolver from narrowing it away.
+            permission_subset=None,
+            granted_by=granted_by,
         )
         self.session.add(row)
         await self.session.flush()
@@ -1924,17 +2213,18 @@ class AgentProposalRepo:
         ).scalars().all()
 
     async def list_awaiting_approval(
-        self, tenant_id: str
+        self, tenant_id: str, scope=None
     ) -> Sequence[CCAgentProposal]:
+        stmt = apply_scope(
+            select(CCAgentProposal).where(
+                CCAgentProposal.tenant_id == tenant_id,
+                CCAgentProposal.status == "awaiting_approval",
+            ),
+            CCAgentProposal.site_id,
+            scope,
+        )
         return (
-            await self.session.execute(
-                select(CCAgentProposal)
-                .where(
-                    CCAgentProposal.tenant_id == tenant_id,
-                    CCAgentProposal.status == "awaiting_approval",
-                )
-                .order_by(CCAgentProposal.created_at)
-            )
+            await self.session.execute(stmt.order_by(CCAgentProposal.created_at))
         ).scalars().all()
 
     async def list_by_status(
@@ -2076,8 +2366,12 @@ class ApprovalRecordRepo:
         policy_id: str = "",
         scope_ok: bool = True,
         reason: str = "",
+        scope_snapshot: Optional[dict] = None,
+        authority_snapshot: Optional[dict] = None,
     ) -> CCApprovalRecord:
         row = CCApprovalRecord(
+            scope_snapshot=scope_snapshot,
+            authority_snapshot=authority_snapshot,
             tenant_id=tenant_id,
             subject_type=subject_type,
             subject_ref=subject_ref,

@@ -67,6 +67,10 @@ const TENANT_NAV: SidebarSection[] = [
       // surfaces, not with access control -- containment is not
       // authorization, and putting it under Users would suggest it is.
       { key: "/organization", label: "Organization", icon: "\u25A6" },
+      // E1.2: who may reach what. Sits beside Organization because the
+      // two are the pair the enterprise model is built from -- and
+      // deliberately separate, because containment is not authority.
+      { key: "/access-scope", label: "Access Scope", icon: "\u26BF" },
       // S1: named for what it lists. "Agents" is reserved for the
       // operational-agent surface (A0+), so the two never blur.
       { key: "/agents", label: "Harken Nodes", icon: "\u2699" },

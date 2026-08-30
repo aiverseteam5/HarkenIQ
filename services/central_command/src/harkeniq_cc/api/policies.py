@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_cc_state, get_scope, get_session, require_permission
 from harkeniq_cc.approval_policy import MODE_AUTO_APPROVE
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
@@ -201,8 +201,16 @@ async def create_policy(
     body: PolicyCreateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Create an approval policy."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval policy", tenant_object=True
+    )
     _reject_auto_approve(body.approval_mode)
     policy = await ApprovalPolicyRepo(session).create(
         tenant_id=user.tenant_id,
@@ -236,8 +244,16 @@ async def update_policy(
     body: PolicyUpdateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Update an approval policy."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval policy", tenant_object=True
+    )
     _reject_auto_approve(body.approval_mode)
     repo = ApprovalPolicyRepo(session)
     policy = await repo.get_by_id(policy_id)
@@ -265,8 +281,16 @@ async def delete_policy(
     policy_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Delete an approval policy."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval policy", tenant_object=True
+    )
     repo = ApprovalPolicyRepo(session)
     policy = await repo.get_by_id(policy_id)
     if policy is None or policy.tenant_id != user.tenant_id:
@@ -319,8 +343,16 @@ async def create_group(
     body: GroupCreateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Create an approval group."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval group", tenant_object=True
+    )
     group = await ApprovalGroupRepo(session).create(
         tenant_id=user.tenant_id,
         name=body.name,
@@ -379,8 +411,16 @@ async def add_group_member(
     body: GroupMemberRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Add a member to an approval group (QA-036: route existed only in the UI)."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval group membership", tenant_object=True
+    )
     repo = ApprovalGroupRepo(session)
     group = await repo.get_by_id(group_id)
     if group is None or group.tenant_id != user.tenant_id:
@@ -410,8 +450,16 @@ async def remove_group_member(
     member_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Remove a member from an approval group."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval group membership", tenant_object=True
+    )
     repo = ApprovalGroupRepo(session)
     group = await repo.get_by_id(group_id)
     if group is None or group.tenant_id != user.tenant_id:
@@ -440,8 +488,16 @@ async def update_group(
     body: GroupUpdateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Update an approval group."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval group", tenant_object=True
+    )
     repo = ApprovalGroupRepo(session)
     group = await repo.get_by_id(group_id)
     if group is None or group.tenant_id != user.tenant_id:
@@ -468,8 +524,16 @@ async def delete_group(
     group_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Delete an approval group (and its members)."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="approval group", tenant_object=True
+    )
     repo = ApprovalGroupRepo(session)
     group = await repo.get_by_id(group_id)
     if group is None or group.tenant_id != user.tenant_id:
@@ -520,9 +584,17 @@ async def create_autonomy_budget(
     body: BudgetCreateRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Create or update an autonomy budget (upserts on tenant_id + device_type)."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="autonomy budget", tenant_object=True
+    )
     budget = await AutonomyBudgetRepo(session).upsert(
         tenant_id=user.tenant_id,
         device_type=body.device_type,
@@ -553,9 +625,17 @@ async def delete_autonomy_budget(
     budget_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Delete an autonomy budget."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="autonomy budget", tenant_object=True
+    )
     repo = AutonomyBudgetRepo(session)
     budget = await repo.get_by_id(budget_id)
     if budget is None or budget.tenant_id != user.tenant_id:
@@ -613,6 +693,7 @@ async def _flip_stop_switch(active: bool, user, session, state) -> dict:
 async def activate_stop_switch(
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Activate the fleet-wide stop switch: deny all autonomous actions.
@@ -621,6 +702,13 @@ async def activate_stop_switch(
     observe-only once their current lease expires.  SM propagates the
     stop switch state via the next lease renewal.
     """
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="the tenant stop switch", tenant_object=True
+    )
     return await _flip_stop_switch(True, user, session, state)
 
 
@@ -631,9 +719,17 @@ async def activate_stop_switch(
 async def deactivate_stop_switch(
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Deactivate the stop switch: resume normal autonomous operation."""
+    # E1.2 layer 3. Tenant governance has no site dimension, so
+    # changing it is TENANT authority: a cluster-scoped principal
+    # may READ why they are blocked (that is the point of the S5
+    # contract) and may not rewrite the rule for everyone else.
+    forbid_out_of_scope(
+        scope, "site.manage", what="the tenant stop switch", tenant_object=True
+    )
     return await _flip_stop_switch(False, user, session, state)
 
 

@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0010"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0011"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0008"),
 }
 
@@ -93,10 +93,13 @@ class TestFreshDatabase:
         _alembic("cc", db, "upgrade", "head")
         assert _version(db) == SERVICES["cc"][2]
         assert {
-            "cc_operational_agents", "cc_agent_scopes",
-            "cc_agent_capabilities", "cc_agent_proposals",
-            "cc_approval_records",
+            "cc_operational_agents", "cc_agent_capabilities",
+            "cc_agent_proposals", "cc_approval_records",
+            # E1.2: the ONE grant table. `cc_agent_scopes` migrated in
+            # and is gone -- a second scope model is what this replaces.
+            "cc_scope_grants", "cc_tenant_settings",
         } <= _tables(db)
+        assert "cc_agent_scopes" not in _tables(db)
         assert "actor" in _columns(db, "cc_outcome_history")
         assert "principal_ref" in _columns(db, "cc_approval_group_members")
 
@@ -203,9 +206,12 @@ class TestExistingDatabase:
         con = sqlite3.connect(db)
         for table in (
             "cc_agent_proposals", "cc_agent_capabilities",
-            "cc_agent_scopes", "cc_operational_agents",
+            "cc_scope_grants", "cc_tenant_settings", "cc_operational_agents",
         ):
             con.execute(f"drop table {table}")
+        # A pre-A0 database has no agent scope table at all; 0008 creates
+        # cc_agent_scopes and 0011 migrates it away again, so the chain
+        # has to survive both on one run.
         # sqlite cannot drop a column on older versions; rebuild the one
         # table whose column A0 adds.
         con.execute("alter table cc_outcome_history rename to _old")
@@ -228,6 +234,87 @@ class TestExistingDatabase:
         assert _version(db) == SERVICES["cc"][2]
         assert "cc_operational_agents" in _tables(db)
         assert "actor" in _columns(db, "cc_outcome_history")
+
+    def test_cc_0011_carries_every_agent_scope_across(self, tmp_path):
+        """E1.2 merges cc_agent_scopes into cc_scope_grants.
+
+        An A0 agent whose scope row was lost would silently stop seeing
+        its own devices, so the copy is asserted per row rather than
+        trusted -- and asserted to be idempotent, because a migration
+        that could double-grant an agent on a retry is worse than one
+        that does nothing.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "0010")
+        con = sqlite3.connect(db)
+        # 0001 is a create_all from CURRENT models, which no longer carry
+        # cc_agent_scopes -- so a genuine pre-0011 database has to be
+        # reconstructed rather than upgraded to. Only the scope rows
+        # matter: 0011 reads this table and never joins the agent.
+        con.execute(
+            "create table cc_agent_scopes (id text primary key, agent_id text, "
+            "tenant_id text, scope_type text, scope_ref text, created_at datetime)"
+        )
+        for n, (st, sr) in enumerate(
+            [("site", "site-1"), ("device_class", "switch"), ("device", "node-7")]
+        ):
+            con.execute(
+                "insert into cc_agent_scopes (id, agent_id, tenant_id, scope_type, "
+                "scope_ref, created_at) values (?,'ag1','t-a',?,?,datetime('now'))",
+                (f"sc{n}", st, sr),
+            )
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "cc_agent_scopes" not in _tables(db)
+
+        con = sqlite3.connect(db)
+        rows = con.execute(
+            "select principal_type, principal_ref, scope_type, scope_ref, "
+            "permission_subset from cc_scope_grants order by scope_type"
+        ).fetchall()
+        con.close()
+        # All three scope types survive. Dropping device_class or device
+        # would take reach away from every shipped agent.
+        assert [(r[2], r[3]) for r in rows] == [
+            ("device", "node-7"), ("device_class", "switch"), ("site", "site-1"),
+        ]
+        assert all(r[0] == "agent" and r[1] == "ag1" for r in rows)
+        # NULL subset: an agent's authority is its A0 capability bindings,
+        # not a permission set. A narrowed subset would silence it.
+        assert all(r[4] is None for r in rows)
+
+    def test_cc_0011_seeds_legacy_open_so_upgrades_do_not_lock_out(self, tmp_path):
+        """Behaviour must be unchanged on upgrade.
+
+        CC cannot enumerate a realm's principals to backfill grants, so
+        an existing tenant that landed `strict` would lock out everyone
+        who has one.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "0010")
+        con = sqlite3.connect(db)
+        for tenant in ("t-a", "t-b"):
+            con.execute(
+                "insert into cc_sites (id, tenant_id, site_name, sm_endpoint, "
+                "license_fingerprint, status, registered_at, last_seen_at) "
+                "values (?,?,?,'','','active',datetime('now'),datetime('now'))",
+                (f"s-{tenant}", tenant, f"site-{tenant}"),
+            )
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        rows = dict(
+            con.execute(
+                "select tenant_id, scope_enforcement from cc_tenant_settings"
+            ).fetchall()
+        )
+        con.close()
+        assert rows == {"t-a": "legacy_open", "t-b": "legacy_open"}
 
     def test_sm_upgrade_from_0007_preserves_drop_backs(self, tmp_path):
         """E0.2 rekeys sm_error_budgets. A withdrawal that is lost would

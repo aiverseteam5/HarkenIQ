@@ -35,7 +35,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import (
+    forbid_out_of_scope,
     get_cc_state,
+    get_scope,
     get_session,
     require_any_permission,
     require_permission,
@@ -182,6 +184,33 @@ async def _governing_policy(
     return policy, group, members
 
 
+def _scope_snapshot(scope) -> dict:
+    """What this approver could reach, at this instant (L2).
+
+    Written once and never rewritten. A later tree move or grant
+    revocation does not touch it, which is exactly what makes an earlier
+    approval survivable and auditable afterwards.
+    """
+    return {
+        "principal_type": scope.principal_type,
+        "principal_ref": scope.principal_ref,
+        "enforcement": scope.enforcement,
+        "tenant_wide": scope.tenant_wide,
+        "site_ids": sorted(scope.site_ids),
+        "org_unit_paths": sorted(scope.org_unit_paths),
+        "device_ids": sorted(scope.device_ids),
+        "device_classes": sorted(scope.device_classes),
+        "grants": [
+            {
+                "scope_type": g.scope_type,
+                "scope_ref": g.scope_ref,
+                "permissions": sorted(g.permissions),
+            }
+            for g in scope.grants
+        ],
+    }
+
+
 async def _record_and_evaluate(
     session: AsyncSession,
     *,
@@ -193,6 +222,7 @@ async def _record_and_evaluate(
     device_agent_id: str,
     site_id: str,
     decision: str,
+    scope,
 ) -> dict:
     """Apply the policy to one approver's decision. Returns the progress block.
 
@@ -229,11 +259,27 @@ async def _record_and_evaluate(
             ),
         )
 
-    # E1.2 fills this in. Until scope grants exist every approver's
-    # authority is tenant-wide, which is exactly today's behaviour --
-    # stated here rather than left implicit so the seam is visible.
-    scope_ok = True
+    # E1.2 layer 4: may this approver decide THIS target?
+    #
+    # Refused, not recorded-as-not-counting. E0.1 already discounts a
+    # record whose scope_ok is false, but writing one anyway would put a
+    # name in the ledger beside a decision they were never entitled to
+    # make -- and the ledger is the evidence R-C3 promises.
+    if not scope.permits(
+        "action.approve", site_id=site_id, device_agent_id=device_agent_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"this {action_type} is outside your authorized scope: you "
+                "do not hold 'action.approve' over the site it targets"
+            ),
+        )
 
+    # Ratified L2: an approval is valid on the authority its approver
+    # held AT THE TIME. Recording the values -- not a boolean verdict --
+    # is what lets a later org-tree or grant change leave this decision
+    # standing and still explain itself.
     await records_repo.record(
         tenant_id=tenant_id,
         subject_type=subject_type,
@@ -242,7 +288,15 @@ async def _record_and_evaluate(
         approver_email=user.email or user.user_id,
         decision=decision,
         policy_id=getattr(policy, "id", "") or "",
-        scope_ok=scope_ok,
+        scope_ok=True,
+        scope_snapshot=_scope_snapshot(scope),
+        authority_snapshot={
+            "role": user.role,
+            "permission": "action.approve",
+            "target_site_id": site_id,
+            "target_device_agent_id": device_agent_id,
+            "enforcement": scope.enforcement,
+        },
     )
     # Every approval is audited individually. Auditing only the outcome
     # would make a two-approver decision indistinguishable from a
@@ -259,7 +313,10 @@ async def _record_and_evaluate(
             "site_id": site_id,
             "policy_id": getattr(policy, "id", None),
             "group_id": getattr(group, "id", None),
-            "scope_ok": scope_ok,
+                # True by construction: an out-of-scope approver is
+                # refused above rather than recorded.
+                "scope_ok": True,
+                "scope_snapshot": _scope_snapshot(scope),
         },
     )
 
@@ -279,6 +336,7 @@ async def _decide_agent_proposal(
     user: UserContext,
     session: AsyncSession,
     state,
+    scope,
 ) -> dict:
     """Decide an Operational Agent's proposal (A1).
 
@@ -315,6 +373,7 @@ async def _decide_agent_proposal(
         device_agent_id=proposal.device_agent_id,
         site_id=proposal.site_id,
         decision=decision,
+        scope=scope,
     )
     if block["state"] == STATE_DENIED:
         decision = DECISION_DENIED
@@ -410,6 +469,7 @@ async def _route_decision(
     user: UserContext,
     session: AsyncSession,
     state,
+    scope,
 ) -> dict:
     """Shared logic for approve/deny: update DB, route to SM, audit-log."""
     repo = ApprovalRouteRepo(session)
@@ -419,7 +479,7 @@ async def _route_decision(
         # node action may be an agent proposal; only if it is neither is
         # this a 404.
         return await _decide_agent_proposal(
-            action_id, decision, user, session, state,
+            action_id, decision, user, session, state, scope,
         )
 
     # Verify tenant ownership
@@ -450,6 +510,7 @@ async def _route_decision(
         device_agent_id=route.device_agent_id,
         site_id=route.site_id,
         decision=decision,
+        scope=scope,
     )
     if block["state"] == STATE_DENIED:
         decision = DECISION_DENIED
@@ -550,6 +611,7 @@ async def list_pending(
         require_any_permission("action.approve", "audit.view")
     ),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Everything waiting on a human decision, whoever asked.
 
@@ -563,10 +625,10 @@ async def list_pending(
     first, and there are far fewer of them.
     """
     routes, total = await ApprovalRouteRepo(session).list_pending_paginated(
-        user.tenant_id, page=page, page_size=page_size,
+        user.tenant_id, page=page, page_size=page_size, scope=scope,
     )
     proposals = await AgentProposalRepo(session).list_awaiting_approval(
-        user.tenant_id
+        user.tenant_id, scope=scope
     )
     items = (
         [_proposal_item(p) for p in proposals] if page == 1 else []
@@ -595,6 +657,7 @@ async def approve_action(
     action_id: str,
     user: UserContext = Depends(require_permission("action.approve")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Record this approval; decide and dispatch when the policy is satisfied.
@@ -604,7 +667,9 @@ async def approve_action(
     rather than reporting a success that did not happen.
     """
     try:
-        return await _route_decision(action_id, DECISION_APPROVED, user, session, state)
+        return await _route_decision(
+            action_id, DECISION_APPROVED, user, session, state, scope
+        )
     except ApprovalIncomplete as pending:
         return {
             "action_id": action_id,
@@ -627,6 +692,7 @@ async def deny_action(
     action_id: str,
     user: UserContext = Depends(require_permission("action.approve")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Deny a pending action. A single denial is terminal (D16).
@@ -634,7 +700,9 @@ async def deny_action(
     Denial never waits for a quorum: an approver who objects cannot be
     outvoted by colleagues clicking faster.
     """
-    return await _route_decision(action_id, DECISION_DENIED, user, session, state)
+    return await _route_decision(
+        action_id, DECISION_DENIED, user, session, state, scope
+    )
 
 
 @router.post(
@@ -645,6 +713,7 @@ async def batch_decide(
     body: BatchDecisionRequest,
     user: UserContext = Depends(require_permission("action.approve")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Batch approve/deny multiple actions."""
@@ -657,7 +726,7 @@ async def batch_decide(
     for action_id in body.action_ids:
         try:
             result = await _route_decision(
-                action_id, body.decision, user, session, state
+                action_id, body.decision, user, session, state, scope
             )
             results.append({"action_id": action_id, "ok": True, "detail": result})
         except ApprovalIncomplete as pending:
@@ -695,10 +764,11 @@ async def approval_history(
         require_any_permission("action.approve", "audit.view")
     ),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """History of approval decisions."""
     routes, total = await ApprovalRouteRepo(session).list_history_paginated(
-        user.tenant_id, page=page, page_size=page_size,
+        user.tenant_id, page=page, page_size=page_size, scope=scope,
     )
     items = [_route_dict(r) for r in routes]
     await _attach_approval_progress(session, user.tenant_id, items)
@@ -724,6 +794,7 @@ async def approval_records(
         require_any_permission("action.approve", "audit.view")
     ),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Every individual approval or denial recorded against this subject.
 

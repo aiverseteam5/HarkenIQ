@@ -1,0 +1,454 @@
+"""Scope grants and the tenant's enforcement posture (E1.2).
+
+Where authorization is administered. A grant is
+``(principal, permission subset, scope refs)`` -- ratified decision B --
+and it is the ONLY thing that confers authority. The organizational tree
+says where a site sits and grants nobody anything.
+
+Two rules this router exists to enforce, both of them arithmetic rather
+than review:
+
+* **Delegation cannot exceed the delegator.** A grantor may only hand
+  out scope they themselves hold, checked against their own resolved
+  scope. `role.manage` is required to grant at all.
+* **The last administrator cannot be locked out.** Switching a tenant to
+  strict enforcement runs a server-side preflight (ratified L1) and
+  refuses, atomically, if no active unexpired principal would still hold
+  `role.manage` at tenant scope afterwards.
+
+The preflight lives here and NOT in the resolver. A resolver that knew
+about administrators would carry that special case into every future
+caller of it.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from harkeniq_cc.api.deps import (
+    forbid_out_of_scope,
+    get_scope,
+    get_session,
+    require_any_permission,
+    require_permission,
+)
+from harkeniq_cc.auth import ROLE_PERMISSIONS
+from harkeniq_cc.db.repos import (
+    AuditRepo,
+    OrgUnitRepo,
+    ScopeGrantRepo,
+    SiteRepo,
+    TenantSettingsRepo,
+)
+from harkeniq_cc.scope import (
+    ENFORCEMENT_MODES,
+    ENFORCEMENT_STRICT,
+    PRINCIPAL_TYPES,
+    PRINCIPAL_USER,
+    SCOPE_DEVICE,
+    SCOPE_DEVICE_CLASS,
+    SCOPE_ORG_UNIT,
+    SCOPE_SITE,
+    SCOPE_TENANT,
+    SCOPE_TYPES,
+    effective_permissions,
+    preflight_strict,
+)
+
+logger = logging.getLogger("harkeniq.cc.api.scope_grants")
+
+router = APIRouter(prefix="/api/scope-grants", tags=["scope-grants"])
+settings_router = APIRouter(prefix="/api/tenant-settings", tags=["tenant-settings"])
+
+
+class GrantRequest(BaseModel):
+    principal_ref: str = Field(..., min_length=1, max_length=128)
+    principal_type: str = Field(PRINCIPAL_USER, max_length=16)
+    scope_type: str = Field(..., max_length=16)
+    scope_ref: str = Field("", max_length=128)
+    #: The role's permissions are the ceiling; this list intersects them.
+    #: Omit for "the role's full set".
+    permission_subset: Optional[list[str]] = None
+    #: The role this grant narrows. Needed because CC resolves a person's
+    #: role from their token, and the grantor is not that person.
+    role: str = Field("", max_length=64)
+    expires_at: Optional[datetime] = None
+    note: str = Field("", max_length=512)
+
+
+class EnforcementRequest(BaseModel):
+    mode: str = Field(..., description="legacy_open | strict")
+
+
+def _grant_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "principal_type": row.principal_type,
+        "principal_ref": row.principal_ref,
+        "scope_type": row.scope_type,
+        "scope_ref": row.scope_ref,
+        "permission_subset": row.permission_subset,
+        "role": row.role,
+        "granted_by": row.granted_by,
+        "granted_at": row.granted_at.isoformat() if row.granted_at else None,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        "revoked_by": row.revoked_by,
+        "note": row.note,
+    }
+
+
+async def _resolve_scope_ref(session, tenant_id: str, scope_type: str, ref: str):
+    """Validate the target exists. A grant to nothing is a silent no-op."""
+    if scope_type == SCOPE_TENANT:
+        return ""
+    if not ref:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scope_type {scope_type!r} requires a scope_ref",
+        )
+    if scope_type == SCOPE_ORG_UNIT:
+        unit = await OrgUnitRepo(session).get(tenant_id, ref)
+        if unit is None:
+            raise HTTPException(status_code=404, detail="org unit not found")
+        return unit.path
+    if scope_type == SCOPE_SITE:
+        site = await SiteRepo(session).get_by_id(ref)
+        if site is None or site.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="site not found")
+        return ""
+    if scope_type == SCOPE_DEVICE_CLASS:
+        if ref.lower() not in ("server", "switch"):
+            raise HTTPException(
+                status_code=400,
+                detail="device_class must be 'server' or 'switch'",
+            )
+        return ""
+    if scope_type == SCOPE_DEVICE:
+        return ""
+    raise HTTPException(status_code=400, detail=f"unknown scope_type {scope_type!r}")
+
+
+# ---------------------------------------------------------------------------
+# Reads
+# ---------------------------------------------------------------------------
+
+
+@router.get("/")
+async def list_grants(
+    principal_ref: str = "",
+    principal_type: str = "",
+    include_revoked: bool = False,
+    user=Depends(require_any_permission("user.view", "audit.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Who may reach what, in this tenant.
+
+    Read at `user.view` or `audit.view` -- the A13 precedent: an auditor
+    reads the evidence of who was authorized without being able to
+    change it.
+    """
+    repo = ScopeGrantRepo(session)
+    if principal_ref:
+        rows = await repo.list_for_principal(
+            user.tenant_id, principal_ref,
+            principal_type=principal_type or PRINCIPAL_USER,
+            include_revoked=include_revoked,
+        )
+    else:
+        rows = await repo.list_all(
+            user.tenant_id, principal_type=principal_type,
+            include_revoked=include_revoked,
+        )
+    return {
+        "grants": [_grant_dict(r) for r in rows],
+        "scope_types": list(SCOPE_TYPES),
+        "principal_types": list(PRINCIPAL_TYPES),
+        "enforcement": await TenantSettingsRepo(session).enforcement(user.tenant_id),
+        "tenant_id": user.tenant_id,
+    }
+
+
+@router.get("/me")
+async def my_scope(
+    user=Depends(require_any_permission("fleet.view", "audit.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """What the CALLER may reach. Every principal may read their own.
+
+    `contextual_unit_ids` is returned separately from the authority
+    fields and marked as such: it is what makes a breadcrumb render, and
+    it confers nothing.
+    """
+    return {
+        "principal_type": scope.principal_type,
+        "principal_ref": scope.principal_ref,
+        "enforcement": scope.enforcement,
+        "tenant_wide": scope.tenant_wide,
+        "site_ids": sorted(scope.site_ids),
+        "org_unit_paths": sorted(scope.org_unit_paths),
+        "device_ids": sorted(scope.device_ids),
+        "device_classes": sorted(scope.device_classes),
+        "contextual_unit_ids": {
+            "ids": sorted(scope.contextual_unit_ids),
+            "authority": False,
+            "note": (
+                "visible for navigation only; seeing an ancestor is not "
+                "authority over it"
+            ),
+        },
+        "grants": [
+            {
+                "scope_type": g.scope_type,
+                "scope_ref": g.scope_ref,
+                "permissions": sorted(g.permissions),
+            }
+            for g in scope.grants
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Mutations
+# ---------------------------------------------------------------------------
+
+
+@router.post("/", status_code=201)
+async def create_grant(
+    body: GrantRequest,
+    user=Depends(require_permission("role.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Grant scope to a principal, within the grantor's own authority."""
+    if body.scope_type not in SCOPE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scope_type must be one of {', '.join(SCOPE_TYPES)}",
+        )
+    if body.principal_type not in PRINCIPAL_TYPES:
+        raise HTTPException(status_code=400, detail="unknown principal_type")
+
+    unit_path = await _resolve_scope_ref(
+        session, user.tenant_id, body.scope_type, body.scope_ref
+    )
+
+    # The delegation ceiling. A grantor hands out only what they hold,
+    # and contextual visibility of an ancestor is not holding it.
+    if body.scope_type == SCOPE_TENANT:
+        forbid_out_of_scope(
+            scope, "role.manage", what="a tenant-wide grant", tenant_object=True
+        )
+    elif body.scope_type == SCOPE_ORG_UNIT:
+        forbid_out_of_scope(
+            scope, "role.manage",
+            what=f"org unit {body.scope_ref!r}", org_unit_path=unit_path,
+        )
+    elif body.scope_type == SCOPE_SITE:
+        forbid_out_of_scope(
+            scope, "role.manage",
+            what=f"site {body.scope_ref!r}", site_id=body.scope_ref,
+        )
+    else:
+        # device and device_class span whatever they match, so only a
+        # tenant-wide grantor may hand them out.
+        forbid_out_of_scope(
+            scope, "role.manage",
+            what=f"{body.scope_type} {body.scope_ref!r}", tenant_object=True,
+        )
+
+    # A subset can only narrow. Checked HERE too, not merely at resolve
+    # time, so an attempt to widen is refused visibly rather than
+    # silently reduced to nothing later.
+    if body.permission_subset is not None and body.role:
+        role_perms = ROLE_PERMISSIONS.get(body.role, [])
+        granted = effective_permissions(role_perms, body.permission_subset)
+        rejected = sorted(set(body.permission_subset) - set(granted))
+        if rejected and "*" not in role_perms:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"role {body.role!r} does not hold {', '.join(rejected)}; a "
+                    "permission subset may only narrow a role, never widen it"
+                ),
+            )
+
+    grant = await ScopeGrantRepo(session).grant(
+        tenant_id=user.tenant_id,
+        principal_type=body.principal_type,
+        principal_ref=body.principal_ref,
+        scope_type=body.scope_type,
+        scope_ref=body.scope_ref,
+        permission_subset=body.permission_subset,
+        role=body.role,
+        granted_by=user.user_id,
+        expires_at=body.expires_at,
+        note=body.note,
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="scope.granted",
+        subject=body.principal_ref,
+        tenant_id=user.tenant_id,
+        site_id=body.scope_ref if body.scope_type == SCOPE_SITE else None,
+        detail={
+            "principal_type": body.principal_type,
+            "scope_type": body.scope_type,
+            "scope_ref": body.scope_ref,
+            "permission_subset": body.permission_subset,
+            "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+        },
+    )
+    await session.commit()
+    return _grant_dict(grant)
+
+
+@router.delete("/{grant_id}")
+async def revoke_grant(
+    grant_id: str,
+    user=Depends(require_permission("role.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Revoke a grant. A timestamp, never a delete.
+
+    An approval recorded under this grant keeps a `scope_snapshot` that
+    has to stay addressable afterwards (ratified L2).
+    """
+    repo = ScopeGrantRepo(session)
+    grant = await repo.get(user.tenant_id, grant_id)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="grant not found")
+
+    if grant.scope_type == SCOPE_SITE:
+        forbid_out_of_scope(
+            scope, "role.manage",
+            what=f"site {grant.scope_ref!r}", site_id=grant.scope_ref,
+        )
+    elif grant.scope_type == SCOPE_ORG_UNIT:
+        unit = await OrgUnitRepo(session).get(user.tenant_id, grant.scope_ref)
+        forbid_out_of_scope(
+            scope, "role.manage",
+            what=f"org unit {grant.scope_ref!r}",
+            org_unit_path=unit.path if unit else "",
+        )
+    else:
+        forbid_out_of_scope(
+            scope, "role.manage",
+            what=f"a {grant.scope_type} grant", tenant_object=True,
+        )
+
+    await repo.revoke(grant, user.user_id)
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="scope.revoked",
+        subject=grant.principal_ref,
+        tenant_id=user.tenant_id,
+        detail={
+            "grant_id": grant.id,
+            "scope_type": grant.scope_type,
+            "scope_ref": grant.scope_ref,
+        },
+    )
+    await session.commit()
+    return _grant_dict(grant)
+
+
+# ---------------------------------------------------------------------------
+# Enforcement posture, and the L1 preflight
+# ---------------------------------------------------------------------------
+
+
+@settings_router.get("/scope-enforcement")
+async def get_enforcement(
+    user=Depends(require_any_permission("fleet.view", "audit.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    mode = await TenantSettingsRepo(session).enforcement(user.tenant_id)
+    check = await _preflight(session, user.tenant_id, caller_scope=scope)
+    return {
+        "tenant_id": user.tenant_id,
+        "scope_enforcement": mode,
+        "modes": list(ENFORCEMENT_MODES),
+        "strict_ready": check.ok,
+        "strict_blocked_reason": check.reason,
+        "tenant_admin_count": check.admin_count,
+    }
+
+
+async def _preflight(session, tenant_id: str, caller_scope=None):
+    """Run the L1 check over every grant in the tenant."""
+    grants = await ScopeGrantRepo(session).list_all(tenant_id)
+
+    def role_permissions_for(row):
+        # The grant records the role it narrows (see the model note).
+        # A grant with no role named cannot be shown to carry
+        # `role.manage`, so it does NOT count toward the preflight:
+        # counting it would let the flip pass on somebody who turns out
+        # not to be an administrator, which is the exact lockout L1
+        # exists to prevent.
+        return ROLE_PERMISSIONS.get(getattr(row, "role", "") or "", [])
+
+    return preflight_strict(
+        grants, role_permissions_for, caller_scope=caller_scope
+    )
+
+
+@settings_router.put("/scope-enforcement")
+async def set_enforcement(
+    body: EnforcementRequest,
+    user=Depends(require_permission("role.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Switch the tenant between legacy_open and strict.
+
+    Ratified L1: the flip to strict is refused unless at least one
+    active, unexpired principal holds a tenant-scope grant containing
+    `role.manage`. The refusal names the missing condition and
+    **applies nothing** -- there is no partial mode change.
+    """
+    if body.mode not in ENFORCEMENT_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of {', '.join(ENFORCEMENT_MODES)}",
+        )
+    forbid_out_of_scope(
+        scope, "role.manage",
+        what="the tenant's scope enforcement mode", tenant_object=True,
+    )
+
+    if body.mode == ENFORCEMENT_STRICT:
+        check = await _preflight(session, user.tenant_id, caller_scope=scope)
+        if not check.ok:
+            # 409, and nothing written. A tenant that locked itself out
+            # of its own administration would need the platform-plane
+            # break-glass to recover, which is exceptional recovery and
+            # must not be the normal path.
+            raise HTTPException(status_code=409, detail=check.reason)
+
+    settings = await TenantSettingsRepo(session).set_enforcement(
+        user.tenant_id, body.mode, user.user_id
+    )
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="scope.enforcement_changed",
+        subject=user.tenant_id,
+        tenant_id=user.tenant_id,
+        detail={"mode": body.mode},
+    )
+    await session.commit()
+    return {
+        "tenant_id": user.tenant_id,
+        "scope_enforcement": settings.scope_enforcement,
+        "updated_by": settings.updated_by,
+    }

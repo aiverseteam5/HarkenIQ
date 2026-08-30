@@ -27,11 +27,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo, OrgUnitRepo
 from harkeniq_cc.org_tree import (
     MAX_DEPTH,
+    flatten,
     OrgTreeError,
     ancestor_ids,
     assemble_tree,
@@ -100,6 +101,48 @@ def _bad(exc: OrgTreeError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def _visible_units(units, scope) -> tuple[list, set[str]]:
+    """Split the tenant's units into what this caller may see (L3).
+
+    Returns (visible units, ids that are contextual-only). A tenant-wide
+    caller sees everything and nothing is contextual.
+
+    A unit is AUTHORITATIVE when a grant covers it -- that is, when its
+    path sits at or below one of the caller's granted paths, or the
+    caller holds the site beneath it. It is CONTEXTUAL when it is merely
+    an ancestor of something authoritative: needed to render a
+    breadcrumb, and never a thing to act on.
+
+    Note what is deliberately absent: a contextual ancestor's OTHER
+    children. Showing them would leak the sibling branches L3 requires
+    to be invisible.
+    """
+    if scope is None or getattr(scope, "tenant_wide", False):
+        return list(units), set()
+
+    by_id = {u.id: u for u in units}
+    authoritative: set[str] = set()
+    for unit in units:
+        if scope.covers_org_unit(unit.path):
+            authoritative.add(unit.id)
+            continue
+        # A site-scoped principal (no org grant) still needs to see the
+        # unit their site hangs from, or the tree renders empty for them.
+        for site_id in scope.site_ids:
+            if scope.site_unit_paths.get(site_id, "") == unit.path:
+                authoritative.add(unit.id)
+                break
+
+    contextual: set[str] = set()
+    for unit_id in authoritative:
+        for ancestor in ancestor_ids(by_id[unit_id].path):
+            if ancestor not in authoritative:
+                contextual.add(ancestor)
+
+    visible_ids = authoritative | contextual
+    return [u for u in units if u.id in visible_ids], contextual
+
+
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
@@ -109,23 +152,37 @@ def _bad(exc: OrgTreeError) -> HTTPException:
 async def list_org_units(
     user: UserContext = Depends(require_permission("site.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """The tenant's tree, nested, with per-node and rolled-up site counts.
 
-    E1.1 returns the whole tenant tree because no scoping mechanism
-    exists yet. E1.2 narrows this to the caller's reachable subtree plus
-    the minimal ancestor chain, and marks those ancestors contextual.
+    Ratified L3: a scoped caller sees their reachable subtree in full,
+    plus the minimal ancestor chain needed to navigate to it. Sibling
+    and unrelated branches are absent entirely.
+
+    **Ancestor visibility is contextual only and confers no authority.**
+    Each ancestor comes back marked `contextual: true, authority: false`
+    and carries none of its other children, so "can see the ancestor for
+    context" and "can act across the ancestor" stay different things --
+    a distinction the object gate enforces independently, because
+    `ResolvedScope.permits` never reads `contextual_unit_ids`.
     """
     repo = OrgUnitRepo(session)
     units = await repo.list_all(user.tenant_id)
     counts = await repo.site_counts(user.tenant_id)
-    roots = assemble_tree(units, site_counts=counts)
+
+    visible, contextual_ids = _visible_units(units, scope)
+    roots = assemble_tree(visible, site_counts=counts)
+    for node in flatten(roots):
+        node["contextual"] = node["id"] in contextual_ids
+        node["authority"] = node["id"] not in contextual_ids
     for root in roots:
         root["subtree_site_count"] = total_site_count(root)
     return {
         "tenant_id": user.tenant_id,
         "max_depth": MAX_DEPTH,
-        "unit_count": len(units),
+        "unit_count": len(visible),
+        "tenant_wide": bool(getattr(scope, "tenant_wide", False)),
         "tree": roots,
     }
 
@@ -135,10 +192,18 @@ async def get_org_unit(
     unit_id: str,
     user: UserContext = Depends(require_permission("site.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     repo = OrgUnitRepo(session)
     unit = await repo.get(user.tenant_id, unit_id)
     if unit is None:
+        raise HTTPException(status_code=404, detail="org unit not found")
+
+    # E1.2: a unit the caller can neither act on nor see as an ancestor
+    # reads as absent. A contextual ancestor IS readable -- that is what
+    # makes a breadcrumb work -- and carries `authority: false`.
+    contextual = unit.id in getattr(scope, "contextual_unit_ids", frozenset())
+    if not scope.covers_org_unit(unit.path) and not contextual:
         raise HTTPException(status_code=404, detail="org unit not found")
 
     counts = await repo.site_counts(user.tenant_id)
@@ -154,7 +219,11 @@ async def get_org_unit(
     sites = await repo.sites_in(user.tenant_id, unit.id)
 
     return {
-        "unit": _unit_dict(unit, site_count=counts.get(unit.id, 0)),
+        "unit": {
+            **_unit_dict(unit, site_count=counts.get(unit.id, 0)),
+            "contextual": contextual,
+            "authority": not contextual,
+        },
         # Root first: this is the breadcrumb.
         "ancestors": [
             _unit_dict(ancestors[uid], site_count=counts.get(uid, 0))
@@ -183,6 +252,7 @@ async def create_org_unit(
     body: OrgUnitCreate,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     repo = OrgUnitRepo(session)
     try:
@@ -196,10 +266,22 @@ async def create_org_unit(
         parent = await repo.get(user.tenant_id, body.parent_id)
         if parent is None:
             raise HTTPException(status_code=404, detail="parent org unit not found")
+        # E1.2 layer 3. Seeing a parent as a breadcrumb is not authority
+        # to hang new units off it.
+        forbid_out_of_scope(
+            scope, "site.manage",
+            what=f"org unit {parent.name!r}", org_unit_path=parent.path,
+        )
         try:
             check_depth(parent.depth)
         except OrgTreeError as exc:
             raise _bad(exc)
+    else:
+        # A new ROOT unit restructures the tenant itself.
+        forbid_out_of_scope(
+            scope, "site.manage",
+            what="creating a root organizational unit", tenant_object=True,
+        )
 
     if await repo.sibling_named(user.tenant_id, body.parent_id or None, name):
         raise HTTPException(
@@ -238,11 +320,16 @@ async def update_org_unit(
     body: OrgUnitUpdate,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     repo = OrgUnitRepo(session)
     unit = await repo.get(user.tenant_id, unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="org unit not found")
+    forbid_out_of_scope(
+        scope, "site.manage",
+        what=f"org unit {unit.name!r}", org_unit_path=unit.path,
+    )
 
     changes: dict = {}
 
@@ -285,6 +372,20 @@ async def update_org_unit(
                 raise HTTPException(
                     status_code=404, detail="destination parent not found"
                 )
+            # BOTH ends. Without the destination check a cluster manager
+            # could move their own subtree under a branch they do not
+            # administer; without the source check (above) they could
+            # move somebody else's.
+            forbid_out_of_scope(
+                scope, "site.manage",
+                what=f"destination org unit {new_parent.name!r}",
+                org_unit_path=new_parent.path,
+            )
+        else:
+            forbid_out_of_scope(
+                scope, "site.manage",
+                what="promoting a unit to a tenant root", tenant_object=True,
+            )
         try:
             check_move(
                 unit.path,
@@ -334,6 +435,7 @@ async def delete_org_unit(
     unit_id: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Refuse to delete a unit that still holds children or sites.
 
@@ -345,6 +447,10 @@ async def delete_org_unit(
     unit = await repo.get(user.tenant_id, unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="org unit not found")
+    forbid_out_of_scope(
+        scope, "site.manage",
+        what=f"org unit {unit.name!r}", org_unit_path=unit.path,
+    )
 
     children = await repo.child_count(user.tenant_id, unit.id)
     sites = await repo.sites_in(user.tenant_id, unit.id)

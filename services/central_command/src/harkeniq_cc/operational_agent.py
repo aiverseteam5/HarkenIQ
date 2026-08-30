@@ -81,7 +81,15 @@ SCOPE_SITE = "site"
 SCOPE_DEVICE_CLASS = "device_class"
 SCOPE_DEVICE = "device"
 
-SCOPE_TYPES = (SCOPE_SITE, SCOPE_DEVICE_CLASS, SCOPE_DEVICE)
+SCOPE_ORG_UNIT = "org_unit"
+
+#: E1.2: one vocabulary for humans and agents. `org_unit` arrives with
+#: the merge of `cc_agent_scopes` into `cc_scope_grants` -- an agent
+#: scoped to a cluster is what lets a region owner build one at all, and
+#: it is the same row a person would hold. `tenant` is deliberately
+#: ABSENT: an agent that reaches everything is exactly the "everything
+#: by default" failure A0's explicit scope rows exist to make impossible.
+SCOPE_TYPES = (SCOPE_ORG_UNIT, SCOPE_SITE, SCOPE_DEVICE_CLASS, SCOPE_DEVICE)
 
 # -- capability bindings -----------------------------------------------------
 
@@ -238,7 +246,11 @@ def parse_attribution(actor: str) -> Optional[tuple[str, int]]:
 # ---------------------------------------------------------------------------
 
 
-def resolve_scope(scopes: Iterable[Any], devices: Iterable[Any]) -> list[Any]:
+def resolve_scope(
+    scopes: Iterable[Any],
+    devices: Iterable[Any],
+    resolved_site_ids: Iterable[str] = (),
+) -> list[Any]:
     """Devices this agent may observe. Fail closed: no rows, no devices.
 
     The three scope types UNION (a site plus one out-of-site device is a
@@ -249,6 +261,10 @@ def resolve_scope(scopes: Iterable[Any], devices: Iterable[Any]) -> list[Any]:
     if not scopes:
         return []
     site_ids = {s.scope_ref for s in scopes if s.scope_type == SCOPE_SITE}
+    # E1.2: an org_unit scope is expanded to its sites by the caller
+    # (agent_runtime resolves it through the one scope resolver), and
+    # arrives here already flattened onto `resolved_site_ids`.
+    site_ids |= set(resolved_site_ids or ())
     classes = {
         (s.scope_ref or "").lower()
         for s in scopes
@@ -493,6 +509,9 @@ def evaluate(
     attention_by_device: Optional[dict[str, dict]] = None,
     open_dedupe_keys: Iterable[str] = (),
     proposals_today: int = 0,
+    #: E1.2: sites an `org_unit` scope expands to, resolved by the ONE
+    #: scope resolver before this pure function is called.
+    resolved_site_ids: Iterable[str] = (),
     now: Optional[datetime] = None,
 ) -> list[dict[str, Any]]:
     """One evaluation pass for one agent. Pure: no I/O, no clock of its own.
@@ -514,7 +533,7 @@ def evaluate(
         row["action_type"]: row
         for row in autonomy_contract.get("action_classes", [])
     }
-    in_scope = resolve_scope(scopes, devices)
+    in_scope = resolve_scope(scopes, devices, resolved_site_ids)
     if not in_scope:
         return []
     stop_switch_active = bool(
@@ -676,6 +695,9 @@ def agent_view(
     devices: Iterable[Any],
     autonomy_contract: dict,
     proposals: Iterable[Any] = (),
+    #: E1.2: sites an `org_unit` scope expands to, resolved by the ONE
+    #: scope resolver before this pure function is called.
+    resolved_site_ids: Iterable[str] = (),
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """One agent, answered the way an operator asks it.
@@ -690,7 +712,7 @@ def agent_view(
     scopes = list(scopes)
     capabilities = list(capabilities)
     proposals = list(proposals)
-    in_scope = resolve_scope(scopes, devices)
+    in_scope = resolve_scope(scopes, devices, resolved_site_ids)
     class_rows = {
         row["action_type"]: row
         for row in autonomy_contract.get("action_classes", [])

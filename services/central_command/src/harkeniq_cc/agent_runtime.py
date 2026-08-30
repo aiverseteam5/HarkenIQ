@@ -43,7 +43,11 @@ from harkeniq_cc.db.repos import (
     OutcomeHistoryRepo,
     SiteRepo,
 )
-from harkeniq_cc.governance import load_attention, load_autonomy_contract
+from harkeniq_cc.governance import (
+    load_agent_scope,
+    load_attention,
+    load_autonomy_contract,
+)
 from harkeniq_cc.operational_agent import (
     BASIS_AUTONOMOUS,
     EVALUATING_STATUSES,
@@ -121,6 +125,13 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
         for agent in agents:
             scopes = await repo.list_scopes(agent.id)
             caps = await repo.list_capabilities(agent.id)
+            # E1.2: the agent's reach comes from the SAME resolver a
+            # human's does. An org_unit scope has to be expanded through
+            # the tree, and doing that here rather than in the composer
+            # is what keeps one resolver instead of two.
+            agent_scope = await load_agent_scope(
+                session, tenant_id=tenant_id, agent_id=agent.id
+            )
             contract = await load_autonomy_contract(
                 session,
                 tenant_id=tenant_id,
@@ -132,6 +143,7 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             proposals = evaluate(
                 agent=agent,
                 scopes=scopes,
+                resolved_site_ids=agent_scope.site_ids,
                 capabilities=caps,
                 devices=devices,
                 incidents_by_device=incidents,

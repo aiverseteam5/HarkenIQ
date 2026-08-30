@@ -131,6 +131,11 @@ def create_app(state) -> FastAPI:
         # both enforced at Central Command. Authorization scope is a
         # separate model that arrives at E1.2.
         "org-units",
+        # E1.2 2026-08-30: scope grants and the tenant's enforcement
+        # posture. Reads are user.view/audit.view, writes role.manage,
+        # both enforced at Central Command.
+        "scope-grants",
+        "tenant-settings",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

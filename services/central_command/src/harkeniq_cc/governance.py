@@ -22,11 +22,78 @@ from harkeniq_cc.db.repos import (
     ApprovalPolicyRepo,
     AutonomyBudgetRepo,
     LearnedSignalRepo,
+    OrgUnitRepo,
     OutcomeHistoryRepo,
     SafetyStateRepo,
+    ScopeGrantRepo,
     SiteRepo,
     StopSwitchRepo,
+    TenantSettingsRepo,
 )
+from harkeniq_cc.scope import (
+    PRINCIPAL_AGENT,
+    PRINCIPAL_USER,
+    ResolvedScope,
+    resolve,
+)
+
+
+async def load_scope(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    principal_ref: str,
+    role_permissions,
+    principal_type: str = PRINCIPAL_USER,
+) -> ResolvedScope:
+    """Resolve one principal's authorization scope. E1.2.
+
+    The ONE loader for scope, for the same reason `load_autonomy_contract`
+    is the one loader for the contract: a human and an agent that
+    assembled their own inputs would drift, and a scope that drifts is an
+    authorization bug rather than a display bug.
+
+    Humans and Operational Agents differ only in `principal_type`. The
+    rows, the tree, the enforcement mode and the resolver are identical.
+    """
+    grants = await ScopeGrantRepo(session).list_for_principal(
+        tenant_id, principal_ref, principal_type=principal_type
+    )
+    org_units = await OrgUnitRepo(session).list_all(tenant_id)
+    sites = await SiteRepo(session).list_all(tenant_id)
+    enforcement = await TenantSettingsRepo(session).enforcement(tenant_id)
+    return resolve(
+        tenant_id=tenant_id,
+        principal_type=principal_type,
+        principal_ref=principal_ref,
+        role_permissions=role_permissions,
+        grant_rows=grants,
+        org_units=org_units,
+        sites=sites,
+        enforcement=enforcement,
+    )
+
+
+async def load_agent_scope(
+    session: AsyncSession, *, tenant_id: str, agent_id: str
+) -> ResolvedScope:
+    """An Operational Agent's scope, through the same resolver.
+
+    An agent's *authority* is its A0 capability bindings plus the
+    autonomy contract -- it does not call the HTTP API, the CC-resident
+    evaluator does. What converges here is WHERE, which is what "no
+    hidden expansion of scope" is about. `role_permissions=["*"]` says
+    "the grant carries no permission narrowing", not "the agent may do
+    anything": every action it proposes still passes the bindings, the
+    autonomy contract and the node funnel.
+    """
+    return await load_scope(
+        session,
+        tenant_id=tenant_id,
+        principal_ref=agent_id,
+        role_permissions=["*"],
+        principal_type=PRINCIPAL_AGENT,
+    )
 
 
 async def load_autonomy_contract(

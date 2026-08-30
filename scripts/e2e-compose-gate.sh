@@ -821,6 +821,91 @@ AFTER_AUT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api
   echo "moving a site between org units changed the autonomy contract" >&2; exit 1; }
 echo "operator 403, auditor 403 on write, and the governance contract did not move"
 
+step "E1.2: scope is enforced at the SERVER, for every persona"
+# The tenant already has a tree from the E1.1 step. Grant the operator a
+# site scope, flip to strict, and prove both directions.
+E12_SITE=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin); rows = d['sites'] if isinstance(d, dict) else d
+print(rows[0]['id'])")
+OP_SUB=$(python3 -c "
+import base64, json, sys
+t = '$OP_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+OWNER_SUB=$(python3 -c "
+import base64, json, sys
+t = '$TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+
+grant() {
+  curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",\"role\":\"$4\"}" \
+    http://localhost:8090/api/scope-grants/
+}
+[ "$(grant "$OWNER_SUB" tenant "" tenant_owner)" = "201" ] || {
+  echo "tenant grant refused" >&2; exit 1; }
+[ "$(grant "$OP_SUB" site "$E12_SITE" operator)" = "201" ] || {
+  echo "site grant refused" >&2; exit 1; }
+
+# The L1 preflight must pass now that an administrator exists, and the
+# flip must be atomic.
+FLIP=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"strict"}' http://localhost:8090/api/tenant-settings/scope-enforcement)
+[ "$FLIP" = "200" ] || { echo "strict flip refused ($FLIP)" >&2; exit 1; }
+echo "granted, and the tenant is in strict enforcement"
+
+# A subset may only narrow: handing an operator role.manage is refused.
+ESC=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$OP_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",
+       \"role\":\"operator\",\"permission_subset\":[\"role.manage\"]}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$ESC" = "400" ] || { echo "permission_subset widened a role ($ESC)" >&2; exit 1; }
+
+# The operator reads their own site and nothing else, and their own
+# resolved scope says so.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/scope-grants/me \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is False, 'a site-scoped operator resolved tenant-wide'
+assert d['site_ids'] == ['$E12_SITE'], d['site_ids']
+assert d['contextual_unit_ids']['authority'] is False
+print('operator scope:', d['site_ids'])
+"
+
+# An out-of-scope MUTATION is refused, and a tenant-governance READ is not:
+# read authority and mutation authority are different things.
+POL=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $OP_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"gate-should-refuse","required_approvers":1}' \
+  http://localhost:8090/api/policies/)
+[ "$POL" = "403" ] || { echo "an operator mutated tenant governance ($POL)" >&2; exit 1; }
+POL_READ=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/)
+[ "$POL_READ" = "200" ] || {
+  echo "an operator cannot read why they are blocked ($POL_READ)" >&2; exit 1; }
+echo "mutation 403, read 200 -- read authority != mutation authority"
+
+step "E1.2: the audit chain still verifies with site scoping recorded"
+# site_id sits outside _chain_payload, so every entry written before the
+# column existed must still verify. A break here means the payload moved.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['valid'], d
+print('chain valid,', d['length'], 'entries')
+"
+
+step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"legacy_open"}' \
+  http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

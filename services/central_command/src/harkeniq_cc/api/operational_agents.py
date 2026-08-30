@@ -26,19 +26,22 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.autonomy import LADDER, action_risk_map
 from harkeniq_cc.db.repos import (
     AgentProposalRepo,
     AuditRepo,
     FleetCacheRepo,
+    OrgUnitRepo,
     OperationalAgentRepo,
     SiteRepo,
 )
-from harkeniq_cc.governance import load_autonomy_contract
+from harkeniq_cc.governance import load_agent_scope, load_autonomy_contract
+from harkeniq_cc.scope import SCOPE_DEVICE, SCOPE_ORG_UNIT, SCOPE_SITE
 from harkeniq_cc.operational_agent import (
     AGENT_STATUSES,
+    SCOPE_ORG_UNIT as AGENT_SCOPE_ORG_UNIT,
     CAPABILITY_KINDS,
     KIND_ACTION_CLASS,
     KIND_READ,
@@ -195,6 +198,7 @@ async def _validate_scopes(
     and a cross-tenant reach at worst. Refuse it at write time.
     """
     site_ids = {s.id for s in await SiteRepo(session).list_all(tenant_id)}
+    unit_ids = {u.id for u in await OrgUnitRepo(session).list_all(tenant_id)}
     device_ids = {
         d.agent_id for d in await FleetCacheRepo(session).list_all(tenant_id)
     }
@@ -202,6 +206,11 @@ async def _validate_scopes(
         if rule.scope_type not in SCOPE_TYPES:
             raise HTTPException(
                 400, f"scope_type must be one of {list(SCOPE_TYPES)}"
+            )
+        if rule.scope_type == AGENT_SCOPE_ORG_UNIT and rule.scope_ref not in unit_ids:
+            raise HTTPException(
+                400,
+                f"org unit {rule.scope_ref!r} does not exist in this tenant",
             )
         if rule.scope_type == SCOPE_SITE and rule.scope_ref not in site_ids:
             raise HTTPException(
@@ -259,6 +268,68 @@ def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
                     f"{binding.capability_ref!r} is not a governed read "
                     f"capability ({', '.join(sorted(READ_CAPABILITIES))})",
                 )
+
+
+def _enforce_delegation_ceiling(creator_scope, scopes) -> None:
+    """An agent may never reach further than the human who built it. E1.2.
+
+    This IS the authorization gate for building an agent, not a check
+    layered on top of one. Requiring tenant scope to create an agent
+    would make the ceiling unreachable -- a tenant-wide creator can
+    delegate anything -- so the gate is per requested scope row instead:
+    a region owner may build an agent for their region, and nobody may
+    build one that reaches past themselves.
+
+    "Delegated administration cannot exceed the delegator's authority",
+    as arithmetic rather than as review.
+    """
+    if not scopes:
+        # No rows means no devices (A0). Nothing to cap, and the agent
+        # is inert until somebody with the authority binds a scope.
+        return
+    for rule in scopes:
+        if not _scope_rule_within(creator_scope, rule):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"cannot grant this agent {rule.scope_type} "
+                    f"{rule.scope_ref!r}: it is outside your own authorized "
+                    "scope, and an agent may never reach further than the "
+                    "person who created it"
+                ),
+            )
+
+
+def _scope_rule_within(creator_scope, rule) -> bool:
+    """Does the creator hold `site.manage` over this requested scope?
+
+    Note what does NOT count: contextual visibility. A cluster manager
+    who can see Region West as a breadcrumb cannot bind an agent to it,
+    because `permits` reads the authority grants and never
+    `contextual_unit_ids`.
+    """
+    if rule.scope_type == SCOPE_SITE:
+        return creator_scope.permits("site.manage", site_id=rule.scope_ref)
+    if rule.scope_type == SCOPE_ORG_UNIT:
+        path = creator_scope.unit_paths.get(rule.scope_ref, "")
+        return bool(path) and creator_scope.permits(
+            "site.manage", org_unit_path=path
+        )
+    if rule.scope_type == SCOPE_DEVICE:
+        return creator_scope.permits(
+            "site.manage", device_agent_id=rule.scope_ref
+        )
+    # `device_class` spans the whole fleet, so only a tenant-wide
+    # principal may delegate one. Anything narrower would silently widen.
+    return creator_scope.permits("site.manage", tenant_object=True)
+
+
+async def _agent_scope_rules(repo, agent_id):
+    """The agent's CURRENT scope rows, as rule-shaped objects."""
+    return [
+        ScopeRule(scope_type=row.scope_type, scope_ref=row.scope_ref)
+        for row in await repo.list_scopes(agent_id)
+    ]
 
 
 async def _apply_bindings(
@@ -397,6 +468,7 @@ async def list_agents(
     status: str | None = Query(None, description="draft|active|paused|retired"),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     repo = OperationalAgentRepo(session)
     agents = await repo.list_all(user.tenant_id, status=status)
@@ -424,12 +496,16 @@ async def create_agent(
     body: CreateAgentBody,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Create an agent. It starts in `draft` and evaluates nothing.
 
     Activation is a separate, human, audited act: creating a bundle and
     turning it loose must never be the same request.
     """
+    # E1.2 layer 3. The ceiling IS the gate: authority over every scope
+    # the agent is asked to reach, and nothing wider.
+    _enforce_delegation_ceiling(scope, body.scopes)
     repo = OperationalAgentRepo(session)
     if await repo.get_by_name(user.tenant_id, body.name) is not None:
         raise HTTPException(409, f"an agent named {body.name!r} already exists")
@@ -483,6 +559,7 @@ async def get_agent(
     agent_id: str,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """One agent, answered the way an operator asks about it.
 
@@ -512,6 +589,11 @@ async def get_agent(
         capabilities=caps,
         devices=devices,
         autonomy_contract=contract,
+        resolved_site_ids=(
+            await load_agent_scope(
+                session, tenant_id=user.tenant_id, agent_id=agent.id
+            )
+        ).site_ids,
         proposals=proposals,
     )
     view["proposals"] = [proposal_dict(p) for p in proposals[:50]]
@@ -533,11 +615,15 @@ async def update_agent(
     body: UpdateAgentBody,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     agent = await _require_agent(session, user.tenant_id, agent_id)
     if agent.status == STATUS_RETIRED:
         raise HTTPException(409, "a retired agent cannot be reconfigured")
     repo = OperationalAgentRepo(session)
+    # E1.2: authority over what this agent already reaches. An agent
+    # nobody can reach is an agent nobody may reconfigure.
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
     actor = user.email or user.user_id
     changed: dict = {}
     if body.description is not None:
@@ -578,14 +664,21 @@ async def replace_bindings(
     body: BindingsBody,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Replace what this agent can see and what it can propose."""
     agent = await _require_agent(session, user.tenant_id, agent_id)
     if agent.status == STATUS_RETIRED:
         raise HTTPException(409, "a retired agent cannot be reconfigured")
+    repo = OperationalAgentRepo(session)
+    # E1.2, BOTH ends, like an org-unit move: authority over what the
+    # agent reaches today and over what it is being pointed at. Without
+    # the first check a scoped principal could re-aim somebody else's
+    # agent; without the second they could widen their own.
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
+    _enforce_delegation_ceiling(scope, body.scopes)
     await _validate_scopes(session, user.tenant_id, body.scopes)
     _validate_capabilities(body.capabilities)
-    repo = OperationalAgentRepo(session)
     actor = user.email or user.user_id
     await _apply_bindings(session, repo, agent, body.scopes, body.capabilities)
     await repo.bump_version(agent, actor)
@@ -624,6 +717,7 @@ async def transition_agent(
     transition: str,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Activate, pause or retire. Always a human act, always audited.
 
@@ -636,12 +730,15 @@ async def transition_agent(
         raise HTTPException(404, "unknown transition")
     target, allowed_from = _TRANSITIONS[transition]
     agent = await _require_agent(session, user.tenant_id, agent_id)
+    repo = OperationalAgentRepo(session)
+    # E1.2: authority over what this agent already reaches. An agent
+    # nobody can reach is an agent nobody may activate, pause or retire.
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
     if agent.status not in allowed_from:
         raise HTTPException(
             409,
             f"cannot {transition} an agent in status {agent.status!r}",
         )
-    repo = OperationalAgentRepo(session)
     if target == STATUS_ACTIVE:
         scopes = await repo.list_scopes(agent.id)
         caps = await repo.list_capabilities(agent.id)
@@ -681,6 +778,7 @@ async def list_proposals(
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Every proposal this agent has made, including the blocked ones.
 

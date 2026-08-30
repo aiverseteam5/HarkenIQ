@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_cc_state, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo, FleetCacheRepo, OrgUnitRepo, SiteRepo
 from harkeniq_cc.sm_client import SMClient
@@ -52,12 +52,20 @@ async def register_site(
     body: SiteRegisterRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
     state=Depends(get_cc_state),
 ) -> dict:
     """Register a new Site Manager with Central Command.
 
     Stores the site locally, then calls RegisterSite on the SM via gRPC.
+
+    E1.2: registering a site is a TENANT-level act -- the site does not
+    exist yet, so there is no object to scope it to. A cluster manager
+    cannot conjure a new site into the tenant.
     """
+    forbid_out_of_scope(
+        scope, "site.manage", what="registering a new site", tenant_object=True
+    )
     # QA-019: when CC holds a verified license, its fingerprint IS the
     # registration credential — never a caller-typed string. A mismatched
     # body value is rejected; without a loaded license (lab), the body
@@ -137,9 +145,10 @@ async def list_sites(
     page_size: int = Query(50, ge=1, le=200),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """List registered sites for the tenant."""
-    sites = await SiteRepo(session).list_all(user.tenant_id)
+    sites = await SiteRepo(session).list_all(user.tenant_id, scope=scope)
     total = len(sites)
     start = (page - 1) * page_size
     end = start + page_size
@@ -160,10 +169,14 @@ async def get_site(
     site_id: str,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Site detail with device count."""
     site = await SiteRepo(session).get_by_id(site_id)
     if site is None or site.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="site not found")
+    # E1.2: out of scope reads as absent.
+    if not scope.covers_site(site.id):
         raise HTTPException(status_code=404, detail="site not found")
 
     devices = await FleetCacheRepo(session).list_by_site(site_id)
@@ -178,6 +191,7 @@ async def set_site_org_unit(
     body: SiteOrgUnitRequest,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Attach this site to an organizational unit, or move it (E1.1).
 
@@ -197,6 +211,18 @@ async def set_site_org_unit(
     unit = await org_repo.get(user.tenant_id, body.org_unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="org unit not found")
+
+    # E1.2 layer 3, on BOTH ends. Moving a site needs authority over
+    # where it is and over where it is going -- otherwise a cluster
+    # manager could pull a site into their own reach, or push one out
+    # of it, and either direction is an unreviewed authority change.
+    forbid_out_of_scope(
+        scope, "site.manage", what=f"site {site.site_name!r}", site_id=site.id
+    )
+    forbid_out_of_scope(
+        scope, "site.manage",
+        what=f"org unit {unit.name!r}", org_unit_path=unit.path,
+    )
 
     previous = site.org_unit_id
     if previous == unit.id:

@@ -874,3 +874,163 @@ with the site still attached; auditor read 200 / write 403; operator read
 403 (no `site.view`); no token 401; the audit chain carries
 `org_unit.created` / `moved` / `site_attached` / `deleted` and still
 verifies.
+
+## 18. E1.2 — scoped RBAC (landed 2026-08-30)
+
+Central Command had exactly one authorization question — does this role
+hold this permission — and no answer at all to "over which objects".
+E1.2 is that second answer, for humans and for Operational Agents,
+through one resolver.
+
+### The model
+
+```
+principal -> grant(s) -> permission subset -> scope refs
+          -> resolved authorization -> target-object check
+```
+
+Two questions, deliberately different, asked in different places:
+
+- **"Could this actor ever possess this permission?"** — the route
+  guard. All 68 `require_permission` sites unchanged.
+- **"Does this actor possess it over THIS target?"** — the repository
+  read filter, the object gate, and the approval gate.
+
+They cannot be the same question because `permission_subset` is **per
+grant**: a principal may hold `site.manage` over Cluster A1 and read-only
+over Region B, so there is no single set of permissions that is true
+everywhere. That is why `UserContext` gains nothing and why scope arrives
+through a separate `get_scope` dependency — and it is what vindicates the
+ratified "do not add scope to the decorators".
+
+### What landed
+
+| Object | Shape |
+|---|---|
+| `cc_scope_grants` | principal_type (user\|agent) · principal_ref · scope_type · scope_ref · permission_subset · role · expires_at · revoked_at |
+| `cc_tenant_settings` | `legacy_open` \| `strict`, per tenant |
+| `cc_approval_records` | `+scope_snapshot` `+authority_snapshot` (L2) |
+| `cc_audit_log` | `+site_id`, **outside the hash payload** |
+| `cc_agent_scopes` | **migrated in and dropped** |
+| `harkeniq_cc/scope.py` | pure resolver: `resolve()`, `ResolvedScope`, `preflight_strict()` |
+| `/api/scope-grants/*`, `/api/tenant-settings/scope-enforcement` | grant administration and the L1 flip |
+| Console `Access Scope` page | one new proxy prefix pair |
+| CC migration **0011** | guarded, idempotent, seeds `legacy_open` |
+
+### Five scope types, not three
+
+The ratified list named tenant, org-unit and site, then "any other scope
+already supported by the product". The repository answered that clause:
+`cc_agent_scopes` supported **site, device_class and device**. Dropping
+the last two in the merge would have taken reach away from every agent
+shipped in A0, so the unified vocabulary is five, and `org_unit` is
+**added** to what an agent may be bound to — which is what lets a region
+owner build an agent for their own region at all.
+
+### Invariants, and where each is enforced
+
+- **A subset only narrows.** `effective_permissions` is
+  `role & subset`, computed once in the resolver. A subset naming a
+  permission the role lacks grants nothing, and the grant API refuses it
+  at write time with a readable reason rather than silently reducing it.
+- **Grants do not union into authority.** Coverage and permission are
+  checked on the **same grant**, so a grant covering the target but
+  lacking the permission never borrows it from one that has it
+  elsewhere. `may_ever()` exists for the fail-fast and is never
+  consulted by `permits()`.
+- **Ancestors are visible, never authoritative.**
+  `contextual_unit_ids` is a separate field and no decision method reads
+  it. The test that proves this empties the authority fields, leaves the
+  ancestors in place, and asserts the scope decides nothing.
+- **Read authority is not mutation authority.** The twelve
+  tenant-governance tables have no site dimension: they are readable at
+  permission level (a cluster manager must be able to read *why* they
+  are blocked — that is the S5 contract's whole point) and mutable only
+  at tenant scope.
+- **Delegation cannot exceed the delegator.** Both for human grants and
+  for agent bindings, checked per requested scope row.
+
+### Two defects the slice found in its own work
+
+**The delegation ceiling had no effective caller.** Agent creation was
+first gated on *tenant* scope, which meant the ceiling could only ever
+cap a tenant-wide creator — who can delegate anything. It was the
+declared-with-no-caller shape this codebase keeps producing. The gate is
+now object-level per requested scope row, so a region owner can build a
+region agent and nobody can build one reaching past themselves. Proven
+live both ways.
+
+**The strict preflight would have locked out a grantless tenant.** Under
+`legacy_open` a principal with no grants resolves tenant-wide — that is
+what keeps upgrades working — and the preflight would have counted that
+synthesized grant as evidence of an administrator, passed, and left
+every principal with nothing. `Grant.synthesized` now marks it and the
+preflight refuses to count it.
+
+### The audit column, precisely
+
+`AuditRepo._chain_payload` hashes `ts, actor, action, subject,
+tenant_id, detail` and only those. `site_id` sits outside it, so every
+chain written before E1.2 still verifies — asserted three ways: the
+payload keys are pinned, a chain written without sites is extended with
+scoped entries and re-verified, and two rows differing only by site are
+shown to hash identically.
+
+Honest limit: historical rows cannot be backfilled, because the site was
+never recorded. They read as tenant-level and are visible only to a
+tenant-scope holder. A scoped principal therefore sees *less* audit than
+before E1.2; that is the correction, not a regression, and an auditor
+holds tenant scope and loses nothing.
+
+### The executable matrix
+
+Ten personas against 68 endpoints is 680 cells, so the matrix is
+executed rather than maintained:
+
+1. `ROUTE_CONTRACT` declares each route's permission and one of four
+   scope treatments. The only hand-written part.
+2. A **route-contract test** walks the live route table; an `/api` route
+   with no declaration **fails the suite**.
+3. A **generated persona sweep** derives every expected outcome from the
+   declaration and drives the real ASGI app.
+
+No test asserts that a UI hid anything.
+
+### Personas are roles plus grants, never new roles
+
+"Region Manager" and "Cluster Manager" are `site_admin` with an
+org-unit grant. The permission vocabulary is fixed at 24 permissions and
+7 roles (spec §4); adding roles would fork it and make every future
+organizational level a schema change. A test asserts no route demands a
+permission outside the fixed vocabulary.
+
+### Site Manager is untouched
+
+SM authenticates with a site/service identity and remains the execution
+and safety boundary. There is no second authorization resolver inside
+it, and E1.2 adds no SM migration.
+
+### Live proof (real PostgreSQL, real Keycloak, six identities)
+
+Migration 0011 applied, the live A0 agent's site scope carried into
+`cc_scope_grants`, `cc_agent_scopes` dropped, `legacy_open` seeded, and
+the audit chain verified before and after.
+
+On the acceptance tenant (Region A → Cluster A1 → site-1, site-b;
+Region B → Cluster B1 → site-3), under **strict**:
+
+| Persona | Reads | Refused |
+|---|---|---|
+| Tenant owner | all 3 sites, 3 devices | — |
+| Region manager (`site_admin` + Region A) | site-1, site-b | site-3 |
+| Cluster manager (`site_admin` + Cluster A1) | site-1, site-b | sibling A2 invisible (404); Region A readable but mutation 403; site-3 404; policy mutation 403; site register 403 |
+| Site admin (`site_admin` + site-1 + site-3) | **site-1 and site-3, across different ancestors** | site-2 |
+| Operator (`operator` + site-1) | site-1 | approving a `BMC_RESET` at site-b — 403 at layer 4 |
+| Auditor (`auditor` + tenant) | all 3 | every mutation |
+| Cluster-scoped auditor | **6 audit entries, one site** | the other sites' entries (tenant auditor sees 105) |
+| Platform super admin, no grant | surface 200, **sees nothing** | every mutation |
+
+Plus: a subset naming `role.manage` for an `operator` refused 400; a
+region owner granting Region B / site-3 / tenant all 403; an agent bound
+inside the region 201 and one reaching site-3 403 with the ceiling's own
+message; no token 401; another realm's token 401; chain valid at 113.
