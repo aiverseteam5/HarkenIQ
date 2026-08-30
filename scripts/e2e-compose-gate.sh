@@ -663,6 +663,82 @@ print("approval ledger:", ", ".join(sorted(approvers)))
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/policies/$POLICY_ID" > /dev/null
 
+step "E0.3: /metrics is served by every service, and it counts"
+# MetricsRegistry shipped with R4-0 and had NO callers: all three
+# services could say they were alive and nothing about what they did.
+for svc_port in "site-manager:8080" "central-command:8090" "console:8100"; do
+  name="${svc_port%%:*}"; port="${svc_port##*:}"
+  body=$(curl -sf "http://localhost:$port/metrics") || {
+    echo "$name serves no /metrics" >&2; exit 1; }
+  echo "$body" | grep -q "harkeniq_up 1.0" || {
+    echo "$name /metrics missing harkeniq_up" >&2; exit 1; }
+  before=$(echo "$body" | awk '/^harkeniq_http_requests_total /{print $2}')
+  curl -sf "http://localhost:$port/healthz" > /dev/null
+  after=$(curl -sf "http://localhost:$port/metrics" \
+    | awk '/^harkeniq_http_requests_total /{print $2}')
+  python3 -c "
+import sys
+before, after = float('$before'), float('$after')
+assert after > before, f'$name request counter did not move: {before} -> {after}'
+print('$name /metrics OK: requests', before, '->', after)
+"
+done
+
+step "E0.3: an auditor can read the evidence, and still change nothing"
+# A13 ratified read-only-everything for the auditor. Approval evidence
+# and approval posture were gated on permissions the auditor never holds.
+AUD_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/auditor" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null) || AUD_ROLE=""
+if [ -z "$AUD_ROLE" ]; then
+  curl -sf -X POST "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
+    -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"auditor"}' > /dev/null
+  AUD_ROLE=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles/auditor" \
+    -H "Authorization: Bearer $KC_ADMIN_TOKEN")
+fi
+curl -s -X POST "http://localhost:8180/admin/realms/harkeniq-platform/users" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"username":"auditor1@harkeniq.com","email":"auditor1@harkeniq.com",
+       "enabled":true,"emailVerified":true,
+       "credentials":[{"type":"password","value":"auditor","temporary":false}]}' \
+  > /dev/null
+AUD_UID=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/users?username=auditor1@harkeniq.com" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+curl -s -X POST "http://localhost:8180/admin/realms/harkeniq-platform/users/$AUD_UID/role-mappings/realm" \
+  -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d "[$AUD_ROLE]" > /dev/null
+AUD_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=auditor1@harkeniq.com&password=auditor" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+for _p in "approvals/" "approvals/history" "policies/" "policies/groups" "audit/"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUD_TOKEN" \
+    "http://localhost:8090/api/$_p")
+  [ "$code" = "200" ] || { echo "auditor read $_p returned $code, want 200" >&2; exit 1; }
+done
+echo "auditor reads approvals, history, policies, groups, audit"
+# ...and mutates nothing.
+for _m in "policies/" "policies/groups"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $AUD_TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"auditor-should-not"}' "http://localhost:8090/api/$_m")
+  [ "$code" = "403" ] || { echo "auditor WROTE $_m ($code)" >&2; exit 1; }
+done
+echo "auditor refused every mutation"
+
+step "E0.3: an inert capability declaration is refused, not accepted"
+SKILL_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"gate-skill-agent\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"skill\",\"capability_ref\":\"fan-health\"}]}" \
+  http://localhost:8090/api/operational-agents/)
+[ "$SKILL_CODE" = "400" ] || {
+  echo "skill binding accepted ($SKILL_CODE): it would do nothing" >&2; exit 1; }
+echo "skill binding refused with a reason naming A2"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

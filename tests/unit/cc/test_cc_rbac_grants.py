@@ -67,15 +67,25 @@ class TestRoleRouteBehavior:
         ("viewer", "/api/fleet/", 200),
         ("auditor", "/api/fleet/", 200),
         ("site_admin", "/api/fleet/", 200),
-        # action.approve — operator and above (R-C4); viewer/auditor never
+        # action.approve — operator and above (R-C4). A13/E0.3: the
+        # AUDITOR reads it too, because approval history is the evidence
+        # R-C3 promises and "read-only everything" is the ratified
+        # auditor scope. A viewer still cannot: they hold neither
+        # action.approve nor audit.view.
         ("operator", "/api/approvals/", 200),
         ("site_admin", "/api/approvals/", 200),
+        ("auditor", "/api/approvals/", 200),
         ("viewer", "/api/approvals/", 403),
-        ("auditor", "/api/approvals/", 403),
-        # site.manage — governance writes stay at site_admin and above
-        ("operator", "/api/policies/", 403),
-        ("viewer", "/api/policies/", 403),
+        ("auditor", "/api/approvals/history", 200),
+        ("viewer", "/api/approvals/history", 403),
+        # A13/E0.3: approval POSTURE (who must approve, how many) reads at
+        # fleet.view, the same read-split S1 applied to autonomy budgets.
+        # Every mutation stays at site.manage — asserted below.
+        ("operator", "/api/policies/", 200),
+        ("viewer", "/api/policies/", 200),
+        ("auditor", "/api/policies/", 200),
         ("site_admin", "/api/policies/", 200),
+        ("auditor", "/api/policies/groups", 200),
         # S1 (D2): autonomy POSTURE is readable by every tenant role —
         # the trust ladder must be visible to the people under it.
         ("operator", "/api/policies/autonomy", 200),
@@ -113,6 +123,46 @@ class TestRoleRouteBehavior:
             )
             assert resp.status_code == expected
             resp = await client.post("/api/policies/stop-switch")
+            assert resp.status_code == expected
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    @pytest.mark.parametrize("role,expected", [
+        # A13/E0.3: opening the POLICY read must not open the write. An
+        # auditor who can read who approves must still be unable to
+        # change it, and an operator who works the queue must be unable
+        # to rewrite the rule that governs the queue.
+        ("operator", 403),
+        ("viewer", 403),
+        ("auditor", 403),
+        ("site_admin", 200),
+    ])
+    async def test_policy_mutation_stays_site_manage(self, role, expected):
+        client, engine = await _client_as(role)
+        try:
+            resp = await client.post(
+                "/api/policies/", json={"name": "x", "required_approvers": 2},
+            )
+            assert resp.status_code == expected
+            resp = await client.post(
+                "/api/policies/groups", json={"name": "g"},
+            )
+            assert resp.status_code == expected
+        finally:
+            await client.aclose()
+            await engine.dispose()
+
+    @pytest.mark.parametrize("role,expected", [
+        # A13/E0.3: an auditor reads approval evidence and decides nothing.
+        ("auditor", 403),
+        ("viewer", 403),
+        ("operator", 404),   # permitted; the action simply does not exist
+    ])
+    async def test_approval_decision_stays_action_approve(self, role, expected):
+        client, engine = await _client_as(role)
+        try:
+            resp = await client.post("/api/approvals/no-such-action/approve")
             assert resp.status_code == expected
         finally:
             await client.aclose()

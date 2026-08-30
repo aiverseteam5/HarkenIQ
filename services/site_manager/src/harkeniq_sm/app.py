@@ -29,6 +29,13 @@ def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Site Manager", version="0.1.0")
     app.state.sm = state
 
+    # E0.3: /metrics from the registry that shipped with R4-0 and had no
+    # callers. Mounted before the routers so the middleware sees every
+    # request, including the ones the routers reject.
+    from harkeniq.metrics import mount_metrics
+
+    mount_metrics(app, "site-manager")
+
     # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
     # partner incident can be traced across service logs.
     from harkeniq.logging_config import request_id_middleware

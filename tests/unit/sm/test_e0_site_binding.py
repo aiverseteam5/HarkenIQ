@@ -213,3 +213,40 @@ class TestBreakGlassUnbind:
         assert (await client.post(
             "/api/site/alpha/unbind", headers=headers, json=body,
         )).status_code == 409
+
+
+class TestMetricsOnTheSiteManager:
+    """E0.3: the Site Manager exposes what it is doing, not only that it
+    is alive."""
+
+    @pytest.fixture
+    async def api(self, db):
+        config = _config(site_token=TOKEN)
+        state = AppState(config=config)
+        state.sessionmaker = db
+        app = create_app(state)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://sm",
+        ) as client:
+            yield client
+
+    async def test_metrics_is_served(self, api):
+        res = await api.get("/metrics")
+        assert res.status_code == 200
+        assert "harkeniq_up 1.0" in res.text
+
+    async def test_the_counter_moves(self, api):
+        def _requests(text):
+            for line in text.splitlines():
+                if line.startswith("harkeniq_http_requests_total "):
+                    return float(line.split()[1])
+            raise AssertionError("counter missing")
+
+        before = _requests((await api.get("/metrics")).text)
+        await api.get("/healthz")
+        assert _requests((await api.get("/metrics")).text) > before
+
+    async def test_metrics_needs_no_site_token(self, api):
+        """Scraped like /healthz. An authenticated scrape endpoint is a
+        scrape endpoint nobody scrapes."""
+        assert (await api.get("/metrics")).status_code == 200

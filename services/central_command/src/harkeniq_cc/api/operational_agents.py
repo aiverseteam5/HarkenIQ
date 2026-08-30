@@ -232,6 +232,17 @@ def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
     """
     known_actions = set(action_risk_map())
     for binding in capabilities:
+        if binding.kind == KIND_SKILL:
+            # E0.3: A0 accepted this and wired it to nothing -- no skill
+            # was installed, no directive queued, no device changed.
+            # Refused with the reason rather than left inert.
+            raise HTTPException(
+                400,
+                "skill bindings are not available yet: installing a skill "
+                "onto an agent's devices needs per-device skill delivery, "
+                "which arrives with A2 (agent deployment). Bind action "
+                "classes and reads today.",
+            )
         if binding.kind not in CAPABILITY_KINDS:
             raise HTTPException(400, f"kind must be one of {list(CAPABILITY_KINDS)}")
         if binding.kind == KIND_ACTION_CLASS:

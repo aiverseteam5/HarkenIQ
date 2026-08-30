@@ -693,3 +693,80 @@ The write path that lets an **agent** declare its site is E1.3 (additive
 `config.site_name` at its ~14 call sites, correlation looping per site).
 E0.2 owns the read path and the identity; it proves that no read can
 leak before the write path can create the situation.
+
+---
+
+## 16. E0.3 — observability, auditor reads, and one inert declaration (landed 2026-08-30)
+
+Third and final slice of E0. No new spec amendment: this implements A13
+(auditor scope) and applies D2's existing posture read-split
+consistently. Nothing ratified changed.
+
+### `/metrics`
+
+`MetricsRegistry`, with Prometheus text export, shipped with R4-0 and had
+**zero callers**. All three services had real `/healthz`, so the platform
+could say it was alive and nothing about what it was doing.
+
+Mounted on Central Command, Site Manager and Console, with a **request
+counting middleware** — mounting an endpoint that always reports zero
+would be the same declared-with-no-writer pattern E0 exists to remove, so
+the counter is asserted to move. The registry is per app rather than the
+module global: two services in one process (every test run) would
+otherwise report each other's traffic. Unauthenticated like `/healthz`,
+carrying only service counters and no tenant identifiers.
+
+### A13 auditor read gates
+
+Three reads were gated on permissions the auditor never holds, so the
+ratified "read-only everything" scope was not real:
+
+| Read | Was | Now |
+|---|---|---|
+| `GET /api/tenants/{id}/roles/` (Console) | `role.manage` | `user.view` |
+| `GET /api/approvals/`, `/history`, `/{id}/records` | `action.approve` | `action.approve` **or** `audit.view` |
+| `GET /api/policies/`, `/groups`, `/groups/{id}` | `site.manage` | `fleet.view` |
+
+No permission was invented — the vocabulary is unchanged. A new
+`require_any_permission` guard admits either of two personas to a read
+they need for different reasons (an operator works the queue; an auditor
+reads the R-C3 evidence), and is deliberately read-only: an `any-of` gate
+on a write would be exactly the broadening D2 forbids. The policy
+read-split matches what S1 already did for autonomy budgets, whose own
+comment says posture must be visible to the people living under it.
+**A viewer still cannot read approval evidence** — they hold neither
+permission — and every mutation is asserted to have stayed put.
+
+### The inert skill binding
+
+A0 accepted `kind: "skill"`, rendered it in the UI, **validated nothing
+about it**, and wired it to nothing: no skill installed, no directive
+queued, no device changed. Making it real needs four things that do not
+exist — a Console endpoint serving a skill's YAML by id (today it is
+exposed only through the marketplace-*installs* feed), a CC fetch path,
+per-device targeting on `InstallSkill` (it fans out to every device on
+the site), and an install-on-activation trigger. That is A2's binding and
+deployment work.
+
+So the kind is refused, with a reason that names A2 and tells the
+operator what they can bind today. `KIND_SKILL` stays defined with the
+four missing pieces written down. Deferred, not discarded.
+
+### Proven on the live stack
+
+`/metrics` on all three services with counters that move (site-manager
+3→5, central-command 2→4, console 4→6). A real Keycloak auditor read
+approvals, history, policies, groups, audit, fleet, incidents and
+autonomy — all 200 — and was refused every mutation, including approving
+an action and creating an agent. A skill binding was refused with the
+reason naming A2.
+
+**Honest limit on one item.** The Console role-bundle gate is proven by
+test but **cannot be exercised on this stack**: the Console honours
+tenant roles only from a *tenant* realm, and the demo runs a single
+platform realm, so no tenant persona reaches the Console there at all.
+That is the ratified A11/A12 separation behaving correctly plus the
+already-recorded TODOS item "SPA realm discovery", which **E1.4** owns.
+Not a gap in this change, and not claimed as live-proven.
+
+2772 → 2808 tests.

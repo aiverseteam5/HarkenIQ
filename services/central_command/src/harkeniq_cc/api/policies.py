@@ -147,10 +147,15 @@ def _budget_dict(b) -> dict:
 
 @router.get(
     "/",
-    dependencies=[Depends(require_permission("site.manage"))],
+    # A13/E0.3: knowing that an action needs two approvers is POSTURE,
+    # and the D2 read-split already made posture readable to the people
+    # living under it (list_autonomy_budgets below says the same). The
+    # auditor's read-only-everything scope depends on this. Every
+    # mutation stays at site.manage.
+    dependencies=[Depends(require_permission("fleet.view"))],
 )
 async def list_policies(
-    user: UserContext = Depends(require_permission("site.manage")),
+    user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List approval policies for the tenant."""
@@ -284,10 +289,11 @@ async def delete_policy(
 
 @router.get(
     "/groups",
-    dependencies=[Depends(require_permission("site.manage"))],
+    # A13/E0.3: who may approve is posture too. Read-split as above.
+    dependencies=[Depends(require_permission("fleet.view"))],
 )
 async def list_groups(
-    user: UserContext = Depends(require_permission("site.manage")),
+    user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List approval groups for the tenant."""
@@ -337,11 +343,12 @@ async def create_group(
 
 @router.get(
     "/groups/{group_id}",
-    dependencies=[Depends(require_permission("site.manage"))],
+    # A13/E0.3: same read-split as the listing above.
+    dependencies=[Depends(require_permission("fleet.view"))],
 )
 async def get_group(
     group_id: str,
-    user: UserContext = Depends(require_permission("site.manage")),
+    user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Group detail with members (QA-036: the Console detail panel's shape)."""

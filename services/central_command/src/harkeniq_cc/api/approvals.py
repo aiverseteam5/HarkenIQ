@@ -34,7 +34,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
+from harkeniq_cc.api.deps import (
+    get_cc_state,
+    get_session,
+    require_any_permission,
+    require_permission,
+)
 from harkeniq_cc.approval_policy import (
     DECISION_APPROVED,
     DECISION_DENIED,
@@ -533,12 +538,17 @@ async def _attach_approval_progress(
 
 @router.get(
     "/",
-    dependencies=[Depends(require_permission("action.approve"))],
+    # A13/E0.3: an operator reads this because they work the queue;
+    # an auditor reads it because it is the R-C3 evidence. Neither
+    # may decide anything -- the POST routes below are unchanged.
+    dependencies=[Depends(require_any_permission("action.approve", "audit.view"))],
 )
 async def list_pending(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    user: UserContext = Depends(require_permission("action.approve")),
+    user: UserContext = Depends(
+        require_any_permission("action.approve", "audit.view")
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Everything waiting on a human decision, whoever asked.
@@ -673,12 +683,17 @@ async def batch_decide(
 
 @router.get(
     "/history",
-    dependencies=[Depends(require_permission("action.approve"))],
+    # A13/E0.3: an operator reads this because they work the queue;
+    # an auditor reads it because it is the R-C3 evidence. Neither
+    # may decide anything -- the POST routes below are unchanged.
+    dependencies=[Depends(require_any_permission("action.approve", "audit.view"))],
 )
 async def approval_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    user: UserContext = Depends(require_permission("action.approve")),
+    user: UserContext = Depends(
+        require_any_permission("action.approve", "audit.view")
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """History of approval decisions."""
@@ -698,11 +713,16 @@ async def approval_history(
 
 @router.get(
     "/{action_id}/records",
-    dependencies=[Depends(require_permission("action.approve"))],
+    # A13/E0.3: an operator reads this because they work the queue;
+    # an auditor reads it because it is the R-C3 evidence. Neither
+    # may decide anything -- the POST routes below are unchanged.
+    dependencies=[Depends(require_any_permission("action.approve", "audit.view"))],
 )
 async def approval_records(
     action_id: str,
-    user: UserContext = Depends(require_permission("action.approve")),
+    user: UserContext = Depends(
+        require_any_permission("action.approve", "audit.view")
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Every individual approval or denial recorded against this subject.

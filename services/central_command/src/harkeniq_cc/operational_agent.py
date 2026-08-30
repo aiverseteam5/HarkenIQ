@@ -87,9 +87,21 @@ SCOPE_TYPES = (SCOPE_SITE, SCOPE_DEVICE_CLASS, SCOPE_DEVICE)
 
 KIND_READ = "read"
 KIND_ACTION_CLASS = "action_class"
+#: Reserved, and deliberately NOT accepted yet. A0 accepted this kind,
+#: rendered it in the UI, validated nothing about it, and wired it to
+#: nothing: no skill was installed, no directive was queued, no device
+#: changed. E0.3 removed it rather than leave a capability that is
+#: accepted and inert.
+#:
+#: Making it real is A2's "binding + deployment" and needs four things
+#: that do not exist: a Console endpoint serving a skill's YAML by id
+#: (today it is exposed only through the marketplace-INSTALLS feed),
+#: a Central Command fetch path, per-device targeting on the InstallSkill
+#: RPC (it fans out to every device on the site), and an
+#: install-on-activation trigger. Deferred, not discarded.
 KIND_SKILL = "skill"
 
-CAPABILITY_KINDS = (KIND_READ, KIND_ACTION_CLASS, KIND_SKILL)
+CAPABILITY_KINDS = (KIND_READ, KIND_ACTION_CLASS)
 
 #: Read capabilities an agent may be bound to. Each is an existing
 #: governed CC surface with its own permission guard; binding one grants
@@ -274,6 +286,11 @@ def bound_reads(capabilities: Iterable[Any]) -> set[str]:
 
 
 def bound_skills(capabilities: Iterable[Any]) -> set[str]:
+    """Skills bound to this agent. Always empty until A2 (see KIND_SKILL).
+
+    Kept so the agent view has a stable shape across the change rather
+    than gaining and losing a field.
+    """
     return {c.capability_ref for c in capabilities if c.kind == KIND_SKILL}
 
 
