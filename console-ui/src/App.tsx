@@ -16,6 +16,7 @@ import LicenseManagement from "./pages/LicenseManagement";
 import FleetOverview from "./pages/FleetOverview";
 import Incidents from "./pages/Incidents";
 import Autonomy from "./pages/Autonomy";
+import Organization from "./pages/Organization";
 import OperationalAgents from "./pages/OperationalAgents";
 import Learning from "./pages/Learning";
 import RiskExposure from "./pages/RiskExposure";
@@ -148,6 +149,7 @@ function AppRoutes() {
         <Route path="/t/:tenantId/risk" element={<RiskExposure />} />
         <Route path="/t/:tenantId/learning" element={<Learning />} />
         <Route path="/t/:tenantId/autonomy" element={<Autonomy />} />
+        <Route path="/t/:tenantId/organization" element={<Organization />} />
         <Route path="/t/:tenantId/operational-agents" element={<OperationalAgents />} />
         <Route path="/t/:tenantId/reliability" element={<VendorReliability />} />
         <Route path="/t/:tenantId/approvals" element={<ApprovalQueue />} />

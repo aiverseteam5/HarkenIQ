@@ -126,6 +126,11 @@ def create_app(state) -> FastAPI:
         # Central Command; this proxy only answers "may this caller reach
         # this tenant at all".
         "operational-agents",
+        # E1.1 2026-08-30: the tenant's own organizational tree.
+        # Containment only -- reads are site.view, mutations site.manage,
+        # both enforced at Central Command. Authorization scope is a
+        # separate model that arrives at E1.2.
+        "org-units",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

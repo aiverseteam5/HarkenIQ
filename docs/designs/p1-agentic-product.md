@@ -770,3 +770,107 @@ already-recorded TODOS item "SPA realm discovery", which **E1.4** owns.
 Not a gap in this change, and not claimed as live-proven.
 
 2772 → 2808 tests.
+
+## 17. E1.1 — the generic organizational tree (landed 2026-08-30)
+
+The first slice of the Enterprise Governance Foundation, and deliberately
+the one with no authorization effect at all. A tenant describes its own
+structure — regions, clusters, circles, trusts, territories, availability
+zones — and attaches each site to exactly one node of it.
+
+### The distinction this slice exists to protect
+
+**Containment is not authorization** (ratified decision B). The tree says
+where a site sits; a scope grant says who may reach it. E1.2 introduces
+`cc_scope_grants`, and a grant will happen to reference an org unit the
+way it could reference a site — but nothing in E1.1 resolves, widens or
+implies permission, and nothing later may make it do so. An org-chart
+edit must never be a privilege change. The compose gate asserts this
+directly: moving a site between units leaves `/api/autonomy` byte
+identical.
+
+**Containment is not blast radius.** The Site Manager's rack and
+fault-domain model is untouched. A power domain is a physical fact about
+which devices die together; an org unit is an administrative fact about
+who owns them. Conflating them would let an org-chart edit change what an
+action is allowed to touch.
+
+### What landed
+
+| Object | Shape |
+|---|---|
+| `cc_org_units` | id · tenant_id · parent_id · unit_type · name · **path** · depth · sort_order · created/updated by/at |
+| `cc_sites.org_unit_id` | FK, nullable through the migration, backfilled by it |
+| `harkeniq_cc/org_tree.py` | pure: path composition, subtree expansion, depth bound, cycle refusal, move rewriting, display assembly |
+| `OrgUnitRepo` | every query conjoined with `tenant_id`; subtree is one `startswith(path, autoescape=True)` |
+| `/api/org-units/*` + `PUT /api/sites/{id}/org-unit` | reads `site.view`, mutations `site.manage` — no new permission |
+| Console `Organization` page | one new proxy prefix, same pattern as `autonomy` and `operational-agents` |
+| CC migration **0010** | guarded and idempotent; backfills one root per tenant |
+
+### Why a materialized path rather than a recursive CTE
+
+A subtree is one prefix match, which behaves identically on PostgreSQL
+and on the sqlite the unit tests run against. A recursive CTE would have
+diverged between them, and E1.2's scope resolver stands on this query —
+the place where a divergence would become an authorization bug rather
+than a display bug. `tests/integration/test_e1_prefix_equivalence.py`
+runs the same query on both engines and asserts identical results.
+
+### The trailing delimiter, stated accurately
+
+Paths are `/id/id/id/` with a **trailing** delimiter, so `/u1/u7/` does
+not prefix-match the sibling `/u1/u70/`.
+
+Worth being precise about what this buys today: ids are `uuid4().hex`,
+always 32 lowercase hex characters, and two ids of equal width cannot be
+strict prefixes of one another — so on current data the sibling trap
+**cannot arise at all**. That is a property of the id generator, not of
+the query. The trailing delimiter makes the query correct *without
+depending on it*: if a future import ever admitted a shorter or
+variable-width id, the prefix match would still be right. The integration
+test proves exactly that case by inserting deliberately short ids.
+
+Hex ids also mean `/`, `%` and `_` cannot occur inside a segment, so the
+delimiter cannot be forged and LIKE's wildcards cannot be smuggled in
+through a unit name. `autoescape=True` holds the line regardless, and a
+test forces a poisoned `/%/` row in to prove it.
+
+### Rules, and where they are enforced
+
+All server-side; the Console renders refusals rather than preventing
+them, because hiding a button is never an authorization boundary.
+
+- **Depth bounded at 8.** A move checks the whole subtree's height, not
+  just the dragged node: a three-level subtree cannot land under a
+  level-7 parent.
+- **Cycles refused.** A destination whose path starts with the moving
+  node's own path is rejected.
+- **Sibling names unique** per (tenant, parent), a database constraint
+  as well as a check.
+- **Delete refuses** while a unit holds children or sites. Cascading
+  would orphan sites silently, and at E1.2 an orphaned site is one nobody
+  can be granted.
+- **A move rewrites every descendant path in one transaction**, audited
+  with both the old and the new path.
+- **`unit_type` is a free slug, never an enum** — the customer's own word
+  for the level, which is what decision A rejected a hard-coded
+  Region/Cluster model in favour of.
+
+### Backward compatibility
+
+Nothing reads `org_unit_id` in E1.1. The compatibility promise is
+asserted rather than trusted: tests confirm the fleet read and the
+autonomy contract are byte identical before and after a tree is built and
+a site attached, and that creating a tree changes no site field.
+
+### Live proof (real PostgreSQL, real Keycloak)
+
+Migration 0010 applied on the running stack and backfilled the demo
+tenant's two E0.2 sites under one root. Over HTTP: a four-level tree
+built with correct paths and depths; a re-parent moved Hall A's whole
+branch and rewrote its path and breadcrumb; a cycle refused 400; a
+depth-9 insert refused 400; a delete of a unit holding a site refused 409
+with the site still attached; auditor read 200 / write 403; operator read
+403 (no `site.view`); no token 401; the audit chain carries
+`org_unit.created` / `moved` / `site_attached` / `deleted` and still
+verifies.

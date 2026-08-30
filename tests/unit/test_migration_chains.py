@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0009"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0010"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0008"),
 }
 
@@ -130,9 +130,72 @@ class TestExistingDatabase:
         con.close()
 
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0009"
+        assert _version(db) == SERVICES["cc"][2]
         assert "cc_approval_records" in _tables(db)
         assert "principal_ref" in _columns(db, "cc_approval_group_members")
+
+    def test_cc_upgrade_from_0009_backfills_one_root_per_tenant(self, tmp_path):
+        """E1.1 lands on a database with sites and no tree.
+
+        The backfill is what makes "every site has one canonical
+        organizational path" true for existing installs rather than only
+        for new ones, so it is asserted here and not merely written.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("drop table cc_org_units")
+        # sqlite refuses to drop a column that carries a foreign key, so
+        # the pre-E1.1 `cc_sites` is reconstructed rather than altered.
+        # `legacy_alter_table` keeps the rename from rewriting the other
+        # tables that reference cc_sites.
+        con.execute("pragma legacy_alter_table=ON")
+        cols = [
+            r[1] for r in con.execute("pragma table_info(cc_sites)").fetchall()
+            if r[1] != "org_unit_id"
+        ]
+        con.execute("drop index if exists ix_cc_sites_org_unit_id")
+        con.execute(
+            "create table cc_sites_legacy as select "
+            + ", ".join(cols)
+            + " from cc_sites"
+        )
+        con.execute("drop table cc_sites")
+        con.execute("alter table cc_sites_legacy rename to cc_sites")
+        for tenant, name in (("t-a", "site-1"), ("t-a", "site-2"), ("t-b", "site-3")):
+            con.execute(
+                "insert into cc_sites (id, tenant_id, site_name, sm_endpoint, "
+                "license_fingerprint, status) values (?, ?, ?, '', '', 'active')",
+                (name + tenant, tenant, name),
+            )
+        con.execute("update alembic_version set version_num='0009'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "cc_org_units" in _tables(db)
+        assert "org_unit_id" in _columns(db, "cc_sites")
+
+        con = sqlite3.connect(db)
+        roots = con.execute(
+            "select tenant_id, id, path, depth from cc_org_units "
+            "where parent_id is null order by tenant_id"
+        ).fetchall()
+        # One root each, not one shared root: tenants never share a tree.
+        assert [r[0] for r in roots] == ["t-a", "t-b"]
+        for tenant_id, unit_id, path, depth in roots:
+            assert path == f"/{unit_id}/"
+            assert depth == 1
+
+        rows = con.execute(
+            "select tenant_id, org_unit_id from cc_sites order by site_name"
+        ).fetchall()
+        con.close()
+        # Every site attached, and attached within its OWN tenant's root.
+        by_tenant = {t: u for t, u in roots and [(r[0], r[1]) for r in roots]}
+        assert all(unit is not None for _, unit in rows)
+        assert all(unit == by_tenant[tenant] for tenant, unit in rows)
 
     def test_cc_upgrade_from_0007(self, tmp_path):
         db = tmp_path / "cc.db"

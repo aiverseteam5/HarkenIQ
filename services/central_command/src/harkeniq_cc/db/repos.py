@@ -10,10 +10,11 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
+    CCOrgUnit,
     CCAgentCapability,
     CCAgentProposal,
     CCAgentScope,
@@ -41,6 +42,234 @@ from harkeniq_cc.db.models import (
     CCWarranty,
     utcnow,
 )
+
+
+class OrgUnitRepo:
+    """Reads and writes on the organizational tree (E1.1).
+
+    Every query is conjoined with `tenant_id`. The prefix match alone
+    would already be safe -- ids are uuid4 -- but tenant isolation is
+    the invariant that must never depend on id entropy.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, tenant_id: str, unit_id: str) -> Optional[CCOrgUnit]:
+        return (
+            await self.session.execute(
+                select(CCOrgUnit).where(
+                    CCOrgUnit.tenant_id == tenant_id, CCOrgUnit.id == unit_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_all(self, tenant_id: str) -> Sequence[CCOrgUnit]:
+        return (
+            await self.session.execute(
+                select(CCOrgUnit)
+                .where(CCOrgUnit.tenant_id == tenant_id)
+                .order_by(CCOrgUnit.depth, CCOrgUnit.sort_order, CCOrgUnit.name)
+            )
+        ).scalars().all()
+
+    async def list_roots(self, tenant_id: str) -> Sequence[CCOrgUnit]:
+        return (
+            await self.session.execute(
+                select(CCOrgUnit)
+                .where(
+                    CCOrgUnit.tenant_id == tenant_id,
+                    CCOrgUnit.parent_id.is_(None),
+                )
+                .order_by(CCOrgUnit.sort_order, CCOrgUnit.name)
+            )
+        ).scalars().all()
+
+    async def list_subtree(self, tenant_id: str, path: str) -> Sequence[CCOrgUnit]:
+        """The unit at `path` and everything beneath it.
+
+        One prefix match. `autoescape` neutralizes LIKE's `%` and `_`;
+        hex ids mean neither can appear anyway, so this is belt and
+        braces on a structural guarantee rather than the guarantee
+        itself.
+        """
+        return (
+            await self.session.execute(
+                select(CCOrgUnit)
+                .where(
+                    CCOrgUnit.tenant_id == tenant_id,
+                    CCOrgUnit.path.startswith(path, autoescape=True),
+                )
+                .order_by(CCOrgUnit.depth, CCOrgUnit.sort_order, CCOrgUnit.name)
+            )
+        ).scalars().all()
+
+    async def list_by_ids(
+        self, tenant_id: str, unit_ids: Sequence[str]
+    ) -> Sequence[CCOrgUnit]:
+        if not unit_ids:
+            return []
+        return (
+            await self.session.execute(
+                select(CCOrgUnit).where(
+                    CCOrgUnit.tenant_id == tenant_id,
+                    CCOrgUnit.id.in_(list(unit_ids)),
+                )
+            )
+        ).scalars().all()
+
+    async def sibling_named(
+        self, tenant_id: str, parent_id: Optional[str], name: str,
+        exclude_id: Optional[str] = None,
+    ) -> Optional[CCOrgUnit]:
+        stmt = select(CCOrgUnit).where(
+            CCOrgUnit.tenant_id == tenant_id,
+            CCOrgUnit.name == name,
+        )
+        stmt = stmt.where(
+            CCOrgUnit.parent_id.is_(None)
+            if parent_id is None
+            else CCOrgUnit.parent_id == parent_id
+        )
+        if exclude_id:
+            stmt = stmt.where(CCOrgUnit.id != exclude_id)
+        return (await self.session.execute(stmt)).scalars().first()
+
+    async def create(
+        self,
+        tenant_id: str,
+        *,
+        name: str,
+        unit_type: str,
+        parent: Optional[CCOrgUnit],
+        sort_order: int = 0,
+        created_by: str = "",
+    ) -> CCOrgUnit:
+        from harkeniq_cc.org_tree import compose_path
+
+        unit = CCOrgUnit(
+            tenant_id=tenant_id,
+            parent_id=parent.id if parent else None,
+            unit_type=unit_type,
+            name=name,
+            sort_order=sort_order,
+            created_by=created_by,
+            updated_by=created_by,
+            # Placeholder: the path needs the generated id, so it is set
+            # immediately below once the default has fired.
+            path="",
+            depth=(parent.depth + 1) if parent else 1,
+        )
+        self.session.add(unit)
+        await self.session.flush()
+        unit.path = compose_path(parent.path if parent else None, unit.id)
+        await self.session.flush()
+        return unit
+
+    async def child_count(self, tenant_id: str, unit_id: str) -> int:
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CCOrgUnit)
+                    .where(
+                        CCOrgUnit.tenant_id == tenant_id,
+                        CCOrgUnit.parent_id == unit_id,
+                    )
+                )
+            ).scalar_one()
+        )
+
+    async def subtree_height(self, tenant_id: str, path: str) -> int:
+        """Levels carried by this subtree; 1 when the unit is a leaf."""
+        rows = await self.list_subtree(tenant_id, path)
+        base = len([seg for seg in path.split("/") if seg])
+        return max((u.depth for u in rows), default=base) - base + 1
+
+    async def move(
+        self,
+        tenant_id: str,
+        unit: CCOrgUnit,
+        new_parent: Optional[CCOrgUnit],
+        *,
+        actor: str = "",
+    ) -> tuple[str, str]:
+        """Re-parent `unit` and rewrite every descendant path.
+
+        Returns (old_path, new_path). The descendants are rewritten in
+        the same transaction as the unit itself: a half-moved subtree
+        would leave paths that resolve to nothing.
+        """
+        from harkeniq_cc.org_tree import compose_path, rewrite_descendant_path
+
+        old_path = unit.path
+        descendants = [
+            row for row in await self.list_subtree(tenant_id, old_path)
+            if row.id != unit.id
+        ]
+        new_path = compose_path(new_parent.path if new_parent else None, unit.id)
+        new_depth = (new_parent.depth + 1) if new_parent else 1
+
+        unit.parent_id = new_parent.id if new_parent else None
+        unit.path = new_path
+        unit.depth = new_depth
+        unit.updated_by = actor
+
+        shift = new_depth - len([s for s in old_path.split("/") if s])
+        for row in descendants:
+            row.path = rewrite_descendant_path(row.path, old_path, new_path)
+            row.depth = row.depth + shift
+            row.updated_by = actor
+        await self.session.flush()
+        return old_path, new_path
+
+    async def delete(self, unit: CCOrgUnit) -> None:
+        await self.session.execute(
+            sa_delete(CCOrgUnit).where(CCOrgUnit.id == unit.id)
+        )
+
+    async def site_counts(self, tenant_id: str) -> dict[str, int]:
+        rows = (
+            await self.session.execute(
+                select(CCSite.org_unit_id, func.count())
+                .where(
+                    CCSite.tenant_id == tenant_id,
+                    CCSite.org_unit_id.isnot(None),
+                )
+                .group_by(CCSite.org_unit_id)
+            )
+        ).all()
+        return {unit_id: int(count) for unit_id, count in rows}
+
+    async def sites_in(self, tenant_id: str, unit_id: str) -> Sequence[CCSite]:
+        return (
+            await self.session.execute(
+                select(CCSite)
+                .where(
+                    CCSite.tenant_id == tenant_id,
+                    CCSite.org_unit_id == unit_id,
+                )
+                .order_by(CCSite.site_name)
+            )
+        ).scalars().all()
+
+    async def site_count_in_subtree(self, tenant_id: str, path: str) -> int:
+        """Sites attached anywhere at or below `path`."""
+        unit_ids = [u.id for u in await self.list_subtree(tenant_id, path)]
+        if not unit_ids:
+            return 0
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CCSite)
+                    .where(
+                        CCSite.tenant_id == tenant_id,
+                        CCSite.org_unit_id.in_(unit_ids),
+                    )
+                )
+            ).scalar_one()
+        )
 
 
 class SiteRepo:

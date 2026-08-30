@@ -739,6 +739,88 @@ SKILL_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   echo "skill binding accepted ($SKILL_CODE): it would do nothing" >&2; exit 1; }
 echo "skill binding refused with a reason naming A2"
 
+step "E1.1: the tenant's organizational tree, and it is containment ONLY"
+# The migration backfills one root per tenant with every site attached, so
+# a tenant that upgrades is never left with sites that have no path.
+ROOT_UNIT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/org-units/ \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tree'][0]['id'])")
+[ -n "$ROOT_UNIT" ] || { echo "migration 0010 left the tenant with no root unit" >&2; exit 1; }
+
+mkunit() {
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"name\":\"$1\",\"unit_type\":\"$2\",\"parent_id\":\"$3\"}" \
+    http://localhost:8090/api/org-units/
+}
+GATE_W=$(mkunit "Gate West" region "$ROOT_UNIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+GATE_E=$(mkunit "Gate East" region "$ROOT_UNIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+GATE_C=$(mkunit "Gate Cluster" cluster "$GATE_W" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+GATE_H=$(mkunit "Gate Hall" hall "$GATE_C" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# A move must rewrite every descendant path in the same transaction; a
+# half-moved subtree leaves paths that resolve to nothing.
+curl -sf -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"parent_id\":\"$GATE_E\"}" \
+  "http://localhost:8090/api/org-units/$GATE_C" > /dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/org-units/$GATE_H" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['unit']['path'].split('/')[2] == '$GATE_E', 'descendant path was not rewritten'
+assert d['unit']['depth'] == 4, f\"depth drifted: {d['unit']['depth']}\"
+names = [a['name'] for a in d['ancestors']]
+assert names[-2:] == ['Gate East', 'Gate Cluster'], names
+print('descendant paths followed the move:', ' > '.join(names))
+"
+
+# Cycle and depth are refused by the SERVER, not by the console.
+CYC=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"parent_id\":\"$GATE_H\"}" "http://localhost:8090/api/org-units/$GATE_E")
+[ "$CYC" = "400" ] || { echo "a cycle was accepted ($CYC)" >&2; exit 1; }
+
+# A unit holding a site is not deletable: a site with no organizational
+# path is a site nobody owns, and at E1.2 one nobody can be granted.
+SITE_ONE=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin); rows = d['sites'] if isinstance(d, dict) else d
+print(rows[0]['id'])")
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"org_unit_id\":\"$GATE_C\"}" \
+  "http://localhost:8090/api/sites/$SITE_ONE/org-unit" > /dev/null
+DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+  -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/org-units/$GATE_C")
+[ "$DEL" = "409" ] || { echo "a unit holding a site was deleted ($DEL)" >&2; exit 1; }
+echo "cycle refused, depth bounded, delete-with-contents refused"
+
+step "E1.1: the tree grants nobody anything (containment is not authorization)"
+# The whole point of decision B. An operator with no site.view cannot even
+# READ the tree, and moving a site between units changes no disposition.
+OP_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=operator1@harkeniq.com&password=operator" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+OP_READ=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
+  http://localhost:8090/api/org-units/)
+[ "$OP_READ" = "403" ] || { echo "operator read the tree without site.view ($OP_READ)" >&2; exit 1; }
+AUD_WRITE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AUD_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"auditor should not","unit_type":"region"}' \
+  http://localhost:8090/api/org-units/)
+[ "$AUD_WRITE" = "403" ] || { echo "auditor mutated the tree ($AUD_WRITE)" >&2; exit 1; }
+
+BEFORE_AUT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); d.pop('generated_at',None); print(json.dumps(d,sort_keys=True))")
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"org_unit_id\":\"$GATE_W\"}" \
+  "http://localhost:8090/api/sites/$SITE_ONE/org-unit" > /dev/null
+AFTER_AUT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); d.pop('generated_at',None); print(json.dumps(d,sort_keys=True))")
+[ "$BEFORE_AUT" = "$AFTER_AUT" ] || {
+  echo "moving a site between org units changed the autonomy contract" >&2; exit 1; }
+echo "operator 403, auditor 403 on write, and the governance contract did not move"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

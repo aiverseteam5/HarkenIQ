@@ -39,6 +39,53 @@ class Base(DeclarativeBase):
     pass
 
 
+class CCOrgUnit(Base):
+    """One node of the tenant's own organizational tree (E1.1).
+
+    Containment, not authorization: this says where a site sits, never
+    who may reach it. `unit_type` is the customer's word for the level
+    -- region, cluster, circle, trust, territory -- deliberately a free
+    slug rather than an enum.
+
+    `path` is materialized as ``/id/id/id/`` with a trailing delimiter,
+    so a subtree is one prefix match that behaves the same on
+    PostgreSQL and sqlite, and so a sibling like `/u1/u70/` can never
+    match a scope over `/u1/u7/`.
+    """
+
+    __tablename__ = "cc_org_units"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("cc_org_units.id"), nullable=True, index=True
+    )
+    #: The customer's own word for this level, normalized to a slug.
+    unit_type: Mapped[str] = mapped_column(String(32), default="organization")
+    name: Mapped[str] = mapped_column(String(255))
+    #: Materialized ancestry, ids only, leading AND trailing delimiter.
+    #: 8 levels x (32 hex + 1 delimiter) + 1 = 265, so 512 is ample.
+    path: Mapped[str] = mapped_column(String(512), index=True)
+    #: 1 for a root unit. Denormalized from `path` for cheap bounds checks.
+    depth: Mapped[int] = mapped_column(Integer, default=1)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        # Two siblings may not share a name: an org chart with two
+        # "Cluster 7"s under one region is an operator trap.
+        UniqueConstraint("tenant_id", "parent_id", "name", name="uq_org_unit_sibling"),
+        Index("ix_org_units_tenant_path", "tenant_id", "path"),
+    )
+
+
 class CCSite(Base):
     __tablename__ = "cc_sites"
 
@@ -49,6 +96,13 @@ class CCSite(Base):
     sm_token: Mapped[str | None] = mapped_column(String(512), nullable=True)
     license_fingerprint: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
+    #: E1.1: the one organizational node this site hangs from. Nullable
+    #: only for the window between the migration creating the column and
+    #: the migration backfilling it; every site has a unit afterwards.
+    #: Containment only -- who may reach the site is a scope grant (E1.2).
+    org_unit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("cc_org_units.id"), nullable=True, index=True
+    )
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

@@ -10,12 +10,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_cc_state, get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.db.repos import AuditRepo, FleetCacheRepo, SiteRepo
+from harkeniq_cc.db.repos import AuditRepo, FleetCacheRepo, OrgUnitRepo, SiteRepo
 from harkeniq_cc.sm_client import SMClient
 
 logger = logging.getLogger("harkeniq.cc.api.sites")
 
 router = APIRouter(prefix="/api/sites", tags=["sites"])
+
+
+class SiteOrgUnitRequest(BaseModel):
+    """E1.1: the one organizational node this site hangs from."""
+
+    org_unit_id: str
 
 
 class SiteRegisterRequest(BaseModel):
@@ -32,6 +38,7 @@ def _site_dict(site) -> dict:
         "sm_endpoint": site.sm_endpoint,
         "status": site.status,
         "license_fingerprint": site.license_fingerprint,
+        "org_unit_id": site.org_unit_id,
         "registered_at": site.registered_at.isoformat() if site.registered_at else None,
         "last_seen_at": site.last_seen_at.isoformat() if site.last_seen_at else None,
     }
@@ -163,3 +170,55 @@ async def get_site(
     result = _site_dict(site)
     result["device_count"] = len(devices)
     return result
+
+
+@router.put("/{site_id}/org-unit")
+async def set_site_org_unit(
+    site_id: str,
+    body: SiteOrgUnitRequest,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Attach this site to an organizational unit, or move it (E1.1).
+
+    One canonical containment path per site: setting a new unit clears
+    the old one, because a site sitting in two places at once would make
+    "the sites under Region West" ambiguous -- and at E1.2 it would make
+    a scope grant ambiguous too.
+
+    Containment only. This changes who owns the site on the org chart
+    and changes nothing about who may act on it.
+    """
+    site = await SiteRepo(session).get_by_id(site_id)
+    if site is None or site.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="site not found")
+
+    org_repo = OrgUnitRepo(session)
+    unit = await org_repo.get(user.tenant_id, body.org_unit_id)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="org unit not found")
+
+    previous = site.org_unit_id
+    if previous == unit.id:
+        return {"site_id": site.id, "org_unit_id": unit.id, "changed": False}
+
+    site.org_unit_id = unit.id
+    await AuditRepo(session).append(
+        actor=user.user_id,
+        action="org_unit.site_attached",
+        subject=site.id,
+        tenant_id=user.tenant_id,
+        detail={
+            "site_name": site.site_name,
+            "from_org_unit_id": previous,
+            "to_org_unit_id": unit.id,
+            "to_path": unit.path,
+        },
+    )
+    await session.commit()
+    return {
+        "site_id": site.id,
+        "org_unit_id": unit.id,
+        "org_unit_path": unit.path,
+        "changed": True,
+    }
