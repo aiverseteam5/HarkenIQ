@@ -152,7 +152,13 @@ services:
       HARKEN_CC_CONSOLE_URL: http://console:8100
       HARKEN_CC_CONSOLE_API_KEY: ${HARKENIQ_INTERNAL_API_KEY:-demo-console-cc-key}
       HARKEN_CC_KEYCLOAK_URL: http://keycloak:8080
-      HARKEN_CC_KEYCLOAK_REALM: harkeniq-platform
+      # E1.4: Central Command serves ONE tenant and validates against
+      # THAT TENANT'S realm. Pointed at the platform realm it would
+      # accept vendor-staff identities carrying tenant roles as tenant
+      # operators; the config validator now refuses that outright in
+      # secure mode.
+      HARKEN_CC_KEYCLOAK_REALM: tenant-demo
+      HARKEN_CC_PLATFORM_REALM: harkeniq-platform
       # The SPA is one OIDC client; CC validates the same tokens (QA-005).
       HARKEN_CC_KEYCLOAK_CLIENT_ID: harkeniq-console
       HARKEN_CC_KEYCLOAK_PUBLIC_URL: http://localhost:8180

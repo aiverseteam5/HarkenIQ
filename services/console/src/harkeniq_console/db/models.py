@@ -49,7 +49,13 @@ class Tenant(Base):
     status: Mapped[str] = mapped_column(String(32), default="active")
     billing_country: Mapped[str] = mapped_column(String(8), default="")
     currency: Mapped[str] = mapped_column(String(3), default="USD")
-    keycloak_realm: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: E1.4: the AUTHORITATIVE tenant<->realm binding. Unique, because two
+    #: tenants claiming one realm would make identity resolution
+    #: ambiguous -- the same guarantee sites.cc_site_id got in E0.2.
+    #: Resolution reads this and no longer consults the slug.
+    keycloak_realm: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

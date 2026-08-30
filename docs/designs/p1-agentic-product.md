@@ -1161,3 +1161,101 @@ database.
 - SM-02 answered `site_resolved=false` with a reason for both site-1 and
   site-b, and returned **0 devices** — never broadened.
 - Both audit chains verify with `site_id` recorded.
+
+## 20. E1.4 — the tenant realm boundary, made real (landed 2026-08-30)
+
+### The finding
+
+`TenantService(session)` was constructed at **all four** of its API call
+sites with no `keycloak_admin` argument. The parameter defaults to
+`None`, so `if self.keycloak:` was **always false**, and
+`KeycloakAdminClient` — four hundred lines shipped in R2b that create a
+realm, provision five roles, register a client, mint an owner and retry
+on 5xx — was never instantiated anywhere outside its own module. Only
+`MockKeycloakAdminClient` was, and only in tests, which is exactly why
+the tests passed.
+
+Creating a tenant therefore returned **200 with `keycloak_realm: null`**:
+no realm, no roles, no client, no owner in Keycloak, and nothing saying
+so. Verified live before the fix — both tenants NULL, and Keycloak
+holding only `master` and `harkeniq-platform`.
+
+**Eighth instance** of this codebase's house failure. The others were a
+table, a rule, a column. This was an entire subsystem.
+
+### What followed from it
+
+Central Command was pinned to `harkeniq-platform` because that was the
+only realm there was, so a platform identity carrying `site_admin`
+received tenant operational permissions. The three tenant roles it used
+only existed there because **E1.2's gate needed them and I created them
+in the platform realm** — the only way to exercise E1.2 live, and not
+the shape the product ships.
+
+### What landed
+
+| Change | Effect |
+|---|---|
+| `AppState.keycloak_admin` + `get_keycloak_admin` | the real client is constructed and injected at all four call sites |
+| `create_tenant` fails closed | no client, or a Keycloak error, and the tenant row is rolled back — never a 200 with a null realm |
+| `provision_realm()` | reusable and idempotent; the path for tenants that predate E1.4 |
+| `POST /tenants/{id}/provision-realm` | there was otherwise no way to give a realm to a tenant that already exists |
+| Console migration **0004** | unique index on `keycloak_realm`, NULL backfilled to the slug |
+| `_resolve_tenant_id` reads `keycloak_realm` | the slug leaves the identity path entirely |
+| `HARKEN_CC_KEYCLOAK_REALM: tenant-demo` | Central Command serves its tenant's realm |
+| CC config refuses the platform realm | the misconfiguration is unbootable in secure mode, not merely wrong |
+| CC migration **0012** — `cc_scope_grants.realm` | see below |
+| Bundles intersect the role | see below |
+
+### Three defects the slice found on the way
+
+**A realm migration silently orphaned every scope grant.** Keycloak
+subjects are realm-scoped, so a grant keyed on the subject alone means
+nothing after a realm change. Moving the demo onto its own realm left
+every grant naming a platform-realm subject: under strict enforcement
+**the tenant was locked out completely**, including the administrator who
+would have re-granted. A grant is a `(realm, subject)` fact, so
+`cc_scope_grants.realm` records it, the resolver ignores foreign-realm
+grants (a grant from another realm authorizing here would be a
+cross-realm authorization bug), and the enforcement read reports
+`grants_for_this_realm`, `stale_grants_from_other_realms` and
+`locked_out` — because a silent lockout looks exactly like
+correctly-configured strict enforcement.
+
+**A custom bundle could widen a role.** `has_permission` OR-ed bundle
+grants with the role, and `effective_permissions` filtered only against
+the global vocabulary — so a bundle naming `tenant.manage` handed it to a
+viewer. Bundles now **intersect** the holder's role, which is E1.2's
+`permission_subset` rule applied to the same idea: a bundle re-shapes
+authority within a role and can only ever remove.
+
+**Provisioning had a 2-second timeout and an unreadable error.** Realm,
+five roles and a client are six sequential admin calls; the first live
+run timed out part-way, and an `httpx` timeout stringifies to the empty
+string, producing `"Keycloak realm creation failed: "` with nothing after
+the colon. The timeout is 10s and errors name the exception type. The
+part-way failure also proved that treating "the realm exists" as "the
+realm is provisioned" is wrong: `ensure_realm_roles` reconciles roles
+independently, and it healed the half-provisioned realm on the next call.
+
+### Live proof
+
+`tenant-rival` created **through the real API**: realm, five roles,
+console client, owner minted, binding recorded, `tenant.create` and
+`tenant.realm_provisioned` audited. `tenant-demo` provisioned through the
+explicit endpoint. Platform realm stripped to `platform_super_admin` and
+`platform_support` only.
+
+- Platform identity → Console platform surface **200**; → tenant Central
+  Command **401** at validation.
+- Tenant identities → Central Command **200**, then E1.2 scope decides.
+- **The E1.2 matrix re-run on the tenant realm is identical**: owner 3
+  sites, region 2, cluster 2, operator 1, auditor 3; ancestor readable
+  and its mutation 403; out-of-scope site 404; tenant governance
+  read 200 / mutate 403; subset widening 400; auditor mutation 403.
+- Rival → demo Central Command **401**; → demo Console **403** "tenant
+  scope mismatch"; demo owner → rival Console **403**, own **200**.
+- A `master`-realm token **401** at both services.
+- A real bundle on a real tenant-realm user: names `fleet.view`,
+  `site.manage`, `action.approve`; the viewer holding it gets
+  **`fleet.view` only**. E0.3's "test-proven only" gap is closed.

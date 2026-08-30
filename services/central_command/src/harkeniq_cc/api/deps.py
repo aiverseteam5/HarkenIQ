@@ -98,6 +98,10 @@ async def get_scope(
             session,
             tenant_id=user.tenant_id,
             principal_ref=user.user_id,
+            # E1.4: only grants made under the realm this Central Command
+            # serves. A subject id from another realm is a different
+            # person, or nobody.
+            realm=getattr(state.config, "keycloak_realm", "") or "",
             role_permissions=ROLE_PERMISSIONS.get(
                 user.role, list(user.permissions)
             ) or list(user.permissions),

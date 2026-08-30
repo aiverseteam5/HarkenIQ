@@ -63,6 +63,18 @@ class CCScopeGrant(Base):
     #: "user" (a Keycloak subject) | "agent" (cc_operational_agents.id)
     principal_type: Mapped[str] = mapped_column(String(16), default="user")
     principal_ref: Mapped[str] = mapped_column(String(128), index=True)
+    #: E1.4: the Keycloak realm this subject belongs to.
+    #:
+    #: A grant is a (realm, subject) fact, not a subject fact: Keycloak
+    #: subjects are realm-scoped, so the same id means nothing across
+    #: realms and a different id means the same person. Keyed on the
+    #: subject alone, moving a tenant to its own realm silently orphaned
+    #: EVERY grant -- under strict enforcement that locked the tenant out
+    #: completely, including the administrator who would have re-granted.
+    #:
+    #: Empty means "made before E1.4"; the resolver treats those as
+    #: belonging to the configured realm so an upgrade changes nothing.
+    realm: Mapped[str] = mapped_column(String(128), default="")
     #: tenant | org_unit | site | device_class | device
     scope_type: Mapped[str] = mapped_column(String(16))
     scope_ref: Mapped[str] = mapped_column(String(128), default="")

@@ -158,10 +158,14 @@ def _migrate_agent_scopes(bind, inspector) -> None:
                 # Python-side, not server-side, so an omitted column is
                 # a NOT NULL violation rather than a default.
                 "INSERT INTO cc_scope_grants "
+                # Every non-nullable column is named explicitly: on a
+                # database born from 0001's create_all the defaults are
+                # Python-side, so an omitted column is a NOT NULL
+                # violation. `realm` is one of those from 0012 onward.
                 "(id, tenant_id, principal_type, principal_ref, scope_type, "
-                " scope_ref, permission_subset, role, granted_by, granted_at, "
-                " revoked_by, note) "
-                "VALUES (:id, :t, 'agent', :p, :st, :sr, NULL, '', "
+                " scope_ref, permission_subset, role, realm, granted_by, "
+                " granted_at, revoked_by, note) "
+                "VALUES (:id, :t, 'agent', :p, :st, :sr, NULL, '', '', "
                 " 'migration:0011', :now, '', 'migrated from cc_agent_scopes')"
             ),
             {

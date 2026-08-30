@@ -52,6 +52,22 @@ class TenantRepo:
     async def get_by_id(self, tenant_id: str) -> Optional[Tenant]:
         return await self.session.get(Tenant, tenant_id)
 
+    async def get_by_realm(self, realm: str) -> Optional[Tenant]:
+        """Resolve a Keycloak realm to its tenant. E1.4.
+
+        The authoritative identity lookup. Authorization used to resolve
+        by slug, which agreed with the realm only by naming convention;
+        this reads the recorded binding, which migration 0004 populated
+        for every tenant and a unique index keeps unambiguous.
+        """
+        if not realm:
+            return None
+        return (
+            await self.session.execute(
+                select(Tenant).where(Tenant.keycloak_realm == realm)
+            )
+        ).scalar_one_or_none()
+
     async def get_by_slug(self, slug: str) -> Optional[Tenant]:
         return (
             await self.session.execute(

@@ -751,12 +751,26 @@ class ScopeGrantRepo:
     async def list_for_principal(
         self, tenant_id: str, principal_ref: str,
         principal_type: str = "user", include_revoked: bool = False,
+        realm: str = "",
     ) -> Sequence[CCScopeGrant]:
+        """Grants for one principal, in one realm (E1.4).
+
+        `realm` narrows to grants made under the realm this Central
+        Command serves. A Keycloak subject is realm-scoped, so a grant
+        from another realm authorizing here would be a cross-realm
+        authorization bug. An empty stored realm is a pre-E1.4 grant and
+        still counts, so an upgrade changes nothing.
+        """
         stmt = select(CCScopeGrant).where(
             CCScopeGrant.tenant_id == tenant_id,
             CCScopeGrant.principal_type == principal_type,
             CCScopeGrant.principal_ref == principal_ref,
         )
+        if realm:
+            stmt = stmt.where(
+                CCScopeGrant.realm.in_([realm, ""])
+                | CCScopeGrant.realm.is_(None)
+            )
         if not include_revoked:
             stmt = stmt.where(CCScopeGrant.revoked_at.is_(None))
         return (
@@ -804,6 +818,7 @@ class ScopeGrantRepo:
         scope_ref: str = "",
         permission_subset: Optional[list] = None,
         role: str = "",
+        realm: str = "",
         granted_by: str = "",
         expires_at: Optional[datetime] = None,
         note: str = "",
@@ -830,6 +845,7 @@ class ScopeGrantRepo:
             existing.revoked_by = ""
             existing.permission_subset = permission_subset
             existing.role = role
+            existing.realm = realm
             existing.granted_by = granted_by
             existing.granted_at = utcnow()
             existing.expires_at = expires_at
@@ -845,6 +861,7 @@ class ScopeGrantRepo:
             scope_ref=scope_ref,
             permission_subset=permission_subset,
             role=role,
+            realm=realm,
             granted_by=granted_by,
             expires_at=expires_at,
             note=note,
@@ -858,6 +875,26 @@ class ScopeGrantRepo:
         grant.revoked_by = revoked_by
         await self.session.flush()
         return grant
+
+    async def realm_census(self, tenant_id: str) -> dict[str, int]:
+        """How many active grants exist, and under which realm. E1.4.
+
+        A tenant moved to a new realm keeps grants naming subjects from
+        the old one. They authorize nothing, and without this the
+        condition is invisible: every principal simply sees nothing and
+        nobody can explain why.
+        """
+        rows = (
+            await self.session.execute(
+                select(CCScopeGrant.realm, func.count())
+                .where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.revoked_at.is_(None),
+                )
+                .group_by(CCScopeGrant.realm)
+            )
+        ).all()
+        return {(realm or ""): int(count) for realm, count in rows}
 
     async def distinct_principals(
         self, tenant_id: str, principal_type: str = "user"

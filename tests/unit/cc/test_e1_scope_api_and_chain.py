@@ -529,3 +529,114 @@ class TestApprovalScope:
             assert after.scope_snapshot == snapshot, (
                 "a later reorganisation rewrote a recorded approval"
             )
+
+
+class TestGrantsAreRealmScoped:
+    """E1.4: a grant is a (realm, subject) fact.
+
+    Keycloak subjects are realm-scoped: the same id means nothing across
+    realms, and the same person has a different id in each. Keyed on the
+    subject alone, moving a tenant onto its own realm silently orphaned
+    every grant -- and under strict enforcement that locked the tenant
+    out completely, including the administrator who would re-grant.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_grant_from_another_realm_does_not_authorize(self):
+        from harkeniq_cc.governance import load_scope
+
+        app, sessionmaker = await _stack()
+        estate = await _estate(sessionmaker)
+        # Strict, or legacy_open synthesizes a tenant-wide grant and the
+        # assertion would be about the fallback rather than the realm.
+        await _strict(sessionmaker)
+        async with sessionmaker() as session:
+            await ScopeGrantRepo(session).grant(
+                tenant_id=TENANT, principal_type="user", principal_ref="sub-1",
+                scope_type=SCOPE_TENANT, role="tenant_owner",
+                realm="harkeniq-platform", granted_by="test",
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            # Serving the TENANT realm: the platform-realm grant is not ours.
+            scope = await load_scope(
+                session, tenant_id=TENANT, principal_ref="sub-1",
+                role_permissions=["fleet.view"], realm="tenant-demo",
+            )
+            assert scope.is_empty(), "a grant from another realm authorized"
+
+        async with sessionmaker() as session:
+            # Serving the realm it was made under: it counts.
+            scope = await load_scope(
+                session, tenant_id=TENANT, principal_ref="sub-1",
+                role_permissions=["fleet.view"], realm="harkeniq-platform",
+            )
+            assert scope.tenant_wide
+
+    @pytest.mark.asyncio
+    async def test_a_pre_e14_grant_with_no_realm_still_counts(self):
+        """An upgrade must change nothing."""
+        from harkeniq_cc.governance import load_scope
+
+        app, sessionmaker = await _stack()
+        await _estate(sessionmaker)
+        await _strict(sessionmaker)
+        async with sessionmaker() as session:
+            await ScopeGrantRepo(session).grant(
+                tenant_id=TENANT, principal_type="user", principal_ref="legacy",
+                scope_type=SCOPE_TENANT, role="tenant_owner", realm="",
+                granted_by="test",
+            )
+            await session.commit()
+        async with sessionmaker() as session:
+            scope = await load_scope(
+                session, tenant_id=TENANT, principal_ref="legacy",
+                role_permissions=["fleet.view"], realm="tenant-demo",
+            )
+            assert scope.tenant_wide
+
+    @pytest.mark.asyncio
+    async def test_the_census_makes_a_realm_lockout_visible(self):
+        """Without this, every principal simply sees nothing.
+
+        A silent lockout is the worst shape this failure can take: it
+        looks exactly like correctly-configured strict enforcement.
+        """
+        app, sessionmaker = await _stack()
+        await _estate(sessionmaker)
+        async with sessionmaker() as session:
+            repo = ScopeGrantRepo(session)
+            for ref in ("old-1", "old-2"):
+                await repo.grant(
+                    tenant_id=TENANT, principal_type="user", principal_ref=ref,
+                    scope_type=SCOPE_TENANT, role="tenant_owner",
+                    realm="harkeniq-platform", granted_by="test",
+                )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            census = await ScopeGrantRepo(session).realm_census(TENANT)
+            assert census == {"harkeniq-platform": 2}
+            # Nothing for the realm this Central Command would serve.
+            assert census.get("tenant-demo", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_an_agent_grant_is_never_narrowed_by_a_realm(self):
+        """An agent id is a CC row id, not a realm subject."""
+        from harkeniq_cc.governance import load_agent_scope
+
+        app, sessionmaker = await _stack()
+        estate = await _estate(sessionmaker)
+        async with sessionmaker() as session:
+            await ScopeGrantRepo(session).grant(
+                tenant_id=TENANT, principal_type="agent", principal_ref="ag-1",
+                scope_type=SCOPE_SITE, scope_ref=estate["site-1"],
+                granted_by="test",
+            )
+            await session.commit()
+        async with sessionmaker() as session:
+            scope = await load_agent_scope(
+                session, tenant_id=TENANT, agent_id="ag-1"
+            )
+            assert scope.covers_site(estate["site-1"])

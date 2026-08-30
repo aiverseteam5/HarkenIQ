@@ -85,18 +85,31 @@ def reset_validator() -> None:
     _tenant_cache.clear()
 
 
-async def _resolve_tenant_id(request: Request, slug: str) -> Optional[str]:
-    cached = _tenant_cache.get(slug)
+async def _resolve_tenant_id(request: Request, realm: str) -> Optional[str]:
+    """Which tenant does this realm belong to? E1.4.
+
+    Reads `tenants.keycloak_realm`, the recorded and unique binding. It
+    used to resolve by SLUG, which matched the realm only because
+    provisioning names a realm after the slug -- so a rename broke the
+    binding silently, and a tenant whose slug matched another tenant's
+    realm name resolved to the wrong tenant.
+
+    Migration 0004 populated the binding for every tenant, so the slug is
+    no longer consulted at all. A realm nobody has recorded resolves to
+    nothing, which is what stops a stray realm on the same Keycloak from
+    minting access.
+    """
+    cached = _tenant_cache.get(realm)
     if cached and (time.time() - cached[0]) < _TENANT_CACHE_TTL_S:
         return cached[1]
     from harkeniq_console.db.repos import TenantRepo
 
     state = request.app.state.console
     async with state.sessionmaker() as session:
-        tenant = await TenantRepo(session).get_by_slug(slug)
+        tenant = await TenantRepo(session).get_by_realm(realm)
     if tenant is None:
         return None
-    _tenant_cache[slug] = (time.time(), tenant.id)
+    _tenant_cache[realm] = (time.time(), tenant.id)
     return tenant.id
 
 
@@ -145,7 +158,7 @@ async def get_current_user(request: Request) -> UserContext:
     # has_permission's custom branch dead code: a tenant could define a
     # bundle and assign it, and the assignment granted nothing (spec S4).
     permissions = await _custom_grants(
-        request, validated.subject, validated.email, tenant_id
+        request, validated.subject, validated.email, tenant_id, role
     )
     return UserContext(
         user_id=validated.subject,
@@ -158,7 +171,8 @@ async def get_current_user(request: Request) -> UserContext:
 
 
 async def _custom_grants(
-    request: Request, subject: str, email: str = "", tenant_id: str = ""
+    request: Request, subject: str, email: str = "", tenant_id: str = "",
+    role: str = "",
 ) -> list[str]:
     """Load custom-role grants; never fail the request over them.
 
@@ -172,7 +186,7 @@ async def _custom_grants(
     try:
         async with state.sessionmaker() as session:
             return await effective_permissions(
-                session, subject, email, tenant_id
+                session, subject, email, tenant_id, role
             )
     except Exception:
         logger.exception("custom-role lookup failed for %s", subject)

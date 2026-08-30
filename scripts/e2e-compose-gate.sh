@@ -42,11 +42,72 @@ step "Agent registered and observed at SM"
 wait_for "SM device observed" 120 bash -c \
   "curl -s -H 'Authorization: Bearer dev-token-sm' http://localhost:8080/api/devices | grep -q '\"observation\": *\"observed\"\\|observed'"
 
-step "CC fleet poll picked up the agent (token bootstrap worked)"
-TOKEN=$(curl -sf -X POST \
+# E1.4: Central Command validates against the TENANT'S realm now, so
+# every CC-facing token below must come from tenant-demo. The platform
+# realm holds only platform_super_admin and platform_support, and a
+# platform token reaching Central Command is a 401 by design.
+tenant_realm_user() {
+  # $1 email, $2 password, $3 realm role
+  local kc_admin
+  kc_admin=$(curl -sf -X POST \
+    "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+    -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+  curl -s -X POST "http://localhost:8180/admin/realms/tenant-demo/users" \
+    -H "Authorization: Bearer $kc_admin" -H "Content-Type: application/json" \
+    -d "{\"username\":\"$1\",\"email\":\"$1\",\"enabled\":true,
+         \"emailVerified\":true,\"firstName\":\"Gate\",\"lastName\":\"User\",
+         \"credentials\":[{\"type\":\"password\",\"value\":\"$2\",
+                            \"temporary\":false}]}" -o /dev/null
+  local uid rj
+  uid=$(curl -s "http://localhost:8180/admin/realms/tenant-demo/users?username=$1&exact=true" \
+    -H "Authorization: Bearer $kc_admin" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
+  [ -n "$uid" ] || { echo "could not create tenant-realm user $1" >&2; return 1; }
+  rj=$(curl -s "http://localhost:8180/admin/realms/tenant-demo/roles/$3" \
+    -H "Authorization: Bearer $kc_admin")
+  curl -s -X POST \
+    "http://localhost:8180/admin/realms/tenant-demo/users/$uid/role-mappings/realm" \
+    -H "Authorization: Bearer $kc_admin" -H "Content-Type: application/json" \
+    -d "[$rj]" -o /dev/null
+}
+
+tenant_token() {
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=password&client_id=harkeniq-console&username=$1&password=$2" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+
+step "E1.4: the tenant's own realm exists, and Central Command validates against it"
+# Tenant creation provisions the realm; a tenant that predates E1.4 gets
+# one through the explicit provisioning endpoint. Either way the tenant
+# has an identity boundary before anybody authenticates into it.
+PLATFORM_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
   -d "grant_type=password&client_id=harkeniq-console&username=admin@harkeniq.com&password=admin" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+E14_TENANT=$(curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  http://localhost:8100/api/admin/tenants/ \
+  | python3 -c "
+import sys, json
+print([t['id'] for t in json.load(sys.stdin)['items'] if t['slug'] == 'tenant-demo'][0])")
+curl -sf -X POST -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  "http://localhost:8100/api/admin/tenants/$E14_TENANT/provision-realm" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['keycloak_realm'] == 'tenant-demo', d
+print('tenant realm:', d['keycloak_realm'])"
+
+tenant_realm_user gate-owner@demo gate-owner tenant_owner || true
+tenant_realm_user gate-op@demo gate-op operator || true
+tenant_realm_user gate-aud@demo gate-aud auditor || true
+
+step "CC fleet poll picked up the agent (token bootstrap worked)"
+# E1.4: a TENANT-realm identity. A platform token is refused by Central
+# Command at validation now, which is the boundary this proves.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
 wait_for "CC fleet has the device" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:8090/api/fleet/ | grep -q agent_id"
 
@@ -159,10 +220,7 @@ curl -s -o /dev/null -X POST \
   "http://localhost:8180/admin/realms/harkeniq-platform/users/$OP_UID/role-mappings/realm" \
   -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d "[$OP_ROLE]"
-OP_TOKEN=$(curl -sf -X POST \
-  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
-  -d "grant_type=password&client_id=harkeniq-console&username=operator1@harkeniq.com&password=operator" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+OP_TOKEN=$(tenant_token gate-op@demo gate-op)
 
 step "CC RBAC is real: operator reads fleet (200), cannot read audit (403)"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/fleet/)" = "200" ]
@@ -708,10 +766,7 @@ AUD_UID=$(curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/users?u
 curl -s -X POST "http://localhost:8180/admin/realms/harkeniq-platform/users/$AUD_UID/role-mappings/realm" \
   -H "Authorization: Bearer $KC_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d "[$AUD_ROLE]" > /dev/null
-AUD_TOKEN=$(curl -sf -X POST \
-  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
-  -d "grant_type=password&client_id=harkeniq-console&username=auditor1@harkeniq.com&password=auditor" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
 
 for _p in "approvals/" "approvals/history" "policies/" "policies/groups" "audit/"; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUD_TOKEN" \
@@ -797,10 +852,7 @@ echo "cycle refused, depth bounded, delete-with-contents refused"
 step "E1.1: the tree grants nobody anything (containment is not authorization)"
 # The whole point of decision B. An operator with no site.view cannot even
 # READ the tree, and moving a site between units changes no disposition.
-OP_TOKEN=$(curl -sf -X POST \
-  "http://localhost:8180/realms/harkeniq-platform/protocol/openid-connect/token" \
-  -d "grant_type=password&client_id=harkeniq-console&username=operator1@harkeniq.com&password=operator" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+OP_TOKEN=$(tenant_token gate-op@demo gate-op)
 OP_READ=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
   http://localhost:8090/api/org-units/)
 [ "$OP_READ" = "403" ] || { echo "operator read the tree without site.view ($OP_READ)" >&2; exit 1; }

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # customer registry to customers [review CRITICAL, 4 passes]. Platform
 # plane asks both questions: vendor staff AND the permission. Entering a
 # tenant is still governed by tenant_scope plus a support-access grant.
-from harkeniq_console.api.deps import get_session, require_platform_permission
+from harkeniq_console.api.deps import get_keycloak_admin, get_session, require_platform_permission
 from harkeniq_console.auth import UserContext
 from harkeniq_console.db.repos import TenantRepo
 from harkeniq_console.tenant_service import TenantCreateRequest, TenantError, TenantService
@@ -59,13 +59,52 @@ def _tenant_dict(t) -> dict:
     }
 
 
+@router.post("/{tenant_id}/provision-realm")
+async def provision_realm(
+    tenant_id: str,
+    user: UserContext = Depends(require_platform_permission("tenant.manage")),
+    session: AsyncSession = Depends(get_session),
+    keycloak=Depends(get_keycloak_admin),
+) -> dict:
+    """Build a tenant's identity boundary in Keycloak. E1.4.
+
+    Creation provisions this for every new tenant. This exists for tenants
+    that predate E1.4 and were created with no realm at all -- there was
+    otherwise no way to give one to a tenant that already exists, and
+    those tenants are unusable until they have one.
+
+    Idempotent: a tenant that already has a realm is returned unchanged.
+    """
+    from harkeniq_console.db.repos import TenantRepo
+
+    tenant = await TenantRepo(session).get_by_id(tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    svc = TenantService(session, keycloak_admin=keycloak)
+    already = bool(tenant.keycloak_realm)
+    try:
+        realm = await svc.provision_realm(tenant, actor=user.email or user.user_id)
+    except TenantError as exc:
+        await session.commit()  # keep the audited failure
+        raise HTTPException(status_code=502, detail=str(exc))
+    await session.commit()
+    return {
+        "tenant_id": tenant.id,
+        "slug": tenant.slug,
+        "keycloak_realm": realm,
+        "provisioned": not already,
+    }
+
+
 @router.post("/")
 async def create_tenant(
     body: CreateTenantBody,
     user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
+    keycloak=Depends(get_keycloak_admin),
 ) -> dict:
-    svc = TenantService(session)
+    svc = TenantService(session, keycloak_admin=keycloak)
     req = TenantCreateRequest(
         name=body.name,
         slug=body.slug,
@@ -109,8 +148,9 @@ async def get_tenant(
     tenant_id: str,
     _user: UserContext = Depends(require_platform_permission("tenant.view")),
     session: AsyncSession = Depends(get_session),
+    keycloak=Depends(get_keycloak_admin),
 ) -> dict:
-    svc = TenantService(session)
+    svc = TenantService(session, keycloak_admin=keycloak)
     detail = await svc.get_tenant_detail(tenant_id)
     if not detail:
         raise HTTPException(status_code=404, detail="tenant not found")
@@ -141,8 +181,9 @@ async def suspend_tenant(
     body: SuspendBody,
     user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
+    keycloak=Depends(get_keycloak_admin),
 ) -> dict:
-    svc = TenantService(session)
+    svc = TenantService(session, keycloak_admin=keycloak)
     try:
         result = await svc.suspend_tenant(tenant_id, body.reason, user.email)
         await session.commit()
@@ -157,8 +198,9 @@ async def reactivate_tenant(
     tenant_id: str,
     user: UserContext = Depends(require_platform_permission("tenant.manage")),
     session: AsyncSession = Depends(get_session),
+    keycloak=Depends(get_keycloak_admin),
 ) -> dict:
-    svc = TenantService(session)
+    svc = TenantService(session, keycloak_admin=keycloak)
     try:
         result = await svc.reactivate_tenant(tenant_id, user.email)
         await session.commit()

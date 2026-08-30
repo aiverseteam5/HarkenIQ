@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import (
     forbid_out_of_scope,
+    get_cc_state,
     get_scope,
     get_session,
     require_any_permission,
@@ -227,6 +228,7 @@ async def create_grant(
     user=Depends(require_permission("role.manage")),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Grant scope to a principal, within the grantor's own authority."""
     if body.scope_type not in SCOPE_TYPES:
@@ -289,6 +291,7 @@ async def create_grant(
         scope_ref=body.scope_ref,
         permission_subset=body.permission_subset,
         role=body.role,
+        realm=getattr(state.config, "keycloak_realm", "") or "",
         granted_by=user.user_id,
         expires_at=body.expires_at,
         note=body.note,
@@ -372,9 +375,14 @@ async def get_enforcement(
     user=Depends(require_any_permission("fleet.view", "audit.view")),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
+    state=Depends(get_cc_state),
 ) -> dict:
     mode = await TenantSettingsRepo(session).enforcement(user.tenant_id)
     check = await _preflight(session, user.tenant_id, caller_scope=scope)
+    census = await ScopeGrantRepo(session).realm_census(user.tenant_id)
+    current = getattr(state.config, "keycloak_realm", "") or ""
+    usable = census.get(current, 0) + census.get("", 0)
+    stale = sum(v for k, v in census.items() if k and k != current)
     return {
         "tenant_id": user.tenant_id,
         "scope_enforcement": mode,
@@ -382,6 +390,15 @@ async def get_enforcement(
         "strict_ready": check.ok,
         "strict_blocked_reason": check.reason,
         "tenant_admin_count": check.admin_count,
+        # E1.4: a tenant moved to a new realm keeps grants naming
+        # subjects from the old one. They authorize nothing, and without
+        # this the condition is invisible -- every principal simply sees
+        # nothing and nobody can say why.
+        "realm": current,
+        "grants_for_this_realm": usable,
+        "stale_grants_from_other_realms": stale,
+        "realm_census": census,
+        "locked_out": bool(mode == "strict" and usable == 0 and stale > 0),
     }
 
 

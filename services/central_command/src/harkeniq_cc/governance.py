@@ -45,6 +45,7 @@ async def load_scope(
     principal_ref: str,
     role_permissions,
     principal_type: str = PRINCIPAL_USER,
+    realm: str = "",
 ) -> ResolvedScope:
     """Resolve one principal's authorization scope. E1.2.
 
@@ -57,7 +58,8 @@ async def load_scope(
     rows, the tree, the enforcement mode and the resolver are identical.
     """
     grants = await ScopeGrantRepo(session).list_for_principal(
-        tenant_id, principal_ref, principal_type=principal_type
+        tenant_id, principal_ref, principal_type=principal_type,
+        realm=realm,
     )
     org_units = await OrgUnitRepo(session).list_all(tenant_id)
     sites = await SiteRepo(session).list_all(tenant_id)
@@ -93,6 +95,9 @@ async def load_agent_scope(
         principal_ref=agent_id,
         role_permissions=["*"],
         principal_type=PRINCIPAL_AGENT,
+        # An agent is not a realm principal: its id is a CC row id, so
+        # its grants carry no realm and are never narrowed by one.
+        realm="",
     )
 
 

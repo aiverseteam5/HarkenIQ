@@ -38,6 +38,20 @@ def create_app(state) -> FastAPI:
     app = FastAPI(title="HarkenIQ Console", version="0.1.0")
     app.state.console = state
 
+    # E1.4: in insecure (lab and test) mode, give the state an in-memory
+    # Keycloak so tenant creation exercises the REAL provisioning path --
+    # realm, roles, client, owner -- rather than the skipped branch that
+    # let a realm-less tenant report success for the whole of R2b.
+    #
+    # This is the one mode that already returns a mock platform-admin
+    # context and bypasses token validation, so a fake Keycloak belongs
+    # to it and to nothing else. A SECURE deployment with no admin client
+    # still refuses to create a tenant.
+    if getattr(state, "keycloak_admin", None) is None and state.config.insecure:
+        from harkeniq_console.keycloak_admin import MockKeycloakAdminClient
+
+        state.keycloak_admin = MockKeycloakAdminClient()
+
     # E0.3: /metrics from the registry that shipped with R4-0 and had no
     # callers. Mounted before the routers so the middleware sees every
     # request, including the ones the routers reject.

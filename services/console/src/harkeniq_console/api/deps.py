@@ -154,3 +154,13 @@ def require_tenant_permission(permission: str) -> Callable:
             )
         return user
     return _check
+
+
+def get_keycloak_admin(request: Request):
+    """The Keycloak admin client that provisions tenant identity (E1.4).
+
+    None only in insecure/lab mode; `TenantService` refuses to create a
+    tenant without one rather than producing a realm-less tenant that
+    reports success and that nobody can authenticate into.
+    """
+    return getattr(request.app.state.console, "keycloak_admin", None)

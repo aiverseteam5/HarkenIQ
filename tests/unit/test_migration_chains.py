@@ -26,8 +26,11 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0011"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0012"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0009"),
+    # E1.4: the Console chain was never covered here, so its migrations
+    # were only ever exercised by the live stack.
+    "console": (REPO / "services/console", "HARKEN_CONSOLE_DSN", "0004"),
 }
 
 
@@ -118,6 +121,56 @@ class TestFreshDatabase:
 
 class TestExistingDatabase:
     """The production path: a database that predates this slice."""
+
+    def test_console_chain_reaches_head(self, tmp_path):
+        db = tmp_path / "console.db"
+        _alembic("console", db, "upgrade", "head")
+        assert _version(db) == SERVICES["console"][2]
+        assert {"tenants", "users", "tenant_services"} <= _tables(db)
+
+    def test_console_0004_makes_the_realm_binding_authoritative(self, tmp_path):
+        """E1.4: every tenant gets a recorded realm, and it is unique.
+
+        Authorization resolved a realm to a tenant by SLUG while
+        `keycloak_realm` was written for display only. The backfill is
+        what lets resolution stop consulting the slug.
+        """
+        import sqlite3
+
+        db = tmp_path / "console.db"
+        _alembic("console", db, "upgrade", "0003")
+        con = sqlite3.connect(db)
+        for slug in ("tenant-demo", "gate-dark"):
+            con.execute(
+                "insert into tenants (id, slug, name, status, billing_country, "
+                "currency, keycloak_realm, created_at, updated_at, "
+                "delinquency_status) values (?,?,?, 'active','US','USD', NULL, "
+                "datetime('now'), datetime('now'), 'current')",
+                (slug.replace("-", ""), slug, slug),
+            )
+        con.commit()
+        con.close()
+
+        _alembic("console", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        rows = dict(con.execute("select slug, keycloak_realm from tenants").fetchall())
+        assert rows == {"tenant-demo": "tenant-demo", "gate-dark": "gate-dark"}
+
+        # Unique: two tenants can never claim one realm.
+        import sqlite3 as _s
+        try:
+            con.execute(
+                "insert into tenants (id, slug, name, status, billing_country, "
+                "currency, keycloak_realm, created_at, updated_at, "
+                "delinquency_status) values ('x','x','x','active','US','USD',"
+                "'tenant-demo', datetime('now'), datetime('now'), 'current')"
+            )
+            con.commit()
+            raise AssertionError("a second tenant claimed an existing realm")
+        except _s.IntegrityError:
+            pass
+        finally:
+            con.close()
 
     def test_cc_upgrade_from_0008(self, tmp_path):
         """E0.1's ledger lands on a database that predates it."""
