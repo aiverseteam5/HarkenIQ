@@ -104,6 +104,84 @@ tenant_realm_user gate-owner@demo gate-owner tenant_owner || true
 tenant_realm_user gate-op@demo gate-op operator || true
 tenant_realm_user gate-aud@demo gate-aud auditor || true
 
+KC_ADMIN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+step "E1.4: the realm carries the five tenant roles, a client, and an owner"
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/roles" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+have = {r['name'] for r in json.load(sys.stdin)}
+want = {'tenant_owner', 'site_admin', 'operator', 'auditor', 'viewer'}
+missing = want - have
+assert not missing, f'tenant realm is missing roles: {sorted(missing)}'
+print('five tenant roles provisioned:', sorted(want))
+"
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/clients?clientId=harkeniq-console" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+clients = json.load(sys.stdin)
+assert clients, 'the tenant realm has no console client to sign in through'
+print('console client registered in the tenant realm')
+"
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/users" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+users = [u['username'] for u in json.load(sys.stdin)]
+assert users, 'the tenant realm has no users at all'
+print('tenant realm users:', sorted(users)[:6])
+"
+
+step "E1.4: the tenant<->realm binding is recorded and authoritative"
+curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  http://localhost:8100/api/admin/tenants/ | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['items']
+demo = [t for t in rows if t['slug'] == 'tenant-demo'][0]
+assert demo['keycloak_realm'] == 'tenant-demo', demo
+# The defect this closes: creation used to return 200 with a NULL realm.
+assert all(t['keycloak_realm'] for t in rows), (
+    'a tenant exists with no realm: it reports success and nobody can '
+    'sign in to it'
+)
+print('every tenant has a recorded realm binding')
+"
+
+step "E1.4: the platform realm holds NO tenant operational role"
+curl -sf "http://localhost:8180/admin/realms/harkeniq-platform/roles" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+have = {r['name'] for r in json.load(sys.stdin)}
+tenant_roles = {'tenant_owner', 'site_admin', 'operator', 'auditor', 'viewer'}
+leaked = have & tenant_roles
+assert not leaked, (
+    f'the platform realm carries tenant operational roles {sorted(leaked)}: '
+    'a platform identity would become a tenant operator'
+)
+assert 'platform_super_admin' in have
+print('platform realm roles:', sorted(have - {'offline_access', 'uma_authorization'}))
+"
+
+step "E1.4: a PLATFORM identity is refused by Central Command"
+PLAT_CC=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" http://localhost:8090/api/fleet/)
+[ "$PLAT_CC" = "401" ] || {
+  echo "a platform identity reached tenant Central Command ($PLAT_CC)" >&2
+  exit 1; }
+echo "platform -> tenant Central Command: 401 at validation"
+
+step "E1.4: a stray realm cannot mint access"
+STRAY=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $KC_ADMIN" http://localhost:8090/api/fleet/)
+[ "$STRAY" = "401" ] || { echo "a master-realm token reached CC ($STRAY)" >&2; exit 1; }
+STRAY_CONSOLE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $KC_ADMIN" http://localhost:8100/api/admin/tenants/)
+[ "$STRAY_CONSOLE" = "401" ] || {
+  echo "a master-realm token reached the Console ($STRAY_CONSOLE)" >&2; exit 1; }
+echo "master-realm token: 401 at both services"
+
 step "CC fleet poll picked up the agent (token bootstrap worked)"
 # E1.4: a TENANT-realm identity. A platform token is refused by Central
 # Command at validation now, which is the boundary this proves.
@@ -957,6 +1035,112 @@ step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"legacy_open"}' \
   http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+
+step "E1.4: tenant A cannot reach tenant B"
+# A second tenant, created END TO END through the real API -- which is
+# also the proof that provisioning runs on the creation path and not
+# only through the explicit endpoint.
+curl -sf -X POST -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Gate Rival","slug":"gate-rival","billing_country":"US","currency":"USD","admin_email":"owner@gate-rival"}' \
+  http://localhost:8100/api/admin/tenants/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['keycloak_realm'] == 'gate-rival', d
+print('gate-rival provisioned end to end:', d['keycloak_realm'])
+" || echo "  (gate-rival already exists from a previous run)"
+
+RIVAL_ID=$(curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  http://localhost:8100/api/admin/tenants/ | python3 -c "
+import sys, json
+print([t['id'] for t in json.load(sys.stdin)['items'] if t['slug'] == 'gate-rival'][0])")
+
+tenant_realm_user_in() {  # realm email password role
+  local uid rj
+  curl -s -X POST "http://localhost:8180/admin/realms/$1/users" \
+    -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+    -d "{\"username\":\"$2\",\"email\":\"$2\",\"enabled\":true,
+         \"emailVerified\":true,\"firstName\":\"Gate\",\"lastName\":\"Rival\",
+         \"credentials\":[{\"type\":\"password\",\"value\":\"$3\",
+                            \"temporary\":false}]}" -o /dev/null
+  uid=$(curl -s "http://localhost:8180/admin/realms/$1/users?username=$2&exact=true" \
+    -H "Authorization: Bearer $KC_ADMIN" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
+  [ -n "$uid" ] || return 1
+  rj=$(curl -s "http://localhost:8180/admin/realms/$1/roles/$4" -H "Authorization: Bearer $KC_ADMIN")
+  curl -s -X POST "http://localhost:8180/admin/realms/$1/users/$uid/role-mappings/realm" \
+    -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+    -d "[$rj]" -o /dev/null
+}
+tenant_realm_user_in gate-rival rival@gate rival-pass tenant_owner || true
+RIVAL_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/gate-rival/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=rival@gate&password=rival-pass" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+RIVAL_CC=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $RIVAL_TOKEN" http://localhost:8090/api/fleet/)
+[ "$RIVAL_CC" = "401" ] || {
+  echo "another tenant's identity reached this tenant's CC ($RIVAL_CC)" >&2
+  exit 1; }
+RIVAL_XT=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $RIVAL_TOKEN" \
+  "http://localhost:8100/api/tenants/$E14_TENANT/users/")
+[ "$RIVAL_XT" = "403" ] || {
+  echo "another tenant read this tenant's Console surface ($RIVAL_XT)" >&2
+  exit 1; }
+echo "tenant A -> tenant B: 401 at Central Command, 403 at the Console"
+
+step "E1.4: a custom bundle cannot widen the role that holds it"
+BUNDLE_ID=$(curl -sf -X POST -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Gate Reader Plus","permissions":["fleet.view","site.manage","action.approve"]}' \
+  "http://localhost:8100/api/tenants/$E14_TENANT/roles/" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+tenant_realm_user gate-bundle@demo gate-bundle viewer || true
+BUNDLE_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=gate-bundle@demo&password=gate-bundle" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+BUNDLE_SUB=$(python3 -c "
+import base64, json
+t = '$BUNDLE_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_console -q \
+  -c "INSERT INTO users (id, tenant_id, email, display_name, role, is_platform_user, keycloak_user_id, status, created_at) VALUES ('gatebundleuser0000000000000000', '$E14_TENANT', 'gate-bundle@demo', 'Gate Bundle', 'viewer', false, '$BUNDLE_SUB', 'active', now()) ON CONFLICT (id) DO NOTHING" \
+  -c "INSERT INTO user_custom_roles (user_id, custom_role_id) VALUES ('gatebundleuser0000000000000000', '$BUNDLE_ID') ON CONFLICT DO NOTHING" \
+  > /dev/null
+
+curl -sf -H "Authorization: Bearer $BUNDLE_TOKEN" http://localhost:8100/api/me \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+perms = set(d['permissions'])
+assert d['role'] == 'viewer', d['role']
+# The bundle names three permissions; the holder's role holds only one
+# of them, and a bundle intersects rather than widens.
+assert 'fleet.view' in perms, perms
+assert 'site.manage' not in perms, 'a bundle widened a viewer to site.manage'
+assert 'action.approve' not in perms, 'a bundle widened a viewer to action.approve'
+print('bundle intersects the role:', sorted(perms))
+"
+
+step "E1.4: the tenant<->realm relationship is audited"
+curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  "http://localhost:8100/api/tenants/$RIVAL_ID/audit/" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+rows = d.get('items') or d.get('entries') or d
+actions = {r['action'] for r in rows}
+assert 'tenant.create' in actions, sorted(actions)
+realms = {
+    (r.get('detail') or {}).get('keycloak_realm')
+    for r in rows if r['action'] in ('tenant.create', 'tenant.realm_provisioned')
+}
+assert 'gate-rival' in realms, realms
+print('audit records the tenant<->realm relationship')
+"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
