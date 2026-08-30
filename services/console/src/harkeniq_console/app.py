@@ -114,6 +114,11 @@ def create_app(state) -> FastAPI:
         # live safety state. Read-only; every mutation stays on the
         # existing /api/policies/* routes at site.manage.
         "autonomy",
+        # A0+A1 2026-08-30: the Operational Agent surface. Reads are
+        # fleet.view and every mutation is site.manage, both enforced at
+        # Central Command; this proxy only answers "may this caller reach
+        # this tenant at all".
+        "operational-agents",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

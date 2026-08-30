@@ -780,12 +780,17 @@ class DirectiveRepo:
         tier: str = "",
         validation_state: str = "",
         issued_by: str = "",
+        actor: str = "",
+        authorization_basis: str = "",
+        proposal_id: str = "",
     ) -> DirectedDirective:
         directive = DirectedDirective(
             device_id=device_id, kind=kind, action_type=action_type,
             params=params, skill_id=skill_id, skill_version=skill_version,
             yaml_content=yaml_content, tier=tier,
             validation_state=validation_state, issued_by=issued_by,
+            actor=actor, authorization_basis=authorization_basis,
+            proposal_id=proposal_id,
         )
         self.session.add(directive)
         await self.session.flush()

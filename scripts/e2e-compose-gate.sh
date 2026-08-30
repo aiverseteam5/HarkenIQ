@@ -314,6 +314,171 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT count(*) FROM cc_safety_state WHERE reported = true" \
   | grep -qv '^0$'
 
+step "A0+A1: a named Operational Agent, end to end on the real stack"
+# The thesis slice, proven rather than described: create -> scope -> bind
+# -> activate -> observe -> propose -> approve -> dispatch -> execute ->
+# attribute. Every hop uses a capability that already existed; the only
+# new one is the CC->SM dispatch verb, which queues on the R5-1 directive
+# transport the firmware campaigns already ride.
+SITE_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['sites'][0]['id'])")
+
+# Creating an agent is site.manage. An operator holds action.approve and
+# must NOT be able to configure one: deciding is not configuring.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $OP_TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"nope","scopes":[],"capabilities":[]}' \
+    http://localhost:8090/api/operational-agents/)" = "403" ]
+
+AGENT_JSON=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"Gate Agent $(date +%s)\",
+       \"description\":\"compose gate\",
+       \"require_approval_always\":true,
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_ID\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"SEL_CLEAR\"},
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/)
+AGENT_ID=$(echo "$AGENT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "$AGENT_JSON" | python3 -c '
+import sys, json
+a = json.load(sys.stdin)
+assert a["status"] == "draft", "a new agent must not be born active"
+assert a["actor"].startswith("op-agent:") and a["actor"].endswith("@v1")
+reads = {c["capability_ref"] for c in a["capabilities"] if c["kind"] == "read"}
+assert {"attention", "autonomy"} <= reads, "required reads must be bound"
+print("agent created:", a["actor"], a["status"])
+'
+
+# A draft agent evaluates nothing. Activation is a separate human act.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/activate" \
+  | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active' and a['activated_by'], 'activation must name a human'
+print('agent activated by', a['activated_by'])
+"
+
+# The detail view answers what an operator actually asks.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID" | python3 -c '
+import sys, json
+v = json.load(sys.stdin)
+assert v["scope"]["device_count"] >= 1, "the agent must see the seeded node"
+classes = {c["action_type"]: c for c in v["capabilities"]["action_classes"]}
+assert set(classes) == {"SEL_CLEAR", "COLLECT_DIAGNOSTICS"}
+for at, c in classes.items():
+    assert c["disposition_reason"], at
+    # require_approval_always is a one-way tightening: nothing this agent
+    # holds may run unattended, whatever the tenant grants.
+    assert c["requires_approval"] is True, at
+print("agent sees", v["scope"]["device_count"], "device(s);",
+      len(classes), "classes, all requiring a human")
+'
+
+# Wait for the evaluator to observe the fault the gate already injected.
+wait_for "agent proposal in the ONE approval queue" 240 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' http://localhost:8090/api/approvals/ \
+   | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('agent_total',0)>0 else 1)\""
+
+QUEUE=$(curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/approvals/)
+echo "$QUEUE" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+agent_items = [a for a in d["actions"] if a["origin"] == "agent"]
+assert agent_items, "the agent proposal must appear in the same queue"
+p = agent_items[0]["proposal"]
+# A request with no reasoning is not reviewable.
+assert p["rationale"], "a proposal must say what it saw and why"
+assert p["actor"].startswith("op-agent:"), "attribution on the proposal"
+assert p["evidence"]["observed"], "evidence must name the observation"
+assert p["authorization_basis"] == "human_approval"
+assert p["status"] == "awaiting_approval"
+print("proposal:", p["action_type"], "on", p["device_agent_id"])
+print("rationale:", p["rationale"][:160])
+'
+PROP_ID=$(echo "$QUEUE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print([a for a in d['actions'] if a['origin'] == 'agent'][0]['action_id'])
+")
+
+# The SAME endpoint and the SAME permission a node action uses.
+curl -sf -X POST -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$PROP_ID/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["origin"] == "agent"
+assert d["decided_by"], "a named human must be recorded"
+assert d["delivery"]["delivered"] is True, d["delivery"]
+print("approved by", d["decided_by"], "-> directive",
+      d["delivery"].get("directive_id"))
+'
+
+# Dispatch really reached the Site Manager as a directive carrying the
+# agent's attribution, and the node really settled it.
+wait_for "directive settled at the SM" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+   \"SELECT count(*) FROM sm_directives WHERE actor LIKE 'op-agent:%' \
+     AND status IN ('completed','failed')\" | grep -qv '^0\$'"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT actor, authorization_basis, status FROM sm_directives \
+   WHERE actor LIKE 'op-agent:%' LIMIT 1"
+
+# The execution became EVIDENCE with its actor intact. Before this slice a
+# directed action produced no outcome row at all, so nothing an agent (or
+# a firmware campaign) did could ever reach the error budget or learning.
+wait_for "attributed outcome at the SM" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+   \"SELECT count(*) FROM sm_action_outcomes WHERE actor LIKE 'op-agent:%'\" \
+   | grep -qv '^0\$'"
+wait_for "attributed outcome reached Central Command" 240 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_outcome_history WHERE actor LIKE 'op-agent:%'\" \
+   | grep -qv '^0\$'"
+
+# The proposal settles against its own outcome, so the agent's record is
+# closed rather than left dispatched forever.
+wait_for "proposal settled with its outcome" 240 bash -c \
+  "curl -s -H 'Authorization: Bearer $OP_TOKEN' \
+     http://localhost:8090/api/operational-agents/$AGENT_ID/proposals \
+   | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(p['outcome'] for p in d['proposals']) else 1)\""
+curl -sf -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/proposals" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+settled = [p for p in d["proposals"] if p["outcome"]]
+assert settled, "no settled proposal"
+p = settled[0]
+assert p["status"] in ("completed", "failed")
+assert p["directive_id"], "the proposal must name the directive it became"
+print("settled:", p["action_type"], p["status"], "outcome", p["outcome"])
+'
+
+# The whole chain is reconstructable from the existing audit chain, and
+# the agent is named in it as an actor.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/ | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+actions = {e["action"] for e in d["entries"]}
+for needed in ("operational_agent.created", "operational_agent.activated",
+               "agent_proposal.created", "action.approved",
+               "agent_proposal.dispatched"):
+    assert needed in actions, f"missing audit event: {needed}"
+assert any(e["actor"].startswith("op-agent:") for e in d["entries"]), \
+    "the agent must appear as an actor in the chain"
+print("audit chain carries the full agent journey")
+'
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | grep -q '"valid": *true'
+
+# There is no agent execution surface. An agent router that could act
+# would be the parallel governance path the architecture forbids.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$AGENT_ID/execute")" = "404" ]
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

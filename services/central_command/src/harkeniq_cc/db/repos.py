@@ -14,6 +14,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
+    CCAgentCapability,
+    CCAgentProposal,
+    CCAgentScope,
     CCApprovalGroup,
     CCApprovalGroupMember,
     CCApprovalPolicy,
@@ -27,6 +30,7 @@ from harkeniq_cc.db.models import (
     CCIncident,
     CCLearnedSignal,
     CCLearningCycle,
+    CCOperationalAgent,
     CCOutcomeHistory,
     CCSafetyState,
     CCSite,
@@ -832,6 +836,10 @@ class OutcomeHistoryRepo:
                 "fault_resolved": bool(r.fault_resolved),
                 "site_id": r.site_id,
                 "ingested_at": r.ingested_at,
+                # A1: evidence that cannot name its actor cannot answer
+                # "what did MY agent do", which is half of trusting one.
+                "actor": r.actor or "",
+                "device_agent_id": r.device_agent_id,
             }
             for r in rows
         ]
@@ -1434,3 +1442,346 @@ class IncidentRepo:
                 .order_by(CCIncident.opened_at)
             )
         ).scalars().all()
+
+
+class OperationalAgentRepo:
+    """A0: the Operational Agent bundle, its scope, and its bindings.
+
+    Every read is tenant-scoped on the row itself (CC is single-tenant
+    structurally, but an agent is tenant-owned data and must never be
+    reachable by id alone from another tenant's request).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    # -- agent -----------------------------------------------------------
+    async def create(
+        self,
+        *,
+        tenant_id: str,
+        name: str,
+        description: str,
+        autonomy_ceiling: int,
+        require_approval_always: bool,
+        max_proposals_per_day: int,
+        created_by: str,
+    ) -> CCOperationalAgent:
+        agent = CCOperationalAgent(
+            tenant_id=tenant_id,
+            name=name,
+            description=description,
+            autonomy_ceiling=autonomy_ceiling,
+            require_approval_always=require_approval_always,
+            max_proposals_per_day=max_proposals_per_day,
+            created_by=created_by,
+            updated_by=created_by,
+        )
+        self.session.add(agent)
+        await self.session.flush()
+        return agent
+
+    async def get(self, tenant_id: str, agent_id: str) -> Optional[CCOperationalAgent]:
+        return (
+            await self.session.execute(
+                select(CCOperationalAgent).where(
+                    CCOperationalAgent.id == agent_id,
+                    CCOperationalAgent.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_name(
+        self, tenant_id: str, name: str
+    ) -> Optional[CCOperationalAgent]:
+        return (
+            await self.session.execute(
+                select(CCOperationalAgent).where(
+                    CCOperationalAgent.tenant_id == tenant_id,
+                    CCOperationalAgent.name == name,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_all(
+        self, tenant_id: str, status: Optional[str] = None
+    ) -> Sequence[CCOperationalAgent]:
+        stmt = select(CCOperationalAgent).where(
+            CCOperationalAgent.tenant_id == tenant_id
+        )
+        if status:
+            stmt = stmt.where(CCOperationalAgent.status == status)
+        return (
+            await self.session.execute(stmt.order_by(CCOperationalAgent.created_at))
+        ).scalars().all()
+
+    async def bump_version(self, agent: CCOperationalAgent, actor: str) -> None:
+        """Any configuration change is a new version.
+
+        The attribution key embeds the version, so a bundle that changes
+        after a proposal was made cannot silently rewrite what that
+        proposal was made under.
+        """
+        agent.version += 1
+        agent.updated_by = actor
+        agent.updated_at = utcnow()
+
+    async def set_status(
+        self, agent: CCOperationalAgent, status: str, actor: str
+    ) -> None:
+        agent.status = status
+        agent.updated_by = actor
+        agent.updated_at = utcnow()
+        if status == "active":
+            agent.activated_by = actor
+            agent.activated_at = utcnow()
+
+    async def mark_evaluated(self, agent: CCOperationalAgent) -> None:
+        agent.last_evaluated_at = utcnow()
+
+    # -- scope -----------------------------------------------------------
+    async def list_scopes(self, agent_id: str) -> Sequence[CCAgentScope]:
+        return (
+            await self.session.execute(
+                select(CCAgentScope)
+                .where(CCAgentScope.agent_id == agent_id)
+                .order_by(CCAgentScope.scope_type, CCAgentScope.scope_ref)
+            )
+        ).scalars().all()
+
+    async def add_scope(
+        self, *, agent_id: str, tenant_id: str, scope_type: str, scope_ref: str
+    ) -> CCAgentScope:
+        row = CCAgentScope(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def clear_scopes(self, agent_id: str) -> None:
+        for row in await self.list_scopes(agent_id):
+            await self.session.delete(row)
+
+    # -- capabilities ----------------------------------------------------
+    async def list_capabilities(self, agent_id: str) -> Sequence[CCAgentCapability]:
+        return (
+            await self.session.execute(
+                select(CCAgentCapability)
+                .where(CCAgentCapability.agent_id == agent_id)
+                .order_by(CCAgentCapability.kind, CCAgentCapability.capability_ref)
+            )
+        ).scalars().all()
+
+    async def add_capability(
+        self,
+        *,
+        agent_id: str,
+        tenant_id: str,
+        kind: str,
+        capability_ref: str,
+        config: Optional[dict] = None,
+    ) -> CCAgentCapability:
+        row = CCAgentCapability(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            kind=kind,
+            capability_ref=capability_ref,
+            config=config,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def clear_capabilities(self, agent_id: str) -> None:
+        for row in await self.list_capabilities(agent_id):
+            await self.session.delete(row)
+
+
+class AgentProposalRepo:
+    """A1: proposals produced by Operational Agents."""
+
+    #: Statuses that still block a duplicate proposal for the same
+    #: (agent, device, action). Mirrors the node action queue's rule:
+    #: a persisting condition must not re-propose work already open, and
+    #: `denied` blocks too because denial is final (D16).
+    OPEN_STATUSES = (
+        "proposed",
+        "awaiting_approval",
+        "approved",
+        "dispatched",
+        "denied",
+    )
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, **kwargs) -> CCAgentProposal:
+        row = CCAgentProposal(**kwargs)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get(self, tenant_id: str, proposal_id: str) -> Optional[CCAgentProposal]:
+        return (
+            await self.session.execute(
+                select(CCAgentProposal).where(
+                    CCAgentProposal.id == proposal_id,
+                    CCAgentProposal.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def all_dedupe_keys(self, tenant_id: str) -> set[str]:
+        """Every condition this tenant's agents have already proposed for.
+
+        Deliberately ALL keys, not just the open ones. A proposal that
+        already failed for a given fault will fail again for the same
+        fault: the live stack re-proposed a permanently-refused SEL_CLEAR
+        on every pass once its first attempt settled. The key carries the
+        condition, so a NEW incident is a new proposal and only a repeat
+        of the same one is suppressed.
+        """
+        rows = (
+            await self.session.execute(
+                select(CCAgentProposal.dedupe_key).where(
+                    CCAgentProposal.tenant_id == tenant_id
+                )
+            )
+        ).scalars().all()
+        return {k for k in rows if k}
+
+    async def find_open(
+        self, tenant_id: str, dedupe_key: str
+    ) -> Optional[CCAgentProposal]:
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.dedupe_key == dedupe_key,
+                    CCAgentProposal.status.in_(self.OPEN_STATUSES),
+                )
+                .order_by(CCAgentProposal.created_at.desc())
+            )
+        ).scalars().first()
+
+    async def list_for_agent(
+        self, tenant_id: str, agent_id: str, limit: int = 100
+    ) -> Sequence[CCAgentProposal]:
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.agent_id == agent_id,
+                )
+                .order_by(CCAgentProposal.created_at.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+
+    async def list_awaiting_approval(
+        self, tenant_id: str
+    ) -> Sequence[CCAgentProposal]:
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.status == "awaiting_approval",
+                )
+                .order_by(CCAgentProposal.created_at)
+            )
+        ).scalars().all()
+
+    async def list_by_status(
+        self, tenant_id: str, statuses: Sequence[str], limit: int = 500
+    ) -> Sequence[CCAgentProposal]:
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.status.in_(list(statuses)),
+                )
+                .order_by(CCAgentProposal.created_at)
+                .limit(limit)
+            )
+        ).scalars().all()
+
+    async def count_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> int:
+        result = await self.session.execute(
+            select(func.count(CCAgentProposal.id)).where(
+                CCAgentProposal.tenant_id == tenant_id,
+                CCAgentProposal.agent_id == agent_id,
+                CCAgentProposal.created_at >= since,
+            )
+        )
+        return result.scalar() or 0
+
+    async def find_by_directive(
+        self, directive_id: str
+    ) -> Optional[CCAgentProposal]:
+        if not directive_id:
+            return None
+        return (
+            await self.session.execute(
+                select(CCAgentProposal).where(
+                    CCAgentProposal.directive_id == directive_id
+                )
+            )
+        ).scalars().first()
+
+    async def find_open_for_execution(
+        self, tenant_id: str, device_agent_id: str, action_type: str
+    ) -> Optional[CCAgentProposal]:
+        """The dispatched proposal an incoming outcome most likely settles.
+
+        Outcomes arrive keyed by (device, action type), not by proposal
+        id, so this is the join. Oldest dispatched first: an outcome
+        settles the proposal that has been waiting longest, never a
+        newer one that has not executed yet.
+        """
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.device_agent_id == device_agent_id,
+                    CCAgentProposal.action_type == action_type,
+                    CCAgentProposal.status == "dispatched",
+                )
+                .order_by(CCAgentProposal.dispatched_at)
+            )
+        ).scalars().first()
+
+    async def decide(
+        self, proposal: CCAgentProposal, decision: str, decided_by: str
+    ) -> None:
+        proposal.status = "approved" if decision == "approved" else "denied"
+        proposal.decided_by = decided_by
+        proposal.decided_at = utcnow()
+
+    async def mark_dispatched(
+        self, proposal: CCAgentProposal, directive_id: str, reason: str = ""
+    ) -> None:
+        proposal.status = "dispatched"
+        proposal.directive_id = directive_id
+        proposal.dispatch_reason = reason
+        proposal.dispatched_at = utcnow()
+
+    async def mark_failed(self, proposal: CCAgentProposal, reason: str) -> None:
+        proposal.status = "failed"
+        proposal.dispatch_reason = reason[:512]
+        proposal.outcome_at = utcnow()
+
+    async def settle(self, proposal: CCAgentProposal, outcome: str) -> None:
+        proposal.status = "completed" if outcome == "SUCCESS" else "failed"
+        proposal.outcome = outcome
+        proposal.outcome_at = utcnow()

@@ -149,6 +149,7 @@ async def _ingest_outcomes(session, site_id: str, outcomes: list[dict]) -> None:
             model=oc.get("model", ""),
             outcome=oc.get("outcome", "UNKNOWN"),
             fault_resolved=oc.get("fault_resolved"),
+            actor=oc.get("actor", "") or "",
             recorded_at=datetime.fromtimestamp(
                 oc.get("recorded_at_unix", 0), tz=timezone.utc,
             ) if oc.get("recorded_at_unix") else datetime.now(timezone.utc),

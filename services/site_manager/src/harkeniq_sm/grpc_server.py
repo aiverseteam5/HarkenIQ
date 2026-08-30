@@ -307,6 +307,97 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         )
         return harkeniq_pb2.SiteSkillInstallAck(accepted=True, queued=queued)
 
+    async def DispatchAction(self, request, context):
+        """A1: queue one decided action for a device on this site.
+
+        This verb DELIVERS a decision; it does not make one. Central
+        Command has already established the actor, the permission and
+        the approval (or the tenant's autonomy grant); the node still
+        runs its unchanged gate funnel and can refuse. The Site Manager's
+        job here is the two things only it can do: resolve the device,
+        and refuse work that its own live safety state already forbids.
+        """
+        if self.directives is None:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason="directive transport not configured"
+            )
+        action_type = (request.action_type or "").strip().upper()
+        if not action_type:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason="action_type is required"
+            )
+        # An action class the executor does not implement must never be
+        # queued: it would sit as a directive nothing can ever settle.
+        from harkeniq.models import ActionType
+
+        try:
+            ActionType(action_type)
+        except ValueError:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False,
+                reason=f"unknown action type {action_type!r}",
+            )
+        try:
+            params = json.loads(request.params_json or "{}")
+            if not isinstance(params, dict):
+                raise ValueError("params_json must be an object")
+        except (json.JSONDecodeError, ValueError) as exc:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason=f"unparseable params_json: {exc}"
+            )
+
+        async with self.sessionmaker() as session:
+            device = await DeviceRepo(session).get_by_agent_id(
+                request.device_agent_id
+            )
+            device_id = device.id if device else None
+        if device_id is None:
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False,
+                reason=f"device {request.device_agent_id!r} is not known at this site",
+            )
+
+        # Safety belongs to the site, so the site enforces it here rather
+        # than trusting the caller's snapshot of it. The node re-checks
+        # everything again; this refusal just avoids queueing work that
+        # is already known to be refused.
+        if self.autonomy is not None:
+            if self.autonomy.stop_switch_active:
+                return harkeniq_pb2.ActionDispatchAck(
+                    accepted=False, reason="site stop switch is active"
+                )
+            if request.authorization == "autonomous_grant":
+                async with self.sessionmaker() as session:
+                    from harkeniq_sm.db.repos import ErrorBudgetRepo
+
+                    dropped = await ErrorBudgetRepo(session).dropped_back_types()
+                if action_type in dropped:
+                    return harkeniq_pb2.ActionDispatchAck(
+                        accepted=False,
+                        reason=(
+                            f"autonomy for {action_type} was withdrawn by the "
+                            f"error budget; a human decision is required"
+                        ),
+                    )
+
+        directive_id = await self.directives.enqueue_action(
+            device_id=device_id,
+            action_type=action_type,
+            params=params,
+            issued_by=request.decided_by or request.actor or "central-command",
+            actor=request.actor,
+            authorization_basis=request.authorization,
+            proposal_id=request.proposal_id,
+        )
+        logger.info(
+            "DispatchAction %s on %s for %s (%s) -> directive %s",
+            action_type, request.device_agent_id, request.actor or "unattributed",
+            request.authorization or "sm_authority", directive_id,
+        )
+        return harkeniq_pb2.ActionDispatchAck(
+            accepted=True, directive_id=directive_id
+        )
+
     async def RegisterSite(self, request, context):
         if not request.license_key_fingerprint:
             return harkeniq_pb2.SiteRegistrationAck(
@@ -485,6 +576,10 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                             vendor=dev.vendor if dev else "",
                             model=dev.model if dev else "",
                             recorded_at_unix=_ts(oc.recorded_at),
+                            # A1: attribution rides the evidence path, so
+                            # an execution is still attributable once it
+                            # has become a number in a success rate.
+                            actor=oc.actor or "",
                         )
                     )
                     oc.reported_to_cc = True

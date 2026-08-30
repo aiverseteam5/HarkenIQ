@@ -239,6 +239,12 @@ class CCOutcomeHistory(Base):
     model: Mapped[str] = mapped_column(String(128), default="")
     outcome: Mapped[str] = mapped_column(String(32))  # SUCCESS/PARTIAL/FAILURE/UNKNOWN/ROLLBACK
     fault_resolved: Mapped[bool | None] = mapped_column(nullable=True)
+    #: A1: who caused this execution. "op-agent:<id>@v<n>" for an
+    #: Operational Agent, "user:<email>" for a human-approved action,
+    #: empty for outcomes reported before attribution existed. Evidence
+    #: without an actor cannot answer "what did MY agent do", which is
+    #: half of what an operator needs before trusting one.
+    actor: Mapped[str] = mapped_column(String(255), default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -571,3 +577,213 @@ class CCSafetyState(Base):
     )
 
     __table_args__ = (Index("ix_cc_safety_tenant", "tenant_id"),)
+
+
+# ---------------------------------------------------------------------------
+# A0+A1: the Operational Agent — the product noun (2026-08-30)
+#
+# An Operational Agent is a DECLARATIVE BUNDLE over capabilities that
+# already exist: a name, a tenant, an explicit scope, bindings to
+# governed capabilities, and a policy that can only ever be a subset of
+# what the tenant itself is permitted. It is configuration, never a
+# runtime, and it holds no credential of its own (machine identity is
+# A3). Its attribution key is `op-agent:<id>@v<version>` per design doc
+# §6, which is why `version` lives on the row: an outcome must name the
+# exact configuration that proposed it, not whatever the bundle looks
+# like today.
+# ---------------------------------------------------------------------------
+
+
+class CCOperationalAgent(Base):
+    """A named, tenant-owned Operational Agent (A0).
+
+    Lifecycle: draft -> active -> paused -> retired. Only `active`
+    agents evaluate; activation is a human act and is audited. Nothing
+    here grants authority: an agent's proposal traverses exactly the
+    same RBAC, autonomy, approval, execution and audit path a human's
+    does, and the node funnel remains the only thing that authorizes
+    execution.
+    """
+
+    __tablename__ = "cc_operational_agents"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(String(512), default="")
+    #: draft | active | paused | retired
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    #: Bumped on every configuration change. Part of the attribution key,
+    #: so a proposal always names the configuration that produced it.
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    #: Ceiling the operator sets for THIS agent. The effective autonomy
+    #: is min(this, the tenant's configured level): an agent can be held
+    #: below the tenant ladder, never lifted above it.
+    autonomy_ceiling: Mapped[int] = mapped_column(Integer, default=0)
+    #: When true every proposal waits for a human even where the S5
+    #: contract would grant the class. A one-way tightening, never a
+    #: loosening.
+    require_approval_always: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: Cap on proposals this agent may create per UTC day. Cheap, honest
+    #: back-pressure on a misconfigured evaluator; not a budget (per-agent
+    #: budgets are A2).
+    max_proposals_per_day: Mapped[int] = mapped_column(Integer, default=25)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    activated_by: Mapped[str] = mapped_column(String(255), default="")
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_op_agent_tenant_name"),
+    )
+
+
+class CCAgentScope(Base):
+    """One explicit scope grant for an agent (A0).
+
+    Scope is a set of rows, never a wildcard: an agent with no scope
+    rows sees NOTHING. "Everything by default" is the failure mode this
+    table exists to make impossible.
+
+    scope_type: site | device_class | device
+      site         -> scope_ref is a cc_sites.id
+      device_class -> scope_ref is "server" | "switch"
+      device       -> scope_ref is a device agent_id
+    """
+
+    __tablename__ = "cc_agent_scopes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_operational_agents.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    scope_type: Mapped[str] = mapped_column(String(16))
+    scope_ref: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "scope_type", "scope_ref", name="uq_agent_scope"
+        ),
+    )
+
+
+class CCAgentCapability(Base):
+    """A binding from an agent to a capability that already exists (A0).
+
+    This table REFERENCES capabilities; it never defines them. There is
+    no agent capability implementation anywhere in the platform, and
+    binding one confers no permission: the capability's own guard still
+    decides.
+
+    kind: read | action_class | skill
+      read         -> capability_ref is a CC read capability id
+                      ("attention", "autonomy", "incidents", "learning")
+      action_class -> capability_ref is an ActionType value
+      skill        -> capability_ref is a marketplace skill id
+    """
+
+    __tablename__ = "cc_agent_capabilities"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_operational_agents.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    capability_ref: Mapped[str] = mapped_column(String(128))
+    config: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "kind", "capability_ref", name="uq_agent_capability"
+        ),
+    )
+
+
+class CCAgentProposal(Base):
+    """A labelled, evidence-carrying proposal from an Operational Agent (A1).
+
+    The proposal is the agent's OUTPUT and the governance layer's INPUT.
+    It records what the agent observed, what it recommends, and the S5
+    disposition AT PROPOSAL TIME with the blocking conditions that
+    produced it — so a denial is explainable months later without
+    re-deriving a contract that has since changed.
+
+    A proposal authorizes nothing. `awaiting_approval` proposals appear
+    in the one approvals queue under `action.approve`; `blocked` ones
+    never dispatch and exist to be read.
+
+    status: proposed -> awaiting_approval -> approved -> dispatched
+                     -> completed | failed
+            proposed -> blocked          (governance refused it)
+            awaiting_approval -> denied  (a human refused it; final, D16)
+    """
+
+    __tablename__ = "cc_agent_proposals"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    #: Frozen attribution key: op-agent:<id>@v<n>. Stored, not derived,
+    #: so a later version bump cannot rewrite history.
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    agent_version: Mapped[int] = mapped_column(Integer, default=1)
+    site_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    device_agent_id: Mapped[str] = mapped_column(String(255), default="")
+    action_type: Mapped[str] = mapped_column(String(64))
+    params: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: Plain-language reason a human can act on.
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    #: What the agent read: attention driver + band, incident ids, CVEs,
+    #: outcome evidence, learned signals. Refs to existing records, not
+    #: a copy of them.
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: S5 disposition captured when the proposal was made.
+    disposition: Mapped[str] = mapped_column(String(32), default="")
+    disposition_reason: Mapped[str] = mapped_column(Text, default="")
+    blocking_conditions: Mapped[list | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
+    #: human_approval | autonomous_grant — the basis execution will claim.
+    authorization_basis: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(24), default="proposed")
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Idempotency key: one open proposal per (agent, device, action).
+    dedupe_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    directive_id: Mapped[str] = mapped_column(String(64), default="")
+    dispatch_reason: Mapped[str] = mapped_column(String(512), default="")
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    outcome: Mapped[str] = mapped_column(String(32), default="")
+    outcome_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+    __table_args__ = (
+        Index("ix_agent_proposals_tenant_status", "tenant_id", "status"),
+    )

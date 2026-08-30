@@ -120,45 +120,27 @@ class ApprovalService:
     async def _record_outcome(
         session, device_id: str, request, agent_status: str, outcome,
     ) -> None:
-        """Write sm_action_outcomes once per terminal action (QA-043)."""
-        from sqlalchemy import select
+        """Write sm_action_outcomes once per terminal action (QA-043).
 
-        from harkeniq_sm.db.models import ActionOutcomeRow
+        Delegates to the shared writer so the node-proposed path and the
+        directed path record outcomes identically (A1). `actor` is empty
+        here: an action the node proposed on its own has no external
+        requester, and inventing one would put a name on work nobody
+        asked for.
+        """
+        from harkeniq_sm.outcomes import record_action_outcome
 
-        existing = (
-            await session.execute(
-                select(ActionOutcomeRow).where(
-                    ActionOutcomeRow.device_id == device_id,
-                    ActionOutcomeRow.action_id == request.action_id,
-                )
-            )
-        ).scalars().first()
-        if existing is not None:
-            return  # idempotent retry of a terminal report
         success = bool((outcome or {}).get("success", agent_status == "COMPLETED"))
-        result = "SUCCESS" if success else "FAILURE"
-        session.add(ActionOutcomeRow(
+        await record_action_outcome(
+            session,
+            device_id=device_id,
             action_id=request.action_id,
             action_type=request.type,
-            device_id=device_id,
-            outcome=result,
+            result="SUCCESS" if success else "FAILURE",
             fault_resolved=(outcome or {}).get("fault_resolved"),
             post_state=outcome if isinstance(outcome, dict) else None,
-        ))
-        # S5: fold the outcome into the A2.2 error budget. Before this the
-        # drop-back model existed only in a class nothing constructed, so a
-        # class could fail repeatedly and keep its autonomy. Demotion is
-        # automatic and needs no human; only a human ever promotes.
-        from harkeniq_sm.db.repos import ErrorBudgetRepo
-
-        _, newly_dropped = await ErrorBudgetRepo(session).record(
-            request.type, result,
+            actor=getattr(request, "actor", "") or "",
         )
-        if newly_dropped:
-            logger.warning(
-                "Error budget drop-back for %s: autonomy withdrawn until an "
-                "operator reviews the failures", request.type,
-            )
 
     @staticmethod
     def _initial_status(agent_status: str) -> str:

@@ -17,15 +17,6 @@ import type { ApprovalAction } from "../types";
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
 
-const SEVERITY_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  info: "info",
-  low: "info",
-  warning: "warning",
-  medium: "warning",
-  high: "critical",
-  critical: "critical",
-};
-
 const DECISION_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
   approved: "success",
   denied: "critical",
@@ -85,6 +76,16 @@ const cardHeaderRow: CSSProperties = {
   alignItems: "center",
   justifyContent: "space-between",
   gap: "0.5rem",
+};
+
+const agentBlockStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "0.375rem",
+  padding: "0.625rem 0.75rem",
+  borderRadius: "var(--radius-md, 6px)",
+  background: "var(--bg-subtle, rgba(127,127,127,0.08))",
+  borderLeft: "3px solid var(--accent)",
 };
 
 const cardDetailRow: CSSProperties = {
@@ -315,9 +316,12 @@ export default function ApprovalQueue() {
     async (decision: "approve" | "deny") => {
       setBatchLoading(true);
       try {
+        // CC's contract is {action_ids, decision: approved|denied}. The
+        // previous body ({ids, decision: "approve"}) was rejected on
+        // every call, so batch decisions never landed.
         await postJson(`/api/t/${tenantId}/approvals/batch`, {
-          ids: Array.from(selected),
-          decision,
+          action_ids: Array.from(selected),
+          decision: decision === "approve" ? "approved" : "denied",
         });
         toast(
           `${selected.size} action(s) ${decision === "approve" ? "approved" : "denied"}`,
@@ -364,22 +368,32 @@ export default function ApprovalQueue() {
         ),
       },
       {
-        key: "agent_id",
+        key: "device_agent_id",
         header: "Device",
         render: (r) => (
           <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
-            {r.agent_id}
+            {r.device_agent_id || "--"}
           </code>
         ),
       },
-      { key: "site_name", header: "Site" },
       {
-        key: "status",
+        key: "origin",
+        header: "Requested by",
+        render: (r) => (
+          <StatusBadge
+            status={r.origin === "agent" ? "agent" : "node"}
+            variant={r.origin === "agent" ? "warning" : "neutral"}
+            size="sm"
+          />
+        ),
+      },
+      {
+        key: "decision",
         header: "Decision",
         render: (r) => (
           <StatusBadge
-            status={r.status}
-            variant={DECISION_VARIANT[r.status] ?? "neutral"}
+            status={r.decision ?? "pending"}
+            variant={DECISION_VARIANT[r.decision ?? "pending"] ?? "neutral"}
             size="sm"
           />
         ),
@@ -395,9 +409,9 @@ export default function ApprovalQueue() {
         render: (r) => formatDate(r.decided_at ?? ""),
       },
       {
-        key: "skill_name",
-        header: "Outcome",
-        render: (r) => r.skill_name || "--",
+        key: "delivered_at",
+        header: "Delivered",
+        render: (r) => (r.delivered_at ? formatDate(r.delivered_at) : "--"),
       },
     ],
     [],
@@ -504,21 +518,21 @@ export default function ApprovalQueue() {
 
               <div style={cardsGrid}>
                 {pendingActions.map((action) => (
-                  <div key={action.id} style={cardStyle}>
+                  <div key={action.action_id} style={cardStyle}>
                     <div style={cardHeaderRow}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                         <input
                           type="checkbox"
                           style={checkboxStyle}
-                          checked={selected.has(action.id)}
-                          onChange={() => toggleSelection(action.id)}
+                          checked={selected.has(action.action_id)}
+                          onChange={() => toggleSelection(action.action_id)}
                           aria-label={`Select ${action.action_type}`}
                         />
                         <StatusBadge status={action.action_type} variant="info" size="sm" />
                       </div>
                       <StatusBadge
-                        status={action.severity}
-                        variant={SEVERITY_VARIANT[action.severity] ?? "neutral"}
+                        status={action.origin === "agent" ? "agent" : "node"}
+                        variant={action.origin === "agent" ? "warning" : "neutral"}
                         size="sm"
                       />
                     </div>
@@ -526,39 +540,78 @@ export default function ApprovalQueue() {
                     <div style={cardDetailRow}>
                       <span>Device</span>
                       <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
-                        {action.agent_id}
+                        {action.device_agent_id || "--"}
                       </code>
                     </div>
                     <div style={cardDetailRow}>
-                      <span>Site</span>
-                      <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>{action.site_name}</span>
+                      <span>Requested by</span>
+                      <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>
+                        {action.proposal ? action.proposal.actor : "this device"}
+                      </span>
                     </div>
                     <div style={cardDetailRow}>
-                      <span>Skill</span>
-                      <span>{action.skill_name || "--"}</span>
+                      <span>Waiting since</span>
+                      <span>{formatDate(action.routed_at ?? "")}</span>
                     </div>
-                    <div style={cardDetailRow}>
-                      <span>Proposed</span>
-                      <span>{formatDate(action.proposed_at)}</span>
-                    </div>
+
+                    {/* A1: an agent has to say what it saw and why. A
+                        request with no rationale is not reviewable, so
+                        the card carries the agent's own reasoning, its
+                        evidence and anything blocking it. */}
+                    {action.proposal ? (
+                      <div style={agentBlockStyle}>
+                        <div style={{ fontSize: "0.8125rem", color: "var(--text-primary)" }}>
+                          {action.proposal.rationale}
+                        </div>
+                        {action.proposal.evidence?.incident_ids?.length ? (
+                          <div style={cardDetailRow}>
+                            <span>Incident</span>
+                            <code style={{ fontSize: "0.75rem" }}>
+                              {action.proposal.evidence.incident_ids.join(", ")}
+                            </code>
+                          </div>
+                        ) : null}
+                        {action.proposal.evidence?.outcome_evidence?.sufficient ? (
+                          <div style={cardDetailRow}>
+                            <span>Track record</span>
+                            <span>
+                              {Math.round(
+                                (action.proposal.evidence.outcome_evidence.success_rate ?? 0) * 100,
+                              )}
+                              % over {action.proposal.evidence.outcome_evidence.executions} runs
+                            </span>
+                          </div>
+                        ) : (
+                          <div style={cardDetailRow}>
+                            <span>Track record</span>
+                            <span>too few outcomes to judge</span>
+                          </div>
+                        )}
+                        {action.proposal.blocking_conditions.length > 0 ? (
+                          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                            {action.proposal.blocking_conditions[0].detail}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     <div style={cardActions}>
                       <button
                         className="btn btn-primary"
                         style={{ flex: 1, fontSize: "0.8125rem" }}
-                        onClick={() => handleDecision(action.id, "approve")}
-                        disabled={actionLoading === action.id}
+                        onClick={() => handleDecision(action.action_id, "approve")}
+                        disabled={actionLoading === action.action_id}
                       >
-                        {actionLoading === action.id ? <Spinner size="sm" /> : null}
+                        {actionLoading === action.action_id ? <Spinner size="sm" /> : null}
                         Approve
                       </button>
                       <button
                         className="btn btn-danger"
                         style={{ flex: 1, fontSize: "0.8125rem" }}
-                        onClick={() => handleDecision(action.id, "deny")}
-                        disabled={actionLoading === action.id}
+                        onClick={() => handleDecision(action.action_id, "deny")}
+                        disabled={actionLoading === action.action_id}
                       >
-                        {actionLoading === action.id ? <Spinner size="sm" /> : null}
+                        {actionLoading === action.action_id ? <Spinner size="sm" /> : null}
                         Deny
                       </button>
                     </div>

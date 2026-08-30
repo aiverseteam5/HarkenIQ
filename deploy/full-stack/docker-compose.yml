@@ -142,6 +142,10 @@ services:
       HARKEN_CC_HTTP_PORT: "8090"
       HARKEN_CC_INSECURE: "false"
       HARKEN_CC_SITE_POLL_INTERVAL_S: "30"
+      # A1: the Operational Agent evaluation cadence. Demo-fast so a
+      # proposal appears while somebody is watching; production defaults
+      # to 120s in config.py.
+      HARKEN_CC_AGENT_EVALUATE_INTERVAL_S: "20"
       # QA-013: Console linkage (marketplace sync + usage reporting were
       # silently disabled without these).
       HARKEN_CC_TENANT_ID: tenant-demo

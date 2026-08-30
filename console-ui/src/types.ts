@@ -220,20 +220,71 @@ export interface FleetIncident {
 }
 
 /** Approval action surfaced to console. */
-export interface ApprovalAction {
-  id: string;
-  tenant_id: string;
-  site_id: string;
-  site_name: string;
+/** A labelled proposal from an Operational Agent (A1). */
+export interface AgentProposal {
+  proposal_id: string;
   agent_id: string;
+  /** Attribution key: op-agent:<id>@v<n>. */
+  actor: string;
+  agent_version: number;
+  site_id: string;
+  device_agent_id: string;
   action_type: string;
-  skill_name: string;
-  severity: string;
-  params: Record<string, unknown> | null;
-  status: "pending" | "approved" | "denied" | "expired";
-  proposed_at: string;
+  params: Record<string, unknown>;
+  rationale: string;
+  evidence: {
+    observed?: string;
+    condition_kind?: string;
+    subsystem?: string;
+    incident_ids?: string[];
+    has_diagnosis?: boolean;
+    remediation_provenance?: string;
+    attention?: { rank?: number; band?: string; driver?: string; risk_score?: number } | null;
+    outcome_evidence?: {
+      executions: number;
+      success: number;
+      failure: number;
+      success_rate: number | null;
+      sufficient: boolean;
+    } | null;
+    learned_signals?: { statement: string; confidence: number | null }[];
+    device?: { vendor?: string; model?: string; health?: string; observation?: string };
+  };
+  disposition: string;
+  disposition_reason: string;
+  blocking_conditions: { code: string; detail: string; scope: string }[];
+  authorization_basis: string;
+  status: string;
+  decided_by: string;
+  decided_at: string | null;
+  directive_id: string;
+  dispatch_reason: string;
+  dispatched_at: string | null;
+  outcome: string;
+  outcome_at: string | null;
+  created_at: string | null;
+}
+
+/** One item in the single approval queue.
+ *
+ * A1: `origin` says who asked. The permission, the decision endpoint and
+ * the downstream execution funnel are identical for both. Field names
+ * mirror Central Command's payload exactly -- the previous shape here
+ * described fields CC has never sent, so every card rendered blank. */
+export interface ApprovalAction {
+  origin: "node" | "agent";
+  id: string;
+  site_id: string;
+  /** The id the decision endpoint takes. NOT `id` for node items. */
+  action_id: string;
+  action_type: string;
+  device_agent_id: string;
+  decision: string | null;
   decided_by: string | null;
   decided_at: string | null;
+  routed_at: string | null;
+  delivered_at: string | null;
+  proposal?: AgentProposal;
 }
 
 /** Chargeback usage summary for a tenant. */

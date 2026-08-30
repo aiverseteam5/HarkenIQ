@@ -69,7 +69,7 @@ the Console proxy. Agent/MCP readiness refers to the future consumer surface
 | Firmware campaigns (waves, halt, rollback) | SM `/api/firmware-campaigns/*` | site · site token | campaign-level human · chained | ✗ / **✗ no CC path** / status-read later / later | proto RPCs | **wiring → S6 CC mediation, WHOLE flow (D6)** |
 | Sites | `/api/sites` · CC | tenant · fleet.view (register site.manage) | — · register chained | filter facet (**S1**) / ✓ / read / read | — | **S1 landed**; site rollup consumes it in S2 |
 | Skill distribution (marketplace → node) | Console→CC `InstallSkill`→SM directives→node | tenant · skill.install | marketplace review · chained | ✓ / ✓ / A1 reuses / later | — | existing (R5-1/R5-2 proven) |
-| Operational Agent (the product noun) | — | tenant · interim site.manage; agent.manage at A2 (matrix review first) | activation human · chained | ✗ / ✗ / — / — | A0 tables | **missing → A0+A1 thesis slice** |
+| Operational Agent (the product noun) | **`/api/operational-agents/*` · CC (A0+A1)** | tenant · reads fleet.view, writes interim site.manage; agent.manage at A2 (matrix review first) | activation human · chained | **✓ (A0+A1)** / ✓ / **is the consumer** / later | S5 contract | **A0+A1 landed**: bundle + scope + bindings + lifecycle (CC 0008), CC-resident evaluator, labelled proposals into the ONE approval queue, `DispatchAction` CC→SM onto the existing directive transport, attribution through to `cc_outcome_history` |
 | Machine identity (service accounts) | — (API keys inert; page retired in P0) | tenant · role bundle ≤ ceiling | — · species-labeled | — | Keycloak client credentials | **missing → A3**; remove api-keys routers then |
 | MCP adapter | — | tenant · caller's token | same as API · same | — | A3, A4 | **missing (by design) → A5 Tier-1 (5 read tools), A6 Tier-2** |
 | NL intent compiler | — | — · zero authority | human approves the compiled form | — | A2 (+A7 prompt/schema) | missing → A7; reuses `LLMProvider` |
@@ -233,8 +233,12 @@ Recorded per Vinod's S5 sequencing call (2026-08-29): these are deferred
 capabilities that stay on the roadmap as candidates for the Operational
 Agent's capability registry — not silent drops.
 
-- **The 9 unmapped action classes.** A10.4 maps 5 of the platform's 14
-  action types. Four are structurally fenced (risk `high`: FIRMWARE_UPDATE,
+- **The 9 unmapped action classes.** *(A0+A1, 2026-08-30: the APPROVAL
+  half is closed — an unmapped class now reads as "always needs a named
+  human" rather than "forbidden", so an agent may propose it and a person
+  may approve it. What remains open is the AUTONOMY half: whether any of
+  them should ever run unattended, which is still the product decision
+  below.)* A10.4 maps 5 of the platform's 14 action types. Four are structurally fenced (risk `high`: FIRMWARE_UPDATE,
   FIRMWARE_ROLLBACK, INTERFACE_RESET, INTERFACE_DISABLE). The remaining
   nine — IDENTIFY_LED and COLLECT_DIAGNOSTICS (risk `none`), FAN_RESET,
   CLEAR_COUNTERS, INTERFACE_ENABLE (risk `low`), and the rest — are
@@ -391,3 +395,137 @@ a running system. S5 folds every terminal outcome at
 `propose` (drop back to Approve — not `deny`, since the action is still
 the right one). Automatic demotion is a ratified safety property; it is
 now real.
+
+---
+
+## 13. A0+A1 — the named Operational Agent (landed 2026-08-30)
+
+The product noun becomes an object. An **Operational Agent** is a
+declarative bundle over capabilities that already exist:
+
+```
+identity      a named, versioned, tenant-owned row; attribution key
+              op-agent:<id>@v<n> (design §6), frozen onto every proposal
+scope         explicit site / device_class / device rows. No rows, no
+              devices: "everything by default" is structurally impossible
+capabilities  REFERENCES to governed capabilities (action classes from the
+              executor's own ACTION_RISK, reads from the CC surfaces).
+              Nothing here defines a capability
+policy        a ceiling that can only ever TIGHTEN the tenant's own
+```
+
+It is configuration, never a runtime. It holds no credential (machine
+identity is A3), it has no API a human lacks, and it reaches nothing its
+bundle does not name.
+
+### Where the decision path lives, and why
+
+Ratified by Vinod: **CC-resident evaluator**. The agent's whole
+contribution is evidence a device cannot see — fleet-wide outcome rates,
+learned signals, cross-site patterns, the autonomy contract, live safety
+state, incident diagnosis. All of it is composed at Central Command by
+pure functions a browser, an MCP tool and a service account read
+identically. An agent anywhere else would re-derive those joins and drift
+from what the operator sees.
+
+So the agent **evaluates at CC and executes at the Site Manager**. SM
+remains the execution boundary; the node funnel remains the only thing
+that authorizes an action. At A3 the evaluator becomes a credentialed
+external caller reading the same contracts through the same guards, and
+nothing in `operational_agent.py` has to change — that is the test of
+whether the seam is real.
+
+### The chain, hop by hop
+
+```
+create -> scope -> bind -> ACTIVATE (human, audited, refuses an agent
+                                     that could see or do nothing)
+       │
+evaluate   attention (same ranking the operator sees) + autonomy contract
+           + learned signals, filtered by scope and bindings
+       │
+propose    cc_agent_proposals: rationale, evidence refs, the S5
+           disposition AT PROPOSAL TIME and the conditions that produced it
+       │
+govern     denied            -> blocked, recorded with the reason
+           requires_approval -> the SAME /api/approvals queue, same
+                                action.approve, same audit vocabulary
+           autonomous        -> dispatched, decided_by "autonomy:level-N"
+       │
+dispatch   DispatchAction (CC->SM, same channel and site token as
+           RouteApproval) -> DirectiveService.enqueue_action
+       │
+execute    node _execute_gated, unchanged, and still able to refuse
+       │
+attribute  sm_action_outcomes(actor) -> error budget -> FleetOutcome(actor)
+           -> cc_outcome_history(actor) -> S5 evidence -> next proposal
+```
+
+### The one new authorization rule
+
+A directive now carries `authorization_basis`. `human_approval` may
+proceed past an authorization-shaped lease verdict, because that verdict
+gates autonomous *initiative* and a human already took it.
+`autonomous_grant` may not: the lease is the whole authorization, so its
+refusal is final. **Without this, the S5 error-budget drop-back could not
+stop an agent**, which is the only thing it exists to do. Every hard gate
+(preconditions, stop switch, expired lease, blast radius) refuses both,
+as it always did.
+
+### Corrections this slice made to its own model
+
+* **`not_budget_mapped` is about autonomy, not permission.** The first
+  implementation read it as "forbidden", which silently removed
+  IDENTIFY_LED, COLLECT_DIAGNOSTICS and FAN_RESET — most of the low-risk
+  work worth delegating — from anything an agent could ever ask for. It
+  now means "always needs a named human", which is what it is. This
+  closes the §11 "9 unmapped action classes" gap for the *approval* path
+  without widening any autonomy boundary: nothing became autonomous.
+* **A tenant stop switch denies every class, mapped or not.** Proposing
+  into a stopped tenant would spend a human's decision on work the node
+  refuses anyway (A10.3).
+
+### The defect it found
+
+**Directed actions produced no outcome record at all.**
+`_run_directed_action` built its `Action` outside the queue that
+`_sync_actions` reports from, and `DirectiveService.report_result` wrote
+only an audit row. So no `sm_action_outcomes`, no `FleetOutcome`, no
+`cc_outcome_history`, no error-budget accounting: **every
+firmware-campaign execution since R5-1 was invisible to learning and to
+the error budget.** Same shape as the S5 `KnowledgeBase` find and QA-042
+— a declared mechanism with no writer on one of its paths. One shared
+writer now serves both paths (`harkeniq_sm/outcomes.py`).
+
+### Invariants (tests, and again at the compose gate)
+
+1. An agent's disposition is the tenant's, only ever narrower. An agent
+   with ceiling 3 against a tenant at level 0 is granted nothing.
+2. A fenced (`high`-risk) class stays denied for every agent at every
+   ceiling; those classes keep their own approval paths.
+3. Scope fails closed. No scope rows means no devices, never all of them.
+4. A bundle may only reference capabilities that already exist; an
+   unknown action class or read is refused at write time.
+5. Activation is a human act and refuses an agent that could see nothing
+   or propose nothing.
+6. One approval queue, one permission, one audit vocabulary. There is no
+   agent execution surface on the agent router (asserted as a 404).
+7. Denial is final (D16); the dedupe key stops a re-proposal.
+8. An outcome with no matching agent proposal stays unattributed rather
+   than being claimed.
+
+### Deliberately deferred (not dropped)
+
+Per-agent budgets, validation/simulation and the full activation gate
+(A2, per §7C); machine identity and the service-account swap (A3); MCP
+(A5/A6); the natural-language builder (A7 — the `catalogue` endpoint is
+the shape it will compile into). Event-driven evaluation stays on the
+roadmap; A1 evaluates on a cadence.
+
+### Also fixed here
+
+The Approvals page decided actions by the approval-route row id rather
+than the `action_id` its endpoint takes, sent `{ids, decision:"approve"}`
+against a `{action_ids, decision:"approved"}` contract, and rendered five
+fields Central Command has never sent. The one queue this slice unifies
+had to work before an agent could use it.

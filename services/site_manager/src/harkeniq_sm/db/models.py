@@ -290,6 +290,11 @@ class ActionOutcomeRow(Base):
     side_effects: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
     operator_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[str] = mapped_column(String(512), default="")
+    #: A1: who caused this execution. "op-agent:<id>@v<n>" for an
+    #: Operational Agent, "user:<email>" for a human-approved action,
+    #: empty for node-proposed work with no external requester. Rides
+    #: FleetOutcome up to CC so evidence keeps its actor.
+    actor: Mapped[str] = mapped_column(String(255), default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     reported_to_cc: Mapped[bool] = mapped_column(Boolean, default=False)  # R3b-3: watermark
 
@@ -406,6 +411,20 @@ class DirectedDirective(Base):
     tier: Mapped[str] = mapped_column(String(32), default="")
     validation_state: Mapped[str] = mapped_column(String(32), default="")
     issued_by: Mapped[str] = mapped_column(String(255), default="")
+    #: A1: the actor on whose behalf this directive runs, in the
+    #: attribution form "op-agent:<id>@v<n>" or "user:<email>".
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    #: A1: the basis the node may claim when it runs this directive.
+    #: "human_approval" carries a named human's decision;
+    #: "autonomous_grant" carries only the tenant's autonomy contract and
+    #: must therefore still satisfy the node's lease. Empty means legacy
+    #: SM-authority work (firmware campaigns), which behaves as before.
+    #: NOT named `authorization`: that is a reserved word in PostgreSQL,
+    #: so every raw query (the compose gate does several) would need
+    #: quoting to read it. Matches cc_agent_proposals.authorization_basis.
+    authorization_basis: Mapped[str] = mapped_column(String(32), default="")
+    #: A1: the CC proposal this directive settles, when there is one.
+    proposal_id: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     result_detail: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

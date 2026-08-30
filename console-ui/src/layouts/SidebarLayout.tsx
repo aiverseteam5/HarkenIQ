@@ -60,6 +60,9 @@ const TENANT_NAV: SidebarSection[] = [
       // Approvals because it answers the question one step earlier \u2014
       // what needs an approval at all.
       { key: "/autonomy", label: "Autonomy", icon: "\u2696" },
+      // A0+A1: the product noun. Sits next to Autonomy because it is
+      // the actor the trust ladder governs.
+      { key: "/operational-agents", label: "Operational Agents", icon: "\u25C8" },
       // S1: named for what it lists. "Agents" is reserved for the
       // operational-agent surface (A0+), so the two never blur.
       { key: "/agents", label: "Harken Nodes", icon: "\u2699" },
