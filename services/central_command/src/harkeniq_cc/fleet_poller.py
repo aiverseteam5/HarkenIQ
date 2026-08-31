@@ -8,11 +8,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo
 from harkeniq_cc.sm_client import SMClient
 
 logger = logging.getLogger("harkeniq.cc.fleet_poller")
+
+
+def _last_seen(dev: dict):
+    """FleetDevice.last_seen_unix -> aware datetime, or None.
+
+    The Site Manager has always sent this and SMClient has always dictified
+    it; the poller used to drop it here, which is how snapshot_at ended up
+    impersonating it. None (or 0, which an SM sends for a device it has
+    never heard from) stays None — an unknown reading is not a fresh one.
+    """
+    unix = dev.get("last_seen_unix")
+    if not unix:
+        return None
+    return datetime.fromtimestamp(unix, tz=timezone.utc)
 
 
 async def fleet_poll_loop(state) -> None:
@@ -69,6 +84,7 @@ async def fleet_poll_loop(state) -> None:
                                 service_tag=dev.get("service_tag", ""),
                                 firmware=dev.get("firmware"),
                                 device_class=dev.get("device_class", ""),
+                                last_seen_at=_last_seen(dev),
                             )
                         # R3b-3: ingest action outcomes for fleet learning
                         outcomes = snapshot.get("outcomes", [])

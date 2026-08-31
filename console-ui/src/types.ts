@@ -199,8 +199,11 @@ export interface FleetDevice {
   service_tag: string;
   health: "ok" | "warning" | "critical" | "unknown";
   tier: "observe" | "approve" | "autonomy";
-  last_seen_at: string;
-  /** Fleet-cache refresh time — what /api/fleet actually sends (QA ISSUE-004). */
+  /** When the SITE last saw the agent. Null when it never has — CC does not
+   *  substitute snapshot_at for it, so a silent agent reads as silent. */
+  last_seen_at: string | null;
+  /** CC's own fleet-cache refresh time. Fresh on every poll regardless of
+   *  whether the agent is alive, so it is never a freshness signal. */
   snapshot_at?: string;
 }
 

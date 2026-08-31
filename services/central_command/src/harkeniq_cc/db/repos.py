@@ -426,6 +426,7 @@ class FleetCacheRepo:
         service_tag: str = "",
         firmware: Optional[list] = None,
         device_class: str = "",
+        last_seen_at: Optional[datetime] = None,
     ) -> CCFleetCache:
         row = (
             await self.session.execute(
@@ -450,6 +451,12 @@ class FleetCacheRepo:
         row.service_tag = service_tag or row.service_tag
         if firmware is not None:
             row.firmware = firmware
+        # Only written when the site actually reported a reading. A poll that
+        # carries none must leave the last honest value alone rather than
+        # clear it — and must never fall back to snapshot_at, which is this
+        # row's refresh time and says nothing about the agent.
+        if last_seen_at is not None:
+            row.last_seen_at = last_seen_at
         row.snapshot_at = utcnow()
         await self.session.flush()
         return row

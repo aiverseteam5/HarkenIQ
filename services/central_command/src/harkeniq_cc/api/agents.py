@@ -25,6 +25,9 @@ def _agent_dict(dev) -> dict:
         "observation": dev.observation,
         "health": dev.health,
         "site_id": dev.site_id,
+        # When the SITE last saw this node; null when it never has. Distinct
+        # from snapshot_at, CC's own cache-refresh time.
+        "last_seen_at": dev.last_seen_at.isoformat() if dev.last_seen_at else None,
         "snapshot_at": dev.snapshot_at.isoformat() if dev.snapshot_at else None,
     }
 
