@@ -1896,9 +1896,12 @@ curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verif
 echo "audit chain verifies"
 
 step "A3: aggregate visibility carries NO per-agent detail (A20.9, A12.1 intact)"
-python3 - <<'A3PY'
-import json, subprocess, sys
-sys.path.insert(0, "services/central_command/src")
+# The gate `cd`s to deploy/full-stack, so the module path is resolved
+# from the repo root the same way the tenant-lookup helper is
+# (gate-caught: ModuleNotFoundError under set -e).
+A3_SRC="$_REPO_ROOT/services/central_command/src" python3 - <<'A3PY'
+import json, os, sys
+sys.path.insert(0, os.environ["A3_SRC"])
 from harkeniq_cc.machine_identity import aggregate_summary
 
 
