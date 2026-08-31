@@ -155,6 +155,11 @@ def create_app(state) -> FastAPI:
         # only -- the Registry authors nothing and has no mutation to
         # proxy. fleet.view at Central Command, same as /api/autonomy.
         "capabilities",
+        # S6 2026-08-31: governed capability orchestration across the
+        # estate. Reads are fleet.view, configuration is site.manage,
+        # and every APPROVAL happens on the existing /api/approvals
+        # surface -- this prefix carries no decision path of its own.
+        "campaigns",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

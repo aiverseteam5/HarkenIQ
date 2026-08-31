@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -49,12 +50,14 @@ from harkeniq_cc.approval_policy import (
     STATE_DENIED,
     SUBJECT_ACTION,
     SUBJECT_AGENT_PROPOSAL,
+    SUBJECT_CAMPAIGN_WAVE,
     approval_block,
     is_member,
     required_approvers,
     resolve_policy,
 )
 from harkeniq_cc.auth import UserContext
+from harkeniq_cc.campaigns import WAVE_PENDING_APPROVAL
 from harkeniq_cc.autonomy import action_risk_map
 from harkeniq_cc.db.repos import (
     AgentProposalRepo,
@@ -484,6 +487,111 @@ async def _decide_agent_proposal(
     }
 
 
+async def _decide_campaign_wave(
+    subject_ref: str,
+    decision: str,
+    user: UserContext,
+    session: AsyncSession,
+    state,
+    scope,
+) -> dict:
+    """Decide one campaign site-wave (S6, D1).
+
+    A THIRD origin on the same ledger — not a third approval model. The
+    policy resolution, the required-approver count, the group rule, the
+    duplicate guarantee and the terminality of a denial are all the ones
+    a node action already gets, because this calls the same function.
+
+    What is decided is one SITE-WAVE, never a campaign: the subject is a
+    digest over the campaign, its version, the site, the wave index, the
+    wave's exact device set and the plan hash. A Console may present many
+    of these together, but each record stands alone and names its own
+    approver.
+
+    Approving does NOT dispatch. It authorizes; the runner still
+    re-checks that the plan is current and that every device can still
+    perform the action. APPROVED is not EXECUTABLE.
+    """
+    from harkeniq_cc.db.repos import CampaignRepo
+
+    repo = CampaignRepo(session)
+    wave = await repo.wave_by_subject(subject_ref)
+    if wave is None:
+        raise HTTPException(status_code=404, detail="approval route not found")
+    campaign = await repo.get(user.tenant_id, wave.campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="approval route not found")
+    if wave.status != WAVE_PENDING_APPROVAL:
+        raise HTTPException(
+            status_code=409,
+            detail=f"this site-wave is already {wave.status}",
+        )
+    if int(wave.campaign_version) != int(campaign.version):
+        # The campaign was edited after this subject was raised, so the
+        # decision would authorize a configuration nobody is running.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this site-wave belongs to an earlier campaign version; "
+                "re-preflight and re-submit to raise current subjects"
+            ),
+        )
+    decided_by = user.email or user.user_id
+
+    block = await _record_and_evaluate(
+        session,
+        user=user,
+        tenant_id=user.tenant_id,
+        subject_type=SUBJECT_CAMPAIGN_WAVE,
+        subject_ref=subject_ref,
+        action_type=campaign.action_type,
+        device_agent_id=(list(wave.device_agent_ids or []) or [""])[0],
+        site_id=wave.site_id,
+        decision=decision,
+        scope=scope,
+    )
+    if block["state"] == STATE_DENIED:
+        decision = DECISION_DENIED
+
+    wave.status = "approved" if decision == "approved" else "denied"
+    wave.decided_by = decided_by
+    wave.decided_at = datetime.now(timezone.utc)
+
+    await AuditRepo(session).append(
+        actor=decided_by,
+        action=f"campaign_wave.{decision}",
+        subject=wave.campaign_id,
+        tenant_id=user.tenant_id,
+        detail={
+            "site_id": wave.site_id,
+            "wave_index": wave.wave_index,
+            "plan_hash": wave.plan_hash,
+            "subject_ref": subject_ref,
+            "devices": list(wave.device_agent_ids or []),
+            "action_type": campaign.action_type,
+        },
+    )
+    await session.commit()
+    return {
+        "action_id": subject_ref,
+        "origin": "campaign_wave",
+        "decision": decision,
+        "decided_by": decided_by,
+        "approval": block,
+        "campaign": {
+            "campaign_id": wave.campaign_id,
+            "version": wave.campaign_version,
+            "site_id": wave.site_id,
+            "wave_index": wave.wave_index,
+            "plan_hash": wave.plan_hash,
+            "devices": list(wave.device_agent_ids or []),
+        },
+        # Approval authorizes; it does not schedule. The runner still
+        # revalidates the plan and every device before anything runs.
+        "note": "approved is not executable; the wave is revalidated at dispatch",
+    }
+
+
 async def _route_decision(
     action_id: str,
     decision: str,
@@ -499,7 +607,13 @@ async def _route_decision(
         # A1: the same id space serves both origins. An id that is not a
         # node action may be an agent proposal; only if it is neither is
         # this a 404.
-        return await _decide_agent_proposal(
+        proposal_repo = AgentProposalRepo(session)
+        if await proposal_repo.get(user.tenant_id, action_id) is not None:
+            return await _decide_agent_proposal(
+                action_id, decision, user, session, state, scope,
+            )
+        # S6: the third origin on the same id space and the same queue.
+        return await _decide_campaign_wave(
             action_id, decision, user, session, state, scope,
         )
 

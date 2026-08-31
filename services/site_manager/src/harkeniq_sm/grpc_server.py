@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,9 @@ from harkeniq_sm.coverage import observation_state, worst_health
 from harkeniq_sm.db.models import Device, DeviceSubsystemState
 from harkeniq_sm.enrollment import EnrollmentError, EnrollmentService
 from harkeniq_sm.stopswitch import SCOPE_TENANT, StopSwitchService
+from harkeniq_sm.firmware_orchestrator import plan_waves
 from harkeniq_sm.db.repos import (
+    DomainRepo,
     ActionRepo,
     AuditRepo,
     DeviceRepo,
@@ -442,6 +445,127 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             request.skill_id, request.skill_version, queued,
         )
         return harkeniq_pb2.SiteSkillInstallAck(accepted=True, queued=queued)
+
+    async def PlanCampaignWaves(self, request, context):
+        """S6: plan one site's campaign waves. READ-ONLY.
+
+        Central Command owns the campaign and orders the sites; it has no
+        fault-domain data and must never acquire any. This handler is the
+        only place the two meet: CC names the eligible devices, this site
+        answers with the exact device membership of each wave, computed by
+        `plan_waves()` against its OWN authoritative fault domains.
+
+        It writes nothing. Not a directive, not a campaign row, not an
+        audit entry -- which is what makes "read-only" provable by a table
+        snapshot rather than merely asserted. It cannot dispatch and it
+        authorizes nothing; a plan is an answer, not a permission.
+
+        What travels back is membership and a domain COUNT, never domain
+        identities: Central Command reflecting this site's topology would
+        make it a second representation of something only this tier owns.
+
+        Determinism is part of the contract. The device list is sorted and
+        each device's domains are sorted before planning, so the same
+        request against the same state yields the same plan and the same
+        hash -- which is what lets an approval bind to a plan at all.
+        """
+        from harkeniq.audit.chain import canonical_json
+
+        action_type = (request.action_type or "").strip().upper()
+        async with self.sessionmaker() as session:
+            site = await SiteRepo(session).get_by_cc_id(request.site_id)
+            if site is None or site.status != "active":
+                reason = (
+                    f"no active site bound to Central Command site id "
+                    f"{request.site_id!r} at this Site Manager"
+                    if site is None else f"site {site.name!r} is {site.status}"
+                )
+                logger.warning("PlanCampaignWaves unresolved: %s", reason)
+                # planned=False is NOT "no waves". Central Command must
+                # not read an unresolved site as an empty estate (A16.3).
+                return harkeniq_pb2.CampaignPlan(
+                    planned=False, reason=reason,
+                    campaign_id=request.campaign_id,
+                    campaign_version=request.campaign_version,
+                    action_type=action_type,
+                    generated_at_unix=int(time.time()),
+                )
+
+            device_repo = DeviceRepo(session)
+            domain_repo = DomainRepo(session)
+
+            # Resolve only devices that are REALLY at this site. One that
+            # is not is reported back by name rather than dropped: a
+            # device that vanished from a plan with no reason cannot be
+            # told from one nobody selected.
+            requested = sorted(set(request.device_agent_ids))
+            resolved: dict[str, str] = {}
+            unplannable: list[str] = []
+            for agent_id in requested:
+                device = await device_repo.get_by_agent_id(agent_id)
+                if device is None or device.site_id != site.id:
+                    unplannable.append(agent_id)
+                else:
+                    resolved[device.id] = agent_id
+
+            domains_by_device: dict[str, list[str]] = {}
+            for device_id in resolved:
+                domains = await domain_repo.domains_for_device(device_id)
+                domains_by_device[device_id] = sorted(d.id for d in domains)
+
+            device_ids = sorted(resolved)
+            max_wave_size = max(1, int(request.max_wave_size or 5))
+            assignment = plan_waves(device_ids, domains_by_device, max_wave_size)
+
+            by_wave: dict[int, list[str]] = {}
+            domains_in_wave: dict[int, set[str]] = {}
+            for device_id, wave in assignment.items():
+                by_wave.setdefault(wave, []).append(resolved[device_id])
+                domains_in_wave.setdefault(wave, set()).update(
+                    domains_by_device.get(device_id, [])
+                )
+
+            waves = [
+                harkeniq_pb2.CampaignPlanWave(
+                    wave_index=idx,
+                    device_agent_ids=sorted(by_wave[idx]),
+                    domain_span=len(domains_in_wave.get(idx, set())),
+                )
+                for idx in sorted(by_wave)
+            ]
+
+            # The hash covers exactly what an approver is approving: the
+            # campaign it belongs to, its version, this site, the action,
+            # and the ordered wave membership. Anything material that
+            # changes changes this, and a stale approval then cannot
+            # address the new plan at all.
+            plan_hash = hashlib.sha256(canonical_json({
+                "campaign_id": request.campaign_id,
+                "campaign_version": int(request.campaign_version),
+                "site_id": request.site_id,
+                "action_type": action_type,
+                "waves": [
+                    {"wave_index": w.wave_index,
+                     "device_agent_ids": list(w.device_agent_ids)}
+                    for w in waves
+                ],
+            })).hexdigest()
+
+            return harkeniq_pb2.CampaignPlan(
+                planned=True,
+                site_id=request.site_id,
+                campaign_id=request.campaign_id,
+                campaign_version=request.campaign_version,
+                action_type=action_type,
+                waves=waves,
+                unplannable_device_ids=unplannable,
+                plan_hash=plan_hash,
+                generated_at_unix=int(time.time()),
+                separation_rule=(
+                    f"at most one device per fault domain per wave, "
+                    f"wave size capped at {max_wave_size}"
+                ),
+            )
 
     async def DispatchAction(self, request, context):
         """A1: queue one decided action for a device on this site.

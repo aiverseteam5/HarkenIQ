@@ -21,6 +21,7 @@ from harkeniq_cc.api import operational_agents as operational_agents_api
 from harkeniq_cc.api import policies as policies_api
 from harkeniq_cc.api import attention as attention_api
 from harkeniq_cc.api import autonomy as autonomy_api
+from harkeniq_cc.api import campaigns as campaigns_api
 from harkeniq_cc.api import capabilities as capabilities_api
 from harkeniq_cc.api import incidents as incidents_api
 from harkeniq_cc.api import predictive as predictive_api
@@ -72,6 +73,7 @@ def create_app(state) -> FastAPI:
     app.include_router(learning_api.router)
     app.include_router(autonomy_api.router)
     app.include_router(capabilities_api.router)
+    app.include_router(campaigns_api.router)
     app.include_router(operational_agents_api.router)
     app.include_router(org_units_api.router)
     app.include_router(scope_grants_api.router)

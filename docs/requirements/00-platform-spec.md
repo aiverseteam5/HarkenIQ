@@ -1165,3 +1165,90 @@ nowhere" is instead REPORTED, by name, on the agent view.
   capability declaration site: a skill may recommend any action string.
   A later Registry-consumer slice validates skill-recommended actions
   against executor reach.
+
+### A18 — 2026-08-31 — S6: governed capability orchestration across an estate (decided: Vinod)
+
+**Trigger.** Every governance mechanism the platform has — org tree,
+scoped RBAC, Capability Registry, autonomy contract, approval ledger,
+directive transport, outcome and learning paths — existed, and nothing
+could express the enterprise intent they were built for: *"run this
+capability across every site in Region West, but only where the executor
+actually supports it, respecting autonomy and approval."* Campaigns
+existed only at the Site Manager, single-site, firmware-specific, gated
+by a site token, with their own private approval field.
+
+**A18.1 — A campaign is generic capability orchestration.** One governed
+`ActionType`, one scoped estate, all fourteen classes through the same
+machinery. Explicitly **not** firmware campaigns moved to Central
+Command: risk, autonomy, approval and execution differentiation all come
+from the existing contracts, never from a special case.
+
+**A18.2 — The tier split is fixed.** Central Command owns campaign
+lifecycle, tenant/org/site targeting, RBAC and scope, capability
+preflight, governance, approval workflow, site ordering and concurrency,
+and campaign state. The Site Manager owns the site execution boundary,
+fault-domain knowledge, device-wave planning and execution. **Central
+Command must never invent or approximate fault-domain or blast-radius
+information.**
+
+**A18.3 — The planning contract is read-only.** `PlanCampaignWaves`
+(CC → SM) returns exact device membership per wave, a domain **count**,
+and a deterministic plan hash. It writes nothing, dispatches nothing and
+authorizes nothing. Fault-domain identities never leave the Site
+Manager, and `plan_waves()` is never duplicated into Central Command:
+Central Command reflecting the site's topology would make it a second
+representation of something only that tier owns.
+
+**A18.4 — Approval is per site-wave, universally.** Every action
+requiring a human is approved per site-wave on the existing
+`/api/approvals` surface, under `action.approve`, recorded in
+`cc_approval_records` with `subject_type = campaign_wave`. There is no
+campaign-level approval model and no campaign-specific approver storage.
+Batch review is a Console affordance; the records stay individually
+attributable and auditable. An autonomous class raises no approval
+subject at all. All site-wave subjects for a campaign version are raised
+at submit, so the set of decisions is deterministic before execution.
+
+**A18.5 — Approval binds to a plan.** The subject is a digest over
+campaign, version, site, wave index, the wave's **exact device set** and
+the plan hash. Plans are immutable; a changed plan is a new row and the
+old is superseded. Binding is therefore structural: a stale approval
+cannot address a new subject even if nobody remembers to check.
+
+**A18.6 — APPROVED ≠ EXECUTABLE ≠ EXECUTED.** Approval authorizes; it
+never guarantees execution. Immediately before each site-wave dispatch,
+capability and policy are revalidated and the plan is re-requested:
+
+- a changed plan **refuses** the wave and requires new approval;
+- capability/policy may only **narrow** the approved set;
+- a newly capable device is **never added** after approval;
+- changed fault-domain membership can never silently widen a blast radius.
+
+**A18.7 — Warned targets need a named human.** `effective = false`
+continues to mean implemented-but-not-currently-permitted. Such targets
+are shown in preflight, never silently excluded, and a named person must
+exclude or acknowledge them before approval. The acknowledgement is
+version-bound and audited; editing a campaign invalidates it.
+
+**A18.8 — Sites are isolated; partial success is first-class.** Within a
+site, halt-on-first-failure stands. Across sites nothing propagates: a
+halted site is not a halted campaign. A halted site **voids** its own
+later approved-but-unstarted waves, explicitly and audited, because
+their predecessor assumption has failed and stale authorization must
+never be reused. Resuming is an explicit operation: re-plan, new plan
+version where material, new approval where required.
+
+**A18.9 — One execution path, and idempotence.** Dispatch is
+`DispatchAction` onto the existing directive transport and the unchanged
+node funnel. The Central Command reconciliation loop decides only which
+wave is next; it is not an execution engine. A restart, a duplicate
+trigger or a repeated `POST /advance` cannot double-execute, because the
+dispatch ledger keys on campaign, version, site, device, wave **and
+plan hash**.
+
+**A18.10 — Nothing new was introduced.** No new permission, no second
+approval model, no second authorization model, no second execution
+engine, no campaign capability catalogue, no second wave-planning
+algorithm. `execution_permitted()` and `Agent._authorize_execution`
+remain untouched (A17.8 stands). The Site Manager's `firmware_campaigns`
+are untouched; superseding them is a later decision.

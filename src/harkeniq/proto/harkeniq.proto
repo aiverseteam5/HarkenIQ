@@ -200,6 +200,13 @@ service SiteManagerService {
   // authorize one -- and it is the only CC->SM path an Operational
   // Agent's approved proposal takes.
   rpc DispatchAction(ActionDispatch) returns (ActionDispatchAck);
+  // S6: READ-ONLY campaign wave planning. Central Command asks the site
+  // that owns these devices how they must be batched. The handler
+  // writes NOTHING -- it cannot mutate, dispatch or authorize -- which
+  // is what lets "read-only" be proven by a table snapshot rather than
+  // asserted. Fault-domain knowledge stays here; CC receives exact wave
+  // membership and never a copy of the topology.
+  rpc PlanCampaignWaves(CampaignPlanRequest) returns (CampaignPlan);
 }
 
 // A1: an approved (or contract-autonomous) action, dispatched CC -> SM.
@@ -433,4 +440,49 @@ message PolicyUpdate {
 message PolicyAck {
   bool accepted = 1;
   string reason = 2;
+}
+
+// ---------------------------------------------------------------------------
+// S6: campaign wave planning (read-only)
+// ---------------------------------------------------------------------------
+
+message CampaignPlanRequest {
+  string tenant_id = 1;
+  string site_id = 2;                    // CC's site id (E0.2 binding)
+  string campaign_id = 3;
+  int32 campaign_version = 4;
+  string action_type = 5;
+  // The eligible set, SORTED by the caller. Ordering is part of the
+  // determinism contract: the same request must yield the same plan_hash.
+  repeated string device_agent_ids = 6;
+  int32 max_wave_size = 7;
+}
+
+message CampaignPlanWave {
+  int32 wave_index = 1;
+  repeated string device_agent_ids = 2;  // exact membership, sorted
+  // How many DISTINCT fault domains this wave spans. A count, never the
+  // domain identities: Central Command must not become a second
+  // representation of the site's topology.
+  int32 domain_span = 3;
+}
+
+message CampaignPlan {
+  bool planned = 1;
+  string reason = 2;                     // why not, when planned = false
+  string site_id = 3;
+  string campaign_id = 4;
+  int32 campaign_version = 5;
+  string action_type = 6;
+  repeated CampaignPlanWave waves = 7;
+  // Requested but not resolvable at this site. Surfaced, never silently
+  // dropped -- a device that vanished from a plan with no reason is
+  // indistinguishable from one nobody selected.
+  repeated string unplannable_device_ids = 8;
+  // sha256 over canonical_json of the plan content. Approval binds to
+  // this; any material change produces a different hash, which is what
+  // makes a stale approval structurally unable to address the new plan.
+  string plan_hash = 9;
+  int64 generated_at_unix = 10;
+  string separation_rule = 11;           // human-readable planner basis
 }

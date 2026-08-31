@@ -378,6 +378,66 @@ class SMClient:
                 "reason": ack.reason,
             }
 
+    async def plan_campaign_waves(
+        self,
+        sm_endpoint: str,
+        token: Optional[str],
+        *,
+        tenant_id: str,
+        site_id: str,
+        campaign_id: str,
+        campaign_version: int,
+        action_type: str,
+        device_agent_ids: list[str],
+        max_wave_size: int = 5,
+    ) -> dict:
+        """S6: ask the site how these devices must be batched. READ-ONLY.
+
+        Central Command never learns the site's fault domains and never
+        plans a wave itself; it asks the tier that owns that knowledge and
+        stores the answer. `planned=False` means the site could not be
+        resolved and MUST NOT be read as "this site has no devices" --
+        the same distinction A16.3 draws for an unresolved snapshot.
+
+        The device list is sorted here so the determinism contract holds
+        from the caller's side too: the same eligible set must produce the
+        same plan hash.
+        """
+        async with self._channel(sm_endpoint) as channel:
+            stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
+            plan = await stub.PlanCampaignWaves(
+                harkeniq_pb2.CampaignPlanRequest(
+                    tenant_id=tenant_id,
+                    site_id=site_id,
+                    campaign_id=campaign_id,
+                    campaign_version=int(campaign_version),
+                    action_type=action_type,
+                    device_agent_ids=sorted(set(device_agent_ids)),
+                    max_wave_size=int(max_wave_size),
+                ),
+                metadata=_metadata(token),
+            )
+        return {
+            "planned": plan.planned,
+            "reason": plan.reason,
+            "site_id": plan.site_id,
+            "campaign_id": plan.campaign_id,
+            "campaign_version": plan.campaign_version,
+            "action_type": plan.action_type,
+            "waves": [
+                {
+                    "wave_index": w.wave_index,
+                    "device_agent_ids": list(w.device_agent_ids),
+                    "domain_span": w.domain_span,
+                }
+                for w in plan.waves
+            ],
+            "unplannable_device_ids": list(plan.unplannable_device_ids),
+            "plan_hash": plan.plan_hash,
+            "generated_at_unix": plan.generated_at_unix,
+            "separation_rule": plan.separation_rule,
+        }
+
     async def dispatch_action(
         self,
         sm_endpoint: str,

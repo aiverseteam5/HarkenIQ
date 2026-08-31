@@ -451,6 +451,11 @@ class SiteManagerServiceStub:
                 request_serializer=harkeniq__pb2.ActionDispatch.SerializeToString,
                 response_deserializer=harkeniq__pb2.ActionDispatchAck.FromString,
                 _registered_method=True)
+        self.PlanCampaignWaves = channel.unary_unary(
+                '/harkeniq.v1.SiteManagerService/PlanCampaignWaves',
+                request_serializer=harkeniq__pb2.CampaignPlanRequest.SerializeToString,
+                response_deserializer=harkeniq__pb2.CampaignPlan.FromString,
+                _registered_method=True)
 
 
 class SiteManagerServiceServicer:
@@ -510,6 +515,18 @@ class SiteManagerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def PlanCampaignWaves(self, request, context):
+        """S6: READ-ONLY campaign wave planning. Central Command asks the site
+        that owns these devices how they must be batched. The handler
+        writes NOTHING -- it cannot mutate, dispatch or authorize -- which
+        is what lets "read-only" be proven by a table snapshot rather than
+        asserted. Fault-domain knowledge stays here; CC receives exact wave
+        membership and never a copy of the topology.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SiteManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -547,6 +564,11 @@ def add_SiteManagerServiceServicer_to_server(servicer, server):
                     servicer.DispatchAction,
                     request_deserializer=harkeniq__pb2.ActionDispatch.FromString,
                     response_serializer=harkeniq__pb2.ActionDispatchAck.SerializeToString,
+            ),
+            'PlanCampaignWaves': grpc.unary_unary_rpc_method_handler(
+                    servicer.PlanCampaignWaves,
+                    request_deserializer=harkeniq__pb2.CampaignPlanRequest.FromString,
+                    response_serializer=harkeniq__pb2.CampaignPlan.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -743,6 +765,33 @@ class SiteManagerService:
             '/harkeniq.v1.SiteManagerService/DispatchAction',
             harkeniq__pb2.ActionDispatch.SerializeToString,
             harkeniq__pb2.ActionDispatchAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PlanCampaignWaves(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/harkeniq.v1.SiteManagerService/PlanCampaignWaves',
+            harkeniq__pb2.CampaignPlanRequest.SerializeToString,
+            harkeniq__pb2.CampaignPlan.FromString,
             options,
             channel_credentials,
             insecure,
