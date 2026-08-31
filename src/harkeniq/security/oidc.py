@@ -41,6 +41,12 @@ class ValidatedToken:
     subject: str
     email: str
     roles: list[str] = field(default_factory=list)
+    #: A3: the client this token was issued to (`azp`). A human token
+    #: names the console client; a machine identity names its own
+    #: service-account client. Exposed so the caller can tell WHICH kind
+    #: of principal presented it -- the validator answers "is this token
+    #: real", never "what may this principal do".
+    client_id: str = ""
 
 
 class KeycloakTokenValidator:
@@ -53,12 +59,20 @@ class KeycloakTokenValidator:
         client_id: str,
         realm_allowed: Callable[[str], bool],
         jwks_ttl_s: float = 300.0,
+        client_allowed: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self.internal_base_url = internal_base_url.rstrip("/")
         self.public_base_url = public_base_url.rstrip("/")
         self.client_id = client_id
         self.realm_allowed = realm_allowed
         self.jwks_ttl_s = jwks_ttl_s
+        #: A3: an additional allow-policy for `azp`, so a machine
+        #: identity's own service-account client is acceptable alongside
+        #: the console client. Default None keeps the exact pre-A3
+        #: behaviour -- one client id, nothing else -- so a service that
+        #: does not opt in cannot accidentally start accepting machine
+        #: tokens.
+        self.client_allowed = client_allowed
         # realm -> (fetched_at, jwks dict)
         self._jwks: dict[str, tuple[float, dict]] = {}
 
@@ -129,8 +143,15 @@ class KeycloakTokenValidator:
         except JWTError as e:
             raise TokenValidationError(f"token rejected: {e}") from e
 
-        azp = claims.get("azp") or claims.get("client_id")
-        if azp != self.client_id:
+        azp = str(claims.get("azp") or claims.get("client_id") or "")
+        # A3: the console client is always acceptable; a service-account
+        # client is acceptable only where the caller supplied a policy
+        # that admits it. Being ON the allow-list is not authorization --
+        # a machine token still resolves to an identity row whose status
+        # decides, and to the A20.3 permission ceiling.
+        if azp != self.client_id and not (
+            self.client_allowed is not None and self.client_allowed(azp)
+        ):
             raise TokenValidationError(
                 f"token issued to {azp!r}, expected {self.client_id!r}"
             )
@@ -150,6 +171,7 @@ class KeycloakTokenValidator:
             subject=str(claims.get("sub", "")),
             email=str(claims.get("email", claims.get("preferred_username", ""))),
             roles=roles,
+            client_id=azp,
         )
 
 

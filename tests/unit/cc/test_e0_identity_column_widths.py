@@ -32,6 +32,11 @@ PRINCIPAL_COLUMNS = {
     "actor", "approver_ref", "changed_by", "created_by", "decided_by",
     "granted_by", "issued_by", "principal_ref", "updated_by",
     "activated_by", "resolved_by",
+    # A3: a machine identity's own principal columns. `keycloak_sub` is
+    # the most principal-bearing column in the platform -- it IS the
+    # subject every machine token carries.
+    "keycloak_sub", "revoked_by", "rotated_by", "acknowledged_by",
+    "activation_acknowledged_by", "produced_by",
 }
 EMAIL_COLUMNS = {"approver_email", "user_email", "actor_email", "email"}
 

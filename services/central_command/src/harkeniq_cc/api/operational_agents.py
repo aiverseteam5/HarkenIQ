@@ -1077,6 +1077,308 @@ async def _activation_decision(session, tenant_id: str, agent) -> dict:
     return await activation_approval_state(session, tenant_id, subject_ref)
 
 
+@router.get(
+    "/{agent_id}/proposals",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def list_proposals(
+    agent_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Every proposal this agent has made, including the blocked ones.
+
+    Blocked proposals are the point: an agent that wanted to act and was
+    refused is exactly what an operator needs to see before raising a
+    level, and hiding them would make the governance invisible.
+    """
+    await _require_agent(session, user.tenant_id, agent_id)
+    proposals = await AgentProposalRepo(session).list_for_agent(
+        user.tenant_id, agent_id, limit=limit,
+    )
+    return {
+        "proposals": [proposal_dict(p) for p in proposals],
+        "total": len(proposals),
+        "agent_id": agent_id,
+        "tenant_id": user.tenant_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# A3: machine identity (spec A20)
+# ---------------------------------------------------------------------------
+#
+# The operator-facing surface lives HERE, with the agent, because this is
+# where `site.manage` and the E1.2 delegation ceiling are enforced --
+# whoever may build and activate an agent may credential it, and the
+# credential grants nothing by itself (A20.2). Keycloak provisioning
+# happens at the Console over the existing internal channel; these routes
+# hold the policy, not the plumbing.
+
+
+def _identity_dict(row, agent=None) -> dict:
+    """What an operator may see. Never the secret — it is not stored."""
+    return {
+        "agent_id": row.agent_id,
+        "client_id": row.keycloak_client_id,
+        "realm": row.realm,
+        "status": row.status,
+        "issued_by": row.issued_by,
+        "issued_at": row.issued_at.isoformat() if row.issued_at else None,
+        "rotated_at": row.rotated_at.isoformat() if row.rotated_at else None,
+        "rotated_by": row.rotated_by or None,
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        "revoked_by": row.revoked_by or None,
+        "revoke_reason": row.revoke_reason or None,
+        "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+        "last_seen_source": row.last_seen_source or None,
+        "contract": (
+            "A machine identity answers 'who is this runtime?'. It grants no "
+            "permission, scope, capability, autonomy, approval or execution "
+            "authority; an authenticated agent is capped at fleet.view and "
+            "incident.view and still proposes through the same governed funnel."
+        ),
+    }
+
+
+@router.post(
+    "/{agent_id}/identity",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def issue_identity(
+    agent_id: str,
+    request: Request,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Issue this agent's machine identity. The secret is shown ONCE.
+
+    A20.5: Central Command never stores the secret — there is no column
+    it could be written into. Keycloak holds it; if it is lost, rotate.
+    """
+    from harkeniq_cc import identity_client
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+    from harkeniq_cc.machine_identity import client_id_for
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    repo = OperationalAgentRepo(session)
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
+    if agent.status == STATUS_RETIRED:
+        raise HTTPException(409, "a retired agent cannot be credentialed")
+
+    identities = AgentIdentityRepo(session)
+    if await identities.get_for_agent(user.tenant_id, agent.id) is not None:
+        raise HTTPException(
+            409,
+            "this agent already has a machine identity; rotate it rather than "
+            "issuing a second one — two identities would be two answers to "
+            "'who is this runtime?'",
+        )
+
+    state = request.app.state.cc
+    realm = getattr(state.config, "keycloak_realm", "") or ""
+    client_id = client_id_for(agent.id)
+    result, reason = await identity_client.provision(
+        state, realm=realm, client_id=client_id,
+    )
+    actor = user.email or user.user_id
+    if result is None:
+        # Fails CLOSED and audited: a half-issued identity that nobody
+        # recorded is worse than none at all.
+        await AuditRepo(session).append(
+            actor=actor, action="agent_identity.issue_failed",
+            subject=agent.id, tenant_id=user.tenant_id,
+            detail={"reason": reason, "client_id": client_id},
+        )
+        await session.commit()
+        raise HTTPException(502, f"machine identity could not be issued: {reason}")
+
+    row = await identities.create(
+        tenant_id=user.tenant_id, agent_id=agent.id, realm=realm,
+        keycloak_client_id=client_id,
+        keycloak_sub=str(result.get("subject", "")),
+        issued_by=actor,
+    )
+    await AuditRepo(session).append(
+        actor=actor, action="agent_identity.issued",
+        subject=agent.id, tenant_id=user.tenant_id,
+        detail={"client_id": client_id, "realm": realm,
+                "subject": str(result.get("subject", ""))},
+    )
+    await session.commit()
+    return {
+        **_identity_dict(row, agent),
+        # Once. Never stored, never shown again.
+        "client_secret": result.get("secret", ""),
+        "secret_notice": (
+            "Store this now. Central Command does not keep it and cannot show "
+            "it again; if it is lost, rotate the identity."
+        ),
+    }
+
+
+@router.post(
+    "/{agent_id}/identity/rotate",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def rotate_identity(
+    agent_id: str,
+    request: Request,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Rotate the secret. No execution gap, and never a second identity.
+
+    One client, one subject, one row — only the secret changes, so tokens
+    already issued stay valid to their natural expiry while the agent
+    picks up the new secret on its next fetch.
+    """
+    from harkeniq_cc import identity_client
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    repo = OperationalAgentRepo(session)
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
+
+    identities = AgentIdentityRepo(session)
+    row = await identities.get_for_agent(user.tenant_id, agent.id)
+    if row is None:
+        raise HTTPException(404, "this agent has no machine identity")
+    if row.status != "active":
+        raise HTTPException(
+            409, f"a {row.status} identity cannot be rotated; issue a new one",
+        )
+
+    state = request.app.state.cc
+    result, reason = await identity_client.rotate(
+        state, realm=row.realm, client_id=row.keycloak_client_id,
+    )
+    actor = user.email or user.user_id
+    if result is None:
+        raise HTTPException(502, f"rotation failed: {reason}")
+
+    await identities.mark_rotated(row, actor)
+    await AuditRepo(session).append(
+        actor=actor, action="agent_identity.rotated",
+        subject=agent.id, tenant_id=user.tenant_id,
+        detail={"client_id": row.keycloak_client_id},
+    )
+    await session.commit()
+    return {
+        **_identity_dict(row, agent),
+        "client_secret": result.get("secret", ""),
+        "secret_notice": (
+            "The previous secret no longer works. Tokens already issued remain "
+            "valid until they expire, so there is no execution gap."
+        ),
+    }
+
+
+class RevokeIdentityBody(BaseModel):
+    reason: str = Field("", max_length=512)
+
+
+@router.post(
+    "/{agent_id}/identity/revoke",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def revoke_identity(
+    agent_id: str,
+    request: Request,
+    body: RevokeIdentityBody = Body(default_factory=RevokeIdentityBody),
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Revoke immediately (A20.5).
+
+    Two things happen, and only one of them is fast: Keycloak stops
+    issuing NEW tokens, and Central Command's status row refuses the ones
+    already out there. Access tokens live 300s, so the row is what makes
+    revocation immediate rather than bounded by a token lifetime — which
+    is why the row is written even if the Keycloak call fails.
+    """
+    from harkeniq_cc import identity_client
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    repo = OperationalAgentRepo(session)
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
+
+    identities = AgentIdentityRepo(session)
+    row = await identities.get_for_agent(user.tenant_id, agent.id)
+    if row is None:
+        raise HTTPException(404, "this agent has no machine identity")
+
+    actor = user.email or user.user_id
+    reason = body.reason or "revoked by an operator"
+    # The row FIRST, and unconditionally: a Keycloak outage must not
+    # leave a credential the operator believes they revoked.
+    await identities.mark_revoked(row, actor, reason)
+    _, kc_reason = await identity_client.set_enabled(
+        request.app.state.cc, realm=row.realm,
+        client_id=row.keycloak_client_id, enabled=False,
+    )
+    await AuditRepo(session).append(
+        actor=actor, action="agent_identity.revoked",
+        subject=agent.id, tenant_id=user.tenant_id,
+        detail={"client_id": row.keycloak_client_id, "reason": reason,
+                "keycloak_disabled": not kc_reason,
+                "keycloak_detail": kc_reason or None},
+    )
+    await session.commit()
+    return {
+        **_identity_dict(row, agent),
+        "effective": "immediate",
+        "detail": (
+            "Refused at Central Command from the next request. "
+            + ("Keycloak client disabled." if not kc_reason
+               else f"Keycloak could not be reached ({kc_reason}); the identity "
+                    "is still refused here, so no token works.")
+        ),
+    }
+
+
+@router.get(
+    "/{agent_id}/identity",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def get_identity(
+    agent_id: str,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Identity status. Read-only, and never the secret."""
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    row = await AgentIdentityRepo(session).get_for_agent(user.tenant_id, agent.id)
+    if row is None:
+        return {
+            "agent_id": agent.id, "exists": False,
+            "detail": "this agent has no machine identity",
+        }
+    return {"exists": True, **_identity_dict(row, agent)}
+
+
+# ---------------------------------------------------------------------------
+# The catch-all transition route — REGISTERED LAST, deliberately.
+# ---------------------------------------------------------------------------
+#
+# `/{agent_id}/{transition}` matches any single path segment, and Starlette
+# matches routes in REGISTRATION order. Declared earlier in the module it
+# swallowed `POST /{agent_id}/identity` and answered 404 'unknown
+# transition' — a route that exists, guarded correctly, and unreachable.
+#
+# Any new single-segment route under this prefix must be declared ABOVE
+# this one. A route-contract test asserts every declared route is
+# reachable, so a future collision fails the suite rather than 404ing in
+# production.
 @router.post(
     "/{agent_id}/{transition}",
     dependencies=[Depends(require_permission("site.manage"))],
@@ -1145,6 +1447,32 @@ async def transition_agent(
                 )
     actor = user.email or user.user_id
     await repo.set_status(agent, target, actor)
+
+    # A20.7: retiring an agent revokes its machine identity. An identity
+    # that outlived the agent it names would answer "who is this
+    # runtime?" with the name of something that no longer exists.
+    if target == STATUS_RETIRED:
+        from harkeniq_cc import identity_client
+        from harkeniq_cc.db.repos import AgentIdentityRepo
+
+        identities = AgentIdentityRepo(session)
+        identity = await identities.get_for_agent(user.tenant_id, agent.id)
+        if identity is not None and identity.status == "active":
+            await identities.mark_revoked(
+                identity, actor, "the agent was retired", status="retired",
+            )
+            _, kc_reason = await identity_client.set_enabled(
+                request.app.state.cc, realm=identity.realm,
+                client_id=identity.keycloak_client_id, enabled=False,
+            )
+            await AuditRepo(session).append(
+                actor=actor, action="agent_identity.retired",
+                subject=agent.id, tenant_id=user.tenant_id,
+                detail={"client_id": identity.keycloak_client_id,
+                        "keycloak_disabled": not kc_reason,
+                        "keycloak_detail": kc_reason or None},
+            )
+
     await AuditRepo(session).append(
         actor=actor,
         action=f"operational_agent.{transition}d",
@@ -1191,31 +1519,3 @@ async def transition_agent(
         payload["skill_installs"] = installs
     return payload
 
-
-@router.get(
-    "/{agent_id}/proposals",
-    dependencies=[Depends(require_permission("fleet.view"))],
-)
-async def list_proposals(
-    agent_id: str,
-    limit: int = Query(100, ge=1, le=500),
-    user: UserContext = Depends(require_permission("fleet.view")),
-    session: AsyncSession = Depends(get_session),
-    scope=Depends(get_scope),
-) -> dict:
-    """Every proposal this agent has made, including the blocked ones.
-
-    Blocked proposals are the point: an agent that wanted to act and was
-    refused is exactly what an operator needs to see before raising a
-    level, and hiding them would make the governance invisible.
-    """
-    await _require_agent(session, user.tenant_id, agent_id)
-    proposals = await AgentProposalRepo(session).list_for_agent(
-        user.tenant_id, agent_id, limit=limit,
-    )
-    return {
-        "proposals": [proposal_dict(p) for p in proposals],
-        "total": len(proposals),
-        "agent_id": agent_id,
-        "tenant_id": user.tenant_id,
-    }

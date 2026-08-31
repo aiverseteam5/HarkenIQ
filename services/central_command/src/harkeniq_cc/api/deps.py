@@ -89,10 +89,35 @@ async def get_scope(
     permission". `ResolvedScope.permits(permission, target)` answers
     "does this actor hold it HERE", and only the second one decides.
     """
-    from harkeniq_cc.governance import load_scope
+    from harkeniq_cc.governance import PRINCIPAL_AGENT, load_scope
     from harkeniq_cc.auth import ROLE_PERMISSIONS
+    from harkeniq_cc.machine_identity import is_machine
 
     state = request.app.state.cc
+
+    # A3 (spec A20): an authenticated Operational Agent resolves through
+    # the SAME resolver, as the principal it already is -- its grants are
+    # `cc_scope_grants` rows with principal_type="agent", keyed on the
+    # agent id. Two things differ from a human, and both are deliberate:
+    #
+    #   * `role_permissions` is the A20.3 ceiling intersection carried on
+    #     the context, NEVER a role and NEVER ["*"]. `load_agent_scope`
+    #     passes ["*"] for the in-process evaluator because that path only
+    #     ever asks WHERE; over HTTP the same value would satisfy every
+    #     route guard in the platform, including action.approve.
+    #   * agent grants carry no realm (an agent id is a CC row id, not a
+    #     realm subject), so they are not narrowed by one.
+    if is_machine(user):
+        async with state.sessionmaker() as session:
+            return await load_scope(
+                session,
+                tenant_id=user.tenant_id,
+                principal_ref=user.user_id,
+                role_permissions=list(user.permissions),
+                principal_type=PRINCIPAL_AGENT,
+                realm="",
+            )
+
     async with state.sessionmaker() as session:
         return await load_scope(
             session,

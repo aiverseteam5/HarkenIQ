@@ -1396,3 +1396,117 @@ execution authority (A17.8, D2 of A16's lineage). The Site Manager grows
 no second authorization model. `INTERFACE_RESET` and `CLEAR_COUNTERS`
 remain governed vocabulary with zero executor reach and are not deleted
 (A17.6).
+
+### A20 — 2026-08-31 — A3: machine identity is authentication, and only authentication (decided: Vinod)
+
+An Operational Agent has never held a credential. It is a row evaluated by
+a Central Command-resident loop that calls the governance composers
+in-process, and its "identity" is an attribution string. A3 gives it a
+durable machine identity so it can authenticate to HarkenIQ — and does
+that **without introducing a second authorization or execution model**.
+
+The credential answers exactly one question: *who is this runtime?* It is
+a narrow authentication boundary, and it is not the product's long-term
+ceiling on what an agent may do.
+
+**A20.1 — One Keycloak client-credentials service account per LOGICAL
+Operational Agent**, in the tenant's own realm, bound 1:1 to a
+`cc_operational_agents.id`. Keycloak is reused, not replaced: no second
+identity provider, no token service, no bespoke agent authentication
+scheme. The `api_keys` table — a complete credential lifecycle whose
+verifier `get_by_hash` has no production caller and which therefore
+authenticates nothing — is retired rather than adopted, because adopting
+it would mean building the second token service this amendment forbids.
+
+**A20.2 — A machine identity confers NOTHING.** It grants no permission,
+no scope, no capability authority, no autonomy, no approval authority and
+no execution authority. Those come from where they already come from: the
+fixed permission vocabulary, `cc_scope_grants`, A0 capability bindings,
+the S5 autonomy contract, the E0.1 approval ledger, and the node's own
+funnel.
+
+**A20.3 — The machine principal ceiling is a HARD, INDEPENDENT
+CONSTANT.**
+
+    effective = A0 agent read bindings  ∩  MACHINE_PRINCIPAL_CEILING
+    MACHINE_PRINCIPAL_CEILING = { fleet.view, incident.view }
+
+The ceiling is deliberately *not* "whatever today's A0 bindings imply". It
+is its own constant and the effective set is the INTERSECTION, so no
+future binding — however written or mapped — can widen machine-principal
+authority. This is E1.4's rule applied to a second subject: a custom role
+bundle could once OR its permissions into a role and widen it; bundles now
+intersect, and so does this. A machine principal must be **structurally
+unable** to hold `action.approve`, `site.manage`, `role.manage`,
+`tenant.manage`, `audit.export`, or any other mutation or administrative
+permission — asserted over the whole vocabulary, not by convention.
+
+The reason this matters: resolved as agents are today
+(`role_permissions=["*"]`, safe only because nothing authenticates), an
+authenticated agent would satisfy every route guard in the platform,
+including approving its own proposals.
+
+**A20.4 — One governance model, end to end.** Authentication → the
+existing `UserContext` → the existing RBAC resolver → the existing scope
+resolver → the existing Capability Registry, autonomy contract and
+approval ledger → the existing execution funnel → the node. No second
+RBAC, scope resolver, capability model, approval system, execution
+engine, identity provider or token service. An agent still causes
+operational work only by proposing: observe → reason → propose →
+approval → execution → the node executes. HTTP authentication grants no
+direct mutation authority.
+
+**A20.5 — Lifecycle: CREATE → ISSUE → BIND → ROTATE → REVOKE → RETIRE.**
+Client secrets are **never stored at Central Command** — Keycloak holds
+them and CC shows one exactly once, the discipline E1.3's enrollment
+tokens already use. **CC's identity status is authoritative on every
+request**, so revocation beats an otherwise-valid JWT immediately rather
+than waiting out a token lifetime. Rotation regenerates the secret with
+no execution gap and never yields two identities: one client, one
+subject, one row, one secret at a time.
+
+**A20.6 — One identity per logical agent.** Per-runtime-instance
+identities are not invented: the repository has no runtime instance
+concept, and two runtimes of one agent share one bundle, one scope and one
+budget, so they share one identity. Instances are made *observable*
+(`last_seen_at`, `last_seen_source`) without being separately
+*authorized*. Distinct per-instance authorization is a future ratified
+decision only if the product later requires it.
+
+**A20.7 — Identity binds to the AGENT, not to a configuration version.**
+Editing configuration does not require re-credentialing. A2's version
+semantics are untouched: an edit still bumps the version and invalidates
+the preflight, the acknowledgement and any activation approval (A19.9). A
+paused agent keeps a valid identity and keeps observing; a **retired**
+agent has its identity revoked.
+
+**A20.8 — D3 survives, unchanged.** An in-flight proposal retains the
+configuration version it was made under. The current hard security and
+safety gates remain authoritative at dispatch, and a revoked identity
+refuses the proposal and audits the refusal — through the `agent_identity`
+slot that already exists in the dispatch gate, not a new mechanism.
+**Approved proposal version ≠ guaranteed execution.**
+
+**A20.9 — Platform Operations sees aggregates, and A12.1 is not
+amended.** Platform and vendor staff receive **no live tenant-plane
+identity access**. A3 may expose aggregate operational signals only —
+identity count, active/revoked/retired counts, high-level health and
+freshness — and never per-agent identity detail through the tenant plane.
+Those aggregates travel the **existing internal CC→Console channel** but
+on a **distinct operational endpoint**, never the usage-events payload,
+because that payload feeds metering and mixing a non-billing signal into
+a billing ingest would corrupt invoicing. Full Platform Support, governed
+support workflows and customer-authorized break-glass remain a separate
+future Platform Operations capability built on this same governance model.
+**Platform Support is never solved by weakening A12.1.**
+
+**A20.10 — No proposal write path in A3.** `POST /proposals` is not
+added: the Central Command-resident agent does not need it, and external
+proposal submission belongs with its first real consumer at MCP/A5 unless
+new evidence proves an earlier dependency.
+
+**A20.11 — The ceiling is not the product's ambition.** A20.3 bounds the
+CREDENTIAL, not the Operational Agent. A4, A5, A6 and MCP may make an
+agent substantially more capable — through the governed Capability
+Registry, RBAC, scope, autonomy, approval and execution architecture that
+already exists. What stays narrow is authentication.
