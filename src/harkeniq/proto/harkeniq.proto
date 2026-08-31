@@ -238,6 +238,12 @@ message SiteSkillInstall {
   string tier = 6;
   string validation_state = 7;
   string issued_by = 8;          // e.g. "marketplace:<install_id>"
+  // A2: install onto THESE devices only. Empty preserves the pre-A2
+  // behaviour of every device at the site, which is what marketplace
+  // installs still want -- but an Operational Agent scoped to six racks
+  // must not install onto the whole site, which is a scope escape
+  // dressed as a convenience.
+  repeated string device_agent_ids = 9;
 }
 
 message SiteSkillInstallAck {

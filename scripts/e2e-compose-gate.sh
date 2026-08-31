@@ -478,15 +478,79 @@ assert {"attention", "autonomy"} <= reads, "required reads must be bound"
 print("agent created:", a["actor"], a["status"])
 '
 
-# A draft agent evaluates nothing. Activation is a separate human act.
+# A2: a draft agent evaluates nothing, and activation is now a GOVERNED
+# transition, not a status write. PREFLIGHT -> ACKNOWLEDGE (where warned)
+# -> ACTIVATE. Switching an agent on without a stored readiness result
+# for this exact configuration version is refused.
+step "A2: activation is refused without a preflight for THIS configuration"
+NOPRE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/activate")
+[ "$NOPRE" = "409" ] || {
+  echo "activated with no preflight ($NOPRE)" >&2; exit 1; }
+echo "activation without a preflight refused (409)"
+
+PRE_JSON=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/preflight")
+echo "$PRE_JSON" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+assert p["configuration_version"] == 1, p["configuration_version"]
+assert len(p["dimensions"]) == 12, len(p["dimensions"])
+# This agent requires a human for every action, so switching it on
+# confers no unattended execution -- and D1 therefore raises no
+# activation approval. Approval is derived, never ceremonial.
+assert p["requires_activation_approval"] is False, p["unattended_classes"]
+assert p["unattended_classes"] == [], p["unattended_classes"]
+# A READY preflight is a statement about configuration, not a grant.
+assert "grants nothing" in p["contract"]["authority"]
+print("preflight:", p["overall"],
+      "| blocked:", p["blocked_dimensions"],
+      "| warn:", p["warn_dimensions"],
+      "| unknown:", p["unknown_dimensions"])
+'
+NEEDS_ACK=$(echo "$PRE_JSON" | python3 -c \
+  "import sys,json; print(json.load(sys.stdin)['requires_acknowledgement'])")
+if [ "$NEEDS_ACK" = "True" ]; then
+  # A warning is not a veto, but it is not nothing: a named human accepts
+  # it, version-bound, before anything is switched on.
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$AGENT_ID/acknowledge" \
+    | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['acknowledged_by'], 'an acknowledgement must name a person'
+print('warnings acknowledged by', a['acknowledged_by'])
+"
+fi
+
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/operational-agents/$AGENT_ID/activate" \
   | python3 -c "
 import sys, json
 a = json.load(sys.stdin)
 assert a['status'] == 'active' and a['activated_by'], 'activation must name a human'
-print('agent activated by', a['activated_by'])
+# A19.9: activation records the configuration it switched on, atomically.
+# Before this had a writer, activated_version stayed 0 against version 1
+# and every active agent reported drift the moment it was turned on.
+assert a['activated_version'] == a['version'], (a['activated_version'], a['version'])
+print('agent activated by', a['activated_by'], 'at v%d' % a['activated_version'])
 "
+
+# A19.9 stated positively: active AND activated_version == version -> no drift.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/runtime" | python3 -c '
+import sys, json
+r = json.load(sys.stdin)
+assert r["activation_state"] == "active", r["activation_state"]
+assert r["activation_provenance"] == "recorded", r["activation_provenance"]
+assert r["configuration_drifted"] is False, "a fresh activation is not drifted"
+assert r["preflight"]["current"] is True
+# Device freshness is three-valued: a device the site has never reported
+# is counted as neither healthy nor unhealthy.
+assert "never_reported" in r["devices"], r["devices"]
+print("runtime:", r["devices"], "| budget:", r["budget"]["limit"] or "unset")
+'
 
 # The detail view answers what an operator actually asks.
 curl -sf -H "Authorization: Bearer $OP_TOKEN" \
@@ -834,16 +898,51 @@ for _m in "policies/" "policies/groups"; do
 done
 echo "auditor refused every mutation"
 
-step "E0.3: an inert capability declaration is refused, not accepted"
-SKILL_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+step "A2: the skill binding E0.3 refused is real, and it is GOVERNED"
+# E0.3 refused `kind: skill` outright rather than leave a capability that
+# was accepted, rendered, and wired to nothing. A2 built the four pieces
+# it named, so the binding is accepted now -- and the point of this step
+# is that accepting it did not make it ungoverned: the skill is resolved
+# and judged against the Capability Registry at preflight, by name.
+SKILL_AGENT=$(curl -sf -X POST \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d "{\"name\":\"gate-skill-agent\",
+  -d "{\"name\":\"gate-skill-agent $(date +%s)\",
        \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
-       \"capabilities\":[{\"kind\":\"skill\",\"capability_ref\":\"fan-health\"}]}" \
-  http://localhost:8090/api/operational-agents/)
-[ "$SKILL_CODE" = "400" ] || {
-  echo "skill binding accepted ($SKILL_CODE): it would do nothing" >&2; exit 1; }
-echo "skill binding refused with a reason naming A2"
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"},
+         {\"kind\":\"skill\",\"capability_ref\":\"fan-health\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ -n "$SKILL_AGENT" ] || { echo "skill binding refused; A2 makes it real" >&2; exit 1; }
+
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$SKILL_AGENT/preflight" \
+  | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+skills = p["skills"]
+assert len(skills) == 1, skills
+row = skills[0]
+assert row["skill_id"] == "fan-health"
+# usable is True / False / None, and None means the platform cannot yet
+# tell -- an unfetchable skill is UNKNOWN, never quietly assumed fine.
+assert row["usable"] in (True, False, None), row
+assert row["reason"], "a skill verdict must carry a reason an operator can act on"
+d = next(x for x in p["dimensions"] if x["dimension"] == "skills")
+assert d["verdict"] in ("ready", "warn", "unknown", "blocked"), d
+print("skill binding governed:", row["skill_id"], "usable=%s" % row["usable"],
+      "|", row["reason"][:72])
+'
+# A skill may never widen authority. The bundle it hangs on is unchanged:
+# the agent still reaches only its own scope and its own action classes.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$SKILL_AGENT" | python3 -c '
+import sys, json
+v = json.load(sys.stdin)
+classes = {c["action_type"] for c in v["capabilities"]["action_classes"]}
+assert classes == {"COLLECT_DIAGNOSTICS"}, classes
+print("skill expanded no capability authority:", sorted(classes))
+'
 
 step "E1.1: the tenant's organizational tree, and it is containment ONLY"
 # The migration backfills one root per tenant with every site attached, so

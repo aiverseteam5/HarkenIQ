@@ -52,6 +52,14 @@ SUBJECT_AGENT_PROPOSAL = "agent_proposal"
 #: requires a human (D1): batching several waves is a review
 #: affordance in the Console, never a merged decision record.
 SUBJECT_CAMPAIGN_WAVE = "campaign_wave"
+#: A2: activating an Operational Agent whose configuration would
+#: grant real UNATTENDED execution (D1). A fourth origin on the
+#: same ledger, not a fourth approval model -- the policy
+#: resolution, approver count, group rule and duplicate guarantee
+#: are the ones a node action already gets. Activation approval
+#: grants no RBAC, scope or capability authority: it approves a
+#: configuration the actor was already permitted to build.
+SUBJECT_AGENT_ACTIVATION = "agent_activation"
 
 DECISION_APPROVED = "approved"
 DECISION_DENIED = "denied"

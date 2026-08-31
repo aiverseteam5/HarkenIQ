@@ -143,6 +143,19 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("POST", "/api/operational-agents/"):           ("site.manage", OBJECT_GATED, True),
     ("PATCH", "/api/operational-agents/{agent_id}"): ("site.manage", OBJECT_GATED, True),
     ("PUT", "/api/operational-agents/{agent_id}/bindings"): ("site.manage", OBJECT_GATED, True),
+    # A2: the governed activation lifecycle. Reads are fleet.view and
+    # READ_SCOPED (an out-of-scope agent is 404, never 403);
+    # configuration is site.manage and OBJECT_GATED via the delegation
+    # ceiling. Activation APPROVAL is not here -- it happens on
+    # /api/approvals, because there is one approval system.
+    ("POST", "/api/operational-agents/{agent_id}/preflight"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/operational-agents/{agent_id}/acknowledge"):
+        ("site.manage", OBJECT_GATED, True),
+    ("GET", "/api/operational-agents/{agent_id}/preflight"):
+        ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/operational-agents/{agent_id}/runtime"):
+        ("fleet.view", READ_SCOPED, False),
     ("POST", "/api/operational-agents/{agent_id}/{transition}"):
         ("site.manage", OBJECT_GATED, True),
 

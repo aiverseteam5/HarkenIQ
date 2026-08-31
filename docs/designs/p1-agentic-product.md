@@ -1265,3 +1265,210 @@ explicit endpoint. Platform realm stripped to `platform_super_admin` and
 - A real bundle on a real tenant-realm user: names `fleet.view`,
   `site.manage`, `action.approve`; the viewer holding it gets
   **`fleet.view` only**. E0.3's "test-proven only" gap is closed.
+
+---
+
+## 21. Where A17 and A18 are recorded
+
+The Capability Registry (**A17**) and S6 Campaigns (**A18**) landed
+between E1.4 and A2 and are recorded as dated amendments in spec §9
+together with the status-ledger rows in `CLAUDE.md`, not as sections
+here. Their invariants are load-bearing for A2 — the Registry answers
+"can the executor do this", and S6 established approval-binds-to-a-plan
+and version-bound acknowledgement — and A2 consumes both rather than
+restating them.
+
+---
+
+## 22. A2 — the Operational Agent becomes a complete product (spec A19)
+
+A0+A1 made the agent an **object**. A2 makes it a **product**: something
+a customer can configure, examine before switching on, budget, pause,
+and explain afterwards.
+
+The distinction matters because A0+A1 shipped an agent that could be
+created and activated, and could not answer the question an operator
+actually has before switching one on: *if I turn this on, what will it
+do, where, and what will stop it?*
+
+### The lifecycle, and what each step is for
+
+```
+CREATE → CONFIGURE → PREFLIGHT → ACKNOWLEDGE → APPROVAL (where required)
+       → ACTIVATE → RUN → OBSERVE → OUTCOME → LEARNING
+```
+
+Only two of these steps are new decisions. PREFLIGHT and ACKNOWLEDGE are
+the operator's; APPROVAL is E0.1's, on the ledger it already owns. The
+rest existed.
+
+### The preflight is a contract, not a page
+
+Twelve dimensions, each carrying a verdict a caller can branch on **and**
+a sentence a person can act on:
+
+| | |
+|---|---|
+| `identity` | does this agent resolve as a principal at all (E1.4's lesson) |
+| `tenant` | it belongs here |
+| `scope` | no rows means no devices; no devices means it observes nothing |
+| `capabilities` | bound classes exist, are implemented, are reachable |
+| `skills` | each bound skill fetches, parses, and recommends something reachable |
+| `autonomy_ceiling` | what the tenant's own contract permits, narrowed |
+| `approval_policy` | whether activation needs a human (D1) |
+| `budget` | the per-agent execution allowance (D2) |
+| `safety` | agent pause, plus the platform switches it lives under |
+| `executor_reach` | per-device, from the Capability Registry |
+| `configuration_version` | this result describes THIS version |
+| `activation_state` | where it is now |
+
+Four verdicts: `READY`, `BLOCKED`, `WARN`, `UNKNOWN`. **BLOCKED
+dominates** — one refused dimension refuses the activation. **WARN
+outranks UNKNOWN** in the roll-up, because a warning is something a human
+can act on now and burying it under "we're not sure" would lose it.
+
+**UNKNOWN is a real answer.** A fleet mid-upgrade has not declared its
+capabilities; treating that as "incapable" would make an agent
+unconfigurable for the duration of an upgrade. This is A17.4 applied to a
+second consumer, and it is the reason the preflight has four verdicts
+rather than three.
+
+The result is assembled **server-side and stored**. The Console consumes
+it and never recreates it: a page that computed its own verdicts could
+show an operator something different from what the activation gate
+enforces, and the divergence would be invisible until it mattered.
+
+### D1 — activation approval is derived
+
+The trigger is one question: *would activating this confer unattended
+execution?* If the ceiling is zero, or the agent requires a human for
+every action, or no bound class is `autonomous` under the tenant's own
+contract, then switching it on grants no new authority and approval would
+be pure ceremony.
+
+If it would, the subject is a **digest over (agent, configuration
+version, exact unattended class set)**. Change any of the three and the
+digest addresses a different subject, so an approval cannot survive the
+edit it was not given for. This is S6's approval-binds-to-a-plan applied
+to a configuration instead of a wave.
+
+**One ledger, one completion rule.** `SUBJECT_AGENT_ACTIVATION` is a
+fourth origin on E0.1's ledger. Policy resolution, required-approver
+count, group membership, duplicate prevention, denial terminality and
+completion are the same functions a node action calls — so a tenant
+configuring `required_approvers = 2` gets two approvers here too, and one
+valid approval leaves the activation pending.
+
+Approving activation does not activate. A person still presses activate,
+and the gate re-checks the preflight then.
+
+### D2 — the budget counts executions, and caps only unattended work
+
+It counts what **ran** under the agent's attribution key, from the
+existing outcome accounting. Not proposals: a proposal that is never
+executed consumes nothing, because intent is not consumption.
+
+Exhaustion means *this agent has spent its delegated unattended
+allowance*. It does not mean *this agent is disabled*. So on exhaustion:
+
+- unattended execution is **refused, at the production dispatch path**;
+- observation, analysis and proposal generation continue;
+- a human-approved proposal still executes.
+
+That last line is the whole point. A budget that also blocked
+human-approved work would be a disguised kill switch, and the platform
+already has real ones (tenant, site, and the agent's own pause) that say
+so honestly.
+
+### D3 — an approved proposal keeps its version, and is not a guarantee
+
+Two independent statements that are easy to collapse into one and must
+not be:
+
+**A V3 proposal stays V3.** It is never reinterpreted as V4. Attribution
+has to keep naming the configuration the decision was actually made
+against, or an outcome lies about what produced it.
+
+**Approved ≠ executable.** Central Command re-evaluates its own hard
+gates at dispatch — identity, activation state, tenant scope, stop
+switch, agent pause — and **an unevaluated gate refuses**, the same
+fail-closed default `execution_permitted()` uses at the Site Manager and
+for the same reason: an unevaluated governing input must never read as
+consent.
+
+These are Central Command's gates *only*. The lease, preconditions and
+blast radius at the Site Manager, and the node's own allow list, run
+afterwards and independently. Nothing here substitutes for them, and the
+node remains the final execution authority.
+
+### Skills as governed compositions
+
+A skill composes capabilities the agent already holds. It may not expand
+permission, scope, capability authority, autonomy ceiling or approval
+authority.
+
+The one thing it *can* do is recommend an action — which is exactly where
+it needs governing. A skill recommending a class the platform does not
+implement is unusable, so it is caught at preflight against the
+Capability Registry rather than discovered at dispatch. There is no
+skill-specific capability model.
+
+E0.3 refused the `skill` binding kind outright rather than leave it
+accepted and inert, naming the four missing pieces. All four exist now:
+
+1. a Console skill-by-id endpoint on the **existing** internal channel;
+2. a Central Command fetch path (`parse_skill` still the untrusted-YAML
+   boundary R4-3 established);
+3. per-device targeting on `InstallSkill` — the RPC previously fanned out
+   to every device at the site, which from a rack-scoped agent is a scope
+   escape dressed as a convenience;
+4. the install-on-activation trigger.
+
+Installation is per (agent, version, skill, device) in a durable ledger,
+so re-activation cannot install twice; a device that cannot run what the
+skill recommends is skipped **with a reason**; an undeclared device
+receives it, because unknown is not incapable.
+
+### Post-activation versioning
+
+`activated_version` records the configuration actually switched on,
+written atomically with the status change. The invariant is stated
+positively:
+
+```
+active AND activated_version == version   →   no drift
+```
+
+An agent freshly activated at V1 reports no drift. Editing an active
+agent increments `version`, which makes the running configuration
+observably stale and invalidates — because each is version-bound — the
+stored preflight, the acknowledgement, and any activation approval.
+
+### Runtime health, reported honestly
+
+Only signals the platform actually produces. Device freshness splits
+three ways — recently seen, stale, and **never reported** — and a device
+the site has never reported is counted as neither healthy nor unhealthy.
+Inventing a plausible value is worse than admitting ignorance, because an
+operator acts on this.
+
+### The defects the correctness slice found in A2's own first pass
+
+The recovery review of the A2 working tree found six, and the pattern is
+familiar enough to name: **five of the six were values that were
+declared, modelled, migrated and read — and never written or never
+called.**
+
+| | |
+|---|---|
+| `_activation_decision` re-derived approval from raw records | it never consulted `required_approvers`, so a tenant configuring dual approval got **single** authorization for activation. E0.1's own defect, reintroduced at the fourth origin — the ninth instance of the house bug, and the most serious, because it was a governance bypass rather than an inert field. |
+| `activated_version` had no writer | `version` defaults to 1 and `activated_version` to 0, so `configuration_drifted` computed `0 != 1` and **every active agent reported drift from the moment of activation**. Not an inert field: an actively wrong answer. |
+| `unattended_permitted` had no production caller | the dispatch loop shipped every approved proposal, `autonomous_grant` included, without consulting the budget. D2 was reportable and unenforced. |
+| budget and pause had no configuration path | the request bodies accepted none of `execution_budget`, `budget_period`, `paused_reason`. A budget a customer cannot set is not a product feature. |
+| `install_bound_skills` had no caller | written completely — per-device ledger, dedup, skip-with-reason, audited — and invoked by nothing. |
+| A2 had no in-repo record | D1/D2/D3 existed only as code docstrings. Spec §9 ended at A18. Fixed by A19 and by this section, **before** the corrective code was written. |
+
+The lesson the project keeps re-learning, stated once more: a declaration
+is not an implementation, and a test that exercises a pure function
+proves nothing about whether anything calls it. The regression tests
+added with these fixes assert the **call**, not only the judgement.

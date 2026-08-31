@@ -425,9 +425,29 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 reason="; ".join(result.errors)[:256] or "validation failed",
             )
         async with self.sessionmaker() as session:
-            site = await SiteRepo(session).get_or_create(self.config.site_name)
+            # E1.3 correctness: resolve the site CC actually named, not
+            # this process's configured name. On a Site Manager serving
+            # several sites the old lookup installed onto whichever site
+            # the config happened to name -- the same shape as the
+            # heartbeat and verdict bugs E1.3's gate found.
+            site = await SiteRepo(session).get_by_cc_id(request.site_id)
+            if site is None:
+                site = await SiteRepo(session).get_or_create(self.config.site_name)
             devices = list(await DeviceRepo(session).list_for_site(site.id))
             await session.commit()
+
+        # A2: install onto the NAMED devices only. An empty list keeps
+        # the pre-A2 site-wide behaviour marketplace installs rely on;
+        # an Operational Agent always names its devices, because
+        # installing onto a whole site from a rack-scoped agent is a
+        # scope escape dressed as a convenience.
+        wanted = set(request.device_agent_ids)
+        skipped_not_at_site: list[str] = []
+        if wanted:
+            present = {d.agent_id for d in devices}
+            skipped_not_at_site = sorted(wanted - present)
+            devices = [d for d in devices if d.agent_id in wanted]
+
         queued = 0
         for device in devices:
             await self.directives.enqueue_skill_install(
@@ -441,10 +461,23 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             )
             queued += 1
         logger.info(
-            "InstallSkill %s v%s: %d directive(s) queued",
+            "InstallSkill %s v%s: %d directive(s) queued%s",
             request.skill_id, request.skill_version, queued,
+            (f", {len(skipped_not_at_site)} requested device(s) are not at "
+             f"this site") if skipped_not_at_site else "",
         )
-        return harkeniq_pb2.SiteSkillInstallAck(accepted=True, queued=queued)
+        reason = ""
+        if skipped_not_at_site:
+            # Named, never silently dropped: a device that vanished from
+            # an install with no reason cannot be told from one nobody
+            # selected.
+            reason = (
+                f"{len(skipped_not_at_site)} requested device(s) are not at "
+                f"this site: {', '.join(skipped_not_at_site[:5])}"
+            )
+        return harkeniq_pb2.SiteSkillInstallAck(
+            accepted=True, queued=queued, reason=reason
+        )
 
     async def PlanCampaignWaves(self, request, context):
         """S6: plan one site's campaign waves. READ-ONLY.

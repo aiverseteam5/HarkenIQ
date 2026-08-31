@@ -108,3 +108,41 @@ async def list_marketplace_installs(
             "yaml_content": entry.yaml_content,
         })
     return {"installs": items, "tenant_id": tenant_id}
+
+
+@router.get("/marketplace/skills/{skill_id}")
+async def internal_skill_by_id(
+    skill_id: str,
+    tenant_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A2: serve one skill's YAML to Central Command by id.
+
+    The fourth piece E0.3 named when it refused skill bindings rather
+    than leave them accepted and inert. It rides the EXISTING CC<->Console
+    credential pair on this router, so no new trust direction is created:
+    Central Command already pulls marketplace installs here.
+
+    Tenant-scoped deliberately. A published skill is readable by any
+    tenant; an unpublished one only by the tenant that owns it, matching
+    the tenant-identity read on `/api/marketplace/skills/{id}`. An
+    internal caller must not become a way around that.
+    """
+    from harkeniq_console.db.repos import MarketplaceRepo
+
+    entry = await MarketplaceRepo(session).get_by_id(skill_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="skill not found")
+    if not entry.published and entry.tenant_id != tenant_id:
+        # Same answer as "does not exist": confirming it would leak that
+        # another tenant has a skill by this id.
+        raise HTTPException(status_code=404, detail="skill not found")
+    return {
+        "skill_id": entry.id,
+        "name": entry.name,
+        "version": entry.version,
+        "tier": entry.tier,
+        "validation_state": entry.validation_state,
+        "published": entry.published,
+        "yaml_content": entry.yaml_content or "",
+    }

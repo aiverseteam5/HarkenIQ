@@ -185,8 +185,15 @@ class TestAuditorCanReadTheEvidence:
 
 
 class TestSkillBindingIsRefused:
+    """E0.3 refused skill bindings and named A2 as the owner of the four
+    missing pieces. A2 built all four, so the refusal is gone -- and the
+    replacement must not be laxer, only later: a skill is accepted here
+    and JUDGED at preflight, where the Registry can be asked whether the
+    agent's own devices can perform what it recommends. That question
+    needs the agent's scope, so it cannot be answered at binding time."""
+
     @pytest.mark.asyncio
-    async def test_a_skill_binding_is_refused_with_the_reason(self):
+    async def test_a_skill_binding_is_now_accepted_and_judged_at_preflight(self):
         client, sessionmaker = await _client()
         site_id = await _seed(sessionmaker)
         res = await client.post("/api/operational-agents/", json={
@@ -197,10 +204,25 @@ class TestSkillBindingIsRefused:
                 {"kind": "skill", "capability_ref": "fan-health"},
             ],
         })
+        assert res.status_code == 201, res.text
+        kinds = {c["kind"] for c in res.json()["capabilities"]}
+        assert "skill" in kinds
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_skill_reference_is_still_refused(self):
+        """Accepting the KIND does not mean accepting anything in it."""
+        client, sessionmaker = await _client()
+        site_id = await _seed(sessionmaker)
+        res = await client.post("/api/operational-agents/", json={
+            "name": "blank-skill",
+            "scopes": [{"scope_type": "site", "scope_ref": site_id}],
+            "capabilities": [
+                {"kind": "action_class", "capability_ref": "SEL_CLEAR"},
+                {"kind": "skill", "capability_ref": "   "},
+            ],
+        })
         assert res.status_code == 400
-        detail = res.json()["detail"]
-        assert "not available yet" in detail
-        assert "A2" in detail
         await client.aclose()
 
     @pytest.mark.asyncio

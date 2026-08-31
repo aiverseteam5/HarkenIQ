@@ -129,6 +129,27 @@ async def _make_agent(client, site_id, **overrides):
     created = await client.post("/api/operational-agents/", json=body)
     assert created.status_code == 201, created.text
     agent_id = created.json()["id"]
+    # A2: activation is gated on a stored preflight for this exact
+    # configuration version, so the journey now runs through it. The
+    # fixture's devices have not declared capabilities, which reads as
+    # UNKNOWN rather than incapable, so the warnings are acknowledged --
+    # by a named human, exactly as an operator would.
+    pre = await client.post(f"/api/operational-agents/{agent_id}/preflight")
+    assert pre.status_code == 200, pre.text
+    result = pre.json()
+    if result.get("requires_acknowledgement"):
+        ack = await client.post(f"/api/operational-agents/{agent_id}/acknowledge")
+        assert ack.status_code == 200, ack.text
+    # A2 D1: an agent whose configuration grants UNATTENDED execution
+    # needs a named human to approve activating it -- on the same
+    # approvals queue a node action uses. A propose-only agent needs
+    # none, which is why this is conditional rather than a ceremony.
+    if result.get("requires_activation_approval"):
+        detail = await client.get(f"/api/operational-agents/{agent_id}")
+        subject = detail.json()["agent"].get("activation_subject_ref")
+        assert subject, "an activation needing approval must name its subject"
+        approved = await client.post(f"/api/approvals/{subject}/approve")
+        assert approved.status_code == 200, approved.text
     activated = await client.post(f"/api/operational-agents/{agent_id}/activate")
     assert activated.status_code == 200, activated.text
     return agent_id

@@ -355,8 +355,15 @@ class SMClient:
         tier: str = "community",
         validation_state: str = "tested",
         issued_by: str = "marketplace",
+        device_agent_ids: Optional[list] = None,
     ) -> dict:
-        """R5-2: push a marketplace skill to a Site Manager."""
+        """R5-2: push a marketplace skill to a Site Manager.
+
+        A2: `device_agent_ids` names the devices to install onto. Empty
+        keeps the site-wide behaviour marketplace installs rely on; an
+        Operational Agent always names its devices, because installing
+        onto a whole site from a rack-scoped agent is a scope escape.
+        """
         async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
             ack = await stub.InstallSkill(
@@ -369,6 +376,7 @@ class SMClient:
                     tier=tier,
                     validation_state=validation_state,
                     issued_by=issued_by,
+                    device_agent_ids=sorted(set(device_agent_ids or [])),
                 ),
                 metadata=_metadata(token),
             )

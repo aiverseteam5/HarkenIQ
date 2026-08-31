@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from harkeniq.capabilities import effective_actions
+from harkeniq_cc.agent_activation import activation_provenance
 from harkeniq_cc.capabilities import (
     implemented_actions,
     reachable_action_classes,
@@ -100,7 +101,17 @@ SCOPE_TYPES = (SCOPE_ORG_UNIT, SCOPE_SITE, SCOPE_DEVICE_CLASS, SCOPE_DEVICE)
 
 KIND_READ = "read"
 KIND_ACTION_CLASS = "action_class"
-#: Reserved, and deliberately NOT accepted yet. A0 accepted this kind,
+#: A2: real. The four pieces E0.3 named all exist now -- a Console
+#: skill-by-id endpoint on the existing internal channel, a Central
+#: Command fetch path, per-device targeting on InstallSkill, and an
+#: install-on-activation trigger.
+#:
+#: A skill is a governed COMPOSITION over capabilities that already
+#: exist. It may not expand permission, scope, capability, autonomy or
+#: approval authority; the one thing it can do is recommend an action,
+#: and that is validated against Capability Registry reach at preflight.
+#:
+#: Historical note, kept because it explains the shape. A0 accepted this kind,
 #: rendered it in the UI, validated nothing about it, and wired it to
 #: nothing: no skill was installed, no directive was queued, no device
 #: changed. E0.3 removed it rather than leave a capability that is
@@ -114,7 +125,7 @@ KIND_ACTION_CLASS = "action_class"
 #: install-on-activation trigger. Deferred, not discarded.
 KIND_SKILL = "skill"
 
-CAPABILITY_KINDS = (KIND_READ, KIND_ACTION_CLASS)
+CAPABILITY_KINDS = (KIND_READ, KIND_ACTION_CLASS, KIND_SKILL)
 
 #: Read capabilities an agent may be bound to. Each is an existing
 #: governed CC surface with its own permission guard; binding one grants
@@ -878,6 +889,25 @@ def agent_view(
             "status": agent.status,
             "version": agent.version,
             "actor": attribution_key(agent.id, agent.version),
+            # A2: the operator needs to see the version that is actually
+            # RUNNING, not only the one being edited. These are the same
+            # number until somebody edits an active agent, and the moment
+            # they differ is exactly when it matters.
+            **activation_provenance(agent),
+            "activation_subject_ref": (
+                getattr(agent, "activation_subject_ref", "") or None
+            ),
+            "activation_acknowledged_by": (
+                getattr(agent, "activation_acknowledged_by", "") or None
+            ),
+            "acknowledgement_current": (
+                bool(getattr(agent, "activation_acknowledged_by", ""))
+                and int(getattr(agent, "activation_acknowledged_version", 0) or 0)
+                == int(agent.version)
+            ),
+            "execution_budget": int(getattr(agent, "execution_budget", 0) or 0),
+            "budget_period": getattr(agent, "budget_period", "daily"),
+            "paused_reason": getattr(agent, "paused_reason", "") or None,
             "species": "agent",
             "autonomy_ceiling": agent.autonomy_ceiling,
             "require_approval_always": agent.require_approval_always,

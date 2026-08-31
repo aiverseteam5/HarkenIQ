@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0015"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0016"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -549,4 +549,56 @@ class TestExistingDatabase:
         assert "plan_hash" in pk, (
             "the dispatch ledger must key on the plan, or a re-approved "
             "wave reads as an already-dispatched one"
+        )
+
+    def test_cc_0016_lands_agent_activation_on_an_existing_tenant(self, tmp_path):
+        """A2's tables and columns arrive on a database that predates them.
+
+        The columns matter as much as the tables: an agent row without
+        `activation_acknowledged_version` cannot express "this
+        acknowledgement was for version 3", which is the whole D3
+        guarantee that an edit invalidates a human's acceptance.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("drop table cc_agent_skill_installs")
+        con.execute("drop table cc_agent_preflights")
+        for column in (
+            "execution_budget", "budget_period", "paused_reason",
+            "activation_acknowledged_by", "activation_acknowledged_at",
+            "activation_acknowledged_version", "activation_subject_ref",
+            "activated_version",
+        ):
+            con.execute(f"alter table cc_operational_agents drop column {column}")
+        con.execute("update alembic_version set version_num='0015'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        tables = _tables(db)
+        assert "cc_agent_preflights" in tables
+        assert "cc_agent_skill_installs" in tables
+        columns = _columns(db, "cc_operational_agents")
+        assert {
+            "execution_budget", "budget_period", "paused_reason",
+            "activation_acknowledged_version", "activated_version",
+        } <= columns
+
+        con = sqlite3.connect(db)
+        try:
+            pk = [
+                r[1] for r in con.execute(
+                    "pragma table_info(cc_agent_skill_installs)"
+                ) if r[5]
+            ]
+        finally:
+            con.close()
+        assert pk == [
+            "agent_id", "agent_version", "skill_id", "device_agent_id"
+        ], (
+            "the install ledger must key on the DEVICE, or a re-activation "
+            "installs twice and a rack-scoped agent cannot be told from a "
+            "site-wide one"
         )
