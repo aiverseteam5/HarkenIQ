@@ -134,6 +134,16 @@ class IPMIProtocol:
     def name(self) -> str:
         return "ipmi"
 
+
+    @classmethod
+    def supported_actions(cls) -> frozenset:
+        """IPMI reach: chassis identify and an atomic SEL clear.
+
+        Everything else in ``execute_action`` falls through to "not
+        supported by ipmi protocol", which is the truth this declares.
+        """
+        return frozenset({"IDENTIFY_LED", "SEL_CLEAR"})
+
     async def connect(self, credentials: dict) -> None:
         """Open an RMCP+ session to the BMC.
 

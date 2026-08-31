@@ -113,6 +113,7 @@ class IngestService:
         peers: Optional[list[str]] = None,
         firmware_json: str = "",
         device_class: str = "",
+        capabilities_json: str = "",
         site_id: str = "",
         site_name: str = "",
     ) -> str:
@@ -138,6 +139,16 @@ class IngestService:
                     firmware = parsed
             except ValueError:
                 logger.warning("Unparseable firmware_json from %s", agent_id)
+        capabilities = None
+        if capabilities_json:
+            try:
+                parsed = json.loads(capabilities_json)
+                if isinstance(parsed, dict):
+                    capabilities = parsed
+            except ValueError:
+                logger.warning(
+                    "Unparseable capabilities_json from %s", agent_id
+                )
         async with self.sessionmaker() as session:
             resolved_site = site_id or await self._site(session)
             await DeviceRepo(session).upsert_registration(
@@ -152,6 +163,7 @@ class IngestService:
                 rack_suggestion=rack_hint(agent_name),
                 firmware=firmware,
                 device_class=device_class,
+                capabilities=capabilities,
             )
             await session.commit()
         return site_name or self.config.site_name

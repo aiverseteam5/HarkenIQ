@@ -150,6 +150,11 @@ def create_app(state) -> FastAPI:
         # both enforced at Central Command.
         "scope-grants",
         "tenant-settings",
+        # Capability Registry 2026-08-31: what the fleet's executors can
+        # ACTUALLY do, reflected from each node's own declaration. Read
+        # only -- the Registry authors nothing and has no mutation to
+        # proxy. fleet.view at Central Command, same as /api/autonomy.
+        "capabilities",
     )
     # The tenant is in the PATH (/api/t/{tenant_id}/fleet/...), not in a
     # header and not in browser storage. One global cc_url served every

@@ -427,6 +427,7 @@ class FleetCacheRepo:
         firmware: Optional[list] = None,
         device_class: str = "",
         last_seen_at: Optional[datetime] = None,
+        capabilities: Optional[dict] = None,
     ) -> CCFleetCache:
         row = (
             await self.session.execute(
@@ -457,6 +458,12 @@ class FleetCacheRepo:
         # row's refresh time and says nothing about the agent.
         if last_seen_at is not None:
             row.last_seen_at = last_seen_at
+        # Same rule as last_seen_at: a poll from an SM that carries no
+        # declaration must leave the last one alone. An SM downgraded
+        # below the Registry would otherwise turn a whole site's proven
+        # capability into unknown on its next poll.
+        if capabilities is not None:
+            row.capabilities = capabilities
         row.snapshot_at = utcnow()
         await self.session.flush()
         return row

@@ -28,7 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
+from harkeniq.capabilities import action_facts
 from harkeniq_cc.autonomy import LADDER, action_risk_map
+from harkeniq_cc.capabilities import reachable_action_classes
 from harkeniq_cc.db.repos import (
     AgentProposalRepo,
     AuditRepo,
@@ -60,6 +62,7 @@ from harkeniq_cc.operational_agent import (
     UNREACHABLE_CANDIDATE,
     agent_view,
     attribution_key,
+    resolve_scope,
 )
 
 logger = logging.getLogger("harkeniq.cc.api.operational_agents")
@@ -231,6 +234,13 @@ async def _validate_scopes(
             )
 
 
+#: Platform capability truth, read from the protocols' own declarations.
+#: A module-level read is correct here: which action classes have code
+#: behind them is a property of the BUILD, not of a tenant, a request or
+#: a device, and it cannot change while the process runs.
+_PLATFORM_FACTS = action_facts()
+
+
 def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
     """Bindings may only reference capabilities that already exist.
 
@@ -255,11 +265,36 @@ def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
         if binding.kind not in CAPABILITY_KINDS:
             raise HTTPException(400, f"kind must be one of {list(CAPABILITY_KINDS)}")
         if binding.kind == KIND_ACTION_CLASS:
-            if binding.capability_ref.upper() not in known_actions:
+            ref = binding.capability_ref.upper()
+            if ref not in known_actions:
                 raise HTTPException(
                     400,
                     f"{binding.capability_ref!r} is not an action class this "
                     f"platform can execute",
+                )
+            # Capability Registry. Until now this check ended one line
+            # above, at "is it in the governed VOCABULARY" -- and the
+            # vocabulary is not the same set as what an executor can
+            # run. INTERFACE_RESET and CLEAR_COUNTERS are fully governed
+            # classes with no implementation on any protocol this
+            # platform ships, so an agent could be bound to one, propose
+            # it, get a human approval, have a directive dispatched, and
+            # be refused by the node. Every time, with nothing upstream
+            # able to say why.
+            #
+            # This is a PLATFORM fact, not a fleet fact: no device
+            # anywhere can run these, so the refusal needs no database
+            # read and applies before any scope is resolved.
+            if not _PLATFORM_FACTS[ref]["implemented"]:
+                raise HTTPException(
+                    400,
+                    f"{ref} is a governed action class that no executor in "
+                    f"this platform implements, so binding it would create "
+                    f"an agent that can only ever propose actions the node "
+                    f"will refuse. Its risk level, preconditions and "
+                    f"blast-radius semantics are intact and it stays in the "
+                    f"vocabulary; implementing it is a separate governed "
+                    f"capability slice.",
                 )
         elif binding.kind == KIND_READ:
             if binding.capability_ref.lower() not in READ_CAPABILITIES:
@@ -268,6 +303,88 @@ def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
                     f"{binding.capability_ref!r} is not a governed read "
                     f"capability ({', '.join(sorted(READ_CAPABILITIES))})",
                 )
+
+
+async def _refuse_zero_reach(
+    session: AsyncSession,
+    tenant_id: str,
+    agent_id: str,
+    capabilities: list[CapabilityBinding],
+) -> None:
+    """Refuse a binding no device in the agent's OWN scope can execute.
+
+    `_validate_capabilities` catches the platform-wide case (nothing
+    implements this class anywhere). This catches the fleet case: the
+    class is implemented, but not by anything this particular agent can
+    reach -- an agent scoped to servers and bound to INTERFACE_DISABLE,
+    or to a site whose switches do not permit it on their allow list.
+    Left unrefused, that agent looks correctly configured and proposes
+    nothing, or proposes and is refused at the node forever.
+
+    Runs AFTER the scope rows are written, and reaches the devices through
+    `resolve_scope` -- the SAME function the evaluator and `agent_view`
+    use to decide what an agent sees. That matters more than it looks:
+    the repository's E1.2 read filter is site-based, so a `device_class`
+    or `device` scope returns nothing through it, and this check would
+    then read "no devices in scope yet" and wave through a binding the
+    evaluator will never act on. Two notions of "in scope" is exactly the
+    divergence this codebase keeps paying for, so there is one.
+
+    Org-unit scopes still expand through `load_agent_scope` -- the ONE
+    scope resolver -- before `resolve_scope` flattens them, which is how
+    the runtime does it too. Nothing is committed yet, so raising here
+    leaves no agent behind.
+
+    REFUSES ON CAPABILITY, NEVER ON POLICY. The test is whether the
+    devices' PROTOCOLS implement the class, not whether their allow lists
+    currently permit it. An earlier version of this check used the
+    effective set and the compose gate caught it: the A0+A1 gate binds
+    SEL_CLEAR deliberately, to a demo node whose allow list does not
+    carry it, precisely to prove that the node's own refusal is final and
+    becomes attributed evidence. Refusing that binding here would have
+    promoted a mutable node policy into a hard Central Command
+    configuration constraint -- an operator could no longer configure an
+    agent ahead of a config rollout, and the Registry would be answering
+    question six, which belongs to the node.
+
+    UNKNOWN NEVER REFUSES. A device that has not declared could turn out
+    to be capable, and a fleet mid-upgrade is entirely undeclared; only
+    provable zero reach -- every in-scope device declared, none of them
+    IMPLEMENTING the class -- is a refusal.
+    """
+    wanted = [
+        b.capability_ref.upper()
+        for b in capabilities
+        if b.kind == KIND_ACTION_CLASS
+    ]
+    if not wanted:
+        return
+    agent_scope = await load_agent_scope(
+        session, tenant_id=tenant_id, agent_id=agent_id
+    )
+    scope_rules = await OperationalAgentRepo(session).list_scopes(agent_id)
+    devices = resolve_scope(
+        scope_rules,
+        await FleetCacheRepo(session).list_all(tenant_id),
+        agent_scope.site_ids,
+    )
+    reach = reachable_action_classes(devices)
+    if reach["devices"] == 0 or reach["unknown"]:
+        # No devices in scope yet, or some have not declared. An agent
+        # built before its fleet arrives is legitimate; refusing it
+        # would make the Registry an obstacle rather than a truth.
+        return
+    for ref in wanted:
+        if ref not in reach["implemented"]:
+            raise HTTPException(
+                400,
+                f"no device in this agent's scope can execute {ref}. "
+                f"{reach['devices']} device(s) are in scope and every one "
+                f"has declared its capabilities; none of their protocols "
+                f"implements this class, so no allow-list change could "
+                f"make it runnable here. Widen the agent's scope, or bind "
+                f"a class these devices can actually perform.",
+            )
 
 
 def _enforce_delegation_ceiling(creator_scope, scopes) -> None:
@@ -523,6 +640,12 @@ async def create_agent(
         created_by=actor,
     )
     await _apply_bindings(session, repo, agent, body.scopes, body.capabilities)
+    # Capability Registry: scope rows exist now, so the agent's own
+    # reach is resolvable through the one resolver. Nothing is
+    # committed yet, so a refusal here leaves no agent behind.
+    await _refuse_zero_reach(
+        session, user.tenant_id, agent.id, body.capabilities
+    )
     await AuditRepo(session).append(
         actor=actor,
         action="operational_agent.created",
@@ -681,6 +804,12 @@ async def replace_bindings(
     _validate_capabilities(body.capabilities)
     actor = user.email or user.user_id
     await _apply_bindings(session, repo, agent, body.scopes, body.capabilities)
+    # Capability Registry: scope rows exist now, so the agent's own
+    # reach is resolvable through the one resolver. Nothing is
+    # committed yet, so a refusal here leaves no agent behind.
+    await _refuse_zero_reach(
+        session, user.tenant_id, agent.id, body.capabilities
+    )
     await repo.bump_version(agent, actor)
     await AuditRepo(session).append(
         actor=actor,

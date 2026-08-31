@@ -1126,6 +1126,116 @@ assert 'gate-rival' in realms, realms
 print('audit records the tenant<->realm relationship')
 "
 
+step "A17: the Capability Registry reflects what the executors can ACTUALLY do"
+# Tokens expire on a long run; re-mint before the tail (E1 gate finding).
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+CAP=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/capabilities/)
+echo "$CAP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+rows = {c['action_type']: c for c in d['classes']}
+assert len(rows) == 14, len(rows)
+
+# The declaration actually travelled: node -> SM -> CC. A fleet reading
+# entirely undeclared means the transport broke, and it would look
+# exactly like a fleet that has not upgraded -- which is why it is
+# asserted rather than eyeballed.
+assert d['fleet']['declared'] > 0, d['fleet']
+assert 'redfish' in d['fleet']['protocols'], d['fleet']
+
+# D1 + the class this slice found. Both are fully governed and have no
+# executor; the Registry has to keep saying so.
+for name in ('INTERFACE_RESET', 'CLEAR_COUNTERS'):
+    r = rows[name]
+    assert r['implemented'] is False, (name, r)
+    assert r['implemented_by'] == [], (name, r)
+    assert r['reach'] == 'unimplemented', (name, r)
+    assert r['effective_device_count'] == 0, (name, r)
+assert rows['INTERFACE_RESET']['risk'] == 'high', rows['INTERFACE_RESET']
+
+# Reversibility is a different axis from risk. If these ever agree, one
+# of the two columns has become redundant.
+assert rows['SEL_CLEAR']['reversibility'] == 'irreversible', rows['SEL_CLEAR']
+assert rows['SEL_CLEAR']['risk'] == 'low', rows['SEL_CLEAR']
+assert rows['FIRMWARE_UPDATE']['inverse_action'] == 'FIRMWARE_ROLLBACK'
+
+# Something is genuinely reachable, or the declaration is empty and every
+# assertion above passes for the wrong reason.
+available = [k for k, v in rows.items() if v['reach'] == 'available']
+assert available, 'no class is available -- the declaration is empty'
+print('capability registry live:', d['fleet'])
+print('  unimplemented:', sorted(k for k, v in rows.items() if not v['implemented']))
+print('  available    :', sorted(available))
+"
+
+step "A17: the Registry confers nothing and adds no mutation"
+test "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/capabilities/)" = "405"
+echo "$CAP" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)['contract']
+assert 'not permission' in c['authority'], c
+assert 'final execution authority' in c['authority'], c
+assert 'never capable and never incapable' in c['unknown'], c
+print('contract carries its own limits')
+"
+
+step "A17: an agent may not be bound to a capability nothing can execute"
+GATE_SITE=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['sites'][0]['id'])")
+for CLASS in INTERFACE_RESET CLEAR_COUNTERS; do
+  CODE=$(curl -s -o /tmp/gate_cap.json -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    http://localhost:8090/api/operational-agents/ \
+    -d "{\"name\":\"gate-cap-$CLASS\",\"description\":\"gate\",
+         \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$GATE_SITE\"}],
+         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"$CLASS\"}]}")
+  test "$CODE" = "400" || { echo "$CLASS binding was NOT refused ($CODE)" >&2; exit 1; }
+  python3 -c "
+import json
+d = json.load(open('/tmp/gate_cap.json'))['detail']
+assert 'no executor in this platform implements' in d, d
+assert 'stays in the vocabulary' in d, d
+print('$CLASS binding refused, and the class keeps its governance')
+"
+done
+# And nothing was left behind by either refusal.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/operational-agents/ \
+  | python3 -c "
+import sys, json
+names = [a['name'] for a in json.load(sys.stdin)['agents']]
+leftover = [n for n in names if n.startswith('gate-cap-')]
+assert not leftover, leftover
+print('refused bindings left no agent behind')
+"
+
+step "A17.7: capability refuses, POLICY does not (the boundary the gate corrected)"
+# The Gate Agent above is bound to SEL_CLEAR, which redfish implements and
+# this demo node's allow list does NOT carry. That binding must SUCCEED:
+# the allow list is operator policy the node enforces as the final
+# execution authority, and refusing it here would make a mutable setting
+# a hard Central Command constraint. The state is reported instead.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID" | python3 -c "
+import sys, json
+v = json.load(sys.stdin)
+rows = {c['action_type']: c for c in v['capabilities']['action_classes']}
+sel = rows['SEL_CLEAR']['capability']
+assert sel['implemented'] is True, sel
+# Capable (redfish has the code) but permitted nowhere on this fleet.
+assert sel['capable_devices'] >= 1, sel
+assert sel['reach'] in ('available', 'not_permitted_on_any_node'), sel
+if sel['reach'] == 'not_permitted_on_any_node':
+    assert sel['reachable_devices'] == 0, sel
+    print('SEL_CLEAR: bound and capable, permitted on no node -- reported, not refused')
+else:
+    print('SEL_CLEAR: permitted on', sel['reachable_devices'], 'node(s)')
+# COLLECT_DIAGNOSTICS is on the node allow list, so it is fully available.
+cd_ = rows['COLLECT_DIAGNOSTICS']['capability']
+assert cd_['reach'] == 'available', cd_
+print('COLLECT_DIAGNOSTICS available on', cd_['reachable_devices'], 'node(s)')
+"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

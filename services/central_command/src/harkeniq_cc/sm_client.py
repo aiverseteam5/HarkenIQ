@@ -139,6 +139,17 @@ class SMClient:
                         inventory = json.loads(d.inventory_json)
                     except (json.JSONDecodeError, TypeError):
                         pass
+                # Capability Registry: an SM that predates it sends "",
+                # and a malformed blob must read as UNDECLARED rather
+                # than as an empty capability set.
+                capabilities = None
+                if getattr(d, "capabilities_json", ""):
+                    try:
+                        parsed = json.loads(d.capabilities_json)
+                        if isinstance(parsed, dict):
+                            capabilities = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        capabilities = None
                 devices.append({
                     "agent_id": d.agent_id,
                     "agent_name": d.agent_name,
@@ -151,6 +162,7 @@ class SMClient:
                     "last_seen_unix": d.last_seen_unix,
                     "service_tag": d.service_tag,
                     "firmware": inventory.get("firmware") or [],
+                    "capabilities": capabilities,
                 })
             incidents = []
             for inc in snap.incidents:

@@ -139,6 +139,7 @@ class DeviceRepo:
         rack_suggestion: Optional[str] = None,
         firmware: Optional[list[dict]] = None,
         device_class: str = "",
+        capabilities: Optional[dict] = None,
     ) -> Device:
         device = await self.get_by_agent_id(agent_id)
         if device is None:
@@ -174,6 +175,12 @@ class DeviceRepo:
             device.rack_suggestion = rack_suggestion
         if firmware is not None:
             device.firmware = firmware
+        # A re-registration that declares nothing must not erase what the
+        # device declared before: an agent rolled back to a build without
+        # the declaration would otherwise silently become "unknown reach"
+        # and take its bound action classes with it.
+        if capabilities is not None:
+            device.capabilities = capabilities
         device.last_seen_at = utcnow()
         await self.session.flush()
         return device

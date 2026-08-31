@@ -49,6 +49,17 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/incidents/"):                 ("incident.view", READ_SCOPED, False),
     ("GET", "/api/incidents/{incident_id}"):    ("incident.view", READ_SCOPED, False),
     ("GET", "/api/outcomes/metrics"):           ("fleet.view", READ_SCOPED, False),
+    # Capability Registry. READ_SCOPED, not UNSCOPED: unlike /api/autonomy
+    # (which describes tenant-wide posture) this describes the caller's
+    # actual DEVICES, so effective reach must be computed only over the
+    # fleet that caller may see. A scoped principal reading the whole
+    # tenant's reach would be a fleet-inventory leak wearing a
+    # capability label.
+    ("GET", "/api/capabilities/"):              ("fleet.view", READ_SCOPED, False),
+    # READ_SCOPED like /api/fleet/{device_id}: an out-of-scope device is
+    # 404, never 403, because a 403 confirms it exists.
+    ("GET", "/api/capabilities/devices/{device_id}"):
+        ("fleet.view", READ_SCOPED, False),
 
     # -- approvals -------------------------------------------------
     ("GET", "/api/approvals/"):                 ("action.approve", READ_SCOPED, False),

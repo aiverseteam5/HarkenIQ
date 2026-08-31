@@ -111,6 +111,27 @@ class DeviceProtocol(Protocol):
         """Protocol name: 'redfish' | 'ipmi' | 'gnmi' | etc."""
         ...
 
+    @classmethod
+    def supported_actions(cls) -> frozenset:
+        """The action classes this protocol's code actually implements.
+
+        Capability Registry: this is the AUTHORITATIVE declaration of
+        implementation reach, and it is a classmethod because reach is a
+        property of the code, not of a connected device -- the platform
+        must be able to state what a protocol can do without one.
+
+        Reach is NOT policy. A node's ``actions.allow_list`` decides what
+        this particular node permits, and stays the final execution
+        authority; the intersection of the two is what the node can
+        actually do. Keeping them separate is what lets the Registry say
+        "implemented but not permitted here" instead of collapsing two
+        different facts into one list.
+
+        A protocol that does not declare reads UNKNOWN at the Registry --
+        never "capable", never "incapable".
+        """
+        ...
+
 
 def create_device_protocol(
     protocol_name: str,

@@ -147,6 +147,37 @@ class GNMIProtocol:
     def name(self) -> str:
         return "gnmi"
 
+
+    @classmethod
+    def supported_actions(cls) -> frozenset:
+        """gNMI reach: admin-state writes and a counter clear.
+
+        TWO governed action classes are deliberately ABSENT, and both
+        absences are the point of the Capability Registry:
+
+        INTERFACE_RESET (D1) has a risk level, preconditions,
+        blast-radius semantics and verification semantics -- and no gNMI
+        implementation whatsoever: ``execute_action`` falls through to
+        "not supported by gnmi protocol".
+
+        CLEAR_COUNTERS is refused a few lines further down with "no gNMI
+        transport on this NOS": counter clearing is CLI-only on SONiC,
+        and R6 chose to refuse it rather than fake it. That refusal was
+        correct and stays; what was missing until now is that nothing
+        upstream KNEW, so the Operational Agent's condition table could
+        map an interface condition to CLEAR_COUNTERS, a human could
+        approve it, and the node would refuse it every single time.
+
+        Declaring either here to make the list look complete would make
+        the Registry lie, and the Registry exists to end exactly that.
+        Implementing them is a separate governed capability slice with
+        its own transport, safety and live proof.
+        """
+        return frozenset({
+            "INTERFACE_DISABLE",
+            "INTERFACE_ENABLE",
+        })
+
     async def connect(self, credentials: dict) -> None:
         username = credentials.get("username", "")
         password = credentials.get("password", "")

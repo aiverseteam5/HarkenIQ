@@ -194,6 +194,12 @@ class Device(Base):
     bmc_location: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     # R4-2 P14: firmware inventory [{component, name, version}] (R-AGENT-17)
     firmware: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    # Capability Registry: the node's OWN declaration of what its executor
+    # can actually do. NULL means the device has not declared -- a node
+    # predating the Registry -- and must read as UNKNOWN reach upstream,
+    # never as "no capabilities". Treating unknown as none would strip
+    # capability from every fleet that has not upgraded yet.
+    capabilities: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     rack_id: Mapped[str | None] = mapped_column(ForeignKey("racks.id"), nullable=True)
     rack_suggestion: Mapped[str | None] = mapped_column(String(255), nullable=True)
     peers: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)

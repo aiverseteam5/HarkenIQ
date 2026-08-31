@@ -1065,3 +1065,103 @@ token authorizes the Site Manager, which remains the execution and
 safety boundary for every site it serves. Per-site authority for people
 and agents is enforced at Central Command and arrives with E1.2. No
 second authorization model is introduced here.
+
+### A17 — 2026-08-31 — The Capability Registry: capability is a declared fact, not an assumption (decided: Vinod)
+
+**Trigger.** The platform governs fourteen action classes and could
+state, for any of them, its risk, its preconditions, its blast radius,
+its approval policy and whether an autonomy budget grants it. It could
+not state whether **any code existed to execute it**. Two classes turned
+out to have none: `INTERFACE_RESET`, which no protocol has ever
+implemented, and `CLEAR_COUNTERS`, which R6 correctly refused to fake
+because SONiC exposes counter clearing only over CLI. Both were fully
+governed, both were bindable to an Operational Agent, and the agent's
+own condition table mapped an interface condition straight to
+`CLEAR_COUNTERS` — so a proposal would be made, a human would approve
+it, a directive would be dispatched, and the node would refuse it. Every
+time, with nothing upstream able to say why.
+
+**A17.1 — Capability is its own question.** Six questions govern an
+action and none substitutes for another:
+
+| Question | Answered by |
+|---|---|
+| **Can** this be executed at all? | the Capability Registry |
+| Who may ask for it? | RBAC permissions |
+| Where may they ask for it? | scope grants (E1.2) |
+| May it run unattended? | the autonomy contract (S5) |
+| Must a human decide? | approval policy (E0.1) |
+| May it happen right now? | the execution gates and the node's allow list |
+
+The Registry answers the first only, and confers nothing.
+
+**A17.2 — The node is the only authoritative source.** A device's
+capability is declared by the agent that would execute the action, from
+its protocol's own implementation reach and its own configured allow
+list. The Site Manager stores that declaration, Central Command caches
+and composes it, the Console and the Operational Agent read it. **No
+layer above the node may declare a capability**, and no surface may
+carry a capability contract of its own.
+
+**A17.3 — Reach and policy are reported separately.** Three sets travel
+together: what the protocol implements, what the node permits, and their
+intersection. "There is no code for it" and "this node does not permit
+it" are different problems with different fixes, and collapsing them
+into one list would leave an operator unable to tell which they have.
+
+**A17.4 — Unknown is a real answer and is never zero.** A device that
+has not declared reads `unknown` — never capable, never incapable. No
+migration backfills an empty declaration, and unknown reach never
+refuses a binding or a proposal; only provable zero reach does. Without
+this rule a fleet that upgraded Central Command before its agents would
+lose every bound action class at once.
+
+**A17.5 — `reversibility` joins `ACTION_RISK`.** One new platform-level
+declaration, on the action class, beside risk: `none` /
+`self_reverting` / `reversible` (naming the inverse class) /
+`irreversible`. It is a genuinely different axis — `SEL_CLEAR` is risk
+`low` and permanently destroys the event log — and in this amendment it
+is **reported only**: no grant, approval requirement or execution gate
+reads it.
+
+**A17.6 — An unimplemented class keeps every governed semantic.**
+`INTERFACE_RESET` and `CLEAR_COUNTERS` retain their risk level,
+preconditions, blast-radius and verification semantics and stay in the
+`ActionType` vocabulary. Deleting a governed class to make the Registry
+pass is explicitly refused: this is a capability truth problem, not a
+reason to drop governance. Implementing either is a separate governed
+capability slice with its own transport, safety, validation and
+live-proof boundary.
+
+**A17.7 — Consumers refuse on CAPABILITY, never on POLICY.** An
+Operational Agent may not be bound to a class no executor implements,
+nor to one no device in its own scope has the code for, and may not
+propose a class its target device's protocol cannot perform. Refusals
+name the capability reason, so an operator is sent to the right fix.
+
+A node's `allow_list` is **not** such a ground. It is operator policy,
+changeable at any time, and §A17.1 already assigns "may it happen right
+now" to the node, which enforces it as the final execution authority. A
+class the nodes implement but do not currently permit therefore **binds
+and proposes normally**, and the node's refusal becomes attributed
+evidence in the error budget — which is the ratified A0+A1 behaviour and
+the mechanism by which an operator discovers the policy is wrong.
+Refusing it at Central Command would promote a mutable node setting into
+a hard configuration constraint and make it impossible to configure an
+agent ahead of a config rollout. The state "bound, capable, permitted
+nowhere" is instead REPORTED, by name, on the agent view.
+
+**A17.8 — Deferred, named, not abandoned.**
+
+- **Capability execution gate.** `execution_permitted()` reserves
+  `capability` as its sixth decision input and nothing supplies it. This
+  amendment deliberately does **not** refactor the production execution
+  chain to fill it; `Agent._authorize_execution` and the node allow list
+  are untouched. A later slice connects Registry truth into the runtime
+  authorization path **without creating a second execution engine or
+  authorization model**, and must land before any capability-dependent
+  autonomous expansion relies on a runtime capability gate.
+- **Skill recommendation validation.** `ActionRecommendation` is a fifth
+  capability declaration site: a skill may recommend any action string.
+  A later Registry-consumer slice validates skill-recommended actions
+  against executor reach.

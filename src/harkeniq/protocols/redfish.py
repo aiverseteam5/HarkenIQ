@@ -60,6 +60,20 @@ class RedfishDeviceProtocol:
         """Underlying Poller (legacy accessor for existing agent code)."""
         return self._poller
 
+
+    @classmethod
+    def supported_actions(cls) -> frozenset:
+        """Redfish reach == the ActionExecutor's own dispatch chain.
+
+        This protocol executes through ``ActionExecutor`` on its legacy
+        direct path (``_protocol_dispatch`` is False for redfish), so the
+        chain there IS the reach and is imported rather than restated --
+        a second copy would be a second capability model.
+        """
+        from harkeniq.actions.executor import EXECUTOR_DISPATCH_ACTIONS
+
+        return EXECUTOR_DISPATCH_ACTIONS
+
     async def connect(self, credentials: dict) -> None:
         """Connect to BMC via Redfish session authentication."""
         self._client = RedfishClient(

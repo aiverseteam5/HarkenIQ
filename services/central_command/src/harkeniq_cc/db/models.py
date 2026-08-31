@@ -223,6 +223,12 @@ class CCFleetCache(Base):
     # R4-2 P14/P15: warranty lookup key + firmware inventory
     service_tag: Mapped[str] = mapped_column(String(255), default="")
     firmware: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    # Capability Registry: the node's own declaration, carried verbatim
+    # from the Site Manager. NULL means the device has not declared and
+    # its reach is UNKNOWN -- distinct from an empty effective set, which
+    # is a proven "this device can do nothing". Collapsing the two would
+    # make the Registry lie about every un-upgraded fleet.
+    capabilities: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     # When the SITE last saw the agent (FleetDevice.last_seen_unix). Distinct
     # from snapshot_at, which is only when CC last refreshed this cache row:
     # a Site Manager that keeps polling makes snapshot_at fresh no matter how

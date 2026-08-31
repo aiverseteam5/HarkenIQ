@@ -333,6 +333,59 @@ class Agent:
         )
         self._running = True
 
+    def declare_capabilities(self) -> dict:
+        """This node's capability declaration (Capability Registry).
+
+        The AUTHORITATIVE statement of what this device can actually do,
+        and the only one: the Site Manager stores it, Central Command
+        caches it, /api/capabilities composes it and the Operational
+        Agent validates against it -- none of them may declare a
+        capability this node did not.
+
+        Reach comes from the protocol's own code; the allow list comes
+        from this node's config. Both are reported, because "no code for
+        it" and "this node does not permit it" are different problems
+        with different fixes, and an operator staring at a device that
+        will not act needs to know which one they have.
+
+        This declaration changes NOTHING about execution: the allow list
+        consulted by ActionExecutor remains the final authority, exactly
+        as before. Connecting Registry truth to the runtime
+        authorization path is the named capability-execution-gate
+        follow-up, deliberately not attempted here.
+        """
+        from harkeniq.capabilities import declare, protocol_reach_of
+
+        actions_cfg = self.config.get("actions") or {}
+        allow_list = actions_cfg.get("allow_list")
+        if allow_list is None:
+            from harkeniq.actions.executor import DEFAULT_ALLOW_LIST
+
+            allow_list = list(DEFAULT_ALLOW_LIST)
+        protocol_name = (
+            getattr(self.protocol, "name", None)
+            or (self.config.get("bmc") or {}).get("protocol")
+            or "redfish"
+        )
+        declaration = declare(
+            protocol_name,
+            allow_list,
+            device_class=getattr(
+                self.device_identity, "device_class", "server"
+            ),
+        )
+        # Prefer the LIVE protocol object's own declaration when there is
+        # one: the instance is what will actually execute, and a build
+        # where the factory and the instance disagree must report the
+        # instance rather than a name lookup.
+        if self.protocol is not None:
+            reach = protocol_reach_of(self.protocol)
+            if reach is not None:
+                declaration["implemented"] = sorted(reach)
+                declaration["effective"] = sorted(reach & set(declaration["allow_list"]))
+                declaration["reach_known"] = True
+        return declaration
+
     async def _register_with_sm(self) -> bool:
         """Register with the Site Manager; returns True on success.
 
@@ -358,6 +411,7 @@ class Agent:
             device_class=getattr(
                 self.device_identity, "device_class", "server"
             ),
+            capabilities=self.declare_capabilities(),
         )
         if reg_ack is None:
             return False
