@@ -2121,6 +2121,33 @@ class OperationalAgentRepo:
             await self.session.execute(stmt.order_by(CCOperationalAgent.created_at))
         ).scalars().all()
 
+    async def list_pending_activation(
+        self, tenant_id: str
+    ) -> Sequence[CCOperationalAgent]:
+        """Agents whose ACTIVATION is waiting on a human (A2 D1).
+
+        A preflight that found unattended grants raises a subject; until
+        somebody decides it, the activation is waiting exactly as a node
+        action or an agent proposal waits. It belongs in the one queue,
+        or the operator has to know to go looking on the agent page --
+        which is a second approval surface in everything but name.
+
+        An agent that is already active or retired is excluded: the
+        subject ref stays on the row as the record of what was approved,
+        but there is nothing left to decide.
+        """
+        return (
+            await self.session.execute(
+                select(CCOperationalAgent)
+                .where(
+                    CCOperationalAgent.tenant_id == tenant_id,
+                    CCOperationalAgent.activation_subject_ref != "",
+                    CCOperationalAgent.status.notin_(("active", "retired")),
+                )
+                .order_by(CCOperationalAgent.updated_at)
+            )
+        ).scalars().all()
+
     async def bump_version(self, agent: CCOperationalAgent, actor: str) -> None:
         """Any configuration change is a new version.
 
@@ -2444,7 +2471,7 @@ class AgentProposalRepo:
         proposal.dispatch_reason = reason[:512]
 
     async def count_in_flight(
-        self, tenant_id: str, actor: str, since: datetime
+        self, tenant_id: str, agent_id: str, since: datetime
     ) -> int:
         """Unattended work this agent has already launched but not settled.
 
@@ -2458,13 +2485,17 @@ class AgentProposalRepo:
         A dispatched action is an execution in flight, so it counts
         against the allowance. Settled proposals leave `dispatched`, so
         this never double-counts what outcome history already holds.
+
+        Matched on the agent across versions, for the same reason
+        `count_executions` is: work launched under v1 is still this
+        agent's work after an edit makes it v2.
         """
         return int(
             (
                 await self.session.execute(
                     select(func.count(CCAgentProposal.id)).where(
                         CCAgentProposal.tenant_id == tenant_id,
-                        CCAgentProposal.actor == actor,
+                        CCAgentProposal.agent_id == agent_id,
                         CCAgentProposal.status == "dispatched",
                         CCAgentProposal.dispatched_at >= since,
                     )
@@ -2975,21 +3006,37 @@ class AgentPreflightRepo:
         return row is not None
 
     async def count_executions(
-        self, tenant_id: str, actor: str, since: datetime
+        self, tenant_id: str, agent_id: str, since: datetime
     ) -> int:
-        """Executions attributed to this agent in the budget window (D2).
+        """Executions attributed to this AGENT in the budget window (D2).
 
         Counts what actually RAN, from the existing outcome history --
         not proposals. A proposal that is never executed consumes
         nothing, because intent is not consumption.
+
+        Matched on the agent, ACROSS its configuration versions, and
+        that distinction is the whole correctness of the budget. Each
+        outcome still records the exact version that decided it (D3
+        requires attribution to name the configuration), but the
+        allowance belongs to the agent: keyed to `op-agent:<id>@v<n>`
+        exactly, editing a description bumped the version and silently
+        refilled a spent budget -- so the one control a customer sets to
+        bound unattended work was reset by the most routine edit there
+        is.
+
+        The prefix is a generated hex id, so it carries no LIKE
+        wildcards; the value is parameterised regardless.
         """
         from harkeniq_cc.db.models import CCOutcomeHistory
+        from harkeniq_cc.operational_agent import ATTRIBUTION_PREFIX
 
         return int(
             (
                 await self.session.execute(
                     select(func.count(CCOutcomeHistory.id)).where(
-                        CCOutcomeHistory.actor == actor,
+                        CCOutcomeHistory.actor.like(
+                            f"{ATTRIBUTION_PREFIX}{agent_id}@v%"
+                        ),
                         CCOutcomeHistory.recorded_at >= since,
                     )
                 )

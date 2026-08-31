@@ -136,6 +136,68 @@ def _proposal_item(proposal) -> dict:
     }
 
 
+def _activation_item(agent, preflight) -> dict:
+    """One pending agent ACTIVATION as a queue item (A2 D1).
+
+    The third origin, in the SAME envelope, because there is one queue.
+    An activation subject that only appeared on the agent's own page
+    would be a second approval surface in everything but name: the
+    operator who works the queue would never see it.
+
+    `action_id` is the activation subject ref -- the digest over the
+    agent, its configuration version and the exact set of classes
+    activation would let run unattended -- because that is what the
+    decision endpoint takes, and what an approval binds to.
+    """
+    from harkeniq_cc.operational_agent import attribution_key
+
+    result = (preflight.result if preflight is not None else None) or {}
+    return {
+        "origin": "agent_activation",
+        "id": agent.id,
+        "site_id": "",
+        "action_id": agent.activation_subject_ref,
+        # Not an action class: activating a bundle is not running one.
+        # Named rather than left blank so a queue row is legible.
+        "action_type": "AGENT_ACTIVATION",
+        "device_agent_id": "",
+        "decision": None,
+        "decided_by": None,
+        "decided_at": None,
+        "routed_at": (
+            preflight.produced_at.isoformat()
+            if preflight is not None and preflight.produced_at else None
+        ),
+        "delivered_at": None,
+        "activation": {
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "actor": attribution_key(agent.id, agent.version),
+            "configuration_version": int(agent.version),
+            # What the human is actually being asked to authorize: the
+            # classes this configuration would let run with nobody
+            # watching. Approving grants no RBAC, scope or capability.
+            "unattended_classes": result.get("unattended_classes") or [],
+            "autonomy_ceiling": int(agent.autonomy_ceiling or 0),
+            "preflight_overall": result.get("overall") or "unknown",
+            "warn_dimensions": result.get("warn_dimensions") or [],
+            "unknown_dimensions": result.get("unknown_dimensions") or [],
+            "blocked_dimensions": result.get("blocked_dimensions") or [],
+            "acknowledged_by": agent.activation_acknowledged_by or None,
+            "acknowledgement_current": (
+                bool(agent.activation_acknowledged_by)
+                and int(agent.activation_acknowledged_version or 0)
+                == int(agent.version)
+            ),
+            "note": (
+                "Approving authorizes activation; it does not activate. A "
+                "person still activates, and the gate re-checks the preflight "
+                "then."
+            ),
+        },
+    }
+
+
 class BatchDecisionRequest(BaseModel):
     action_ids: list[str]
     decision: str  # "approved" or "denied"
@@ -269,14 +331,29 @@ async def _record_and_evaluate(
     # record whose scope_ok is false, but writing one anyway would put a
     # name in the ledger beside a decision they were never entitled to
     # make -- and the ledger is the evidence R-C3 promises.
+    # An agent ACTIVATION names no site, because the agent's reach can
+    # span sites, org units and device classes -- there is no single site
+    # to hold authority over. So it is asked as the tenant-level question
+    # it actually is, explicitly, rather than falling through on an empty
+    # site id: `permits` treats "no target named" as the tenant question
+    # anyway, and relying on that left the refusal saying "the site it
+    # targets" about a subject that targets no site.
+    tenant_level = subject_type == SUBJECT_AGENT_ACTIVATION
     if not scope.permits(
-        "action.approve", site_id=site_id, device_agent_id=device_agent_id
+        "action.approve",
+        site_id=site_id,
+        device_agent_id=device_agent_id,
+        tenant_object=tenant_level,
     ):
         raise HTTPException(
             status_code=403,
             detail=(
-                f"this {action_type} is outside your authorized scope: you "
-                "do not hold 'action.approve' over the site it targets"
+                "activating an Operational Agent is a tenant-level decision, "
+                "because its reach is not confined to one site: you need "
+                "'action.approve' for this tenant, not for a site within it"
+                if tenant_level
+                else f"this {action_type} is outside your authorized scope: "
+                "you do not hold 'action.approve' over the site it targets"
             ),
         )
 
@@ -902,12 +979,17 @@ async def _attach_approval_progress(
         return
     repo = ApprovalRecordRepo(session)
     by_subject: dict[str, list] = {}
-    for subject_type in (SUBJECT_ACTION, SUBJECT_AGENT_PROPOSAL):
-        refs = [
-            i["action_id"] for i in items
-            if (i["origin"] == "agent") == (subject_type == SUBJECT_AGENT_PROPOSAL)
-        ]
-        by_subject.update(await repo.map_for_subjects(subject_type, refs))
+    # Each origin keeps its own subject type, so a proposal id and an
+    # activation digest can never collide in the ledger.
+    _SUBJECT_FOR_ORIGIN = {
+        "node": SUBJECT_ACTION,
+        "agent": SUBJECT_AGENT_PROPOSAL,
+        "agent_activation": SUBJECT_AGENT_ACTIVATION,
+    }
+    for origin, subject_type in _SUBJECT_FOR_ORIGIN.items():
+        refs = [i["action_id"] for i in items if i["origin"] == origin]
+        if refs:
+            by_subject.update(await repo.map_for_subjects(subject_type, refs))
 
     policies = await ApprovalPolicyRepo(session).list_all(tenant_id)
     groups = {g.id: g for g in await ApprovalGroupRepo(session).list_all(tenant_id)}
@@ -965,21 +1047,59 @@ async def list_pending(
     proposals = await AgentProposalRepo(session).list_awaiting_approval(
         user.tenant_id, scope=scope
     )
+
+    # A2/D1: activations waiting on a human, in the SAME queue. Listed
+    # only when this caller could actually decide one -- `permits` with
+    # no target is the tenant-wide question, which is exactly what
+    # `_record_and_evaluate` asks for an activation subject. One rule,
+    # asked in both places, so the queue never shows a row the decision
+    # would refuse and never hides one it would allow.
+    activations: list[dict] = []
+    if page == 1 and scope.permits("action.approve"):
+        from harkeniq_cc.db.repos import AgentPreflightRepo, OperationalAgentRepo
+
+        pre_repo = AgentPreflightRepo(session)
+        for agent in await OperationalAgentRepo(session).list_pending_activation(
+            user.tenant_id
+        ):
+            activations.append(
+                _activation_item(agent, await pre_repo.current(agent.id))
+            )
+
     items = (
-        [_proposal_item(p) for p in proposals] if page == 1 else []
+        activations + [_proposal_item(p) for p in proposals] if page == 1 else []
     ) + [_route_dict(r) for r in routes]
 
     # E0.1: every item says how many approvals it needs and how many it
     # has. An operator must be able to see "1 of 2" before deciding,
     # otherwise a second approver has no way to know they are needed.
     await _attach_approval_progress(session, user.tenant_id, items)
+
+    # An activation whose decision is COMPLETE is no longer waiting on a
+    # human -- it is waiting on an operator to press activate, which is
+    # not a queue item. Filtered here rather than in the query because
+    # "is this decided" is the completion rule's answer, and asking it
+    # twice in two ways is how the two drift apart.
+    decided = {
+        i["action_id"] for i in items
+        if i["origin"] == "agent_activation"
+        and (i.get("approval") or {}).get("state") != "pending"
+    }
+    if decided:
+        items = [
+            i for i in items
+            if not (i["origin"] == "agent_activation" and i["action_id"] in decided)
+        ]
+    activation_total = sum(1 for i in items if i["origin"] == "agent_activation")
+
     return {
         "actions": items,
         "page": page,
         "page_size": page_size,
-        "total": total + len(proposals),
+        "total": total + len(proposals) + activation_total,
         "node_total": total,
         "agent_total": len(proposals),
+        "activation_total": activation_total,
         "tenant_id": user.tenant_id,
     }
 

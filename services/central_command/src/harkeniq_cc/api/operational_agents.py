@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq.capabilities import action_facts
+from harkeniq_cc.agent_activation import activation_provenance
 from harkeniq_cc.approval_policy import STATE_APPROVED
 from harkeniq_cc.autonomy import LADDER, action_risk_map
 from harkeniq_cc.capabilities import reachable_action_classes
@@ -157,10 +158,12 @@ def _agent_dict(agent, scopes=(), capabilities=()) -> dict:
             agent.activated_at.isoformat() if agent.activated_at else None
         ),
         # A19.9: the configuration actually switched on, reported by the
-        # transition itself and not only by the detail read -- a caller
-        # that just activated should not have to ask again to learn what
-        # it activated.
-        "activated_version": int(agent.activated_version or 0),
+        # transition and the LIST too, not only by the detail read -- a
+        # caller that just activated should not have to ask again to
+        # learn what it activated, and an operator scanning the list
+        # should see a drifted agent without opening it. From the one
+        # provenance rule, so no view can disagree with another.
+        **activation_provenance(agent),
         "execution_budget": int(agent.execution_budget or 0),
         "budget_period": agent.budget_period,
         "paused_reason": agent.paused_reason or None,
@@ -986,12 +989,41 @@ async def get_agent_preflight(
             "configuration_version": int(agent.version),
             "detail": "no preflight has been run for this configuration",
         }
+    result = row.result or {}
+
+    # A2/D1: readiness has to say whether the approval it demands has
+    # actually been given, and by how many people. Reported from
+    # `activation_approval_state` -- E0.1's completion rule -- so the
+    # page can never show "approved" where the gate would refuse.
+    activation_approval = None
+    if result.get("requires_activation_approval") and agent.activation_subject_ref:
+        from harkeniq_cc.api.approvals import activation_approval_state
+
+        block = await activation_approval_state(
+            session, user.tenant_id, agent.activation_subject_ref,
+        )
+        activation_approval = {
+            "subject_ref": agent.activation_subject_ref,
+            **block,
+            "note": (
+                "Decided on the approvals queue, under action.approve, on the "
+                "same ledger a node action uses. Approving authorizes "
+                "activation; a person still activates."
+            ),
+        }
+
     return {
         "agent_id": agent.id, "exists": True,
         "current": int(row.configuration_version) == int(agent.version),
         "produced_by": row.produced_by,
         "produced_at": row.produced_at.isoformat() if row.produced_at else None,
-        **(row.result or {}),
+        "acknowledged_by": agent.activation_acknowledged_by or None,
+        "acknowledgement_current": (
+            bool(agent.activation_acknowledged_by)
+            and int(agent.activation_acknowledged_version or 0) == int(agent.version)
+        ),
+        "activation_approval": activation_approval,
+        **result,
     }
 
 
