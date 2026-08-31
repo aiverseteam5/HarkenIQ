@@ -376,9 +376,30 @@ class TestAgentOriginSharesTheContract:
     """An agent's request earns no easier path to a decision."""
 
     async def _proposal(self, stack, site_id, action_type="POWER_CYCLE"):
-        from harkeniq_cc.db.models import CCAgentProposal
+        """A proposal, and the ACTIVE agent it is attributed to.
+
+        A2's dispatch gate re-checks the proposing agent at decision time
+        (D3): identity, activation state, tenant and safety, against the
+        world as it is now rather than as it was when the proposal was
+        made. A proposal attributed to an agent that does not exist is
+        correctly refused, so this fixture builds the agent it names.
+
+        The agent row is created directly rather than through the API
+        because this file tests the APPROVAL ledger, not the activation
+        lifecycle -- but its state is the state a real activation
+        produces: active, at the version the attribution key names.
+        """
+        from harkeniq_cc.db.models import CCAgentProposal, CCOperationalAgent
 
         async with stack.sessionmaker() as session:
+            agent = CCOperationalAgent(
+                id="ag1", tenant_id=TENANT, name="fixture-agent",
+                description="the agent this proposal is attributed to",
+                version=1, status="active", activated_version=1,
+                autonomy_ceiling=0, require_approval_always=True,
+                created_by="fixture", updated_by="fixture",
+            )
+            session.add(agent)
             row = CCAgentProposal(
                 tenant_id=TENANT, agent_id="ag1", actor="op-agent:ag1@v1",
                 agent_version=1, site_id=site_id, device_agent_id="node-1",

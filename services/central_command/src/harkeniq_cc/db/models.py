@@ -875,6 +875,35 @@ class CCOperationalAgent(Base):
     #: back-pressure on a misconfigured evaluator; not a budget (per-agent
     #: budgets are A2).
     max_proposals_per_day: Mapped[int] = mapped_column(Integer, default=25)
+    #: A2 (D2): the per-agent EXECUTION budget. Counts actions actually
+    #: executed under this agent's attribution, the way S5 budgets count
+    #: actions -- not proposals, because a proposal that never runs
+    #: consumes nothing and intent is not consumption. 0 = unset; the
+    #: tenant and site budgets still apply either way.
+    #:
+    #: Exhaustion stops UNATTENDED execution only. It means "this agent
+    #: has spent its delegated unattended allowance", never "this agent
+    #: is disabled": it keeps observing, reasoning, proposing, and
+    #: executing whatever a human approves.
+    execution_budget: Mapped[int] = mapped_column(Integer, default=0)
+    budget_period: Mapped[str] = mapped_column(String(16), default="daily")
+    #: A2: per-agent safety. A paused agent proposes nothing. This can
+    #: only ever tighten -- it cannot loosen a tenant or site stop
+    #: switch, which stop the agent whatever this says.
+    paused_reason: Mapped[str] = mapped_column(String(512), default="")
+    #: A2 (D3/D1): a named human accepted this configuration's warnings
+    #: and unknowns. Bound to the version it was given for, so editing
+    #: the agent invalidates it -- otherwise somebody acknowledges v1 and
+    #: the estate runs v2.
+    activation_acknowledged_by: Mapped[str] = mapped_column(String(255), default="")
+    activation_acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    activation_acknowledged_version: Mapped[int] = mapped_column(Integer, default=0)
+    #: A2: the approval subject raised when activation would confer
+    #: unattended execution (D1). Empty when activation needed none.
+    activation_subject_ref: Mapped[str] = mapped_column(String(64), default="")
+    activated_version: Mapped[int] = mapped_column(Integer, default=0)
     created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
@@ -1318,4 +1347,78 @@ class CCCampaignWave(Base):
             "plan_hash", name="uq_campaign_wave",
         ),
         Index("ix_cc_campaign_waves_status", "campaign_id", "status"),
+    )
+
+
+class CCAgentPreflight(Base):
+    """A2: one stored activation readiness result. IMMUTABLE.
+
+    Never updated: a re-run is a new row, and the previous one is
+    stamped superseded. That is what makes "activation binds to a
+    preflight" a fact about storage rather than a convention somebody
+    has to maintain -- and it keeps the result an operator actually
+    approved explicable after the fact.
+
+    Bound to the configuration version it describes. Editing the agent
+    bumps that version and this stops being current, because otherwise a
+    person acknowledges one configuration and the estate runs another.
+    """
+
+    __tablename__ = "cc_agent_preflights"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_operational_agents.id"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    configuration_version: Mapped[int] = mapped_column(Integer, default=1)
+    #: ready | blocked | warn | unknown
+    overall: Mapped[str] = mapped_column(String(16), default="unknown")
+    can_activate: Mapped[bool] = mapped_column(Boolean, default=False)
+    requires_acknowledgement: Mapped[bool] = mapped_column(Boolean, default=False)
+    requires_activation_approval: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )
+    #: The full twelve-dimension contract, exactly as composed.
+    result: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    produced_by: Mapped[str] = mapped_column(String(255), default="")
+    produced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_cc_agent_preflights_agent", "agent_id", "configuration_version"),
+    )
+
+
+class CCAgentSkillInstall(Base):
+    """A2: per-device skill delivery for one agent. The idempotency ledger.
+
+    The composite primary key IS the guarantee, the same shape
+    `cc_skill_deliveries` and `cc_campaign_dispatches` use: a restart, a
+    replay or a re-activation cannot install the same skill twice onto
+    the same device under the same configuration version.
+
+    Per DEVICE, not per site. `SiteSkillInstall` carried only a site id
+    and fanned out to every device on it, so an agent scoped to six
+    racks would have installed onto the whole site -- a scope escape
+    dressed as a convenience.
+    """
+
+    __tablename__ = "cc_agent_skill_installs"
+
+    agent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    agent_version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    skill_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    device_agent_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    site_id: Mapped[str] = mapped_column(String(32), default="")
+    skill_version: Mapped[str] = mapped_column(String(32), default="")
+    #: queued | delivered | failed | skipped
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    detail: Mapped[str] = mapped_column(String(512), default="")
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
     )

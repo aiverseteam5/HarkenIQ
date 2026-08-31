@@ -14,6 +14,8 @@ from sqlalchemy import delete as sa_delete, false as sa_false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
+    CCAgentPreflight,
+    CCAgentSkillInstall,
     CCCampaign,
     CCCampaignDispatch,
     CCCampaignPlan,
@@ -2064,6 +2066,8 @@ class OperationalAgentRepo:
         require_approval_always: bool,
         max_proposals_per_day: int,
         created_by: str,
+        execution_budget: int = 0,
+        budget_period: str = "daily",
     ) -> CCOperationalAgent:
         agent = CCOperationalAgent(
             tenant_id=tenant_id,
@@ -2072,6 +2076,10 @@ class OperationalAgentRepo:
             autonomy_ceiling=autonomy_ceiling,
             require_approval_always=require_approval_always,
             max_proposals_per_day=max_proposals_per_day,
+            # A2/D2: settable at creation. 0 means unset -- the tenant and
+            # site budgets still apply, and this can only narrow them.
+            execution_budget=execution_budget,
+            budget_period=budget_period,
             created_by=created_by,
             updated_by=created_by,
         )
@@ -2127,12 +2135,28 @@ class OperationalAgentRepo:
     async def set_status(
         self, agent: CCOperationalAgent, status: str, actor: str
     ) -> None:
+        """Move an agent's lifecycle state, recording what was switched on.
+
+        A2/A19.9: `activated_version` is written HERE, in the same unit of
+        work as the status, because the pair is one fact. Splitting them
+        would let a crash between the two leave an agent that is active at
+        a version nothing recorded.
+
+        The invariant this establishes is stated positively:
+
+            active AND activated_version == version  ->  no drift
+
+        Before this existed the column had no writer at all, so it stayed
+        0 while `version` starts at 1, and every freshly activated agent
+        reported configuration drift immediately.
+        """
         agent.status = status
         agent.updated_by = actor
         agent.updated_at = utcnow()
         if status == "active":
             agent.activated_by = actor
             agent.activated_at = utcnow()
+            agent.activated_version = int(agent.version)
 
     async def mark_evaluated(self, agent: CCOperationalAgent) -> None:
         agent.last_evaluated_at = utcnow()
@@ -2398,6 +2422,56 @@ class AgentProposalRepo:
         proposal.status = "failed"
         proposal.dispatch_reason = reason[:512]
         proposal.outcome_at = utcnow()
+
+    async def withhold_unattended(
+        self, proposal: CCAgentProposal, reason: str
+    ) -> None:
+        """A2/D2: this may no longer run WITHOUT a human -- but it may run.
+
+        Budget exhaustion (or an agent pause) withdraws the unattended
+        grant, it does not destroy the proposal. So the proposal returns
+        to the human queue with its basis rewritten, rather than being
+        failed: the agent keeps observing and proposing, and a person can
+        still approve this exact piece of work.
+
+        This is the shape R3a ratified for the error-budget drop-back --
+        `propose`, never `deny` -- applied to the per-agent budget.
+        """
+        proposal.status = "awaiting_approval"
+        proposal.authorization_basis = "human_approval"
+        proposal.decided_by = ""
+        proposal.decided_at = None
+        proposal.dispatch_reason = reason[:512]
+
+    async def count_in_flight(
+        self, tenant_id: str, actor: str, since: datetime
+    ) -> int:
+        """Unattended work this agent has already launched but not settled.
+
+        Outcome history is the source of truth for what RAN, but it lags
+        dispatch: an outcome only exists once the node has reported. Left
+        at that, an agent with a budget of one could dispatch a hundred
+        proposals in a single pass, because none of them had come back
+        yet -- the budget would be real in the report and meaningless in
+        the runtime.
+
+        A dispatched action is an execution in flight, so it counts
+        against the allowance. Settled proposals leave `dispatched`, so
+        this never double-counts what outcome history already holds.
+        """
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count(CCAgentProposal.id)).where(
+                        CCAgentProposal.tenant_id == tenant_id,
+                        CCAgentProposal.actor == actor,
+                        CCAgentProposal.status == "dispatched",
+                        CCAgentProposal.dispatched_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
 
     async def settle(self, proposal: CCAgentProposal, outcome: str) -> None:
         proposal.status = "completed" if outcome == "SUCCESS" else "failed"
@@ -2811,3 +2885,114 @@ class CampaignRepo:
             stmt = stmt.where(CCCampaignWave.site_id == site_id)
         await self.session.execute(stmt)
         await self.session.flush()
+
+
+class AgentPreflightRepo:
+    """A2: stored activation readiness results, and the skill ledger.
+
+    Preflights are IMMUTABLE. A re-run is a new row and the previous one
+    is stamped superseded rather than updated, so the result a person
+    actually approved stays explicable after the configuration moves on.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def store(self, **kw) -> CCAgentPreflight:
+        row = CCAgentPreflight(**kw)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def supersede_all(self, agent_id: str) -> int:
+        rows = (
+            await self.session.execute(
+                select(CCAgentPreflight).where(
+                    CCAgentPreflight.agent_id == agent_id,
+                    CCAgentPreflight.superseded_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            row.superseded_at = utcnow()
+        await self.session.flush()
+        return len(rows)
+
+    async def current(self, agent_id: str) -> Optional[CCAgentPreflight]:
+        return (
+            await self.session.execute(
+                select(CCAgentPreflight)
+                .where(
+                    CCAgentPreflight.agent_id == agent_id,
+                    CCAgentPreflight.superseded_at.is_(None),
+                )
+                .order_by(CCAgentPreflight.produced_at.desc())
+            )
+        ).scalars().first()
+
+    async def history(self, agent_id: str) -> Sequence[CCAgentPreflight]:
+        return (
+            await self.session.execute(
+                select(CCAgentPreflight)
+                .where(CCAgentPreflight.agent_id == agent_id)
+                .order_by(CCAgentPreflight.produced_at.desc())
+            )
+        ).scalars().all()
+
+    # -- per-device skill installs ------------------------------------------
+
+    async def record_install(self, **kw) -> CCAgentSkillInstall:
+        """One row per (agent, version, skill, device). The composite key
+        is the guarantee: a re-activation cannot install twice."""
+        existing = await self.session.get(
+            CCAgentSkillInstall,
+            (kw["agent_id"], kw["agent_version"], kw["skill_id"],
+             kw["device_agent_id"]),
+        )
+        if existing is not None:
+            return existing
+        row = CCAgentSkillInstall(**kw)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def installs(
+        self, agent_id: str, agent_version: Optional[int] = None
+    ) -> Sequence[CCAgentSkillInstall]:
+        stmt = select(CCAgentSkillInstall).where(
+            CCAgentSkillInstall.agent_id == agent_id
+        )
+        if agent_version is not None:
+            stmt = stmt.where(CCAgentSkillInstall.agent_version == agent_version)
+        return (await self.session.execute(stmt)).scalars().all()
+
+    async def already_installed(
+        self, agent_id: str, agent_version: int, skill_id: str, device: str
+    ) -> bool:
+        row = await self.session.get(
+            CCAgentSkillInstall, (agent_id, agent_version, skill_id, device)
+        )
+        return row is not None
+
+    async def count_executions(
+        self, tenant_id: str, actor: str, since: datetime
+    ) -> int:
+        """Executions attributed to this agent in the budget window (D2).
+
+        Counts what actually RAN, from the existing outcome history --
+        not proposals. A proposal that is never executed consumes
+        nothing, because intent is not consumption.
+        """
+        from harkeniq_cc.db.models import CCOutcomeHistory
+
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count(CCOutcomeHistory.id)).where(
+                        CCOutcomeHistory.actor == actor,
+                        CCOutcomeHistory.recorded_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )

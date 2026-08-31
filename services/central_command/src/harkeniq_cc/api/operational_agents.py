@@ -22,13 +22,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq.capabilities import action_facts
+from harkeniq_cc.approval_policy import STATE_APPROVED
 from harkeniq_cc.autonomy import LADDER, action_risk_map
 from harkeniq_cc.capabilities import reachable_action_classes
 from harkeniq_cc.db.repos import (
@@ -85,12 +86,22 @@ class CapabilityBinding(BaseModel):
     capability_ref: str = Field(..., min_length=1, max_length=128)
 
 
+#: A2/D2: the windows a per-agent execution budget may be measured over.
+#: Kept small and explicit; an arbitrary duration would make two agents'
+#: budgets incomparable in the same report.
+BUDGET_PERIODS = ("daily", "weekly", "monthly")
+
+
 class CreateAgentBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str = Field("", max_length=512)
     autonomy_ceiling: int = Field(0, ge=0, le=3)
     require_approval_always: bool = True
     max_proposals_per_day: int = Field(25, ge=1, le=500)
+    #: A2/D2. 0 means unset -- the tenant and site budgets still apply.
+    #: This can only ever narrow them; it never grants execution.
+    execution_budget: int = Field(0, ge=0, le=10000)
+    budget_period: str = Field("daily")
     scopes: list[ScopeRule] = Field(default_factory=list)
     capabilities: list[CapabilityBinding] = Field(default_factory=list)
 
@@ -100,6 +111,12 @@ class UpdateAgentBody(BaseModel):
     autonomy_ceiling: Optional[int] = Field(None, ge=0, le=3)
     require_approval_always: Optional[bool] = None
     max_proposals_per_day: Optional[int] = Field(None, ge=1, le=500)
+    execution_budget: Optional[int] = Field(None, ge=0, le=10000)
+    budget_period: Optional[str] = None
+    #: A2: per-agent pause. A non-empty reason stops unattended work; ""
+    #: lifts it. It can only tighten -- lifting this cannot resume an
+    #: agent a tenant or site stop switch has halted.
+    paused_reason: Optional[str] = Field(None, max_length=512)
 
 
 class BindingsBody(BaseModel):
@@ -139,6 +156,14 @@ def _agent_dict(agent, scopes=(), capabilities=()) -> dict:
         "activated_at": (
             agent.activated_at.isoformat() if agent.activated_at else None
         ),
+        # A19.9: the configuration actually switched on, reported by the
+        # transition itself and not only by the detail read -- a caller
+        # that just activated should not have to ask again to learn what
+        # it activated.
+        "activated_version": int(agent.activated_version or 0),
+        "execution_budget": int(agent.execution_budget or 0),
+        "budget_period": agent.budget_period,
+        "paused_reason": agent.paused_reason or None,
         "last_evaluated_at": (
             agent.last_evaluated_at.isoformat() if agent.last_evaluated_at else None
         ),
@@ -252,16 +277,16 @@ def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
     known_actions = set(action_risk_map())
     for binding in capabilities:
         if binding.kind == KIND_SKILL:
-            # E0.3: A0 accepted this and wired it to nothing -- no skill
-            # was installed, no directive queued, no device changed.
-            # Refused with the reason rather than left inert.
-            raise HTTPException(
-                400,
-                "skill bindings are not available yet: installing a skill "
-                "onto an agent's devices needs per-device skill delivery, "
-                "which arrives with A2 (agent deployment). Bind action "
-                "classes and reads today.",
-            )
+            # A2: skill bindings are real now. E0.3 refused them rather
+            # than leave them accepted and inert, and named the four
+            # missing pieces; all four exist. A binding is accepted here
+            # and JUDGED at preflight, where the Registry can be asked
+            # whether the agent's own devices can perform what the skill
+            # recommends -- a question that needs the agent's scope, so
+            # it cannot be answered on this line.
+            if not binding.capability_ref.strip():
+                raise HTTPException(400, "a skill binding needs a skill id")
+            continue
         if binding.kind not in CAPABILITY_KINDS:
             raise HTTPException(400, f"kind must be one of {list(CAPABILITY_KINDS)}")
         if binding.kind == KIND_ACTION_CLASS:
@@ -628,6 +653,10 @@ async def create_agent(
         raise HTTPException(409, f"an agent named {body.name!r} already exists")
     await _validate_scopes(session, user.tenant_id, body.scopes)
     _validate_capabilities(body.capabilities)
+    if body.budget_period not in BUDGET_PERIODS:
+        raise HTTPException(
+            400, f"budget_period must be one of {list(BUDGET_PERIODS)}",
+        )
 
     actor = user.email or user.user_id
     agent = await repo.create(
@@ -637,6 +666,8 @@ async def create_agent(
         autonomy_ceiling=body.autonomy_ceiling,
         require_approval_always=body.require_approval_always,
         max_proposals_per_day=body.max_proposals_per_day,
+        execution_budget=body.execution_budget,
+        budget_period=body.budget_period,
         created_by=actor,
     )
     await _apply_bindings(session, repo, agent, body.scopes, body.capabilities)
@@ -760,16 +791,53 @@ async def update_agent(
     if body.max_proposals_per_day is not None:
         agent.max_proposals_per_day = body.max_proposals_per_day
         changed["max_proposals_per_day"] = body.max_proposals_per_day
-    if not changed:
+    # A2/D2: the budget is configuration -- it changes what this agent may
+    # do without a human, so it is version-bound like everything else and
+    # re-opens the preflight.
+    if body.execution_budget is not None:
+        agent.execution_budget = body.execution_budget
+        changed["execution_budget"] = body.execution_budget
+    if body.budget_period is not None:
+        if body.budget_period not in BUDGET_PERIODS:
+            raise HTTPException(
+                400, f"budget_period must be one of {list(BUDGET_PERIODS)}",
+            )
+        agent.budget_period = body.budget_period
+        changed["budget_period"] = body.budget_period
+
+    # The PAUSE is not configuration. It is a runtime safety control that
+    # can only tighten, so it deliberately does NOT bump the version:
+    # versioning it would mean an emergency pause invalidated a valid
+    # activation approval, and resuming needed a fresh one. A control
+    # that is expensive to use in an emergency does not get used.
+    paused_change: Optional[str] = None
+    if body.paused_reason is not None:
+        agent.paused_reason = body.paused_reason
+        paused_change = body.paused_reason or ""
+
+    if not changed and paused_change is None:
         raise HTTPException(400, "no fields to update")
-    await repo.bump_version(agent, actor)
-    await AuditRepo(session).append(
-        actor=actor,
-        action="operational_agent.updated",
-        subject=agent.id,
-        tenant_id=user.tenant_id,
-        detail={"changed": changed, "version": agent.version},
-    )
+    if changed:
+        await repo.bump_version(agent, actor)
+    if paused_change is not None:
+        await AuditRepo(session).append(
+            actor=actor,
+            action=(
+                "operational_agent.paused" if paused_change
+                else "operational_agent.resumed"
+            ),
+            subject=agent.id,
+            tenant_id=user.tenant_id,
+            detail={"reason": paused_change, "version": agent.version},
+        )
+    if changed:
+        await AuditRepo(session).append(
+            actor=actor,
+            action="operational_agent.updated",
+            subject=agent.id,
+            tenant_id=user.tenant_id,
+            detail={"changed": changed, "version": agent.version},
+        )
     await session.commit()
     return _agent_dict(
         agent,
@@ -837,6 +905,146 @@ _TRANSITIONS = {
 }
 
 
+@router.post("/{agent_id}/preflight",
+             dependencies=[Depends(require_permission("site.manage"))])
+async def preflight_agent(
+    agent_id: str,
+    request: Request,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Produce the activation readiness contract for this configuration.
+
+    Twelve dimensions, each with a verdict a caller can branch on and a
+    sentence a person can act on. Assembled SERVER-SIDE and stored: the
+    Console consumes this and never recreates it, because a page that
+    computed its own verdicts could show an operator something different
+    from what the activation gate enforces.
+    """
+    from harkeniq_cc.agent_lifecycle import run_preflight
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(
+        OperationalAgentRepo(session), agent.id))
+    result = await run_preflight(
+        session, request.app.state.cc, tenant_id=user.tenant_id,
+        agent=agent, actor=user.email or user.user_id,
+    )
+    # D1: raise the activation approval subject now, so an operator sees
+    # the decision they will need before they try to activate.
+    if result.get("requires_activation_approval"):
+        from harkeniq_cc.agent_activation import activation_subject_ref
+
+        agent.activation_subject_ref = activation_subject_ref(
+            agent.id, agent.version, result.get("unattended_classes") or [],
+        )
+    else:
+        agent.activation_subject_ref = ""
+    await session.commit()
+    return result
+
+
+@router.post("/{agent_id}/acknowledge",
+             dependencies=[Depends(require_permission("site.manage"))])
+async def acknowledge_agent(
+    agent_id: str,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """A named human accepts this configuration's warnings and unknowns."""
+    from harkeniq_cc.agent_lifecycle import acknowledge_preflight
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    try:
+        result = await acknowledge_preflight(
+            session, tenant_id=user.tenant_id, agent=agent,
+            actor=user.email or user.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await session.commit()
+    return result
+
+
+@router.get("/{agent_id}/preflight",
+            dependencies=[Depends(require_permission("fleet.view"))])
+async def get_agent_preflight(
+    agent_id: str,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    from harkeniq_cc.db.repos import AgentPreflightRepo
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    row = await AgentPreflightRepo(session).current(agent.id)
+    if row is None:
+        return {
+            "agent_id": agent.id, "exists": False,
+            "configuration_version": int(agent.version),
+            "detail": "no preflight has been run for this configuration",
+        }
+    return {
+        "agent_id": agent.id, "exists": True,
+        "current": int(row.configuration_version) == int(agent.version),
+        "produced_by": row.produced_by,
+        "produced_at": row.produced_at.isoformat() if row.produced_at else None,
+        **(row.result or {}),
+    }
+
+
+@router.get("/{agent_id}/runtime",
+            dependencies=[Depends(require_permission("fleet.view"))])
+async def agent_runtime(
+    agent_id: str,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """What the runtime can HONESTLY say about this agent.
+
+    Only signals the platform actually produces. A dimension it cannot
+    observe reads unknown rather than being filled with a plausible
+    value, because an operator acts on what this says.
+    """
+    from harkeniq_cc.agent_lifecycle import runtime_state
+
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    return await runtime_state(session, tenant_id=user.tenant_id, agent=agent)
+
+
+async def _activation_decision(session, tenant_id: str, agent) -> dict:
+    """Has activating THIS configuration been approved? (D1, A19.5.)
+
+    The subject is a digest over the agent, its configuration version
+    and the classes activation would let run unattended -- so an
+    approval cannot survive an edit that changes any of them.
+
+    The verdict comes from `activation_approval_state`, which is E0.1's
+    completion rule and nothing else: same policy resolution, same
+    required-approver count, same group membership rule, same terminal
+    denial a node action gets. This function deliberately does NOT read
+    approval records and decide for itself.
+
+    It used to. It counted any single record as approval, so a tenant
+    with `required_approvers = 2` got single authorization for
+    activation -- E0.1's own defect, reintroduced at the fourth origin.
+    One ledger, one completion rule; a second implementation here is a
+    defect whatever it computes.
+    """
+    from harkeniq_cc.api.approvals import activation_approval_state
+
+    subject_ref = agent.activation_subject_ref or ""
+    if not subject_ref:
+        # No subject raised means preflight has not run for this
+        # configuration, or it needs no approval. Either way this is not
+        # an approval, and the caller's preflight check decides which.
+        return {"state": "pending", "required": 1, "received": 0}
+    return await activation_approval_state(session, tenant_id, subject_ref)
+
+
 @router.post(
     "/{agent_id}/{transition}",
     dependencies=[Depends(require_permission("site.manage"))],
@@ -844,6 +1052,7 @@ _TRANSITIONS = {
 async def transition_agent(
     agent_id: str,
     transition: str,
+    request: Request,
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
@@ -869,18 +1078,39 @@ async def transition_agent(
             f"cannot {transition} an agent in status {agent.status!r}",
         )
     if target == STATUS_ACTIVE:
-        scopes = await repo.list_scopes(agent.id)
-        caps = await repo.list_capabilities(agent.id)
-        if not scopes:
-            raise HTTPException(
-                409, "cannot activate an agent with no scope: it would see nothing"
-            )
-        if not any(c.kind == KIND_ACTION_CLASS for c in caps):
-            raise HTTPException(
-                409,
-                "cannot activate an agent with no action class bound: it would "
-                "propose nothing",
-            )
+        # A2: activation is gated on a STORED preflight for THIS exact
+        # configuration version. The two ad-hoc checks that used to live
+        # here are now two of its twelve dimensions, so there is one
+        # readiness contract and the Console cannot disagree with it.
+        from harkeniq_cc.agent_activation import may_activate
+        from harkeniq_cc.db.repos import AgentPreflightRepo
+
+        row = await AgentPreflightRepo(session).current(agent.id)
+        allowed, reason = may_activate(
+            (row.result if row is not None else None), agent
+        )
+        if not allowed:
+            raise HTTPException(409, reason)
+
+        result = row.result or {}
+        # D1: activation approval is required only where activation
+        # confers real unattended execution. A propose-only agent grants
+        # no new authority by being switched on, so gating it would be
+        # ceremony.
+        if result.get("requires_activation_approval"):
+            block = await _activation_decision(session, user.tenant_id, agent)
+            if block.get("state") != STATE_APPROVED:
+                raise HTTPException(
+                    409,
+                    "this configuration grants unattended execution for "
+                    + ", ".join(result.get("unattended_classes") or [])
+                    + f", so activation requires approval on the approvals "
+                    f"queue before it can proceed "
+                    f"({block.get('received', 0)} of "
+                    f"{block.get('required', 1)} approval(s) recorded"
+                    + (", denied" if block.get("state") == "denied" else "")
+                    + ")",
+                )
     actor = user.email or user.user_id
     await repo.set_status(agent, target, actor)
     await AuditRepo(session).append(
@@ -888,14 +1118,46 @@ async def transition_agent(
         action=f"operational_agent.{transition}d",
         subject=agent.id,
         tenant_id=user.tenant_id,
-        detail={"status": target, "version": agent.version},
+        detail={
+            "status": target,
+            "version": agent.version,
+            # A19.9: what was actually switched on, in the record itself.
+            "activated_version": int(agent.activated_version or 0),
+        },
     )
+
+    # A19.11: activation is the install trigger. Bound skills are
+    # delivered to the devices in the agent's own scope that can actually
+    # run what they recommend -- per device, deduplicated by a durable
+    # ledger, so re-activating never installs twice.
+    installs: dict = {}
+    if target == STATUS_ACTIVE:
+        from harkeniq_cc.agent_lifecycle import install_bound_skills
+
+        try:
+            installs = await install_bound_skills(
+                session, request.app.state.cc, tenant_id=user.tenant_id,
+                agent=agent, preflight=(row.result or {}), actor=actor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A site being unreachable must not roll back an activation a
+            # human just authorized: the ledger records what was queued,
+            # and an operator can see what did not reach its devices.
+            logger.warning(
+                "skill install during activation of %s failed: %s", agent.id, exc,
+            )
+            installs = {"installed": 0, "skipped": 0, "skills": [],
+                        "error": str(exc)[:256]}
+
     await session.commit()
-    return _agent_dict(
+    payload = _agent_dict(
         agent,
         await repo.list_scopes(agent.id),
         await repo.list_capabilities(agent.id),
     )
+    if target == STATUS_ACTIVE:
+        payload["skill_installs"] = installs
+    return payload
 
 
 @router.get(

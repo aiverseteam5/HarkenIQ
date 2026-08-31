@@ -181,6 +181,35 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
     return created
 
 
+async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, str]:
+    """May this proposal run WITHOUT a human, right now? (A2 D2 / A19.7.)
+
+    THIS is the production unattended path, so this is where the
+    per-agent execution budget has to be asked. It was declared,
+    migrated, reported in the preflight and asked nowhere: the dispatch
+    loop shipped every approved proposal, `autonomous_grant` included,
+    so an exhausted budget stopped nothing.
+
+    Asked through `unattended_permitted`, which is the authoritative
+    check -- not a second budget rule written here.
+    """
+    from harkeniq_cc.agent_activation import unattended_permitted
+    from harkeniq_cc.agent_lifecycle import executions_used
+    from harkeniq_cc.operational_agent import parse_attribution
+
+    parsed = parse_attribution(getattr(proposal, "actor", "") or "")
+    if parsed is None:
+        # Not an Operational Agent's proposal. Nothing agent-shaped to ask.
+        return True, ""
+    agent_id, _version = parsed
+    agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
+    if agent is None:
+        return False, "the agent that made this proposal no longer exists"
+    return unattended_permitted(agent, await executions_used(
+        session, tenant_id, agent,
+    ))
+
+
 async def dispatch_decided(state, tenant_id: str) -> list[Any]:
     """Hand every decided proposal to the site that owns its device.
 
@@ -189,6 +218,12 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
     autonomy contract granted the class and no human was required. The
     basis travels with the dispatch because it changes what the node
     will accept.
+
+    A2/D2: the basis also decides whether the per-agent execution budget
+    gets a say. An `autonomous_grant` spends the agent's unattended
+    allowance and is withheld once that is gone; a human's decision does
+    not, because the budget caps DELEGATED work, never what a person
+    chose to do.
     """
     dispatched: list[Any] = []
     async with state.sessionmaker() as session:
@@ -200,6 +235,31 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
         audit = AuditRepo(session)
         client = SMClient(state.config.sm_tls_ca)
         for proposal in pending:
+            if proposal.authorization_basis == BASIS_AUTONOMOUS:
+                allowed, why = await _unattended_allowed(
+                    session, tenant_id, proposal,
+                )
+                if not allowed:
+                    # Withheld, not failed: the work is still valid and a
+                    # human may still approve it. Exhaustion withdraws the
+                    # unattended grant; it does not disable the agent.
+                    await prop_repo.withhold_unattended(proposal, why)
+                    await audit.append(
+                        actor=proposal.actor,
+                        action="agent_proposal.unattended_withheld",
+                        subject=proposal.id,
+                        tenant_id=tenant_id,
+                        detail={
+                            "reason": why,
+                            "action_type": proposal.action_type,
+                            "device_agent_id": proposal.device_agent_id,
+                            "now_requires": "human_approval",
+                        },
+                    )
+                    logger.info(
+                        "Withheld unattended proposal %s: %s", proposal.id, why,
+                    )
+                    continue
             site = await site_repo.get_by_id(proposal.site_id)
             if site is None or site.tenant_id != tenant_id:
                 await prop_repo.mark_failed(

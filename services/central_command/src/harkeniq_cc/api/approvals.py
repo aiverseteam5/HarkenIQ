@@ -50,6 +50,7 @@ from harkeniq_cc.approval_policy import (
     STATE_DENIED,
     SUBJECT_ACTION,
     SUBJECT_AGENT_PROPOSAL,
+    SUBJECT_AGENT_ACTIVATION,
     SUBJECT_CAMPAIGN_WAVE,
     approval_block,
     is_member,
@@ -333,6 +334,64 @@ async def _record_and_evaluate(
     return block
 
 
+async def _agent_dispatch_gates(session, tenant_id: str, proposal) -> tuple:
+    """Central Command's hard gates, re-evaluated at dispatch (A2 D3).
+
+    An approved proposal names the configuration it was authorized
+    against; it does not carry that configuration's permissions forward
+    in time. So identity, activation state, scope and safety are asked
+    again HERE, against the world as it is now.
+
+    These are CC's gates only. The Site Manager's lease, preconditions
+    and blast radius, and the node's own allow list, run afterwards and
+    independently — this never substitutes for them.
+    """
+    from harkeniq_cc.agent_activation import (
+        dispatch_permitted,
+        proposal_version_is_honoured,
+    )
+    from harkeniq_cc.db.repos import OperationalAgentRepo, StopSwitchRepo
+    from harkeniq_cc.operational_agent import parse_attribution
+
+    parsed = parse_attribution(getattr(proposal, "actor", "") or "")
+    if parsed is None:
+        # Not an Operational Agent proposal (a campaign, say). Its own
+        # path governs it; there is nothing agent-shaped to re-check.
+        return True, ""
+    agent_id, _version = parsed
+
+    agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
+    if agent is None:
+        return False, "the agent that made this proposal no longer exists"
+
+    honoured, why = proposal_version_is_honoured(proposal, agent)
+    stop = await StopSwitchRepo(session).get(tenant_id)
+
+    return dispatch_permitted(
+        agent_identity=(True if honoured else why),
+        agent_active=(
+            True if agent.status == "active"
+            else f"the agent is {agent.status!r}, not active"
+        ),
+        tenant_scope=(
+            True if agent.tenant_id == tenant_id
+            else "the agent belongs to another tenant"
+        ),
+        stop_switch=(
+            "the tenant stop switch is active"
+            if stop is not None and getattr(stop, "active", False) else True
+        ),
+        # D2: a human approved this one, so the EXECUTION budget does not
+        # refuse it -- the budget caps unattended work, not what a person
+        # decided. A paused agent is a different matter: pausing is an
+        # explicit safety act.
+        budget=(
+            f"the agent is paused: {agent.paused_reason}"
+            if agent.paused_reason else True
+        ),
+    )
+
+
 async def _decide_agent_proposal(
     proposal_id: str,
     decision: str,
@@ -384,6 +443,34 @@ async def _decide_agent_proposal(
 
     delivery = {"accepted": False, "delivered": False, "reason": "not attempted"}
     if decision == "approved":
+        # A2 (D3): approved is not guaranteed. The proposal keeps the
+        # configuration version it was made under and is NEVER silently
+        # reinterpreted as the current one -- and it is never silently
+        # executed just because somebody once approved it. The hard gates
+        # are re-evaluated here, now, and a revoked scope, a retired
+        # agent, an active stop switch or a spent budget still refuses.
+        allowed, gate_reason = await _agent_dispatch_gates(
+            session, user.tenant_id, proposal
+        )
+        if not allowed:
+            await repo.mark_failed(proposal, gate_reason[:512])
+            await AuditRepo(session).append(
+                actor=proposal.actor,
+                action="agent_proposal.refused_at_dispatch",
+                subject=proposal.id,
+                tenant_id=user.tenant_id,
+                detail={"reason": gate_reason,
+                        "action_type": proposal.action_type},
+            )
+            await session.commit()
+            return {
+                "action_id": proposal.id, "origin": "agent",
+                "decision": decision, "decided_by": decided_by,
+                "delivery": {"accepted": False, "delivered": False,
+                             "reason": gate_reason},
+                "approval": block,
+                "proposal": _proposal_item(proposal)["proposal"],
+            }
         site = await SiteRepo(session).get_by_id(proposal.site_id)
         if site is None or site.tenant_id != user.tenant_id:
             await repo.mark_failed(
@@ -484,6 +571,113 @@ async def _decide_agent_proposal(
         "delivery": delivery,
         "approval": block,
         "proposal": _proposal_item(proposal)["proposal"],
+    }
+
+
+async def activation_approval_state(
+    session: AsyncSession, tenant_id: str, subject_ref: str
+) -> dict:
+    """The E0.1 completion block for an agent-activation subject (A19.5).
+
+    THE one place activation approval is judged. The activation gate in
+    `operational_agents` calls this rather than reading records itself,
+    because a second implementation of "is this approved" is a defect by
+    definition whatever it computes -- and the first version of A2 proved
+    it: it counted any single record as approval, so a tenant that
+    configured `required_approvers = 2` got ONE, which is exactly the
+    defect E0.1 existed to fix.
+
+    Same policy resolution, same required count, same group rule, same
+    terminal denial. The subject carries no action class, device or site,
+    so a wildcard policy governs it -- which is what makes "dual approval
+    for everything" mean everything, per A15.
+    """
+    policy, group, _members = await _governing_policy(session, tenant_id, "", "")
+    records = await ApprovalRecordRepo(session).list_for_subject(
+        SUBJECT_AGENT_ACTIVATION, subject_ref,
+    )
+    return approval_block(policy, group, records)
+
+
+async def _decide_agent_activation(
+    subject_ref: str,
+    decision: str,
+    user: UserContext,
+    session: AsyncSession,
+    state,
+    scope,
+) -> Optional[dict]:
+    """Decide whether an Operational Agent may be ACTIVATED (A2, D1).
+
+    A fourth origin on the same ledger -- not a fourth approval model.
+    The policy resolution, approver count, group rule and duplicate
+    guarantee are the ones a node action already gets, because this
+    calls the same function.
+
+    What is being approved is a CONFIGURATION the actor was already
+    permitted to build: activation approval grants no RBAC, no scope and
+    no capability authority. It answers one question -- may this
+    configuration enter the governed runtime state, given that doing so
+    would let it act without a human.
+
+    Returns None when the subject is not an agent activation, so the
+    caller can keep looking.
+    """
+    from harkeniq_cc.db.repos import OperationalAgentRepo
+
+    repo = OperationalAgentRepo(session)
+    agents = await repo.list_all(user.tenant_id)
+    agent = next(
+        (a for a in agents
+         if (a.activation_subject_ref or "") == subject_ref), None,
+    )
+    if agent is None:
+        return None
+
+    decided_by = user.email or user.user_id
+    block = await _record_and_evaluate(
+        session,
+        user=user,
+        tenant_id=user.tenant_id,
+        subject_type=SUBJECT_AGENT_ACTIVATION,
+        subject_ref=subject_ref,
+        action_type="",
+        device_agent_id="",
+        site_id="",
+        decision=decision,
+        scope=scope,
+    )
+    if block["state"] == STATE_DENIED:
+        decision = DECISION_DENIED
+
+    await AuditRepo(session).append(
+        actor=decided_by,
+        action=f"operational_agent.activation_{decision}",
+        subject=agent.id,
+        tenant_id=user.tenant_id,
+        detail={
+            "configuration_version": int(agent.version),
+            "subject_ref": subject_ref,
+        },
+    )
+    await session.commit()
+    return {
+        "action_id": subject_ref,
+        "origin": "agent_activation",
+        "decision": decision,
+        "decided_by": decided_by,
+        "approval": block,
+        "agent": {
+            "agent_id": agent.id,
+            "name": agent.name,
+            "configuration_version": int(agent.version),
+        },
+        # Approving activation does not activate. A person still presses
+        # activate, and the gate re-checks the preflight then.
+        "note": (
+            "approved is not active; the activation gate re-checks the "
+            "preflight for this configuration version"
+        ),
     }
 
 
@@ -612,6 +806,12 @@ async def _route_decision(
             return await _decide_agent_proposal(
                 action_id, decision, user, session, state, scope,
             )
+        # A2: the fourth origin on the same id space and same queue.
+        activation = await _decide_agent_activation(
+            action_id, decision, user, session, state, scope,
+        )
+        if activation is not None:
+            return activation
         # S6: the third origin on the same id space and the same queue.
         return await _decide_campaign_wave(
             action_id, decision, user, session, state, scope,

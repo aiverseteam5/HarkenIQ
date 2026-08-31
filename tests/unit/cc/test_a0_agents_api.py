@@ -77,6 +77,27 @@ def _body(site_id: str, **kw):
     return body
 
 
+async def _activate(client, agent_id):
+    """Take an agent through the A2 governed activation lifecycle.
+
+    PREFLIGHT -> ACKNOWLEDGE (where warned) -> APPROVE (where activation
+    confers unattended execution) -> ACTIVATE. A propose-only agent
+    needs no approval, which is why both steps are conditional.
+    """
+    pre = await client.post(f"/api/operational-agents/{agent_id}/preflight")
+    assert pre.status_code == 200, pre.text
+    result = pre.json()
+    if result.get("requires_acknowledgement"):
+        assert (
+            await client.post(f"/api/operational-agents/{agent_id}/acknowledge")
+        ).status_code == 200
+    if result.get("requires_activation_approval"):
+        detail = await client.get(f"/api/operational-agents/{agent_id}")
+        subject = detail.json()["agent"]["activation_subject_ref"]
+        assert (await client.post(f"/api/approvals/{subject}/approve")).status_code == 200
+    return await client.post(f"/api/operational-agents/{agent_id}/activate")
+
+
 class TestGovernance:
     @pytest.mark.asyncio
     async def test_viewer_can_read_but_not_create(self):
@@ -197,9 +218,21 @@ class TestLifecycle:
             "ignored", scopes=[],
         ))
         agent_id = created.json()["id"]
-        res = await client.post(f"/api/operational-agents/{agent_id}/activate")
-        assert res.status_code == 409
-        assert "see nothing" in res.json()["detail"]
+        # A2: activation is gated on a preflight, so the protection now
+        # arrives as a BLOCKED dimension rather than an ad-hoc check --
+        # same guarantee, one contract instead of two places.
+        assert (
+            await _activate(client, agent_id)
+        ).status_code == 409
+        pre = await client.post(f"/api/operational-agents/{agent_id}/preflight")
+        assert pre.status_code == 200, pre.text
+        result = pre.json()
+        assert result["can_activate"] is False
+        assert "scope" in result["blocked_dimensions"]
+        scope_row = next(
+            d for d in result["dimensions"] if d["dimension"] == "scope"
+        )
+        assert "see no devices" in scope_row["detail"]
         await client.aclose()
 
     @pytest.mark.asyncio
@@ -210,9 +243,17 @@ class TestLifecycle:
             site_id, capabilities=[{"kind": "read", "capability_ref": "fleet"}],
         ))
         agent_id = created.json()["id"]
-        res = await client.post(f"/api/operational-agents/{agent_id}/activate")
-        assert res.status_code == 409
-        assert "propose nothing" in res.json()["detail"]
+        assert (
+            await client.post(f"/api/operational-agents/{agent_id}/activate")
+        ).status_code == 409
+        pre = await client.post(f"/api/operational-agents/{agent_id}/preflight")
+        result = pre.json()
+        assert result["can_activate"] is False
+        assert "capabilities" in result["blocked_dimensions"]
+        caps_row = next(
+            d for d in result["dimensions"] if d["dimension"] == "capabilities"
+        )
+        assert "propose nothing" in caps_row["detail"]
         await client.aclose()
 
     @pytest.mark.asyncio
@@ -222,7 +263,7 @@ class TestLifecycle:
         agent_id = (await client.post(
             "/api/operational-agents/", json=_body(site_id)
         )).json()["id"]
-        activated = await client.post(f"/api/operational-agents/{agent_id}/activate")
+        activated = await _activate(client, agent_id)
         assert activated.status_code == 200
         assert activated.json()["status"] == "active"
         assert activated.json()["activated_by"] == "tenant_owner@example.com"
@@ -275,11 +316,15 @@ class TestLifecycle:
         agent_id = (await client.post(
             "/api/operational-agents/", json=_body(site_id)
         )).json()["id"]
-        await client.post(f"/api/operational-agents/{agent_id}/activate")
+        assert (await _activate(client, agent_id)).status_code == 200
         entries = (await client.get("/api/audit/")).json()["entries"]
         actions = {e["action"] for e in entries}
         assert "operational_agent.created" in actions
         assert "operational_agent.activated" in actions
+        # A2: preflight and acknowledgement are first-class events, not
+        # side effects. A configuration somebody activated must be
+        # reconstructable from the chain, including what they accepted.
+        assert "operational_agent.preflighted" in actions
         await client.aclose()
 
 

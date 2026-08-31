@@ -1252,3 +1252,147 @@ engine, no campaign capability catalogue, no second wave-planning
 algorithm. `execution_permitted()` and `Agent._authorize_execution`
 remain untouched (A17.8 stands). The Site Manager's `firmware_campaigns`
 are untouched; superseding them is a later decision.
+
+### A19 — 2026-08-31 — A2: the Operational Agent becomes a complete governed product (decided: Vinod)
+
+A0+A1 made the Operational Agent an object: identity, scope rows,
+capability bindings, a policy that can only tighten the tenant's own, and
+labelled proposals into the one approval queue. It could be created and
+switched on. It could not be **configured, examined before it acted,
+budgeted, or explained afterwards** — and its skill binding was accepted
+and inert (E0.3 refused the kind rather than leave it so).
+
+A2 closes that gap. It introduces **no new permission, no second approval
+model, no second budget system, no second capability model and no second
+execution path**. Every judgement below is a composition over governance
+that already exists.
+
+**A19.1 — Activation is a governed transition, not a status write.** The
+lifecycle is fixed: CREATE → CONFIGURE → PREFLIGHT → ACKNOWLEDGE →
+APPROVAL (where required) → ACTIVATE → RUN → OBSERVE → OUTCOME →
+LEARNING. Activation without a stored preflight for the exact
+configuration version is refused. The two ad-hoc checks A0 performed at
+the transition become dimensions of that one contract, so the Console and
+the gate cannot disagree.
+
+**A19.2 — The activation preflight is a contract, not a checklist.**
+Twelve dimensions — identity, tenant, scope, capabilities, skills,
+autonomy ceiling, approval policy, budget, safety, executor reach,
+configuration version, activation state — each carrying one of four
+verdicts: READY, BLOCKED, WARN, UNKNOWN. BLOCKED dominates and refuses
+activation. WARN and UNKNOWN require a named human's acknowledgement,
+version-bound, exactly as A18.7 requires for a warned campaign target.
+**UNKNOWN is first-class** (A17.4): a fleet mid-upgrade is unknown, not
+incapable, and the two are never conflated. The result is assembled
+server-side and stored immutably; a re-run supersedes, never updates.
+
+**A19.3 — A READY preflight confers nothing.** It is a statement about
+configuration. Every proposal the activated agent makes still passes the
+S5 autonomy contract, the E0.1 approval ledger, the Site Manager's lease,
+preconditions and blast radius, and the node's own allow list. Activation
+grants no RBAC, no scope and no capability authority: it approves a
+configuration the actor was **already permitted to build**.
+
+**A19.4 — D1: activation approval is DERIVED, never ceremonial.**
+Approval is required if and only if activation would confer real
+unattended execution — that is, the agent's ceiling is above zero, it does
+not require a human for every action, and at least one bound class is
+`autonomous` under the tenant's own contract. An observe-, suggest- or
+propose-only agent grants no new authority by being switched on and is
+activated without a separate approval. Configuration saves are never
+gated.
+
+**A19.5 — Activation approval rides the one ledger, under the one
+completion rule.** `SUBJECT_AGENT_ACTIVATION` is a fourth origin on the
+E0.1 ledger — not a fourth approval model. Policy resolution, required
+approver count, group membership, duplicate prevention, the terminality
+of a denial (D16) and the completion rule are **the same functions a node
+action calls**. A tenant configuring `required_approvers = 2` gets two
+approvers for an activation, and one valid approval leaves the activation
+**pending**. Any second implementation of that judgement is a defect by
+definition, whatever it computes.
+
+**A19.6 — The approval subject binds to the configuration.**
+`activation_subject_ref` is a digest over the agent id, its configuration
+version and the exact set of classes activation would let run unattended.
+An edit that changes any of the three yields a different subject, so an
+approval structurally cannot survive the configuration it was not given
+for. Approving activation does not activate: a person still activates,
+and the gate re-checks the preflight then.
+
+**A19.7 — D2: the budget counts EXECUTIONS, and caps only unattended
+work.** The per-agent budget counts actions actually executed under the
+agent's attribution key, drawn from the existing outcome accounting — not
+proposals, because intent is not consumption. Exhaustion means "this
+agent has spent its delegated unattended allowance", never "this agent is
+disabled". When exhausted, unattended execution is **refused at the
+production dispatch path**; observation, analysis, proposal generation and
+human-approved execution all continue unaffected. A human-approved
+proposal is never refused for want of unattended budget. The tenant and
+site budgets (S5, A10.4) are unchanged and still apply; this is a
+narrowing, never a grant.
+
+**A19.8 — D3: an approved proposal keeps its version and is not a
+guaranteed execution.** A proposal authorized against configuration V3
+remains attributable to V3 and is never silently reinterpreted as V4.
+Equally, it is never silently executed because somebody once approved it:
+Central Command re-evaluates its own hard gates at dispatch — agent
+identity, activation state, tenant scope, stop switch, agent pause — and
+an unevaluated gate is a refusal, not a pass. These are Central Command's
+gates only; the Site Manager's lease, preconditions and blast radius, and
+the node's allow list, run afterwards and independently and are never
+substituted for. **Approved proposal version ≠ guaranteed execution.**
+
+**A19.9 — Post-activation configuration versioning.** Activation records
+the configuration version actually switched on, atomically with the status
+change. `active AND activated_version == version` is the definition of no
+drift; an agent freshly activated at V1 reports no drift. Editing an
+active agent increments the version, which makes the running configuration
+observably stale and invalidates the stored preflight, the acknowledgement
+and any activation approval — each of which is version-bound.
+
+**A19.10 — Skills are governed COMPOSITIONS, never permissions.** A skill
+composes capabilities the agent already holds. Binding one may not expand
+permission, scope, capability authority, autonomy ceiling or approval
+authority. The one thing a skill can do is recommend an action, and that
+is validated against the Capability Registry at preflight: a skill
+recommending a class the platform does not implement is unusable and is
+reported as such before activation, never discovered at dispatch. There is
+no skill-specific capability model and there must never be one.
+
+**A19.11 — Skill installation is per DEVICE, scoped and idempotent.**
+Installation is triggered by activation and targets only devices within
+the agent's own resolved scope that can actually run what the skill
+recommends; a device that cannot is skipped **with a reason**, never
+silently omitted. An undeclared device receives it, because unknown is not
+incapable (A17.4) and the node's allow list remains final. Delivery is the
+existing `InstallSkill` RPC onto the R5-1 directive transport, now
+carrying explicit device targeting — installing onto a whole site from a
+rack-scoped agent would be a scope escape dressed as a convenience. A
+durable per-(agent, version, skill, device) ledger makes re-activation
+non-duplicating, and the installation is audited.
+
+**A19.12 — Runtime health is reported honestly or not at all.** The
+runtime view reports only signals the platform actually produces:
+activation state, configuration version and drift, last evaluation, device
+freshness split into recently-seen / stale / **never-reported**, budget
+consumption, proposal volume, skill installation state and preflight
+currency. A device the site has never reported is counted as neither
+healthy nor unhealthy. Inventing a plausible value is worse than admitting
+ignorance, because an operator acts on this.
+
+**A19.13 — Read/write split, unchanged vocabulary.** Preflight,
+acknowledge and the lifecycle transitions are `site.manage` and
+object-gated through the E1.2 delegation ceiling; the preflight and
+runtime reads are `fleet.view` and scope-filtered, so an out-of-scope
+agent is 404 and never 403. No permission is invented, and every route is
+declared in the executable route contract. Activation approval is decided
+on `/api/approvals` under `action.approve`, because there is one approval
+system.
+
+**A19.14 — What A2 did not do.** `execution_permitted()` and
+`Agent._authorize_execution` are untouched; the node remains the final
+execution authority (A17.8, D2 of A16's lineage). The Site Manager grows
+no second authorization model. `INTERFACE_RESET` and `CLEAR_COUNTERS`
+remain governed vocabulary with zero executor reach and are not deleted
+(A17.6).
