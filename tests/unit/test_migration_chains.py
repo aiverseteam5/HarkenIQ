@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0014"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0015"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -505,3 +505,48 @@ class TestExistingDatabase:
         finally:
             con.close()
         assert value is None
+
+    def test_cc_0015_lands_campaigns_on_an_existing_tenant(self, tmp_path):
+        """S6's tables arrive on a database that predates them.
+
+        Also pins the dispatch ledger's key. `plan_hash` is IN it because
+        a wave that was superseded and legitimately re-approved is a
+        different wave: without it the re-approved dispatch would read as
+        a replay and real work would be silently dropped.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        for table in (
+            "cc_campaign_dispatches", "cc_campaign_waves", "cc_campaign_plans",
+            "cc_campaign_scopes", "cc_campaign_sites", "cc_campaign_targets",
+            "cc_campaigns",
+        ):
+            con.execute(f"drop table {table}")
+        con.execute("update alembic_version set version_num='0014'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        tables = _tables(db)
+        for table in (
+            "cc_campaigns", "cc_campaign_targets", "cc_campaign_sites",
+            "cc_campaign_scopes", "cc_campaign_plans", "cc_campaign_waves",
+            "cc_campaign_dispatches",
+        ):
+            assert table in tables, table
+
+        con = sqlite3.connect(db)
+        try:
+            pk = [
+                r[1] for r in con.execute(
+                    "pragma table_info(cc_campaign_dispatches)"
+                ) if r[5]
+            ]
+        finally:
+            con.close()
+        assert "plan_hash" in pk, (
+            "the dispatch ledger must key on the plan, or a re-approved "
+            "wave reads as an already-dispatched one"
+        )

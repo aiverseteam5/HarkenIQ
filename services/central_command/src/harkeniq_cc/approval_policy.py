@@ -44,6 +44,14 @@ MODE_AUTO_APPROVE = "auto_approve"
 
 SUBJECT_ACTION = "action"
 SUBJECT_AGENT_PROPOSAL = "agent_proposal"
+#: S6: one site-wave of a campaign. A THIRD origin on the same
+#: ledger, deliberately not a third approval model -- the decision
+#: function, the policy resolution, the required-approver count and
+#: the duplicate guarantee are all the ones a node action already
+#: gets. Approval granularity is per site-wave for every action that
+#: requires a human (D1): batching several waves is a review
+#: affordance in the Console, never a merged decision record.
+SUBJECT_CAMPAIGN_WAVE = "campaign_wave"
 
 DECISION_APPROVED = "approved"
 DECISION_DENIED = "denied"

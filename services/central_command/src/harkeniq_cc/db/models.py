@@ -1001,3 +1001,321 @@ class CCAgentProposal(Base):
     __table_args__ = (
         Index("ix_agent_proposals_tenant_status", "tenant_id", "status"),
     )
+
+
+# ---------------------------------------------------------------------------
+# S6: campaigns -- governed capability orchestration across an estate
+# ---------------------------------------------------------------------------
+
+
+class CCCampaign(Base):
+    """A governed run of ONE action class across a scoped set of devices.
+
+    Tenant-plane by necessity: a campaign targets an org unit that spans
+    sites, and only Central Command knows the tree. What it deliberately
+    does NOT know is blast radius -- fault domains live at the Site
+    Manager, so this row carries site ordering and never a device wave
+    plan (S6 architectural invariant).
+
+    Versioned like an Operational Agent, and for the same reason: an
+    outcome must name the exact configuration that produced it. Editing
+    a campaign bumps `version` and invalidates both the acknowledgement
+    and any approval taken against the previous one, so nobody can
+    acknowledge v1 and have the estate run v2.
+    """
+
+    __tablename__ = "cc_campaigns"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(String(1024), default="")
+    #: Exactly one governed ActionType. Never a free-form verb.
+    action_type: Mapped[str] = mapped_column(String(64))
+    params: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: draft | preflighted | acknowledged | awaiting_approval | running |
+    #: completed | halted | cancelled
+    status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    #: How many SITES advance at once. Device concurrency within a site
+    #: is the Site Manager's decision, from its own fault domains.
+    site_concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    max_wave_size: Mapped[int] = mapped_column(Integer, default=5)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    preflight_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: D2: a named human excluded or accepted every warned target. Bound
+    #: to the version it was given for -- an edit invalidates it.
+    acknowledged_by: Mapped[str] = mapped_column(String(255), default="")
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    acknowledged_version: Mapped[int] = mapped_column(Integer, default=0)
+    halt_reason: Mapped[str] = mapped_column(String(1024), default="")
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_cc_campaigns_tenant_status", "tenant_id", "status"),
+    )
+
+
+class CCCampaignTarget(Base):
+    """One device considered by a campaign, and what preflight decided.
+
+    Every device the scope resolved to gets a row -- including the ones
+    that were excluded. An excluded target with its reason recorded is
+    the artifact that makes "the campaign never discovers incapability
+    after dispatch" auditable rather than merely asserted.
+    """
+
+    __tablename__ = "cc_campaign_targets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_campaigns.id"), index=True
+    )
+    site_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_agent_id: Mapped[str] = mapped_column(String(255))
+    device_name: Mapped[str] = mapped_column(String(255), default="")
+    device_class: Mapped[str] = mapped_column(String(32), default="server")
+    #: eligible | warn_not_permitted | unknown |
+    #: excluded_unimplemented | excluded_by_operator
+    applicability: Mapped[str] = mapped_column(String(32), default="eligible")
+    reason: Mapped[str] = mapped_column(String(512), default="")
+    #: pending | dispatched | completed | failed | skipped
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    #: D2: what the dispatch-time revalidation decided, and why. Distinct
+    #: from `applicability`, which is what PREFLIGHT decided -- keeping
+    #: them separate is what lets an operator see that the world changed
+    #: between approval and dispatch.
+    revalidation: Mapped[str] = mapped_column(String(32), default="")
+    revalidation_reason: Mapped[str] = mapped_column(String(512), default="")
+    outcome: Mapped[str] = mapped_column(String(32), default="")
+    error: Mapped[str] = mapped_column(String(512), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "device_agent_id", name="uq_campaign_target"
+        ),
+        Index("ix_cc_campaign_targets_site", "campaign_id", "site_id"),
+    )
+
+
+class CCCampaignSite(Base):
+    """Per-site branch state. The site is the isolation unit.
+
+    A campaign spanning eight sites has eight independent branches: one
+    halting must not stop the others (S6), which is the same boundary
+    E0.2 and E1.3 drew for identity, correlation and error budgets.
+    """
+
+    __tablename__ = "cc_campaign_sites"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_campaigns.id"), index=True
+    )
+    site_id: Mapped[str] = mapped_column(String(32), index=True)
+    site_name: Mapped[str] = mapped_column(String(255), default="")
+    #: pending | running | completed | halted | skipped
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    current_wave: Mapped[int] = mapped_column(Integer, default=0)
+    wave_count: Mapped[int] = mapped_column(Integer, default=0)
+    halt_reason: Mapped[str] = mapped_column(String(1024), default="")
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "site_id", name="uq_campaign_site"),
+    )
+
+
+class CCCampaignDispatch(Base):
+    """Durable dispatch ledger. One row per device per wave, ever.
+
+    The composite primary key IS the idempotency guarantee, exactly as
+    `cc_skill_deliveries` does it: a restart, a replay or a redelivery
+    cannot execute a device twice in a wave, because the second insert
+    cannot exist. Re-running a campaign creates a NEW version and
+    therefore new rows; it never rewrites this evidence.
+    """
+
+    __tablename__ = "cc_campaign_dispatches"
+
+    campaign_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    campaign_version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    device_agent_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    wave_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: The plan this dispatch belonged to. In the key because a wave that
+    #: was superseded and legitimately re-approved is a DIFFERENT wave: a
+    #: ledger without it would read the re-approved dispatch as a replay
+    #: and silently drop real work. Executing twice is separately
+    #: prevented by refusing to re-dispatch a target already SUCCESS.
+    plan_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    directive_id: Mapped[str] = mapped_column(String(64), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    authorization: Mapped[str] = mapped_column(String(32), default="")
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(String(512), default="")
+    dispatched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class CCCampaignScope(Base):
+    """A campaign's target SELECTION, kept out of its action params.
+
+    This exists because the first cut stored scope rows inside
+    `cc_campaigns.params`, and the dispatcher sends those params to the
+    node as the action's parameters -- so governance selection would have
+    shipped to every device as an execution payload. Selection and
+    payload are different things and now live apart.
+
+    Deliberately NOT `cc_scope_grants`. That table is an AUTHORIZATION
+    grant answering "who may reach what"; this is a selection answering
+    "which devices does this run touch". Storing selection there would
+    make creating a campaign grant reach, which is an authorization
+    side-effect nobody asked for.
+    """
+
+    __tablename__ = "cc_campaign_scopes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_campaigns.id"), index=True
+    )
+    #: org_unit | site | device_class | device -- the E1.2 vocabulary,
+    #: resolved by the E1.2 resolver. No new scope type is introduced.
+    scope_type: Mapped[str] = mapped_column(String(32))
+    scope_ref: Mapped[str] = mapped_column(String(128))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "scope_type", "scope_ref", name="uq_campaign_scope"
+        ),
+    )
+
+
+class CCCampaignPlan(Base):
+    """One site's wave plan, exactly as the Site Manager computed it.
+
+    IMMUTABLE. A row is never updated: a changed plan is a new row and
+    the previous one is stamped `superseded_at`. That is what makes
+    "approval binds to a plan" a fact about storage rather than a
+    convention someone has to maintain.
+
+    Central Command stores wave MEMBERSHIP and a domain COUNT. It never
+    stores fault-domain identities, because reflecting the site's
+    topology here would make Central Command a second representation of
+    something only the Site Manager owns.
+    """
+
+    __tablename__ = "cc_campaign_plans"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_campaigns.id"), index=True
+    )
+    campaign_version: Mapped[int] = mapped_column(Integer, default=1)
+    site_id: Mapped[str] = mapped_column(String(32), index=True)
+    #: sha256 the Site Manager computed over the plan content. Approval
+    #: binds to this; any material change yields a different one.
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    #: [{wave_index, device_agent_ids, domain_span}] -- membership and a
+    #: count, never domain ids.
+    waves: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    unplannable: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    separation_rule: Mapped[str] = mapped_column(String(255), default="")
+    generated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "campaign_version", "site_id", "plan_hash",
+            name="uq_campaign_plan",
+        ),
+    )
+
+
+class CCCampaignWave(Base):
+    """One site-wave: the unit of approval, and the unit of execution.
+
+    This row is where the three states the platform must never conflate
+    are kept apart:
+
+        APPROVED    a named human authorized THIS exact plan and set
+        EXECUTABLE  re-evaluated at dispatch; may narrow, may refuse
+        EXECUTED    it actually ran, and the outcome says how
+
+    `subject_ref` is the digest the approval ledger records against,
+    computed over campaign, version, site, wave index, the wave's exact
+    device list and the plan hash. It is not merely an identifier: change
+    any of those and the digest no longer addresses this subject, so a
+    stale approval is structurally unable to authorize new work.
+    """
+
+    __tablename__ = "cc_campaign_waves"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_campaigns.id"), index=True
+    )
+    campaign_version: Mapped[int] = mapped_column(Integer, default=1)
+    site_id: Mapped[str] = mapped_column(String(32), index=True)
+    wave_index: Mapped[int] = mapped_column(Integer, default=0)
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    #: The exact devices this wave authorizes. Part of the approved
+    #: subject, not a convenience copy.
+    device_agent_ids: Mapped[list | None] = mapped_column(
+        JSONVariant, nullable=True
+    )
+    domain_span: Mapped[int] = mapped_column(Integer, default=0)
+    #: The 32-hex digest recorded in cc_approval_records.subject_ref.
+    subject_ref: Mapped[str] = mapped_column(String(64), index=True, default="")
+    #: autonomous | pending_approval | approved | denied | voided |
+    #: dispatched | completed | failed
+    status: Mapped[str] = mapped_column(String(24), default="pending_approval")
+    #: Q3: a halted site voids its later approved waves, because they were
+    #: approved under a sequence whose predecessor has now failed. Stale
+    #: authorization is never silently reused.
+    void_reason: Mapped[str] = mapped_column(String(512), default="")
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "campaign_version", "site_id", "wave_index",
+            "plan_hash", name="uq_campaign_wave",
+        ),
+        Index("ix_cc_campaign_waves_status", "campaign_id", "status"),
+    )

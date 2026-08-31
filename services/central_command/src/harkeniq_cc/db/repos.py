@@ -14,6 +14,13 @@ from sqlalchemy import delete as sa_delete, false as sa_false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
+    CCCampaign,
+    CCCampaignDispatch,
+    CCCampaignPlan,
+    CCCampaignScope,
+    CCCampaignSite,
+    CCCampaignTarget,
+    CCCampaignWave,
     CCOrgUnit,
     CCAgentCapability,
     CCAgentProposal,
@@ -2488,3 +2495,319 @@ class ApprovalRecordRepo:
         for row in rows:
             out.setdefault(row.subject_ref, []).append(row)
         return out
+
+
+class CampaignRepo:
+    """S6 campaigns, their targets, their per-site branches and the
+    dispatch ledger.
+
+    Every read is tenant-scoped and takes the E1.2 `scope`, exactly as
+    the fleet and incident reads do: a campaign is a fleet-shaped object
+    and a scoped principal must not see one that reaches sites they
+    cannot.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    # -- campaigns ----------------------------------------------------------
+
+    async def create(self, **kw) -> CCCampaign:
+        campaign = CCCampaign(**kw)
+        self.session.add(campaign)
+        await self.session.flush()
+        return campaign
+
+    async def get(self, tenant_id: str, campaign_id: str) -> Optional[CCCampaign]:
+        row = await self.session.get(CCCampaign, campaign_id)
+        if row is None or row.tenant_id != tenant_id:
+            return None
+        return row
+
+    async def list_all(
+        self, tenant_id: str, status: Optional[str] = None, scope=None
+    ) -> Sequence[CCCampaign]:
+        stmt = select(CCCampaign).where(CCCampaign.tenant_id == tenant_id)
+        if status:
+            stmt = stmt.where(CCCampaign.status == status)
+        rows = (
+            await self.session.execute(stmt.order_by(CCCampaign.created_at.desc()))
+        ).scalars().all()
+        if scope is None or getattr(scope, "tenant_wide", False):
+            return rows
+        # A campaign is visible when the caller can see at least one site
+        # it reaches. Filtering on the campaign's own sites rather than a
+        # column keeps this consistent with how every other site-anchored
+        # read is scoped.
+        visible = set(getattr(scope, "site_ids", ()) or ())
+        if not visible:
+            return []
+        site_rows = (
+            await self.session.execute(
+                select(CCCampaignSite.campaign_id, CCCampaignSite.site_id).where(
+                    CCCampaignSite.campaign_id.in_([r.id for r in rows] or [""])
+                )
+            )
+        ).all()
+        reach: dict[str, set[str]] = {}
+        for campaign_id, site_id in site_rows:
+            reach.setdefault(campaign_id, set()).add(site_id)
+        return [r for r in rows if reach.get(r.id, set()) & visible]
+
+    async def bump_version(self, campaign: CCCampaign) -> None:
+        """An edit is a new configuration context.
+
+        The version bump is what invalidates the acknowledgement and any
+        approval taken against the previous one -- otherwise a person
+        acknowledges v1 and the estate runs v2.
+        """
+        campaign.version = int(campaign.version) + 1
+        campaign.acknowledged_by = ""
+        campaign.acknowledged_at = None
+        campaign.acknowledged_version = 0
+        campaign.status = "draft"
+        campaign.preflight_at = None
+        campaign.updated_at = utcnow()
+        await self.session.flush()
+
+    # -- targets ------------------------------------------------------------
+
+    async def replace_targets(self, campaign_id: str, rows: list[dict]) -> None:
+        await self.session.execute(
+            sa_delete(CCCampaignTarget).where(
+                CCCampaignTarget.campaign_id == campaign_id
+            )
+        )
+        for row in rows:
+            self.session.add(CCCampaignTarget(campaign_id=campaign_id, **row))
+        await self.session.flush()
+
+    async def targets(
+        self, campaign_id: str, site_id: Optional[str] = None
+    ) -> Sequence[CCCampaignTarget]:
+        stmt = select(CCCampaignTarget).where(
+            CCCampaignTarget.campaign_id == campaign_id
+        )
+        if site_id:
+            stmt = stmt.where(CCCampaignTarget.site_id == site_id)
+        return (
+            await self.session.execute(
+                stmt.order_by(CCCampaignTarget.site_id, CCCampaignTarget.device_agent_id)
+            )
+        ).scalars().all()
+
+    async def get_target(
+        self, campaign_id: str, device_agent_id: str
+    ) -> Optional[CCCampaignTarget]:
+        return (
+            await self.session.execute(
+                select(CCCampaignTarget).where(
+                    CCCampaignTarget.campaign_id == campaign_id,
+                    CCCampaignTarget.device_agent_id == device_agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    # -- per-site branches --------------------------------------------------
+
+    async def replace_sites(self, campaign_id: str, rows: list[dict]) -> None:
+        await self.session.execute(
+            sa_delete(CCCampaignSite).where(
+                CCCampaignSite.campaign_id == campaign_id
+            )
+        )
+        for row in rows:
+            self.session.add(CCCampaignSite(campaign_id=campaign_id, **row))
+        await self.session.flush()
+
+    async def sites(self, campaign_id: str) -> Sequence[CCCampaignSite]:
+        return (
+            await self.session.execute(
+                select(CCCampaignSite)
+                .where(CCCampaignSite.campaign_id == campaign_id)
+                .order_by(CCCampaignSite.order_index)
+            )
+        ).scalars().all()
+
+    async def get_site(
+        self, campaign_id: str, site_id: str
+    ) -> Optional[CCCampaignSite]:
+        return (
+            await self.session.execute(
+                select(CCCampaignSite).where(
+                    CCCampaignSite.campaign_id == campaign_id,
+                    CCCampaignSite.site_id == site_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    # -- dispatch ledger ----------------------------------------------------
+
+    async def already_dispatched(
+        self, campaign_id: str, version: int, site_id: str,
+        device_agent_id: str, wave_index: int, plan_hash: str,
+    ) -> bool:
+        """Has this exact device already been dispatched in this wave?
+
+        The composite primary key is the real guarantee; this read exists
+        so the caller can skip cleanly rather than provoke an integrity
+        error on a replay.
+        """
+        row = await self.session.get(
+            CCCampaignDispatch,
+            (campaign_id, version, site_id, device_agent_id, wave_index,
+             plan_hash),
+        )
+        return row is not None
+
+    async def record_dispatch(self, **kw) -> CCCampaignDispatch:
+        row = CCCampaignDispatch(**kw)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def dispatches(
+        self, campaign_id: str
+    ) -> Sequence[CCCampaignDispatch]:
+        return (
+            await self.session.execute(
+                select(CCCampaignDispatch).where(
+                    CCCampaignDispatch.campaign_id == campaign_id
+                )
+            )
+        ).scalars().all()
+
+    # -- scopes (SELECTION, not an authorization grant) ---------------------
+
+    async def replace_scopes(self, campaign_id: str, rules: list[tuple]) -> None:
+        await self.session.execute(
+            sa_delete(CCCampaignScope).where(
+                CCCampaignScope.campaign_id == campaign_id
+            )
+        )
+        for scope_type, scope_ref in rules:
+            self.session.add(CCCampaignScope(
+                campaign_id=campaign_id,
+                scope_type=scope_type,
+                scope_ref=scope_ref,
+            ))
+        await self.session.flush()
+
+    async def scopes(self, campaign_id: str) -> Sequence[CCCampaignScope]:
+        return (
+            await self.session.execute(
+                select(CCCampaignScope).where(
+                    CCCampaignScope.campaign_id == campaign_id
+                )
+            )
+        ).scalars().all()
+
+    # -- plans (IMMUTABLE) --------------------------------------------------
+
+    async def store_plan(self, **kw) -> CCCampaignPlan:
+        """Persist a plan exactly as the site computed it.
+
+        Never updates. If this plan hash already exists for this
+        (campaign, version, site) it is the same plan and the existing
+        row is returned -- which is what makes re-planning idempotent.
+        """
+        existing = (
+            await self.session.execute(
+                select(CCCampaignPlan).where(
+                    CCCampaignPlan.campaign_id == kw["campaign_id"],
+                    CCCampaignPlan.campaign_version == kw["campaign_version"],
+                    CCCampaignPlan.site_id == kw["site_id"],
+                    CCCampaignPlan.plan_hash == kw["plan_hash"],
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        row = CCCampaignPlan(**kw)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def supersede_plans(
+        self, campaign_id: str, site_id: str, keep_hash: str
+    ) -> int:
+        """Stamp every other plan for this site superseded.
+
+        The rows stay: an approval that referenced one must remain
+        explicable after the fact, and deleting the plan would erase what
+        somebody actually authorized.
+        """
+        rows = (
+            await self.session.execute(
+                select(CCCampaignPlan).where(
+                    CCCampaignPlan.campaign_id == campaign_id,
+                    CCCampaignPlan.site_id == site_id,
+                    CCCampaignPlan.plan_hash != keep_hash,
+                    CCCampaignPlan.superseded_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            row.superseded_at = utcnow()
+        await self.session.flush()
+        return len(rows)
+
+    async def current_plan(
+        self, campaign_id: str, site_id: str
+    ) -> Optional[CCCampaignPlan]:
+        return (
+            await self.session.execute(
+                select(CCCampaignPlan)
+                .where(
+                    CCCampaignPlan.campaign_id == campaign_id,
+                    CCCampaignPlan.site_id == site_id,
+                    CCCampaignPlan.superseded_at.is_(None),
+                )
+                .order_by(CCCampaignPlan.received_at.desc())
+            )
+        ).scalars().first()
+
+    # -- waves (approval + execution unit) ----------------------------------
+
+    async def add_wave(self, **kw) -> CCCampaignWave:
+        row = CCCampaignWave(**kw)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def waves(
+        self, campaign_id: str, site_id: Optional[str] = None
+    ) -> Sequence[CCCampaignWave]:
+        stmt = select(CCCampaignWave).where(
+            CCCampaignWave.campaign_id == campaign_id
+        )
+        if site_id:
+            stmt = stmt.where(CCCampaignWave.site_id == site_id)
+        return (
+            await self.session.execute(
+                stmt.order_by(CCCampaignWave.site_id, CCCampaignWave.wave_index)
+            )
+        ).scalars().all()
+
+    async def wave_by_subject(
+        self, subject_ref: str
+    ) -> Optional[CCCampaignWave]:
+        """Resolve an approval subject back to the wave it authorizes."""
+        return (
+            await self.session.execute(
+                select(CCCampaignWave).where(
+                    CCCampaignWave.subject_ref == subject_ref
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def clear_waves(
+        self, campaign_id: str, site_id: Optional[str] = None
+    ) -> None:
+        stmt = sa_delete(CCCampaignWave).where(
+            CCCampaignWave.campaign_id == campaign_id
+        )
+        if site_id:
+            stmt = stmt.where(CCCampaignWave.site_id == site_id)
+        await self.session.execute(stmt)
+        await self.session.flush()

@@ -408,3 +408,63 @@ class TestAgentDeclaresItself:
         assert "capabilities=self.declare_capabilities()" in source
         register = inspect.getsource(grpc_stub.SiteManagerReporter.register_agent)
         assert "capabilities_json=" in register
+
+
+class TestListConfigFromEnvironment:
+    """A list setting given by environment must arrive as a list.
+
+    Found building the S6 two-site acceptance, where each node needs its
+    own allow list. `_coerce` handled bool, int and float and returned
+    the raw string for a list default, so `HARKENIQ_ACTIONS_ALLOW_LIST`
+    became a list of CHARACTERS and `ActionExecutor` refused every
+    action -- silently, because refusing is the fail-closed direction and
+    nothing logged a configuration error.
+
+    It matters to the Registry directly: `allow_list` is half of a node's
+    capability declaration, so a node configured this way declared an
+    effective set of nothing while looking correctly configured.
+    """
+
+    def test_a_list_setting_arrives_as_a_list(self):
+        from harkeniq.config import load_config
+
+        config = load_config(env={
+            "HARKENIQ_BMC_HOST": "https://bmc",
+            "HARKENIQ_ACTIONS_ALLOW_LIST": "IDENTIFY_LED,FAN_RESET",
+        })
+        assert config["actions"]["allow_list"] == ["IDENTIFY_LED", "FAN_RESET"]
+
+    def test_whitespace_around_entries_is_tolerated(self):
+        from harkeniq.config import load_config
+
+        config = load_config(env={
+            "HARKENIQ_BMC_HOST": "https://bmc",
+            "HARKENIQ_ACTIONS_ALLOW_LIST": " IDENTIFY_LED , FAN_RESET ",
+        })
+        assert config["actions"]["allow_list"] == ["IDENTIFY_LED", "FAN_RESET"]
+
+    def test_the_executor_then_permits_exactly_those_actions(self):
+        from harkeniq.actions.executor import ActionExecutor
+        from harkeniq.config import load_config
+
+        config = load_config(env={
+            "HARKENIQ_BMC_HOST": "https://bmc",
+            "HARKENIQ_ACTIONS_ALLOW_LIST": "IDENTIFY_LED",
+        })
+        executor = ActionExecutor(None, "dell", {"actions": config["actions"]})
+        assert executor.allow_list == ["IDENTIFY_LED"]
+        assert "COLLECT_DIAGNOSTICS" not in executor.allow_list
+
+    def test_the_declaration_reflects_an_env_configured_allow_list(self):
+        """The Registry half: a node configured by environment declares
+        the allow list it was actually given, not a character soup."""
+        from harkeniq.capabilities import declare
+        from harkeniq.config import load_config
+
+        config = load_config(env={
+            "HARKENIQ_BMC_HOST": "https://bmc",
+            "HARKENIQ_ACTIONS_ALLOW_LIST": "IDENTIFY_LED,SEL_CLEAR",
+        })
+        declaration = declare("redfish", config["actions"]["allow_list"])
+        assert declaration["allow_list"] == ["IDENTIFY_LED", "SEL_CLEAR"]
+        assert declaration["effective"] == ["IDENTIFY_LED", "SEL_CLEAR"]

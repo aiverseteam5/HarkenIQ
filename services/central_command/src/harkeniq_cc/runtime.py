@@ -68,6 +68,7 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     """Serve until cancelled. ``state`` injection is for tests."""
     from harkeniq_cc.app import create_app  # late: app imports routers
     from harkeniq_cc.agent_runtime import operational_agent_loop
+    from harkeniq_cc.campaign_runner import campaign_loop
     from harkeniq_cc.fleet_poller import fleet_poll_loop
     from harkeniq_cc.intelligence import intelligence_loop
     from harkeniq_cc.marketplace_sync import marketplace_sync_loop
@@ -121,6 +122,9 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     async def operational_agent_task() -> None:
         await operational_agent_loop(state)
 
+    async def campaign_task() -> None:
+        await campaign_loop(state)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(serve_http(), name="http")
@@ -130,6 +134,7 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
             tg.create_task(intelligence_task(), name="intelligence")
             tg.create_task(warranty_task(), name="warranty")
             tg.create_task(marketplace_task(), name="marketplace_sync")
+            tg.create_task(campaign_task(), name="campaigns")
             tg.create_task(
                 operational_agent_task(), name="operational_agents"
             )

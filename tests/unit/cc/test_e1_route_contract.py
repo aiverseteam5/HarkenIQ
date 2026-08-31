@@ -56,6 +56,30 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     # tenant's reach would be a fleet-inventory leak wearing a
     # capability label.
     ("GET", "/api/capabilities/"):              ("fleet.view", READ_SCOPED, False),
+    # S6 campaigns. Reads are fleet.view and READ_SCOPED (an out-of-scope
+    # campaign is 404, never 403); configuration is site.manage and
+    # OBJECT_GATED, because the delegation ceiling is checked against the
+    # scope rows the campaign is being pointed at. No campaign.*
+    # permission exists -- the vocabulary is fixed.
+    ("GET", "/api/campaigns/"):                 ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/campaigns/{campaign_id}"):    ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/campaigns/{campaign_id}/targets"):
+        ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/campaigns/{campaign_id}/sites"):
+        ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/campaigns/{campaign_id}/waves"):
+        ("fleet.view", READ_SCOPED, False),
+    ("POST", "/api/campaigns/{campaign_id}/advance"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/campaigns/"):                ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/campaigns/{campaign_id}/preflight"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/campaigns/{campaign_id}/acknowledge"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/campaigns/{campaign_id}/submit"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/campaigns/{campaign_id}/cancel"):
+        ("site.manage", OBJECT_GATED, True),
     # READ_SCOPED like /api/fleet/{device_id}: an out-of-scope device is
     # 404, never 403, because a 403 confirms it exists.
     ("GET", "/api/capabilities/devices/{device_id}"):

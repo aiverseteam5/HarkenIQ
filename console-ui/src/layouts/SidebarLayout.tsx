@@ -65,6 +65,9 @@ const TENANT_NAV: SidebarSection[] = [
       // halves of one question -- Autonomy answers "may it run without
       // a human", this answers "can it run at all".
       { key: "/capabilities", label: "Capabilities", icon: "\u2692" },
+      // S6: governed orchestration across the estate. Sits after
+      // Capabilities because a campaign is what you do WITH one.
+      { key: "/campaigns", label: "Campaigns", icon: "\u25A4" },
       // A0+A1: the product noun. Sits next to Autonomy because it is
       // the actor the trust ladder governs.
       { key: "/operational-agents", label: "Operational Agents", icon: "\u25C8" },

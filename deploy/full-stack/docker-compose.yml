@@ -302,6 +302,108 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------
+  # S6: a second DEVICE-BEARING site on the SAME Site Manager.
+  # Start with: docker compose --profile multi-site up -d
+  #
+  # The S6 acceptance criterion is that one site can halt while another
+  # completes, and that needs eligible devices at BOTH sites -- a second
+  # empty site proves multi-site targeting and nothing about isolation.
+  #
+  # These three nodes share the mock BMC (identity comes from config, not
+  # from the simulator) and differ in the two things the scenario needs:
+  # which site they enroll at, and what their own allow list permits.
+  # site-a-2 deliberately does NOT permit COLLECT_DIAGNOSTICS, so its
+  # node refuses the campaign's action for real -- the halt is produced
+  # by the node's own authority, never simulated.
+
+  agent-a2:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.agent
+    profiles: ["multi-site"]
+    restart: unless-stopped
+    environment:
+      HARKENIQ_AGENT_ID: site-a-node-2
+      HARKENIQ_AGENT_NAME: site-a-node-2
+      HARKENIQ_BMC_HOST: https://mock-simulator:9000
+      HARKENIQ_BMC_USERNAME: admin
+      HARKENIQ_BMC_PASSWORD: password
+      HARKENIQ_SITE_MANAGER_HOST: site-manager
+      HARKENIQ_SITE_MANAGER_PORT: "50051"
+      HARKENIQ_SITE_MANAGER_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
+      HARKENIQ_SITE_MANAGER_TLS: "false"
+      HARKENIQ_SITE_MANAGER_ENROLLMENT_TOKEN: ${SITE_A_ENROLL:-}
+      # Implements COLLECT_DIAGNOSTICS (redfish) but does not PERMIT it:
+      # preflight warns, a human acknowledges, the node refuses, the wave
+      # fails and the site halts.
+      HARKENIQ_ACTIONS_ALLOW_LIST: "IDENTIFY_LED"
+      HARKENIQ_POLLING_SENSOR_INTERVAL: "15"
+      HARKENIQ_BASELINE_MIN_SAMPLES: "5"
+    volumes:
+      - agenta2data:/var/lib/harkeniq
+    depends_on:
+      site-manager:
+        condition: service_healthy
+      mock-simulator:
+        condition: service_healthy
+
+  agent-b1:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.agent
+    profiles: ["multi-site"]
+    restart: unless-stopped
+    environment:
+      HARKENIQ_AGENT_ID: site-b-node-1
+      HARKENIQ_AGENT_NAME: site-b-node-1
+      HARKENIQ_BMC_HOST: https://mock-simulator:9000
+      HARKENIQ_BMC_USERNAME: admin
+      HARKENIQ_BMC_PASSWORD: password
+      HARKENIQ_SITE_MANAGER_HOST: site-manager
+      HARKENIQ_SITE_MANAGER_PORT: "50051"
+      HARKENIQ_SITE_MANAGER_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
+      HARKENIQ_SITE_MANAGER_TLS: "false"
+      HARKENIQ_SITE_MANAGER_ENROLLMENT_TOKEN: ${SITE_B_ENROLL:-}
+      HARKENIQ_ACTIONS_ALLOW_LIST: "IDENTIFY_LED,COLLECT_DIAGNOSTICS,FAN_RESET"
+      HARKENIQ_POLLING_SENSOR_INTERVAL: "15"
+      HARKENIQ_BASELINE_MIN_SAMPLES: "5"
+    volumes:
+      - agentb1data:/var/lib/harkeniq
+    depends_on:
+      site-manager:
+        condition: service_healthy
+      mock-simulator:
+        condition: service_healthy
+
+  agent-b2:
+    build:
+      context: ../..
+      dockerfile: deploy/full-stack/Dockerfile.agent
+    profiles: ["multi-site"]
+    restart: unless-stopped
+    environment:
+      HARKENIQ_AGENT_ID: site-b-node-2
+      HARKENIQ_AGENT_NAME: site-b-node-2
+      HARKENIQ_BMC_HOST: https://mock-simulator:9000
+      HARKENIQ_BMC_USERNAME: admin
+      HARKENIQ_BMC_PASSWORD: password
+      HARKENIQ_SITE_MANAGER_HOST: site-manager
+      HARKENIQ_SITE_MANAGER_PORT: "50051"
+      HARKENIQ_SITE_MANAGER_TOKEN: ${HARKENIQ_SITE_TOKEN:-dev-token-sm}
+      HARKENIQ_SITE_MANAGER_TLS: "false"
+      HARKENIQ_SITE_MANAGER_ENROLLMENT_TOKEN: ${SITE_B_ENROLL:-}
+      HARKENIQ_ACTIONS_ALLOW_LIST: "IDENTIFY_LED,COLLECT_DIAGNOSTICS,FAN_RESET"
+      HARKENIQ_POLLING_SENSOR_INTERVAL: "15"
+      HARKENIQ_BASELINE_MIN_SAMPLES: "5"
+    volumes:
+      - agentb2data:/var/lib/harkeniq
+    depends_on:
+      site-manager:
+        condition: service_healthy
+      mock-simulator:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
   # R6-P8: network simulation profile.
   # Start with: docker compose --profile network-sim up
   # A switch simulator (P0-fixture-faithful gNMI) + an agent speaking the
@@ -352,4 +454,7 @@ services:
 volumes:
   pgdata:
   agentdata:
+  agenta2data:
+  agentb1data:
+  agentb2data:
   networkagentdata:

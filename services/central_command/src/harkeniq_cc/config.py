@@ -51,6 +51,8 @@ class CCConfig:
     # already refreshed, and proposing faster than the evidence changes
     # would only produce duplicates the dedupe key throws away.
     agent_evaluate_interval_s: float = 120.0
+    #: S6: how often the campaign reconciler looks for an eligible wave.
+    campaign_interval_s: float = 60.0
     # R4-2 P15: warranty enrichment (Dell TechDirect; empty = disabled)
     dell_api_client_id: str = ""
     dell_api_client_secret: str = ""
@@ -105,6 +107,7 @@ _ENV_MAP = {
     "HARKEN_CC_PATTERN_DETECT_INTERVAL_S": "pattern_detect_interval_s",
     "HARKEN_CC_MARKETPLACE_SYNC_INTERVAL_S": "marketplace_sync_interval_s",
     "HARKEN_CC_AGENT_EVALUATE_INTERVAL_S": "agent_evaluate_interval_s",
+    "HARKEN_CC_CAMPAIGN_INTERVAL_S": "campaign_interval_s",
     "HARKEN_CC_DELL_API_CLIENT_ID": "dell_api_client_id",
     "HARKEN_CC_DELL_API_CLIENT_SECRET": "dell_api_client_secret",
     "HARKEN_CC_WARRANTY_REFRESH_INTERVAL_S": "warranty_refresh_interval_s",
