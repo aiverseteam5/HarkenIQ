@@ -29,6 +29,10 @@ from harkeniq_cc.warranty.base import (
 from harkeniq_cc.warranty.dell_techdirect import DellTechDirectProvider
 from harkeniq_cc.warranty.refresh import make_provider, refresh_once
 
+# A fixed, deliberately-not-now reading so a test can tell a real
+# last_seen_at apart from snapshot_at (which is written at upsert).
+SEEN_AT = datetime(2026, 8, 30, 12, 0, 0, tzinfo=timezone.utc)
+
 TENANT = "test-tenant"
 
 
@@ -228,6 +232,7 @@ async def client():
             vendor="dell", model="R750", service_tag="DTAG1",
             firmware=[{"component": "bmc", "name": "iDRAC9",
                        "version": "7.00.00.00"}],
+            last_seen_at=SEEN_AT,
         )
         device_id = row.id
         await WarrantyRepo(session).upsert_records([
@@ -275,7 +280,12 @@ class TestWarrantyAPI:
         assert detail["site_name"] == "dc-blr-1"
         assert detail["warranty"]["status"] == "active"
         assert detail["firmware"][0]["version"] == "7.00.00.00"
-        assert detail["last_seen_at"]
+        # This used to pass only because get_device aliased snapshot_at onto
+        # last_seen_at, so ANY cached row satisfied it. Assert the seeded
+        # reading, and that CC's own refresh time is a different value.
+        seen = datetime.fromisoformat(detail["last_seen_at"])
+        assert (seen if seen.tzinfo else seen.replace(tzinfo=timezone.utc)) == SEEN_AT
+        assert detail["snapshot_at"] != detail["last_seen_at"]
 
     async def test_device_detail_404(self, client):
         r = await client.get("/api/fleet/nonexistent-id")

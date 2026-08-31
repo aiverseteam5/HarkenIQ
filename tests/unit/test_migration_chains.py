@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0012"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0013"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0009"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.

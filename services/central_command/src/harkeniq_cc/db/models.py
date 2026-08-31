@@ -223,6 +223,15 @@ class CCFleetCache(Base):
     # R4-2 P14/P15: warranty lookup key + firmware inventory
     service_tag: Mapped[str] = mapped_column(String(255), default="")
     firmware: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    # When the SITE last saw the agent (FleetDevice.last_seen_unix). Distinct
+    # from snapshot_at, which is only when CC last refreshed this cache row:
+    # a Site Manager that keeps polling makes snapshot_at fresh no matter how
+    # long the agent has been silent. Nullable because a site that has never
+    # reported a reading has no honest value, and inventing one restates the
+    # very lie this column exists to end.
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_fleet_cache_site_id", "site_id"),)

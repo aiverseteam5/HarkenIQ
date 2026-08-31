@@ -101,6 +101,48 @@ class TestFleetCacheRepo:
         await repo.clear_site(site.id)
         assert await repo.list_by_site(site.id) == []
 
+    async def test_last_seen_defaults_to_null_not_to_snapshot(
+        self, session, site
+    ):
+        """An unreported reading is unknown, never "now".
+
+        The whole defect this column fixes was snapshot_at standing in for a
+        reading nobody supplied, so the absent case has to stay absent.
+        """
+        repo = FleetCacheRepo(session)
+        dev = await repo.upsert_device(site.id, "agent-1")
+        assert dev.last_seen_at is None
+        assert dev.snapshot_at is not None
+
+    async def test_last_seen_is_stored_and_is_not_snapshot_at(
+        self, session, site
+    ):
+        seen = datetime(2026, 8, 30, 12, 0, 0, tzinfo=timezone.utc)
+        repo = FleetCacheRepo(session)
+        dev = await repo.upsert_device(site.id, "agent-1", last_seen_at=seen)
+        assert dev.last_seen_at == seen
+        assert dev.snapshot_at != dev.last_seen_at
+
+    async def test_poll_without_a_reading_keeps_the_last_honest_value(
+        self, session, site
+    ):
+        """A later poll that carries no reading must not erase the old one.
+
+        Clearing it would make a briefly-quiet SM look like an agent that had
+        never been seen; overwriting it with utcnow() would be the original
+        lie wearing the new column's name.
+        """
+        seen = datetime(2026, 8, 30, 12, 0, 0, tzinfo=timezone.utc)
+        repo = FleetCacheRepo(session)
+        await repo.upsert_device(site.id, "agent-1", last_seen_at=seen)
+        dev = await repo.upsert_device(site.id, "agent-1", health="ok")
+        # sqlite drops tzinfo on read-back where PostgreSQL keeps it, so
+        # compare the instant rather than the storage engine's rendering.
+        got = dev.last_seen_at
+        if got.tzinfo is None:
+            got = got.replace(tzinfo=timezone.utc)
+        assert got == seen
+
 
 class TestApprovalRouteRepo:
     async def test_create(self, session, site):

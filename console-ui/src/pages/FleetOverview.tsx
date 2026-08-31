@@ -165,7 +165,7 @@ const detailValue: CSSProperties = {
 
 /* ── Helpers ──────────────────────────────────────── */
 
-function formatDate(iso: string | undefined): string {
+function formatDate(iso: string | null | undefined): string {
   if (!iso) return "--";
   return new Date(iso).toLocaleString("en-US", {
     month: "short",
@@ -432,7 +432,10 @@ export default function FleetOverview() {
         key: "last_seen_at",
         header: "Last Seen",
         sortKey: "last_seen_at",
-        render: (r) => formatDate(r.last_seen_at ?? r.snapshot_at),
+        // No snapshot_at fallback: that is CC's cache-refresh time, and
+        // showing it under "Last Seen" is what made a silent agent look
+        // fresh. Never seen renders as "--".
+        render: (r) => formatDate(r.last_seen_at),
       },
     ],
     [],
@@ -563,7 +566,7 @@ export default function FleetOverview() {
             </div>
             <div style={detailRow}>
               <span style={detailLabel}>Last Seen</span>
-              <span style={detailValue}>{formatDate(selectedDevice.last_seen_at ?? selectedDevice.snapshot_at)}</span>
+              <span style={detailValue}>{formatDate(selectedDevice.last_seen_at)}</span>
             </div>
 
             {/* S1: predictive risk — deterministic scoring that already

@@ -27,6 +27,10 @@ def _device_dict(dev) -> dict:
         "subsystems": dev.subsystems,
         "service_tag": dev.service_tag,
         "firmware": dev.firmware or [],
+        # Two different facts, and they are not interchangeable: last_seen_at
+        # is when the SITE last saw the agent (null if it never has),
+        # snapshot_at is only when CC last refreshed this cache row.
+        "last_seen_at": dev.last_seen_at.isoformat() if dev.last_seen_at else None,
         "snapshot_at": dev.snapshot_at.isoformat() if dev.snapshot_at else None,
     }
 
@@ -161,7 +165,8 @@ async def get_device(
         "name": row.agent_name or row.agent_id,
         "site_name": site.site_name,
         "subsystems_json": row.subsystems or {},
-        "last_seen_at": row.snapshot_at.isoformat() if row.snapshot_at else None,
+        # last_seen_at used to be overridden here with snapshot_at, so a
+        # silent agent read as fresh. _device_dict now sends the real one.
         "warranty": warranty_dict(warranty) if warranty else None,
     })
     return detail
