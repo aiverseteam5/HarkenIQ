@@ -123,6 +123,21 @@ class CorrelationEngine:
                     await rules.tor_connectivity(
                         session, self.config, site_id, self.incidents, now
                     )
+                    # ONE TRANSACTION PER SITE, not one across all of them.
+                    #
+                    # Correctness first: sites are independent by ratified
+                    # decision, so a sweep that finished Site A and then
+                    # failed on Site B must not roll back A's conclusions.
+                    # A shared transaction couples the sites' durability,
+                    # which is exactly the coupling E1.3 removed
+                    # everywhere else.
+                    #
+                    # It also bounds the write window: the lock a sweep
+                    # holds no longer grows with the number of sites
+                    # served, which matters to every other writer -- row
+                    # locks on PostgreSQL, and the whole database file on
+                    # the sqlite the e2e harness uses.
+                    await session.commit()
                 await self.incidents.resolve_recovered_children(session)
                 await self.incidents.resolve_recovered_ambiguities(session)
                 await self.incidents.auto_resolve_parents(session)
