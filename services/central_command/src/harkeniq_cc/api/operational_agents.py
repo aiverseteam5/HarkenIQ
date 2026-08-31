@@ -335,11 +335,22 @@ async def _refuse_zero_reach(
     the runtime does it too. Nothing is committed yet, so raising here
     leaves no agent behind.
 
+    REFUSES ON CAPABILITY, NEVER ON POLICY. The test is whether the
+    devices' PROTOCOLS implement the class, not whether their allow lists
+    currently permit it. An earlier version of this check used the
+    effective set and the compose gate caught it: the A0+A1 gate binds
+    SEL_CLEAR deliberately, to a demo node whose allow list does not
+    carry it, precisely to prove that the node's own refusal is final and
+    becomes attributed evidence. Refusing that binding here would have
+    promoted a mutable node policy into a hard Central Command
+    configuration constraint -- an operator could no longer configure an
+    agent ahead of a config rollout, and the Registry would be answering
+    question six, which belongs to the node.
+
     UNKNOWN NEVER REFUSES. A device that has not declared could turn out
     to be capable, and a fleet mid-upgrade is entirely undeclared; only
     provable zero reach -- every in-scope device declared, none of them
-    with the class -- is a refusal. The node's allow list is still the
-    final authority either way.
+    IMPLEMENTING the class -- is a refusal.
     """
     wanted = [
         b.capability_ref.upper()
@@ -364,15 +375,15 @@ async def _refuse_zero_reach(
         # would make the Registry an obstacle rather than a truth.
         return
     for ref in wanted:
-        if ref not in reach["effective"]:
+        if ref not in reach["implemented"]:
             raise HTTPException(
                 400,
                 f"no device in this agent's scope can execute {ref}. "
                 f"{reach['devices']} device(s) are in scope and every one "
-                f"has declared its capabilities; none of them implements "
-                f"or permits this class. Widen the agent's scope, permit "
-                f"the class on those nodes' allow lists, or bind a class "
-                f"those devices can actually run.",
+                f"has declared its capabilities; none of their protocols "
+                f"implements this class, so no allow-list change could "
+                f"make it runnable here. Widen the agent's scope, or bind "
+                f"a class these devices can actually perform.",
             )
 
 

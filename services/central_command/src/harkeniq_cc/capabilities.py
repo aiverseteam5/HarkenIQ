@@ -279,26 +279,68 @@ def _class_reason(
 
 
 def reachable_action_classes(devices: Iterable[Any]) -> dict[str, Any]:
-    """Effective + unknown reach across devices, for consumers.
+    """What these devices can run, split into CAPABILITY and POLICY.
 
-    Returns ``{"effective": set, "unknown": bool}``. `effective` is every
-    class at least one DECLARED device can run; `unknown` says whether
-    any device in the set has yet to declare.
+    Returns ``{"implemented": set, "effective": set, "unknown": bool,
+    "devices": int}``:
 
-    Consumers must use both. Blocking on "not in effective" alone would
-    refuse every binding on a fleet that has not upgraded, so a refusal
-    is only correct when reach is provably zero: the class is
-    unimplemented platform-wide, or every device in view has declared and
-    none of them has it.
+      implemented  the union of what these devices' PROTOCOLS implement.
+                   A capability fact: immutable for a given build and
+                   device, and the only ground a consumer may REFUSE on.
+      effective    implemented, narrowed by each node's own allow list.
+                   A policy fact: an operator can change it this
+                   afternoon, and the node enforces it as the final
+                   execution authority. Reported, never used to refuse.
+
+    The split is the whole discipline of this module, and getting it
+    wrong is easy: an early version of the binding check refused on
+    `effective`, which quietly promoted a mutable node policy into a hard
+    Central Command configuration constraint and made it impossible to
+    configure an agent ahead of a config rollout. The Registry answers
+    "can the code do this"; whether a node permits it today is question
+    six, and question six belongs to the node.
+
+    `unknown` says whether any device has yet to declare. Consumers must
+    use it: blocking on an empty set alone would refuse every binding on
+    a fleet that has not upgraded. A refusal is only correct when reach
+    is provably zero -- unimplemented platform-wide, or every device
+    declared and none of them implementing it.
     """
+    implemented: set[str] = set()
     effective: set[str] = set()
     unknown = False
     seen = 0
     for device in devices:
         seen += 1
-        row_effective = effective_actions(getattr(device, "capabilities", None))
+        declaration = getattr(device, "capabilities", None)
+        row_effective = effective_actions(declaration)
         if row_effective is None:
             unknown = True
             continue
         effective |= set(row_effective)
-    return {"effective": effective, "unknown": unknown, "devices": seen}
+        implemented |= {
+            str(a) for a in ((declaration or {}).get("implemented") or [])
+        }
+    return {
+        "implemented": implemented,
+        "effective": effective,
+        "unknown": unknown,
+        "devices": seen,
+    }
+
+
+def implemented_actions(declaration: Optional[dict]) -> Optional[frozenset[str]]:
+    """What a device's PROTOCOL implements, or None when unknown.
+
+    The capability half of a declaration, without the node's allow list
+    applied. This is what a consumer decides with; ``effective_actions``
+    is what it displays.
+    """
+    if not isinstance(declaration, dict):
+        return None
+    if not declaration.get("reach_known"):
+        return None
+    implemented = declaration.get("implemented")
+    if implemented is None:
+        return None
+    return frozenset(str(a) for a in implemented)

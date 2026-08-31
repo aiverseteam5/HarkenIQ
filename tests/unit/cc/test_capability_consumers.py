@@ -163,7 +163,7 @@ class TestBindingRefusesZeroReachInScope:
         await client.aclose()
 
     @pytest.mark.asyncio
-    async def test_the_refusal_offers_the_three_real_fixes(self):
+    async def test_the_refusal_offers_the_real_fixes(self):
         client, sm = await _stack()
         site_id = await _seed(sm, [("srv-1", "server", SERVER_DECL)])
         detail = (await client.post(
@@ -171,7 +171,9 @@ class TestBindingRefusesZeroReachInScope:
             json=_body(site_id, ["INTERFACE_DISABLE"]),
         )).json()["detail"]
         assert "Widen the agent's scope" in detail
-        assert "allow lists" in detail
+        # And it must say why an allow-list change would NOT help, since
+        # that is the first thing an operator would otherwise try.
+        assert "no allow-list change could make it runnable" in detail
         await client.aclose()
 
     @pytest.mark.asyncio
@@ -235,8 +237,11 @@ class TestScopeIsResolvedTheSameWayTheEvaluatorDoes:
 
     @pytest.mark.asyncio
     async def test_a_device_class_scope_is_checked_not_skipped(self):
+        """A switch fleet bound to SEL_CLEAR: gNMI has no such code, and
+        the scope is expressed by device class, which the repository's
+        site-based filter cannot see."""
         client, sm = await _stack()
-        await _seed(sm, [("sw-1", "switch", declare("gnmi", ["IDENTIFY_LED"], "switch"))])
+        await _seed(sm, [("sw-1", "switch", SWITCH_DECL)])
         r = await client.post(
             "/api/operational-agents/",
             json={
@@ -244,7 +249,7 @@ class TestScopeIsResolvedTheSameWayTheEvaluatorDoes:
                 "description": "capability test",
                 "scopes": [{"scope_type": "device_class", "scope_ref": "switch"}],
                 "capabilities": [
-                    {"kind": "action_class", "capability_ref": "INTERFACE_DISABLE"}
+                    {"kind": "action_class", "capability_ref": "SEL_CLEAR"}
                 ],
             },
         )
@@ -472,14 +477,32 @@ class TestProposalGuard:
         )
         assert [p["device_agent_id"] for p in got] == ["d1"]
 
-    def test_a_node_that_does_not_permit_the_class_is_not_proposed_for(self):
-        """Implemented by redfish, but absent from this node's allow
-        list -- a policy refusal, and just as certain as a missing one."""
+    def test_a_node_that_does_not_permit_the_class_is_STILL_proposed_for(self):
+        """Policy is not capability, and the node owns policy.
+
+        redfish implements SEL_CLEAR; this node's allow list does not
+        carry it. The proposal is still made: the node's refusal is the
+        ratified final authority and becomes attributed evidence in the
+        error budget, which is how an operator learns the policy is
+        wrong. Withholding it here would hide that, and would also make
+        a mutable node setting silently disable a binding.
+
+        The compose gate depends on exactly this: A0+A1 binds SEL_CLEAR
+        to a demo node that does not permit it, on purpose."""
         narrow = declare("redfish", ["IDENTIFY_LED"], "server")
         got = _run(
             [_cap("action_class", "SEL_CLEAR")],
             [_dev("d1", capabilities=narrow)],
             {"d1": [SEL_INCIDENT]},
+        )
+        assert [p["action_type"] for p in got] == ["SEL_CLEAR"]
+
+    def test_a_protocol_that_cannot_do_it_is_never_proposed_for(self):
+        """The capability half, which DOES withhold the proposal."""
+        got = _run(
+            [_cap("action_class", "SEL_CLEAR")],
+            [_dev("sw1", capabilities=SWITCH_DECL, device_class="switch")],
+            {"sw1": [SEL_INCIDENT]},
         )
         assert got == []
 
@@ -528,3 +551,99 @@ class TestAgentViewConsumesTheRegistry:
         view = self._view([])
         row = next(r for r in view["capabilities"]["action_classes"] if r["action_type"] == "SEL_CLEAR")
         assert row["capability"]["reach"] == "no_devices_in_scope"
+
+
+class TestCapabilityIsRefusedOnPolicyIsNot:
+    """The boundary the compose gate corrected, pinned in both directions.
+
+    `implemented` is a CAPABILITY fact: immutable for a build and a
+    device, and the only ground a refusal may stand on. `allow_list` is
+    POLICY: an operator can change it this afternoon, and the node
+    enforces it as the ratified final execution authority. A Registry
+    that refuses on policy has answered question six, which belongs to
+    the node -- and in practice makes it impossible to configure an agent
+    ahead of a config rollout.
+
+    The A0+A1 compose gate binds SEL_CLEAR to a demo node whose allow
+    list does not carry it, deliberately, to prove the node's refusal is
+    final and becomes attributed evidence. That binding must succeed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_class_no_node_permits_still_binds(self):
+        client, sm = await _stack()
+        narrow = declare("redfish", ["IDENTIFY_LED"], "server")
+        site_id = await _seed(sm, [("srv-1", "server", narrow)])
+        r = await client.post(
+            "/api/operational-agents/", json=_body(site_id, ["SEL_CLEAR"])
+        )
+        assert r.status_code == 201, r.text
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_the_gate_binding_is_accepted(self):
+        """The exact shape scripts/e2e-compose-gate.sh creates."""
+        client, sm = await _stack()
+        narrow = declare(
+            "redfish", ["IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET"],
+            "server",
+        )
+        site_id = await _seed(sm, [("node-1", "server", narrow)])
+        r = await client.post(
+            "/api/operational-agents/",
+            json=_body(site_id, ["SEL_CLEAR", "COLLECT_DIAGNOSTICS"]),
+        )
+        assert r.status_code == 201, r.text
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_a_class_no_protocol_implements_is_still_refused(self):
+        """The capability half is untouched by the correction."""
+        client, sm = await _stack()
+        site_id = await _seed(sm, [("srv-1", "server", SERVER_DECL)])
+        r = await client.post(
+            "/api/operational-agents/",
+            json=_body(site_id, ["INTERFACE_DISABLE"]),
+        )
+        assert r.status_code == 400, r.text
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_the_platform_refusal_is_untouched(self):
+        client, sm = await _stack()
+        site_id = await _seed(sm, [("srv-1", "server", SERVER_DECL)])
+        for action in ("INTERFACE_RESET", "CLEAR_COUNTERS"):
+            r = await client.post(
+                "/api/operational-agents/", json=_body(site_id, [action])
+            )
+            assert r.status_code == 400, (action, r.text)
+        await client.aclose()
+
+    def test_the_two_sets_are_reported_separately(self):
+        from harkeniq_cc.capabilities import reachable_action_classes
+
+        narrow = declare("redfish", ["IDENTIFY_LED"], "server")
+        reach = reachable_action_classes([_dev("d1", capabilities=narrow)])
+        assert "SEL_CLEAR" in reach["implemented"]
+        assert "SEL_CLEAR" not in reach["effective"]
+        assert reach["unknown"] is False
+
+    def test_agent_view_names_the_policy_obstacle(self):
+        """It no longer blocks, so this view is where an operator finds
+        out. 'Bound, capable, and nowhere permitted' gets its own name."""
+        narrow = declare("redfish", ["IDENTIFY_LED"], "server")
+        view = agent_view(
+            agent=_agent_obj(),
+            scopes=[SimpleNamespace(scope_type="site", scope_ref="s1")],
+            capabilities=[_cap("action_class", "SEL_CLEAR")],
+            devices=[_dev("d1", capabilities=narrow)],
+            autonomy_contract=_contract(),
+            now=NOW,
+        )
+        row = next(
+            r for r in view["capabilities"]["action_classes"]
+            if r["action_type"] == "SEL_CLEAR"
+        )
+        assert row["capability"]["reach"] == "not_permitted_on_any_node"
+        assert row["capability"]["capable_devices"] == 1
+        assert row["capability"]["reachable_devices"] == 0

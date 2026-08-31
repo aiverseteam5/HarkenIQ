@@ -1209,6 +1209,33 @@ assert not leftover, leftover
 print('refused bindings left no agent behind')
 "
 
+step "A17.7: capability refuses, POLICY does not (the boundary the gate corrected)"
+# The Gate Agent above is bound to SEL_CLEAR, which redfish implements and
+# this demo node's allow list does NOT carry. That binding must SUCCEED:
+# the allow list is operator policy the node enforces as the final
+# execution authority, and refusing it here would make a mutable setting
+# a hard Central Command constraint. The state is reported instead.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID" | python3 -c "
+import sys, json
+v = json.load(sys.stdin)
+rows = {c['action_type']: c for c in v['capabilities']['action_classes']}
+sel = rows['SEL_CLEAR']['capability']
+assert sel['implemented'] is True, sel
+# Capable (redfish has the code) but permitted nowhere on this fleet.
+assert sel['capable_devices'] >= 1, sel
+assert sel['reach'] in ('available', 'not_permitted_on_any_node'), sel
+if sel['reach'] == 'not_permitted_on_any_node':
+    assert sel['reachable_devices'] == 0, sel
+    print('SEL_CLEAR: bound and capable, permitted on no node -- reported, not refused')
+else:
+    print('SEL_CLEAR: permitted on', sel['reachable_devices'], 'node(s)')
+# COLLECT_DIAGNOSTICS is on the node allow list, so it is fully available.
+cd_ = rows['COLLECT_DIAGNOSTICS']['capability']
+assert cd_['reach'] == 'available', cd_
+print('COLLECT_DIAGNOSTICS available on', cd_['reachable_devices'], 'node(s)')
+"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

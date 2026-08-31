@@ -1133,11 +1133,23 @@ reason to drop governance. Implementing either is a separate governed
 capability slice with its own transport, safety, validation and
 live-proof boundary.
 
-**A17.7 — Consumers must refuse what they cannot execute.** An
+**A17.7 — Consumers refuse on CAPABILITY, never on POLICY.** An
 Operational Agent may not be bound to a class no executor implements,
-nor to one no device in its own scope can execute, and may not propose a
-class its target device has declared it cannot run. Refusals name the
-capability reason, so an operator is sent to the right fix.
+nor to one no device in its own scope has the code for, and may not
+propose a class its target device's protocol cannot perform. Refusals
+name the capability reason, so an operator is sent to the right fix.
+
+A node's `allow_list` is **not** such a ground. It is operator policy,
+changeable at any time, and §A17.1 already assigns "may it happen right
+now" to the node, which enforces it as the final execution authority. A
+class the nodes implement but do not currently permit therefore **binds
+and proposes normally**, and the node's refusal becomes attributed
+evidence in the error budget — which is the ratified A0+A1 behaviour and
+the mechanism by which an operator discovers the policy is wrong.
+Refusing it at Central Command would promote a mutable node setting into
+a hard configuration constraint and make it impossible to configure an
+agent ahead of a config rollout. The state "bound, capable, permitted
+nowhere" is instead REPORTED, by name, on the agent view.
 
 **A17.8 — Deferred, named, not abandoned.**
 

@@ -49,7 +49,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from harkeniq.capabilities import effective_actions
-from harkeniq_cc.capabilities import reachable_action_classes
+from harkeniq_cc.capabilities import (
+    implemented_actions,
+    reachable_action_classes,
+)
 from harkeniq_cc.autonomy import (
     AUTONOMOUS,
     DENIED,
@@ -583,12 +586,21 @@ def evaluate(
                 # proposal, the human approval and the dispatch were all
                 # wasted, and nothing upstream could say why.
                 #
+                # CAPABILITY, NOT POLICY: the test is what the device's
+                # protocol IMPLEMENTS, not what its allow list currently
+                # permits. A node that implements a class but does not
+                # permit it must still be proposed for -- the node's
+                # refusal is the ratified final authority and becomes
+                # attributed evidence in the error budget, which is
+                # exactly how an operator learns the policy is wrong.
+                # Silently withholding the proposal would hide that.
+                #
                 # Unknown never blocks: a device that has not declared
                 # may well be capable, and refusing it would silence an
                 # agent for an entire fleet mid-upgrade. Only a device
-                # that HAS declared, and did not name this class, is a
-                # proven no.
-                device_reach = effective_actions(
+                # that HAS declared, whose protocol does not implement
+                # this class, is a proven no.
+                device_reach = implemented_actions(
                     getattr(device, "capabilities", None)
                 )
                 if device_reach is not None and action_type not in device_reach:
@@ -717,17 +729,37 @@ def _capability_view(
     autonomous class no device can execute is not "denied", it is
     "granted and unrunnable", and telling an operator the first when the
     second is true sends them to the wrong page.
+
+    Capability and POLICY are separated here too, and that separation
+    now carries weight it did not before: a class the nodes implement
+    but do not permit no longer blocks the binding, so this view is the
+    only place an operator finds out. `permitted_devices` counts nodes
+    whose allow list carries it; `capable_devices` counts nodes whose
+    protocol implements it. Bound, capable and nowhere permitted is a
+    real and silent-until-now state, and it gets its own name.
     """
     capable = 0
+    permitted = 0
     undeclared = 0
     for device in in_scope:
-        device_reach = effective_actions(getattr(device, "capabilities", None))
-        if device_reach is None:
+        declaration = getattr(device, "capabilities", None)
+        reach = implemented_actions(declaration)
+        if reach is None:
             undeclared += 1
-        elif action_type in device_reach:
+            continue
+        if action_type in reach:
             capable += 1
-    if capable:
+        allowed = effective_actions(declaration)
+        if allowed is not None and action_type in allowed:
+            permitted += 1
+    if permitted:
         state = "available"
+    elif capable:
+        # The code is there and no node permits it. The agent will
+        # propose, and the node will refuse -- which is the ratified
+        # design, but an operator should not have to discover it from a
+        # failed outcome.
+        state = "not_permitted_on_any_node"
     elif undeclared:
         state = "unknown"
     elif in_scope:
@@ -737,7 +769,8 @@ def _capability_view(
     return {
         "implemented": True,
         "reach": state,
-        "reachable_devices": capable,
+        "reachable_devices": permitted,
+        "capable_devices": capable,
         "undeclared_devices": undeclared,
         "devices_in_scope": len(in_scope),
     }
