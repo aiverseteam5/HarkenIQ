@@ -1530,3 +1530,118 @@ going stale; proposals retaining their originating attribution; the
 per-device skill ledger; and every lifecycle step attributed to a named
 person in the audit chain. The tenant autonomy ladder is raised for the
 one step that needs an unattended grant to exist, and put back.
+
+---
+
+## 23. A3 — machine identity (spec A20)
+
+The Operational Agent has never held a credential. It is a row in
+`cc_operational_agents`, evaluated by one in-process loop
+(`agent_runtime.py:412`) that calls the governance composers directly and
+dispatches through the *site's* token. Its identity is a string:
+`op-agent:<id>@v<n>`. Attribution, nothing more.
+
+A3 gives it one that can authenticate — and the whole design problem is
+doing that without the credential quietly becoming authority.
+
+### What the inspection found
+
+Keycloak is already integrated, and the primitives A3 needs are the ones
+missing:
+
+| | |
+|---|---|
+| Confidential client | `keycloak_admin.py` hardcodes `publicClient: True`. No `serviceAccountsEnabled`, no secret retrieval |
+| `client_credentials` inbound | Nowhere. The only use in the repo is OUTBOUND, to Dell TechDirect |
+| Multi-client acceptance | `oidc.py` hard-fails `azp != client_id`, pinned to `harkeniq-console`. **A service-account token is rejected today** |
+| `api_keys` | A full credential lifecycle — hash, prefix, scope, status, expiry, last-used, revoked — whose verifier `get_by_hash` **has no production caller**. It authenticates nothing |
+
+`api_keys` is retired rather than adopted. Making it real would mean
+building a second token service, which is the thing A3 exists to avoid.
+
+### The defect A3 had to be designed around
+
+`load_agent_scope` passes `role_permissions=["*"]`, and says why:
+
+> *"An agent's authority is its A0 capability bindings plus the autonomy
+> contract — **it does not call the HTTP API**, the CC-resident evaluator
+> does."*
+
+That premise is exactly what a credential removes. Resolved as agents are
+today, an authenticated agent principal satisfies **every** route guard in
+the platform — `site.manage`, `tenant.manage`, `role.manage`,
+`audit.export`, and `action.approve`. It could approve its own proposals.
+
+Nothing was wrong with the code; the comment was accurate. A3 invalidates
+its premise, which is why the boundary was written before any of it moved.
+
+### The ceiling, and why it is a constant rather than a derivation
+
+The obvious design is "derive the machine principal's permissions from the
+agent's A0 read bindings". That is only as safe as the mapping table: add
+a binding later that maps to something broader and the ceiling silently
+moves.
+
+So the ceiling is an independent constant and the effective set is an
+**intersection**:
+
+```
+effective = A0 agent read bindings  ∩  MACHINE_PRINCIPAL_CEILING
+MACHINE_PRINCIPAL_CEILING = { fleet.view, incident.view }
+```
+
+E1.4 already learned this shape on a different subject: a custom role
+bundle used to OR its permissions into the role and could therefore
+*widen* it. Bundles now intersect. So does this.
+
+The test that pins it grants the agent **every** read binding that exists
+and then sweeps the entire permission vocabulary — a binding-driven test
+would pass while the ceiling was absent.
+
+### What identity is, and what it is not
+
+One Keycloak client-credentials service account per **logical** agent, in
+the tenant realm, 1:1 with `cc_operational_agents.id`. Not per runtime
+instance: the repository has no runtime instance concept, and two runtimes
+of one agent share one bundle, one scope and one budget — so they share one
+identity and are told apart by observation (`last_seen_at`,
+`last_seen_source`), never by separate authorization.
+
+Secrets are never stored at Central Command. Keycloak holds them; CC shows
+one exactly once, the discipline `site_enrollment_tokens` established at
+E1.3. **CC's own status row is authoritative on every request**, which is
+what makes revocation immediate: access tokens live 300s on this stack, so
+disabling the Keycloak client alone would leave a revoked agent
+authenticated for up to five minutes.
+
+Identity binds to the agent, not the configuration version — otherwise
+every description edit would demand re-credentialing. A2's version
+semantics are untouched. A paused agent keeps its identity and keeps
+observing (D2's rule: a hold stops unattended execution, not observation);
+a retired agent has its identity revoked.
+
+### Platform Operations, without touching A12.1
+
+A12.1 ratified that vendor staff have no live L3 access by default, and
+CC's realm pinning enforces it. Platform visibility is therefore
+**aggregate only** — counts and freshness, never per-agent detail through
+the tenant plane.
+
+Those aggregates ride the existing internal CC→Console channel, but on
+their own endpoint. The existing phone-home endpoint is
+`POST /api/internal/usage-events`, and it feeds
+`MeteringService.ingest_usage_batch` — a **billing** ingest. Putting an
+operational signal into a metering payload is a category error that could
+corrupt invoicing, so the channel is reused and the payload is not.
+
+Full Platform Support, governed support workflows and customer-authorized
+break-glass remain a separate future Platform Operations capability, built
+on this same governance model. Platform Support is never solved by
+weakening A12.1.
+
+### The ceiling is not the ambition
+
+A20.3 bounds the **credential**, not the Operational Agent. A4, A5, A6 and
+MCP may make an agent substantially more capable, through the governed
+Capability Registry, RBAC, scope, autonomy, approval and execution
+architecture that already exists. What stays narrow is authentication.

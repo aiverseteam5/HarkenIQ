@@ -14,6 +14,7 @@ from sqlalchemy import delete as sa_delete, false as sa_false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
+    CCAgentIdentity,
     CCAgentPreflight,
     CCAgentSkillInstall,
     CCCampaign,
@@ -3043,3 +3044,105 @@ class AgentPreflightRepo:
             ).scalar()
             or 0
         )
+
+
+class AgentIdentityRepo:
+    """A3: the machine-identity ledger (A20.1/A20.5).
+
+    Reads are keyed on (realm, keycloak_sub) because that is what a token
+    carries and because an identity is a (realm, subject) fact -- E1.4's
+    lesson, applied to a machine principal.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_for_agent(
+        self, tenant_id: str, agent_id: str
+    ) -> Optional[CCAgentIdentity]:
+        return (
+            await self.session.execute(
+                select(CCAgentIdentity).where(
+                    CCAgentIdentity.tenant_id == tenant_id,
+                    CCAgentIdentity.agent_id == agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_subject(
+        self, realm: str, subject: str
+    ) -> Optional[CCAgentIdentity]:
+        """The authentication hot path. Deliberately NOT tenant-filtered.
+
+        The tenant is checked by `machine_identity.authenticate`, which
+        refuses with a reason. Filtering it away here would turn a
+        cross-tenant credential into "no identity" and lose the fact that
+        a real identity was presented against the wrong tenant -- which
+        is exactly what an operator needs to see in the audit log.
+        """
+        if not subject:
+            return None
+        return (
+            await self.session.execute(
+                select(CCAgentIdentity).where(
+                    CCAgentIdentity.realm == (realm or ""),
+                    CCAgentIdentity.keycloak_sub == subject,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_for_tenant(
+        self, tenant_id: str
+    ) -> Sequence[CCAgentIdentity]:
+        return (
+            await self.session.execute(
+                select(CCAgentIdentity)
+                .where(CCAgentIdentity.tenant_id == tenant_id)
+                .order_by(CCAgentIdentity.issued_at)
+            )
+        ).scalars().all()
+
+    async def create(
+        self, *, tenant_id: str, agent_id: str, realm: str,
+        keycloak_client_id: str, keycloak_sub: str, issued_by: str,
+    ) -> CCAgentIdentity:
+        row = CCAgentIdentity(
+            tenant_id=tenant_id, agent_id=agent_id, realm=realm,
+            keycloak_client_id=keycloak_client_id, keycloak_sub=keycloak_sub,
+            status="active", issued_by=issued_by, issued_at=utcnow(),
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def mark_rotated(self, row: CCAgentIdentity, actor: str) -> None:
+        """Rotation changes the SECRET, never the identity.
+
+        One client, one subject, one row -- so there is never a moment
+        with two identities for one agent. Tokens already issued stay
+        valid to their natural expiry, which is what makes rotation
+        gapless.
+        """
+        row.rotated_at = utcnow()
+        row.rotated_by = actor
+
+    async def mark_revoked(
+        self, row: CCAgentIdentity, actor: str, reason: str,
+        status: str = "revoked",
+    ) -> None:
+        row.status = status
+        row.revoked_at = utcnow()
+        row.revoked_by = actor
+        row.revoke_reason = reason[:512]
+
+    async def touch(self, row: CCAgentIdentity, source: str) -> None:
+        """Record that this identity was used. OBSERVATION ONLY.
+
+        `last_seen_source` is caller-supplied and therefore never an
+        authorization input -- a principal that could influence its own
+        authorization by choosing a string would be a second
+        authorization model.
+        """
+        row.last_seen_at = utcnow()
+        if source:
+            row.last_seen_source = source[:255]

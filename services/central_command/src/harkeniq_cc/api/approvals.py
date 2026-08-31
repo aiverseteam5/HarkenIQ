@@ -444,6 +444,24 @@ async def _agent_dispatch_gates(session, tenant_id: str, proposal) -> tuple:
     honoured, why = proposal_version_is_honoured(proposal, agent)
     stop = await StopSwitchRepo(session).get(tenant_id)
 
+    # A3/A20.8: a REVOKED machine identity refuses work that was already
+    # approved. It rides the `agent_identity` gate that already exists
+    # rather than adding a new one -- identity validity and attribution
+    # coherence are the same question asked of the same principal.
+    #
+    # An agent with NO identity is not refused: today's Central
+    # Command-resident evaluator holds no credential at all, and refusing
+    # it would break every existing proposal. The gate refuses a
+    # credential that was WITHDRAWN, which is a different fact.
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+
+    identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent.id)
+    if identity is not None and identity.status != "active":
+        honoured, why = False, (
+            f"this agent's machine identity is {identity.status}"
+            + (f": {identity.revoke_reason}" if identity.revoke_reason else "")
+        )
+
     return dispatch_permitted(
         agent_identity=(True if honoured else why),
         agent_active=(

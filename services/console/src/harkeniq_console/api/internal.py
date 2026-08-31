@@ -9,6 +9,7 @@ checked it until now. Secure mode with no key configured fails CLOSED.
 from __future__ import annotations
 
 import hmac
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -146,3 +147,160 @@ async def internal_skill_by_id(
         "published": entry.published,
         "yaml_content": entry.yaml_content or "",
     }
+
+
+# ---------------------------------------------------------------------------
+# A3 machine identity (spec A20)
+# ---------------------------------------------------------------------------
+#
+# Keycloak provisioning lives at the Console because the Console is
+# already the identity plane -- it creates realms, roles, clients and
+# owners (E1.4) and holds the only admin credentials in the platform.
+#
+# Central Command asks over the EXISTING internal channel it already uses
+# for usage and marketplace pulls, so no new trust direction is created.
+# The alternative -- giving Central Command its own Keycloak admin
+# credentials -- would hand a tenant-plane service realm-admin power to
+# solve a problem the identity plane already solves.
+#
+# The OPERATOR-facing surface stays at Central Command, where the agent
+# lives and where site.manage and the E1.2 delegation ceiling are
+# enforced. These endpoints are plumbing, not policy.
+
+
+class ProvisionIdentityRequest(BaseModel):
+    realm: str
+    client_id: str
+
+
+@router.post("/agent-identities")
+async def provision_agent_identity(
+    body: ProvisionIdentityRequest,
+    request: Request,
+) -> dict:
+    """Create a service-account client. Returns the secret ONCE."""
+    keycloak = getattr(request.app.state.console, "keycloak_admin", None)
+    if keycloak is None:
+        raise HTTPException(
+            status_code=503, detail="keycloak admin is not configured",
+        )
+    try:
+        uuid, secret = await keycloak.create_service_account_client(
+            body.realm, body.client_id,
+        )
+        subject = await keycloak.get_service_account_subject(body.realm, uuid)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"{type(exc).__name__}: {exc}",
+        ) from exc
+    return {
+        "client_uuid": uuid,
+        "client_id": body.client_id,
+        "subject": subject,
+        # Shown once, here, and never stored at Central Command.
+        "secret": secret,
+    }
+
+
+class RotateIdentityRequest(BaseModel):
+    realm: str
+    client_id: str
+
+
+@router.post("/agent-identities/rotate")
+async def rotate_agent_identity(
+    body: RotateIdentityRequest, request: Request,
+) -> dict:
+    """New secret, SAME client and SAME service-account subject.
+
+    Rotation must never mint a second identity: one client, one subject,
+    one row. Only the secret changes, so tokens already issued stay valid
+    to their natural expiry and there is no execution gap.
+    """
+    keycloak = getattr(request.app.state.console, "keycloak_admin", None)
+    if keycloak is None:
+        raise HTTPException(503, "keycloak admin is not configured")
+    uuid = await keycloak.find_client_uuid(body.realm, body.client_id)
+    if not uuid:
+        raise HTTPException(404, "service account client not found")
+    try:
+        secret = await keycloak.regenerate_client_secret(body.realm, uuid)
+        subject = await keycloak.get_service_account_subject(body.realm, uuid)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"{type(exc).__name__}: {exc}") from exc
+    return {"client_id": body.client_id, "subject": subject, "secret": secret}
+
+
+class DisableIdentityRequest(BaseModel):
+    realm: str
+    client_id: str
+    enabled: bool = False
+
+
+@router.post("/agent-identities/set-enabled")
+async def set_agent_identity_enabled(
+    body: DisableIdentityRequest, request: Request,
+) -> dict:
+    """Stop Keycloak issuing NEW tokens.
+
+    Not the authoritative revocation: Central Command's own status row
+    refuses the tokens already issued, which is what makes revocation
+    immediate rather than bounded by a token lifetime.
+    """
+    keycloak = getattr(request.app.state.console, "keycloak_admin", None)
+    if keycloak is None:
+        raise HTTPException(503, "keycloak admin is not configured")
+    uuid = await keycloak.find_client_uuid(body.realm, body.client_id)
+    if not uuid:
+        # Already gone is the desired end state for a disable.
+        return {"client_id": body.client_id, "enabled": body.enabled,
+                "detail": "client not found; nothing to disable"}
+    await keycloak.set_client_enabled(body.realm, uuid, body.enabled)
+    return {"client_id": body.client_id, "enabled": body.enabled}
+
+
+class IdentitySummaryRequest(BaseModel):
+    """A20.9: aggregate operational visibility. COUNTS ONLY.
+
+    Deliberately has no field that could carry an agent id, name, client
+    id or subject. A12.1 is not amended: platform and vendor staff get no
+    live tenant-plane identity access, and the shape of this payload is
+    what makes that true rather than a promise about it.
+    """
+
+    tenant_id: str
+    identities: int = 0
+    active: int = 0
+    revoked: int = 0
+    retired: int = 0
+    ever_seen: int = 0
+    never_seen: int = 0
+    most_recent_seen_at: str | None = None
+
+
+@router.post("/agent-identity-summary")
+async def ingest_agent_identity_summary(
+    body: IdentitySummaryRequest, request: Request,
+) -> dict:
+    """Aggregate operational signal — NOT a metering event.
+
+    Deliberately a separate endpoint from `/usage-events`, which feeds
+    `MeteringService.ingest_usage_batch` and therefore billing. Mixing a
+    non-billing operational signal into a billing ingest is a category
+    error that could corrupt invoicing, so the channel is reused and the
+    payload is not.
+
+    Held in memory on the app state: this is an operational reading, and
+    persisting per-tenant identity history at the platform plane would
+    start to look like the per-agent visibility A12.1 forbids.
+    """
+    console = request.app.state.console
+    store = getattr(console, "agent_identity_summaries", None)
+    if store is None:
+        store = {}
+        console.agent_identity_summaries = store
+    payload = body.model_dump()
+    payload["received_at"] = datetime.now(timezone.utc).isoformat()
+    store[body.tenant_id] = payload
+    return {"accepted": True, "tenant_id": body.tenant_id}

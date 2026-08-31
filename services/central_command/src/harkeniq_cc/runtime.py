@@ -125,6 +125,13 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     async def campaign_task() -> None:
         await campaign_loop(state)
 
+    async def identity_summary_task() -> None:
+        # A20.9: aggregate counts to the platform plane. Counts only --
+        # A12.1 is not amended, so no per-agent detail leaves the tenant.
+        from harkeniq_cc.machine_identity import identity_summary_loop
+
+        await identity_summary_loop(state)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(serve_http(), name="http")
@@ -135,6 +142,9 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
             tg.create_task(warranty_task(), name="warranty")
             tg.create_task(marketplace_task(), name="marketplace_sync")
             tg.create_task(campaign_task(), name="campaigns")
+            tg.create_task(
+                identity_summary_task(), name="identity_summary"
+            )
             tg.create_task(
                 operational_agent_task(), name="operational_agents"
             )

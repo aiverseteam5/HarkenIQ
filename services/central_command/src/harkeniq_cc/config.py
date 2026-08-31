@@ -37,6 +37,9 @@ class CCConfig:
     # QA-018: CA bundle for TLS to Site Managers; empty = plaintext (lab).
     sm_tls_ca: str = ""
     console_api_key: str = ""
+    #: A3/A20.9: how often aggregate identity counts are reported to
+    #: the platform plane. Counts only -- A12.1 is not amended.
+    identity_report_interval_s: float = 900.0
     license_key_path: str = ""
     # QA-019: Console-issued Ed25519 public key that verifies the license
     # file. Required whenever license_key_path is set (fail-closed).
@@ -100,6 +103,7 @@ _ENV_MAP = {
     "HARKEN_CC_CONSOLE_URL": "console_url",
     "HARKEN_CC_SM_TLS_CA": "sm_tls_ca",
     "HARKEN_CC_CONSOLE_API_KEY": "console_api_key",
+    "HARKEN_CC_IDENTITY_REPORT_INTERVAL_S": "identity_report_interval_s",
     "HARKEN_CC_LICENSE_KEY_PATH": "license_key_path",
     "HARKEN_CC_LICENSE_VERIFY_KEY_PATH": "license_verify_key_path",
     "HARKEN_CC_USAGE_REPORT_INTERVAL_S": "usage_report_interval_s",

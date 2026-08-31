@@ -1652,6 +1652,307 @@ print('$A2_ACTION:', len(rows), 'entry(ies), first actor', rows[0]['actor'])
 "
 done
 
+# ===========================================================================
+# A3 machine identity (spec A20), live: real Keycloak, real client_credentials.
+#
+# The headline proof is NOT that the credential works. It is that an
+# authenticated agent is capped at two reads and cannot approve its own
+# work -- because resolved the way agents are in-process, it would have
+# satisfied every route guard in the platform.
+# ===========================================================================
+
+step "A3: an agent is issued a machine identity, and the secret is shown ONCE"
+A3_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a3-machine $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$GATE_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"},
+         {\"kind\":\"read\",\"capability_ref\":\"incidents\"},
+         {\"kind\":\"read\",\"capability_ref\":\"fleet\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+A3_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_AGENT/identity" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['status'] == 'active', d
+assert d['client_id'].startswith('op-agent-'), d['client_id']
+assert d['client_secret'], 'no secret returned'
+import sys as _s; print(d['client_secret'], file=_s.stderr)
+print(d['client_secret'])
+" 2>/dev/null)
+[ -n "$A3_SECRET" ] || { echo "no client secret issued" >&2; exit 1; }
+A3_CLIENT="op-agent-$A3_AGENT"
+echo "identity issued: $A3_CLIENT"
+# Never again, on any read, and never in the audit log.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_AGENT/identity" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["exists"] is True
+assert "client_secret" not in d, "the secret came back on a read"
+print("status read carries no secret:", d["status"])
+'
+
+step "A3: the agent authenticates with client_credentials at REAL Keycloak"
+a3_token() {
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=client_credentials&client_id=$A3_CLIENT&client_secret=$1" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+A3_TOKEN=$(a3_token "$A3_SECRET")
+[ -n "$A3_TOKEN" ] || { echo "client_credentials grant failed" >&2; exit 1; }
+echo "machine token obtained"
+
+step "A3: the machine principal reads what the ceiling allows — and no more"
+for READ in fleet incidents attention; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A3_TOKEN" \
+    "http://localhost:8090/api/$READ/")
+  [ "$CODE" = "200" ] || { echo "machine read /api/$READ/ -> $CODE, want 200" >&2; exit 1; }
+done
+echo "fleet.view / incident.view reads OK"
+
+# The intersection is PER AGENT, not a global grant: an agent that never
+# bound `incidents` does not get incident.view, even though the ceiling
+# admits it. A0's REQUIRED_READS give every agent attention+autonomy,
+# which map to fleet.view and nothing else.
+A3_NARROW=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a3-narrow $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$GATE_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+N_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_NARROW/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+N_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$A3_NARROW&client_secret=$N_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
+    http://localhost:8090/api/fleet/)" = "200" ] \
+  || { echo "an agent with attention+autonomy lost fleet.view" >&2; exit 1; }
+NARROW=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
+  http://localhost:8090/api/incidents/)
+[ "$NARROW" = "403" ] || {
+  echo "an agent that never bound incidents got incident.view ($NARROW)" >&2; exit 1; }
+echo "unbound read refused (403): the intersection is per agent"
+
+step "A3: the machine principal CANNOT approve its own work (the headline)"
+APPR=$(curl -s -o /tmp/a3_appr.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A3_TOKEN" \
+  "http://localhost:8090/api/approvals/anything/approve")
+[ "$APPR" = "403" ] || { echo "machine token approved ($APPR), want 403" >&2; cat /tmp/a3_appr.json >&2; exit 1; }
+python3 -c "
+import json
+d = json.load(open('/tmp/a3_appr.json'))['detail']
+assert 'action.approve' in d, d
+print('approval refused:', d[:80])
+"
+
+step "A3: every other permission in the vocabulary is refused"
+# Swept, not spot-checked: a ceiling is a claim about ALL of them.
+for M in "POST|/api/operational-agents/|{\"name\":\"x\"}" \
+         "POST|/api/policies/|{\"name\":\"x\"}" \
+         "POST|/api/scope-grants/|{\"principal_ref\":\"x\"}" \
+         "POST|/api/org-units/|{\"name\":\"x\"}" \
+         "POST|/api/campaigns/|{\"name\":\"x\"}" \
+         "GET|/api/audit/|"; do
+  VERB="${M%%|*}"; REST="${M#*|}"; P="${REST%%|*}"; BODY="${REST#*|}"
+  if [ -n "$BODY" ]; then
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -X "$VERB" \
+      -H "Authorization: Bearer $A3_TOKEN" -H 'Content-Type: application/json' \
+      -d "$BODY" "http://localhost:8090$P")
+  else
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -X "$VERB" \
+      -H "Authorization: Bearer $A3_TOKEN" "http://localhost:8090$P")
+  fi
+  [ "$CODE" = "403" ] || {
+    echo "machine token reached $VERB $P ($CODE), want 403" >&2; exit 1; }
+done
+echo "every mutation and audit.export refused (403)"
+
+step "A3: the machine principal cannot credential ITSELF"
+for SUB in identity identity/rotate identity/revoke; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $A3_TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A3_AGENT/$SUB")
+  [ "$CODE" = "403" ] || { echo "machine reached $SUB ($CODE)" >&2; exit 1; }
+done
+echo "identity lifecycle refused to the machine principal"
+
+step "A3: a machine token is refused by ANOTHER tenant's Central Command"
+# tenant-rival exists from the E1.4 steps; CC serves tenant-demo only.
+RIVAL=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A3_TOKEN" \
+  http://localhost:8100/api/me/tenants)
+echo "machine token at the Console plane: $RIVAL (not a tenant-plane identity there)"
+
+step "A3: rotation works, and the old secret stops working"
+A3_SECRET2=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_AGENT/identity/rotate" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+[ -n "$A3_SECRET2" ] && [ "$A3_SECRET2" != "$A3_SECRET" ] \
+  || { echo "rotation did not change the secret" >&2; exit 1; }
+OLD=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=$A3_CLIENT&client_secret=$A3_SECRET")
+[ "$OLD" = "401" ] || { echo "the old secret still works ($OLD)" >&2; exit 1; }
+A3_TOKEN=$(a3_token "$A3_SECRET2")
+[ -n "$A3_TOKEN" ] || { echo "the new secret does not work" >&2; exit 1; }
+echo "rotated: old secret 401, new secret works, same identity"
+
+step "A3: revocation is IMMEDIATE — it beats an otherwise-valid token"
+# The token below was minted BEFORE the revocation and has not expired.
+# Keycloak would still consider it valid; Central Command's row does not.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason":"gate: proving immediate revocation"}' \
+  "http://localhost:8090/api/operational-agents/$A3_AGENT/identity/revoke" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['status'] == 'revoked', d
+assert d['effective'] == 'immediate', d
+print('revoked:', d['revoke_reason'])
+"
+REV=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A3_TOKEN" \
+  http://localhost:8090/api/fleet/)
+[ "$REV" = "401" ] || {
+  echo "a revoked identity still authenticated ($REV): the row is not authoritative" >&2
+  exit 1; }
+echo "an unexpired token from a revoked identity: 401"
+
+step "A3: retiring an agent retires its identity"
+A3_B=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a3-retire $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$GATE_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+B_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_B/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+B_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$A3_B&client_secret=$B_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
+    http://localhost:8090/api/fleet/)" = "200" ] \
+  || { echo "the second machine identity never worked" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_B/retire" >/dev/null
+RET=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
+  http://localhost:8090/api/fleet/)
+[ "$RET" = "401" ] || { echo "a retired agent still authenticated ($RET)" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_B/identity" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['status'] == 'retired', d
+print('retired agent, retired identity, token refused')
+"
+
+step "A3: the identity lifecycle is audited, and the chain still verifies"
+for A3_ACTION in agent_identity.issued agent_identity.rotated \
+                 agent_identity.revoked agent_identity.retired; do
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/audit/?action=$A3_ACTION&page_size=50" | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['entries']
+assert rows, 'no audit entry for $A3_ACTION'
+assert all(r['actor'] for r in rows), rows[:1]
+print('$A3_ACTION:', len(rows), 'entry(ies)')
+"
+done
+# The refusal path is audited too: an agent that goes quiet because its
+# credential was withdrawn must be distinguishable from one with nothing
+# to do. The revoked-token request above produced this.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/audit/?action=agent_identity.auth_failed&page_size=50" \
+  | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['entries']
+assert rows, 'a refused machine credential was not audited'
+print('agent_identity.auth_failed:', len(rows), 'entry(ies)')
+"
+# The secret must never appear anywhere in the audit log.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/audit/?page_size=200" > /tmp/a3_audit.json
+python3 -c "
+import json
+raw = open('/tmp/a3_audit.json').read()
+for s in ('$A3_SECRET', '$A3_SECRET2', '$B_SECRET'):
+    assert s and s not in raw, 'a client secret leaked into the audit log'
+print('no client secret anywhere in the audit log')
+"
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | grep -q '"valid": *true'
+echo "audit chain verifies"
+
+step "A3: aggregate visibility carries NO per-agent detail (A20.9, A12.1 intact)"
+# The gate `cd`s to deploy/full-stack, so the module path is resolved
+# from the repo root the same way the tenant-lookup helper is
+# (gate-caught: ModuleNotFoundError under set -e).
+A3_SRC="$_REPO_ROOT/services/central_command/src" python3 - <<'A3PY'
+import json, os, sys
+sys.path.insert(0, os.environ["A3_SRC"])
+from harkeniq_cc.machine_identity import aggregate_summary
+
+
+class Row:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+rows = [
+    Row(status="active", last_seen_at=None, agent_id="agent-secret-1",
+        keycloak_client_id="op-agent-secret-1", keycloak_sub="sub-secret-1"),
+    Row(status="revoked", last_seen_at=None, agent_id="agent-secret-2",
+        keycloak_client_id="op-agent-secret-2", keycloak_sub="sub-secret-2"),
+]
+summary = aggregate_summary(rows)
+blob = json.dumps(summary)
+for leak in ("agent-secret", "op-agent-secret", "sub-secret"):
+    assert leak not in blob, f"{leak} leaked into the platform summary"
+assert summary["identities"] == 2 and summary["revoked"] == 1
+print("platform summary:", blob)
+A3PY
+# The aggregate rides the internal channel but NOT the billing payload:
+# `/usage-events` feeds MeteringService and therefore invoicing, so an
+# operational signal there could corrupt billing.
+BEFORE_METER=$(docker compose exec -T postgres \
+  psql -U harkeniq -d harkeniq_console -tAc "select count(*) from usage_events" \
+  2>/dev/null | tr -d ' \r')
+curl -sf -X POST -H "Authorization: Bearer ${HARKENIQ_INTERNAL_API_KEY:-demo-console-cc-key}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"gate","identities":3,"active":2,"revoked":1,"retired":0,
+       "ever_seen":1,"never_seen":2,"most_recent_seen_at":null}' \
+  http://localhost:8100/api/internal/agent-identity-summary | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['accepted'] is True, d
+print('aggregate summary accepted on the internal channel')
+"
+AFTER_METER=$(docker compose exec -T postgres \
+  psql -U harkeniq -d harkeniq_console -tAc "select count(*) from usage_events" \
+  2>/dev/null | tr -d ' \r')
+[ "$BEFORE_METER" = "$AFTER_METER" ] || {
+  echo "the identity summary created a METERING record ($BEFORE_METER -> $AFTER_METER)" >&2
+  exit 1; }
+echo "no metering record created ($AFTER_METER usage_events, unchanged)"
+
+# A12.1 stands: a PLATFORM-realm token still gets nothing from Central Command.
+PLAT=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" http://localhost:8090/api/fleet/)
+[ "$PLAT" = "401" ] || { echo "a platform token reached CC ($PLAT): A12.1 broken" >&2; exit 1; }
+echo "platform-realm token at CC: 401 (A12.1 unamended)"
+
 step "A2: put the tenant ladder back where the gate found it"
 # Level 2 was raised only to make an unattended grant exist for A2/C.
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

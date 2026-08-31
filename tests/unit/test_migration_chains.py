@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0016"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0017"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -602,3 +602,70 @@ class TestExistingDatabase:
             "installs twice and a rack-scoped agent cannot be told from a "
             "site-wide one"
         )
+
+    def test_cc_0017_lands_agent_identities_and_stores_no_secret(self, tmp_path):
+        """A3's table arrives on a database that predates it.
+
+        The column list is asserted as a NEGATIVE too: there must be no
+        column a client secret could be written into. A20.5 says Keycloak
+        holds the secret and Central Command shows one exactly once —
+        which is only structurally true if there is nowhere to put it.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("drop table cc_agent_identities")
+        con.execute("update alembic_version set version_num='0016'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "cc_agent_identities" in _tables(db)
+
+        columns = _columns(db, "cc_agent_identities")
+        assert {
+            "agent_id", "tenant_id", "realm", "keycloak_client_id",
+            "keycloak_sub", "status", "issued_by", "revoked_at",
+            "last_seen_at",
+        } <= columns, columns
+        assert not any("secret" in c for c in columns), (
+            "a machine identity must have nowhere to store a client secret"
+        )
+
+    def test_cc_0017_does_not_backfill_identities(self, tmp_path):
+        """Unknown is not zero, and it is not an identity either.
+
+        No agent has a machine identity today, so there is nothing to
+        infer. An agent without a row simply cannot authenticate, which
+        is the correct answer rather than a missing one.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_operational_agents "
+            "(id, tenant_id, name, description, version, status, "
+            " autonomy_ceiling, require_approval_always, max_proposals_per_day,"
+            " created_by, created_at, updated_by, updated_at, activated_by,"
+            " execution_budget, budget_period, paused_reason,"
+            " activation_acknowledged_by, activation_acknowledged_version,"
+            " activation_subject_ref, activated_version) "
+            "values ('legacy','t1','Pre-A3','',1,'active',0,1,25,"
+            "'v',datetime('now'),'v',datetime('now'),'v',"
+            "0,'daily','','',0,'',1)"
+        )
+        con.execute("drop table cc_agent_identities")
+        con.execute("update alembic_version set version_num='0016'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        rows = con.execute("select count(*) from cc_agent_identities").fetchone()[0]
+        agents = con.execute(
+            "select count(*) from cc_operational_agents"
+        ).fetchone()[0]
+        con.close()
+        assert agents == 1, "the pre-A3 agent must survive the upgrade"
+        assert rows == 0, "no identity may be invented for an existing agent"

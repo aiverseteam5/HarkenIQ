@@ -156,6 +156,19 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
         ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/operational-agents/{agent_id}/runtime"):
         ("fleet.view", READ_SCOPED, False),
+    # A3 (spec A20): the machine-identity lifecycle. No new permission —
+    # whoever may build and activate an agent may credential it, and the
+    # credential grants nothing by itself, so it is agent configuration
+    # under the same delegation ceiling. Status is a fleet.view read and
+    # never carries the secret.
+    ("POST", "/api/operational-agents/{agent_id}/identity"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/operational-agents/{agent_id}/identity/rotate"):
+        ("site.manage", OBJECT_GATED, True),
+    ("POST", "/api/operational-agents/{agent_id}/identity/revoke"):
+        ("site.manage", OBJECT_GATED, True),
+    ("GET", "/api/operational-agents/{agent_id}/identity"):
+        ("fleet.view", READ_SCOPED, False),
     ("POST", "/api/operational-agents/{agent_id}/{transition}"):
         ("site.manage", OBJECT_GATED, True),
 

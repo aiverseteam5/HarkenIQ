@@ -1422,3 +1422,75 @@ class CCAgentSkillInstall(Base):
     installed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
+
+
+class CCAgentIdentity(Base):
+    """A3: one machine identity per LOGICAL Operational Agent (A20.1/A20.6).
+
+    A Keycloak client-credentials service account in the tenant's own
+    realm, bound 1:1 to `cc_operational_agents.id`. It answers "who is
+    this runtime?" and confers nothing else (A20.2).
+
+    NOT per runtime instance. The repository has no runtime instance
+    concept, and two runtimes of one agent share one bundle, one scope
+    and one budget -- so they share one identity, and are told apart by
+    `last_seen_*` observation rather than by separate authorization.
+
+    THE SECRET IS NEVER STORED HERE. Keycloak holds it; Central Command
+    shows one exactly once at issue and rotate, the discipline
+    `site_enrollment_tokens` established at E1.3. There is deliberately
+    no column it could be written into by accident.
+
+    `status` is authoritative on EVERY request (A20.5). Access tokens
+    live 300s on the reference stack, so disabling the Keycloak client
+    alone would leave a revoked agent authenticated for up to five
+    minutes; checking this row is what makes revocation immediate.
+    """
+
+    __tablename__ = "cc_agent_identities"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: 1:1 with the agent. UNIQUE is the guarantee, not a convention:
+    #: two identities for one agent would be two answers to "who is this
+    #: runtime?", and the second one would be unaccountable.
+    agent_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("cc_operational_agents.id"), unique=True, index=True
+    )
+    #: E1.4: an identity is a (realm, subject) fact. Keycloak subjects are
+    #: realm-scoped, so the same id means nothing across realms.
+    realm: Mapped[str] = mapped_column(String(128), default="")
+    keycloak_client_id: Mapped[str] = mapped_column(String(255), unique=True)
+    #: The service-account subject. This is what arrives in every token,
+    #: and the only binding from a credential back to an agent.
+    #: 128, not 64: this is the most principal-bearing column in the
+    #: platform and the identity-width invariant requires >=128 for a
+    #: subject. A 36-char UUID fits either way -- but sqlite ignores
+    #: VARCHAR length, so a too-narrow column passes every unit test
+    #: and raises StringDataRightTruncation on PostgreSQL in
+    #: production. That has cost this codebase twice already.
+    keycloak_sub: Mapped[str] = mapped_column(String(128), default="", index=True)
+    #: active | revoked | retired
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+
+    issued_by: Mapped[str] = mapped_column(String(255), default="")
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rotated_by: Mapped[str] = mapped_column(String(255), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[str] = mapped_column(String(255), default="")
+    revoke_reason: Mapped[str] = mapped_column(String(512), default="")
+
+    #: Runtime association: OBSERVATION ONLY. Never an authorization
+    #: input -- a caller that could influence its own authorization by
+    #: choosing a source string would be a second authorization model.
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_seen_source: Mapped[str] = mapped_column(String(255), default="")

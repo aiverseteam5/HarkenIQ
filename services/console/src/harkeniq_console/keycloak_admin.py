@@ -353,6 +353,129 @@ class KeycloakAdminClient:
         )
         return resp.json()
 
+    # -- machine identity (A3 / spec A20) ------------------------------------
+
+    async def create_service_account_client(
+        self, realm: str, client_id: str,
+    ) -> tuple[str, str]:
+        """A confidential client with a service account. Returns (uuid, secret).
+
+        Deliberately NOT the shape `create_client` builds. Four settings
+        carry the whole security intent:
+
+          publicClient: False        a secret exists at all
+          serviceAccountsEnabled     client_credentials is the point
+          standardFlowEnabled: False no browser login
+          directAccessGrantsEnabled: False
+                                     no username/password grant
+
+        The last two matter: a machine identity that could also be used
+        as a login would be a credential with two meanings, and only one
+        of them would be governed by A20's ceiling.
+
+        NO realm roles are assigned. If a machine principal drew its
+        permissions from realm roles, that would be a second
+        authorization model -- its permissions come from its A0 bindings
+        intersected with the A20.3 ceiling, and from nowhere else.
+        """
+        body = {
+            "clientId": client_id,
+            "enabled": True,
+            "publicClient": False,
+            "serviceAccountsEnabled": True,
+            "standardFlowEnabled": False,
+            "directAccessGrantsEnabled": False,
+            "implicitFlowEnabled": False,
+            "protocol": "openid-connect",
+        }
+        resp = await self._request(
+            "POST", f"/admin/realms/{realm}/clients",
+            json=body, context=f"create service account '{client_id}' in '{realm}'",
+        )
+        client_uuid = _extract_id_from_location(resp.headers)
+        if not client_uuid:
+            list_resp = await self._request(
+                "GET", f"/admin/realms/{realm}/clients?clientId={client_id}",
+                context=f"lookup service account '{client_id}' in '{realm}'",
+            )
+            clients = list_resp.json()
+            if not clients:
+                raise KeycloakError(
+                    f"service account '{client_id}' created but UUID could "
+                    f"not be determined",
+                )
+            client_uuid = clients[0]["id"]
+
+        secret = await self.get_client_secret(realm, client_uuid)
+        logger.info(
+            "service account '%s' created in realm '%s' (uuid=%s)",
+            client_id, realm, client_uuid,
+        )
+        return client_uuid, secret
+
+    async def get_client_secret(self, realm: str, client_uuid: str) -> str:
+        resp = await self._request(
+            "GET", f"/admin/realms/{realm}/clients/{client_uuid}/client-secret",
+            context=f"read client secret in '{realm}'",
+        )
+        return str(resp.json().get("value", ""))
+
+    async def get_service_account_subject(
+        self, realm: str, client_uuid: str,
+    ) -> str:
+        """The service account's user id — what arrives in every token's `sub`.
+
+        This is the ONLY binding from a presented credential back to an
+        Operational Agent, so it is read at issue time and stored rather
+        than inferred later from a client id.
+        """
+        resp = await self._request(
+            "GET",
+            f"/admin/realms/{realm}/clients/{client_uuid}/service-account-user",
+            context=f"read service account subject in '{realm}'",
+        )
+        return str(resp.json().get("id", ""))
+
+    async def regenerate_client_secret(
+        self, realm: str, client_uuid: str,
+    ) -> str:
+        """Rotate. The client, and therefore the identity, is unchanged.
+
+        Tokens already issued stay valid to their natural expiry, which
+        is what makes rotation gapless -- and there is never a moment
+        with two identities, because only the secret changed.
+        """
+        resp = await self._request(
+            "POST", f"/admin/realms/{realm}/clients/{client_uuid}/client-secret",
+            context=f"rotate client secret in '{realm}'",
+        )
+        return str(resp.json().get("value", ""))
+
+    async def set_client_enabled(
+        self, realm: str, client_uuid: str, enabled: bool,
+    ) -> None:
+        """Disable at Keycloak. NOT the authoritative revocation.
+
+        Central Command's own status row is what makes revocation
+        immediate (A20.5): access tokens live 300s, so disabling here
+        alone would leave a revoked agent authenticated for up to five
+        minutes. This stops NEW tokens being issued; the row stops the
+        ones already out there.
+        """
+        await self._request(
+            "PUT", f"/admin/realms/{realm}/clients/{client_uuid}",
+            json={"enabled": enabled},
+            context=f"set client enabled={enabled} in '{realm}'",
+        )
+
+    async def find_client_uuid(self, realm: str, client_id: str) -> str:
+        resp = await self._request(
+            "GET", f"/admin/realms/{realm}/clients?clientId={client_id}",
+            context=f"lookup client '{client_id}' in '{realm}'",
+        )
+        clients = resp.json()
+        return str(clients[0]["id"]) if clients else ""
+
     # -- realm teardown (testing) -------------------------------------------
 
     async def delete_realm(self, realm: str) -> None:
@@ -492,3 +615,65 @@ class MockKeycloakAdminClient:
         to_remove = [k for k in self._role_mappings if k[0] == realm]
         for k in to_remove:
             del self._role_mappings[k]
+
+    # -- machine identity (A3 / spec A20) ------------------------------------
+
+    async def create_service_account_client(  # noqa: D102
+        self, realm: str, client_id: str,
+    ) -> tuple[str, str]:
+        if realm not in self._realms:
+            raise KeycloakError(f"realm '{realm}' not found", status_code=404)
+        existing = self._clients.setdefault(realm, {})
+        if client_id in existing:
+            raise KeycloakError(
+                f"client '{client_id}' already exists", status_code=409,
+            )
+        uuid = f"uuid-{client_id}"
+        existing[client_id] = {
+            "id": uuid,
+            "clientId": client_id,
+            "enabled": True,
+            "publicClient": False,
+            "serviceAccountsEnabled": True,
+            "standardFlowEnabled": False,
+            "directAccessGrantsEnabled": False,
+            "secret": f"secret-{client_id}-1",
+            "serviceAccountSubject": f"sa-sub-{client_id}",
+            "rotations": 1,
+        }
+        return uuid, existing[client_id]["secret"]
+
+    def _client_by_uuid(self, realm: str, client_uuid: str) -> dict:
+        for row in self._clients.get(realm, {}).values():
+            if row.get("id") == client_uuid:
+                return row
+        raise KeycloakError(f"client '{client_uuid}' not found", status_code=404)
+
+    async def get_client_secret(self, realm: str, client_uuid: str) -> str:  # noqa: D102
+        return str(self._client_by_uuid(realm, client_uuid).get("secret", ""))
+
+    async def get_service_account_subject(  # noqa: D102
+        self, realm: str, client_uuid: str,
+    ) -> str:
+        return str(
+            self._client_by_uuid(realm, client_uuid).get("serviceAccountSubject", "")
+        )
+
+    async def regenerate_client_secret(  # noqa: D102
+        self, realm: str, client_uuid: str,
+    ) -> str:
+        row = self._client_by_uuid(realm, client_uuid)
+        row["rotations"] = int(row.get("rotations", 1)) + 1
+        # A new secret, the SAME client and the SAME service-account
+        # subject: rotation must never mint a second identity.
+        row["secret"] = f"secret-{row['clientId']}-{row['rotations']}"
+        return str(row["secret"])
+
+    async def set_client_enabled(  # noqa: D102
+        self, realm: str, client_uuid: str, enabled: bool,
+    ) -> None:
+        self._client_by_uuid(realm, client_uuid)["enabled"] = enabled
+
+    async def find_client_uuid(self, realm: str, client_id: str) -> str:  # noqa: D102
+        row = self._clients.get(realm, {}).get(client_id)
+        return str(row["id"]) if row else ""
