@@ -226,6 +226,36 @@ def build_capability_registry(
                 "authority, and it grants none of them. The node's own "
                 "allow list remains the final execution authority."
             ),
+            # The two words the whole contract turns on. A consumer that
+            # confuses them refuses work the platform can perform.
+            "implemented": (
+                "CAPABILITY EXISTENCE: a real handler exists in this "
+                "build for this action class, on the named protocols. "
+                "This is the Registry's actual answer, it is immutable "
+                "for a given build and device, and it is the ONLY ground "
+                "on which a binding or a proposal may be refused."
+            ),
+            "effective": (
+                "A CONFIGURATION/READINESS PROJECTION, not a definition "
+                "of capability existence: implemented AND currently "
+                "permitted by the node's own allow list. The allow list "
+                "is operator configuration that can change at any time, "
+                "so 'effective' describes readiness right now and "
+                "nothing more. Every 'effective_*' field on a class row, "
+                "and 'effective' on a device declaration, carries this "
+                "meaning. An action that is implemented but not "
+                "currently permitted MUST still bind and still be "
+                "proposed; the node evaluates its allow list at "
+                "execution time and its refusal becomes attributed "
+                "evidence."
+            ),
+            "refusal": (
+                "A binding or proposal is refused only for absence of "
+                "implementation -- no executor in the platform has it, "
+                "or no protocol among the devices in scope has it. It is "
+                "never refused because a node does not currently permit "
+                "it."
+            ),
             "unknown": (
                 "A device that has not declared reads 'unknown', never "
                 "capable and never incapable. Unknown reach does not "

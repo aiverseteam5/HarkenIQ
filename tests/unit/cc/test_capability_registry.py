@@ -254,6 +254,42 @@ class TestContractStatesItConfersNothing:
         contract = build_capability_registry(tenant_id=TENANT, devices=[])["contract"]
         assert "never capable and never incapable" in contract["unknown"]
 
+    def test_implemented_is_declared_as_capability_existence(self):
+        contract = build_capability_registry(tenant_id=TENANT, devices=[])["contract"]
+        assert "CAPABILITY EXISTENCE" in contract["implemented"]
+        assert "ONLY ground" in contract["implemented"]
+
+    def test_effective_is_declared_a_projection_not_a_definition(self):
+        """A consumer reading `effective` as capability existence would
+        refuse work the platform can perform. The contract has to say so
+        in its own words, not only in ours."""
+        contract = build_capability_registry(tenant_id=TENANT, devices=[])["contract"]
+        assert "CONFIGURATION/READINESS PROJECTION" in contract["effective"]
+        assert "not a definition" in contract["effective"]
+        assert "MUST still bind" in contract["effective"]
+
+    def test_the_refusal_ground_is_stated(self):
+        contract = build_capability_registry(tenant_id=TENANT, devices=[])["contract"]
+        assert "only for absence of implementation" in contract["refusal"]
+        assert "never refused because a node does not currently permit" in (
+            contract["refusal"]
+        )
+
+    def test_every_effective_field_is_covered_by_the_stated_meaning(self):
+        """If a new effective_* field appears, the contract sentence that
+        defines them all must still be the one that describes it."""
+        row = build_capability_registry(
+            tenant_id=TENANT,
+            devices=[_Device("srv1", capabilities=SERVER_DECL)],
+        )["classes"][0]
+        effective_fields = {k for k in row if k.startswith("effective")}
+        assert effective_fields == {
+            "effective_device_count",
+            "effective_sites",
+            "effective_devices",
+            "effective_devices_truncated",
+        }, effective_fields
+
 
 # ---------------------------------------------------------------------------
 # API
