@@ -86,16 +86,20 @@ async def executions_used(session, tenant_id: str, agent) -> int:
 
     Proposals, by contrast, are never counted. Intent is not
     consumption: a proposal that is never executed costs nothing.
+
+    Counted per AGENT, across its configuration versions. Attribution
+    still records the exact version that decided each outcome -- D3
+    requires that -- but the allowance belongs to the agent, or an
+    ordinary edit would refill a spent budget.
     """
     from harkeniq_cc.db.repos import AgentProposalRepo
 
-    actor = attribution_key(agent.id, agent.version)
     since = budget_window_start(agent.budget_period)
     settled = await AgentPreflightRepo(session).count_executions(
-        tenant_id, actor, since,
+        tenant_id, agent.id, since,
     )
     in_flight = await AgentProposalRepo(session).count_in_flight(
-        tenant_id, actor, since,
+        tenant_id, agent.id, since,
     )
     return int(settled) + int(in_flight)
 
@@ -467,10 +471,32 @@ async def runtime_state(session, *, tenant_id: str, agent) -> dict:
         else:
             stale += 1
 
+    # A19.11: installation is per DEVICE, so the report is too. A summary
+    # count would tell an operator that a forty-device agent "installed"
+    # without saying it reached thirty-one, or which nine it missed and
+    # why -- and the reason is the whole point of skipping with one.
     installs = await pre_repo.installs(agent.id, agent.version)
     install_state: dict[str, int] = {}
+    by_skill: dict[str, dict] = {}
     for row in installs:
         install_state[row.status] = install_state.get(row.status, 0) + 1
+        entry = by_skill.setdefault(
+            row.skill_id,
+            {"skill_id": row.skill_id, "skill_version": row.skill_version,
+             "devices": [], "counts": {}},
+        )
+        entry["counts"][row.status] = entry["counts"].get(row.status, 0) + 1
+        entry["devices"].append({
+            "device_agent_id": row.device_agent_id,
+            "site_id": row.site_id,
+            "status": row.status,
+            "detail": row.detail or "",
+            "installed_at": (
+                row.installed_at.isoformat() if row.installed_at else None
+            ),
+        })
+    for entry in by_skill.values():
+        entry["devices"].sort(key=lambda d: d["device_agent_id"])
 
     preflight = await pre_repo.current(agent.id)
     limit = int(agent.execution_budget or 0)
@@ -503,6 +529,7 @@ async def runtime_state(session, *, tenant_id: str, agent) -> dict:
         },
         "proposals_in_window": proposals,
         "skills": install_state,
+        "skills_by_id": sorted(by_skill.values(), key=lambda s: s["skill_id"]),
         "paused_reason": agent.paused_reason or None,
         "preflight": {
             "exists": preflight is not None,

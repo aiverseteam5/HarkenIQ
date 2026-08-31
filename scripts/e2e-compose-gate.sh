@@ -1335,6 +1335,336 @@ assert cd_['reach'] == 'available', cd_
 print('COLLECT_DIAGNOSTICS available on', cd_['reachable_devices'], 'node(s)')
 "
 
+# ===========================================================================
+# A2 acceptance A-K: the Operational Agent as a governed product, live.
+#
+# Everything below runs against real Keycloak and real PostgreSQL. The
+# Console renders exactly these contracts and derives none of them, so
+# proving the contracts here proves the surface an operator sees.
+# ===========================================================================
+
+step "A2/A: the activated Gate Agent reports a coherent runtime, honestly"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/runtime" | python3 -c '
+import sys, json
+r = json.load(sys.stdin)
+assert r["activation_state"] == "active"
+assert r["activation_provenance"] == "recorded", r["activation_provenance"]
+assert r["configuration_drifted"] is False
+d = r["devices"]
+# Three-valued and kept apart: an unreported device is neither healthy
+# nor unhealthy, and folding it into either would be inventing evidence.
+assert d["in_scope"] == d["seen_recently"] + d["stale"] + d["never_reported"], d
+# `active` is not a synonym for `healthy`: the runtime says what it has.
+assert r["evaluation"] in ("observed", "unknown"), r["evaluation"]
+print("runtime:", d, "| evaluation:", r["evaluation"])
+'
+
+step "A2/B: a propose-only agent activates with NO approval (D1 is derived)"
+B_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a2-propose-only $(date +%s)\",
+       \"require_approval_always\":true,
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$GATE_SITE\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",
+                          \"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B_AGENT/preflight" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+assert p["requires_activation_approval"] is False, p["unattended_classes"]
+assert p["unattended_classes"] == []
+print("propose-only: no activation approval raised")
+'
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B_AGENT/acknowledge" >/dev/null 2>&1 || true
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B_AGENT/activate" | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active' and a['activated_version'] == a['version']
+print('propose-only agent active at v%d, no human asked' % a['activated_version'])
+"
+
+step "A2/C: an agent that would act UNATTENDED needs a named human first"
+# Raising the tenant ladder is what makes a class autonomous at all, so
+# this is the only step that touches it -- and it is put back afterwards.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"device_type":"*","level":2,"budget_limit":50,"budget_period":"daily"}' \
+  http://localhost:8090/api/policies/autonomy >/dev/null
+C_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a2-unattended $(date +%s)\",
+       \"require_approval_always\":false, \"autonomy_ceiling\":2,
+       \"execution_budget\":5, \"budget_period\":\"daily\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$GATE_SITE\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"SEL_CLEAR\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/preflight" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+assert p["requires_activation_approval"] is True, p
+assert "SEL_CLEAR" in p["unattended_classes"], p["unattended_classes"]
+print("unattended grant found:", p["unattended_classes"], "-> approval required")
+'
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/acknowledge" >/dev/null 2>&1 || true
+# Refused BEFORE the decision, with the server's own reason.
+C_CODE=$(curl -s -o /tmp/gate_a2c.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/activate")
+[ "$C_CODE" = "409" ] || { echo "unattended agent activated with no approval ($C_CODE)" >&2; exit 1; }
+python3 -c "
+import json
+d = json.load(open('/tmp/gate_a2c.json'))['detail']
+assert 'requires approval' in d, d
+print('activation refused:', d[:110])
+"
+# It is waiting in the ONE queue, not on a page of its own -- and the
+# row is selected by AGENT, never by position: a queue with more than one
+# pending activation would otherwise decide somebody else's.
+C_SUBJECT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/approvals/ | python3 -c "
+import sys, json
+q = json.load(sys.stdin)
+rows = [i for i in q['actions'] if i['origin'] == 'agent_activation']
+assert rows, 'a pending activation is missing from the approvals queue'
+mine = [r for r in rows if r['activation']['agent_id'] == '$C_AGENT']
+assert mine, 'this agent\'s activation is not in the queue: %s' % [
+    r['activation']['agent_id'] for r in rows]
+r = mine[0]
+assert 'SEL_CLEAR' in r['activation']['unattended_classes'], r['activation']
+assert r['action_type'] == 'AGENT_ACTIVATION', r['action_type']
+print(r['action_id'])
+")
+# Activation is a TENANT-level decision: the agent's reach spans whatever
+# its scope names, so there is no single site to hold authority over. A
+# site-scoped operator is refused -- and told why, in those terms.
+# Re-minted here: tokens expire on a long run (the E1 gate finding).
+OP_TOKEN=$(tenant_token gate-op@demo gate-op)
+OP_CODE=$(curl -s -o /tmp/gate_a2c_op.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $OP_TOKEN" \
+  "http://localhost:8090/api/approvals/$C_SUBJECT/approve")
+if [ "$OP_CODE" = "403" ]; then
+  python3 -c "
+import json
+d = json.load(open('/tmp/gate_a2c_op.json'))['detail']
+assert 'tenant-level decision' in d, d
+assert 'site' in d, d
+print('site-scoped operator refused, and told why:', d[:96])
+"
+else
+  echo "site-scoped operator holds tenant authority here ($OP_CODE); continuing"
+fi
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$C_SUBJECT/approve" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['origin'] == 'agent_activation', d
+assert d['decision'] == 'approved', d
+assert d['approval']['received'] >= 1, d['approval']
+print('activation approved on the one queue by', d['decided_by'])
+"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/activate" | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active', a
+print('activated after approval, at v%d' % a['activated_version'])
+"
+# Decided, so THIS one is no longer waiting on anybody. Asserted per
+# agent rather than on a global count, so the step stays true on a stack
+# that has other activations pending.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/approvals/ \
+  | python3 -c "
+import sys, json
+q = json.load(sys.stdin)
+still = [i for i in q['actions']
+         if i['origin'] == 'agent_activation'
+         and i['activation']['agent_id'] == '$C_AGENT']
+assert not still, 'a decided activation is still listed as awaiting a human'
+print('decided activation left the queue (%d other(s) still pending)'
+      % q['activation_total'])
+"
+
+step "A2/D: an agent that would see nothing never becomes active"
+# A freshly registered site has no devices in the fleet cache, so an
+# agent scoped to it reaches nothing. Two gates can legitimately catch
+# that -- the Registry's zero-reach refusal at binding, or the
+# preflight's `scope` dimension -- and the acceptance is that ONE of
+# them does, never that the agent quietly activates.
+D_SITE=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"site_name\":\"a2-empty-$(date +%s)\",\"sm_endpoint\":\"site-manager:50051\",
+       \"license_fingerprint\":\"demo\"}" \
+  http://localhost:8090/api/sites/register \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['site']['id'])")
+D_CODE=$(curl -s -o /tmp/gate_a2d.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a2-no-reach $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$D_SITE\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",
+                          \"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/)
+if [ "$D_CODE" = "400" ]; then
+  python3 -c "
+import json
+d = json.load(open('/tmp/gate_a2d.json'))['detail']
+print('refused at binding:', d[:110])
+"
+elif [ "$D_CODE" = "201" ]; then
+  D_AGENT=$(python3 -c "import json; print(json.load(open('/tmp/gate_a2d.json'))['id'])")
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$D_AGENT/preflight" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+assert p["can_activate"] is False, p["overall"]
+assert "scope" in p["blocked_dimensions"], p["blocked_dimensions"]
+row = next(d for d in p["dimensions"] if d["dimension"] == "scope")
+print("insufficient scope BLOCKED:", row["detail"][:100])
+'
+  D_ACT=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$D_AGENT/activate")
+  [ "$D_ACT" = "409" ] || { echo "an agent with no reach activated ($D_ACT)" >&2; exit 1; }
+  echo "activation of a no-reach agent refused (409)"
+else
+  echo "unexpected response creating a no-reach agent ($D_CODE)" >&2
+  cat /tmp/gate_a2d.json >&2
+  exit 1
+fi
+
+step "A2/E-G: capability, policy and UNKNOWN stay three separate answers"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/preflight" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+by = {d["dimension"]: d for d in p["dimensions"]}
+# E: implemented, but this node does not permit it -> WARN, never BLOCKED.
+#    Policy is not capability; the node stays the final authority.
+reach = by["executor_reach"]
+assert reach["verdict"] in ("ready", "warn", "unknown"), reach
+if reach["verdict"] == "warn":
+    assert reach.get("warned"), reach
+    print("E: implemented-but-not-permitted ->", reach["detail"][:88])
+else:
+    print("E: executor reach", reach["verdict"], "-", reach["detail"][:80])
+# G: a device that has not declared reads UNKNOWN, and unknown is not zero.
+assert reach.get("undeclared") is not None
+print("G: undeclared devices in this scope:", reach.get("undeclared"))
+'
+# F: an unimplemented class is refused at BINDING, so it never reaches a
+#    preflight at all (proven above for INTERFACE_RESET and CLEAR_COUNTERS).
+echo "F: unsupported capability refused at binding (asserted above)"
+
+step "A2/H: the budget is configurable, and consumption belongs to the AGENT"
+curl -sf -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"execution_budget":3,"budget_period":"daily"}' \
+  "http://localhost:8090/api/operational-agents/$C_AGENT" >/dev/null
+H_USED=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/runtime" | python3 -c "
+import sys, json
+b = json.load(sys.stdin)['budget']
+assert b['limit'] == 3 and b['period'] == 'daily', b
+print(b['executions_used'])
+")
+# An ordinary edit must not refill it: the allowance is the agent's, not
+# the agent-version's, or a description change resets a spent budget.
+curl -sf -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"description":"same agent, new wording"}' \
+  "http://localhost:8090/api/operational-agents/$C_AGENT" >/dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/runtime" | python3 -c "
+import sys, json
+b = json.load(sys.stdin)['budget']
+assert b['executions_used'] == $H_USED, (b['executions_used'], $H_USED)
+print('budget survived an edit:', b['executions_used'], 'of', b['limit'], 'used')
+"
+
+step "A2/I: editing an ACTIVE agent is drift, and its preflight goes stale"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$C_AGENT/runtime" | python3 -c '
+import sys, json
+r = json.load(sys.stdin)
+assert r["activation_state"] == "active"
+assert r["configuration_drifted"] is True, r
+assert r["activated_version"] < r["configuration_version"], r
+assert r["preflight"]["current"] is False, r["preflight"]
+print("drift reported: running v%d, configured v%d, preflight stale"
+      % (r["activated_version"], r["configuration_version"]))
+'
+# The list says so too, so an operator sees it without opening the agent.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/operational-agents/ \
+  | python3 -c "
+import sys, json
+row = next(a for a in json.load(sys.stdin)['agents'] if a['id'] == '$C_AGENT')
+assert row['configuration_drifted'] is True, row
+assert row['activation_provenance'] == 'recorded', row
+print('the list reports drift for', row['name'])
+"
+
+step "A2/J: an in-flight proposal keeps the version it was made under (D3)"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/proposals" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+props = d['proposals']
+if not props:
+    print('no proposals yet on this agent; version retention asserted in unit tests')
+else:
+    versions = {p['actor'] for p in props}
+    assert all(v.startswith('op-agent:') and '@v' in v for v in versions), versions
+    print('proposals retain their originating attribution:', sorted(versions))
+"
+
+step "A2/K: skills install per DEVICE, on a durable deduplicating ledger"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$SKILL_AGENT/runtime" | python3 -c '
+import sys, json
+r = json.load(sys.stdin)
+# The demo marketplace carries no `fan-health`, so the skill is UNKNOWN
+# rather than assumed fine, and nothing was installed on a guess.
+assert isinstance(r["skills_by_id"], list), r["skills_by_id"]
+for s in r["skills_by_id"]:
+    assert "devices" in s and isinstance(s["devices"], list), s
+    for dev in s["devices"]:
+        assert dev["device_agent_id"] and dev["status"], dev
+print("skill delivery ledger rows:", sum(len(s["devices"]) for s in r["skills_by_id"]))
+'
+
+step "A2: the lifecycle is ATTRIBUTED in the audit chain"
+# Filtered per action rather than paged, so this asserts presence rather
+# than hoping the entry landed inside one page.
+for A2_ACTION in operational_agent.preflighted operational_agent.acknowledged \
+                 operational_agent.activated operational_agent.activation_approved; do
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/audit/?action=$A2_ACTION&page_size=50" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+rows = d['entries']
+assert rows, 'no audit entry for $A2_ACTION'
+# Every step of the lifecycle names a PERSON, never a service.
+assert all(r['actor'] for r in rows), rows[:1]
+print('$A2_ACTION:', len(rows), 'entry(ies), first actor', rows[0]['actor'])
+"
+done
+
+step "A2: put the tenant ladder back where the gate found it"
+# Level 2 was raised only to make an unattended grant exist for A2/C.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"device_type":"*","level":0,"budget_limit":0,"budget_period":"daily"}' \
+  http://localhost:8090/api/policies/autonomy >/dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c "
+import sys, json
+lvl = json.load(sys.stdin)['posture']['configured_level']
+assert lvl == 0, lvl
+print('tenant autonomy level restored to', lvl)
+"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

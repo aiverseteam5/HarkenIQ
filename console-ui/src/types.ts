@@ -295,10 +295,16 @@ export interface ApprovalProgress {
  * mirror Central Command's payload exactly -- the previous shape here
  * described fields CC has never sent, so every card rendered blank. */
 export interface ApprovalAction {
-  origin: "node" | "agent";
+  /** A2: a third origin, on the same queue and the same ledger.
+   *  `agent_activation` asks whether a configuration may enter the
+   *  governed runtime state, given that doing so would let it act
+   *  without a human. It is not an action class and touches no device. */
+  origin: "node" | "agent" | "agent_activation";
   id: string;
   site_id: string;
-  /** The id the decision endpoint takes. NOT `id` for node items. */
+  /** The id the decision endpoint takes. NOT `id` for node items.
+   *  For an activation this is the subject digest over the agent, its
+   *  configuration version and the exact unattended class set. */
   action_id: string;
   action_type: string;
   device_agent_id: string;
@@ -309,6 +315,29 @@ export interface ApprovalAction {
   delivered_at: string | null;
   approval?: ApprovalProgress;
   proposal?: AgentProposal;
+  activation?: AgentActivationRequest;
+}
+
+/** What a human is asked to authorize when an agent is activated (A2 D1).
+ *
+ * Approval is DERIVED: it is raised only where activation would confer
+ * real unattended execution. Approving authorizes activation; it does
+ * not activate, and it grants no RBAC, scope or capability authority. */
+export interface AgentActivationRequest {
+  agent_id: string;
+  agent_name: string;
+  actor: string;
+  configuration_version: number;
+  /** The classes this configuration would let run with nobody watching. */
+  unattended_classes: string[];
+  autonomy_ceiling: number;
+  preflight_overall: string;
+  warn_dimensions: string[];
+  unknown_dimensions: string[];
+  blocked_dimensions: string[];
+  acknowledged_by: string | null;
+  acknowledgement_current: boolean;
+  note: string;
 }
 
 /** Chargeback usage summary for a tenant. */

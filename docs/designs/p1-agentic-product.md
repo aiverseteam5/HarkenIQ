@@ -1472,3 +1472,61 @@ The lesson the project keeps re-learning, stated once more: a declaration
 is not an implementation, and a test that exercises a pure function
 proves nothing about whether anything calls it. The regression tests
 added with these fixes assert the **call**, not only the judgement.
+
+### A2 completion — the Console surface, and the gap it exposed (spec A19)
+
+The Console must let a customer answer twelve questions about an agent:
+who it is, where it may operate, what it can do, what skills are bound,
+how autonomous it is, what approval is required, what budget applies,
+what safety constraints apply, whether it is ready, why it is
+blocked or warned, which configuration is running, and what it is doing
+now.
+
+It answers all twelve by **rendering contracts Central Command already
+composes** — the twelve-dimension preflight, the runtime read and the
+agent view. The page recomputes none of them. If the browser could reach
+its own verdict, an operator could approve something different from what
+the activation gate enforces, and the divergence would be invisible until
+it mattered. The Activate button reflects the stored contract; the server
+refuses independently and its reason is what the operator sees.
+
+**The gap building the page exposed.** An activation waiting on a human
+appeared nowhere in the approval queue. The decision path was complete
+and correct — `activation_approval_state` judged it on E0.1's completion
+rule — but the only way to reach it was to be handed the subject digest
+from the agent's own page. "There is no second approval queue" was true
+of the ledger and false of the product: an approver working the queue
+would never have seen it. Activations are now a third origin in the same
+list, in the same envelope, with the same progress block, deciding on the
+same endpoint — and a decided one leaves, because it is no longer waiting
+on anybody.
+
+**Activation is a tenant-level decision, and now says so.** The scope
+check passed an empty site id and fell through to `permits`' tenant
+question by accident, so a site-scoped operator was refused with *"this
+is outside your authorized scope … over the site it targets"* — about a
+subject that targets no site, with a hole where the action class should
+have been. The behaviour is right: an agent's reach spans whatever its
+scope names, so there is no single site to hold authority over. It is now
+asked explicitly as a tenant question and refused in those words.
+
+**A second D2 defect, found building the acceptance.** Consumption was
+keyed to `op-agent:<id>@v<n>` — the attribution string, which carries the
+version. Editing a **description** bumped the version and reset a spent
+budget to zero, so the one control a customer sets to bound unattended
+work was refilled by the most routine edit there is, and by the agent's
+own reconfiguration flow. Attribution still names the exact version on
+every outcome, because D3 requires that; **consumption belongs to the
+agent**, across its versions.
+
+**Live acceptance A–K** runs in the compose gate on real PostgreSQL and
+real Keycloak: a propose-only agent activating with no approval (D1 is
+derived, not ceremonial); an unattended-granting agent refused, queued,
+refused again for a site-scoped operator, approved by tenant authority,
+then activated; an agent with no reach blocked and refused; capability,
+policy and UNKNOWN reported as three separate answers; a budget that
+survives an edit; drift after editing an active agent, with the preflight
+going stale; proposals retaining their originating attribution; the
+per-device skill ledger; and every lifecycle step attributed to a named
+person in the audit chain. The tenant autonomy ladder is raised for the
+one step that needs an unattended grant to exist, and put back.

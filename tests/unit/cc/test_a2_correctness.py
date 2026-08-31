@@ -728,6 +728,79 @@ class TestBudgetIsEnforcedAndConfigurable:
         assert len(FakeSM.dispatches) == 1
 
     @pytest.mark.asyncio
+    async def test_editing_an_agent_does_not_refill_a_spent_budget(self):
+        """Found building the A-K acceptance, on the live contract.
+
+        Consumption was keyed to `op-agent:<id>@v<n>` -- the attribution
+        string, which carries the version. So editing a DESCRIPTION
+        bumped the version and reset a spent budget to zero: the one
+        control a customer sets to bound unattended work was refilled by
+        the most routine edit there is, and by the agent's own
+        reconfiguration flow.
+
+        Attribution still names the exact version on every outcome (D3
+        requires it). Consumption belongs to the AGENT.
+        """
+        stack = await _stack()
+        site_id = await _seed(stack)
+        async with stack.client() as c:
+            agent_id = await _unattended_agent(c, site_id, execution_budget=2)
+            await _record_executions(stack, site_id, f"op-agent:{agent_id}@v1", 2)
+
+            runtime = (
+                await c.get(f"/api/operational-agents/{agent_id}/runtime")
+            ).json()
+            assert runtime["budget"]["executions_used"] == 2
+            assert runtime["budget"]["exhausted"] is True
+
+            # An ordinary configuration edit.
+            edited = await c.patch(
+                f"/api/operational-agents/{agent_id}",
+                json={"description": "same agent, new wording"},
+            )
+            assert edited.status_code == 200
+            assert edited.json()["version"] == 2
+
+            runtime = (
+                await c.get(f"/api/operational-agents/{agent_id}/runtime")
+            ).json()
+            assert runtime["budget"]["executions_used"] == 2, (
+                "an edit refilled the budget: work done under v1 is still "
+                "this agent's work under v2"
+            )
+            assert runtime["budget"]["exhausted"] is True
+
+        # And it still refuses unattended dispatch after the edit.
+        await _autonomous_proposal(
+            stack, site_id, f"op-agent:{agent_id}@v2", agent_id,
+        )
+        assert await agent_runtime.dispatch_decided(stack.state, TENANT) == []
+
+    @pytest.mark.asyncio
+    async def test_outcomes_keep_naming_the_version_that_decided_them(self):
+        """The fix must not blur attribution, which is a different axis."""
+        stack = await _stack()
+        site_id = await _seed(stack)
+        async with stack.client() as c:
+            agent_id = await _unattended_agent(c, site_id, execution_budget=5)
+            await _record_executions(stack, site_id, f"op-agent:{agent_id}@v1", 1)
+            await c.patch(f"/api/operational-agents/{agent_id}",
+                          json={"description": "v2"})
+            await _record_executions(stack, site_id, f"op-agent:{agent_id}@v2", 1)
+
+        async with stack.sessionmaker() as session:
+            from sqlalchemy import select
+
+            from harkeniq_cc.db.models import CCOutcomeHistory
+
+            actors = sorted(
+                (await session.execute(select(CCOutcomeHistory.actor))).scalars().all()
+            )
+        assert actors == [f"op-agent:{agent_id}@v1", f"op-agent:{agent_id}@v2"], (
+            "each outcome must still name the configuration that decided it"
+        )
+
+    @pytest.mark.asyncio
     async def test_budget_exhaustion_does_not_block_human_approved_work(self):
         """D2's other half, and the one that makes it a budget not a switch."""
         stack = await _stack()

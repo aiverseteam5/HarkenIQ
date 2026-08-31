@@ -59,6 +59,34 @@ const cardsGrid: CSSProperties = {
   gap: "0.75rem",
 };
 
+/* A1/A2: one queue, three requesters. `origin` says who asked; the
+ * permission, the ledger, the completion rule and the audit trail are
+ * identical for all three. Nothing here is an agent-only review path. */
+const ORIGIN_LABEL: Record<string, string> = {
+  node: "node",
+  agent: "agent",
+  agent_activation: "agent activation",
+};
+
+const ORIGIN_VARIANT: Record<
+  string,
+  "success" | "warning" | "critical" | "info" | "neutral"
+> = {
+  node: "neutral",
+  agent: "warning",
+  agent_activation: "info",
+};
+
+const activationBlockStyle: CSSProperties = {
+  marginTop: "0.625rem",
+  padding: "0.625rem 0.75rem",
+  borderRadius: "var(--radius-md, 6px)",
+  background: "var(--bg-subtle, rgba(127,127,127,0.08))",
+  borderLeft: "3px solid var(--status-info, #2563eb)",
+  fontSize: "0.8125rem",
+  lineHeight: 1.5,
+};
+
 const cardStyle: CSSProperties = {
   background: "var(--bg-card)",
   border: "1px solid var(--border-color)",
@@ -391,8 +419,8 @@ export default function ApprovalQueue() {
         header: "Requested by",
         render: (r) => (
           <StatusBadge
-            status={r.origin === "agent" ? "agent" : "node"}
-            variant={r.origin === "agent" ? "warning" : "neutral"}
+            status={ORIGIN_LABEL[r.origin] ?? r.origin}
+            variant={ORIGIN_VARIANT[r.origin] ?? "neutral"}
             size="sm"
           />
         ),
@@ -541,22 +569,28 @@ export default function ApprovalQueue() {
                         <StatusBadge status={action.action_type} variant="info" size="sm" />
                       </div>
                       <StatusBadge
-                        status={action.origin === "agent" ? "agent" : "node"}
-                        variant={action.origin === "agent" ? "warning" : "neutral"}
+                        status={ORIGIN_LABEL[action.origin] ?? action.origin}
+                        variant={ORIGIN_VARIANT[action.origin] ?? "neutral"}
                         size="sm"
                       />
                     </div>
 
                     <div style={cardDetailRow}>
-                      <span>Device</span>
+                      <span>{action.activation ? "Agent" : "Device"}</span>
                       <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
-                        {action.device_agent_id || "--"}
+                        {action.activation
+                          ? action.activation.actor
+                          : action.device_agent_id || "--"}
                       </code>
                     </div>
                     <div style={cardDetailRow}>
                       <span>Requested by</span>
                       <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>
-                        {action.proposal ? action.proposal.actor : "this device"}
+                        {action.activation
+                          ? "an operator configuring this agent"
+                          : action.proposal
+                            ? action.proposal.actor
+                            : "this device"}
                       </span>
                     </div>
                     <div style={cardDetailRow}>
@@ -585,6 +619,53 @@ export default function ApprovalQueue() {
                             Approvers must be in {action.approval.group_name}
                           </div>
                         ) : null}
+                      </div>
+                    ) : null}
+
+                    {/* A2/D1: what is actually being authorized. Approval
+                        is raised ONLY where activation would confer real
+                        unattended execution, so the card names those
+                        classes -- approving a bundle without seeing what
+                        it may then do unwatched is not a decision. */}
+                    {action.activation ? (
+                      <div style={activationBlockStyle}>
+                        <div style={{ fontWeight: 600 }}>
+                          Activating {action.activation.agent_name} (v
+                          {action.activation.configuration_version}) would let it run
+                          without a human:
+                        </div>
+                        <div style={{ marginTop: "0.25rem" }}>
+                          {action.activation.unattended_classes.length > 0
+                            ? action.activation.unattended_classes
+                                .map((c) => c.replace(/_/g, " "))
+                                .join(", ")
+                            : "nothing (no unattended grant recorded)"}
+                        </div>
+                        <div style={cardDetailRow}>
+                          <span>Readiness</span>
+                          <span>
+                            {action.activation.preflight_overall}
+                            {action.activation.warn_dimensions.length > 0
+                              ? ` · warns: ${action.activation.warn_dimensions.join(", ")}`
+                              : ""}
+                            {action.activation.unknown_dimensions.length > 0
+                              ? ` · unknown: ${action.activation.unknown_dimensions.join(", ")}`
+                              : ""}
+                          </span>
+                        </div>
+                        <div style={cardDetailRow}>
+                          <span>Warnings accepted by</span>
+                          <span>
+                            {action.activation.acknowledged_by ?? "nobody yet"}
+                            {action.activation.acknowledged_by &&
+                            !action.activation.acknowledgement_current
+                              ? " (stale — the configuration changed)"
+                              : ""}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.375rem" }}>
+                          {action.activation.note}
+                        </div>
                       </div>
                     ) : null}
 

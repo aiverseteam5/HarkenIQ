@@ -8,7 +8,7 @@ import StatusBadge from "../components/StatusBadge";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
-import { getJson, postJson } from "../api";
+import { getJson, patchJson, postJson } from "../api";
 import { useAuth } from "../useAuth";
 import type { AgentProposal } from "../types";
 
@@ -54,6 +54,14 @@ interface AgentRow {
   max_proposals_per_day: number;
   created_by: string;
   activated_by: string;
+  /** A19.9: the configuration actually switched on. 0 with an active
+   *  agent means it was activated before the platform recorded this,
+   *  which is UNKNOWN — never read as drift. */
+  activated_version: number;
+  configuration_drifted: boolean;
+  execution_budget: number;
+  budget_period: string;
+  paused_reason: string | null;
   last_evaluated_at: string | null;
   scopes: ScopeRule[];
   capabilities: CapabilityBinding[];
@@ -120,6 +128,116 @@ interface AgentView {
   proposals: AgentProposal[];
 }
 
+/* ── A2: readiness, activation, runtime ───────────── */
+
+/** One dimension of the activation readiness contract.
+ *
+ * Composed at Central Command and stored. This page RENDERS it and
+ * never recomputes it: if the browser could reach its own verdict, an
+ * operator could approve something different from what the activation
+ * gate enforces, and the divergence would be invisible until it
+ * mattered. */
+interface PreflightDimension {
+  dimension: string;
+  verdict: "ready" | "blocked" | "warn" | "unknown";
+  detail: string;
+  [extra: string]: unknown;
+}
+
+interface ActivationApproval {
+  subject_ref: string;
+  state: string;
+  required: number;
+  received: number;
+  remaining?: number;
+  approvers: { approver: string; decision: string }[];
+  policy_name?: string;
+  group_name?: string;
+  note: string;
+}
+
+interface Preflight {
+  agent_id: string;
+  exists: boolean;
+  current?: boolean;
+  produced_by?: string;
+  produced_at?: string | null;
+  detail?: string;
+  configuration_version: number;
+  overall?: "ready" | "blocked" | "warn" | "unknown";
+  can_activate?: boolean;
+  requires_acknowledgement?: boolean;
+  requires_activation_approval?: boolean;
+  unattended_classes?: string[];
+  blocked_dimensions?: string[];
+  warn_dimensions?: string[];
+  unknown_dimensions?: string[];
+  dimensions?: PreflightDimension[];
+  skills?: {
+    skill_id: string;
+    usable: boolean | null;
+    recommended: string[];
+    unsupported: string[];
+    reason: string;
+    name?: string;
+    version?: string;
+  }[];
+  acknowledged_by?: string | null;
+  acknowledgement_current?: boolean;
+  activation_approval?: ActivationApproval | null;
+  contract?: { authority: string; unknown: string; versioning: string };
+}
+
+/** What the runtime can HONESTLY say. Only signals the platform
+ *  actually produces; a dimension it cannot observe reads unknown
+ *  rather than being filled with a plausible value. */
+interface RuntimeState {
+  agent_id: string;
+  actor: string;
+  activation_state: string;
+  configuration_version: number;
+  activated_version: number;
+  activation_provenance: "recorded" | "unknown" | "inactive";
+  configuration_drifted: boolean;
+  last_evaluated_at: string | null;
+  evaluation: string;
+  devices: {
+    in_scope: number;
+    seen_recently: number;
+    stale: number;
+    /** Never counted as healthy OR unhealthy. */
+    never_reported: number;
+  };
+  budget: {
+    period: string;
+    limit: number;
+    executions_used: number;
+    remaining: number | null;
+    exhausted: boolean;
+  };
+  proposals_in_window: number;
+  skills: Record<string, number>;
+  skills_by_id: {
+    skill_id: string;
+    skill_version: string;
+    counts: Record<string, number>;
+    devices: {
+      device_agent_id: string;
+      site_id: string;
+      status: string;
+      detail: string;
+      installed_at: string | null;
+    }[];
+  }[];
+  paused_reason: string | null;
+  preflight: {
+    exists: boolean;
+    configuration_version: number | null;
+    overall: string;
+    current: boolean;
+  };
+}
+
 interface Catalogue {
   action_classes: {
     action_type: string;
@@ -157,6 +275,47 @@ const DISPOSITION_VARIANT: Record<string, "success" | "warning" | "critical" | "
   requires_approval: "warning",
   denied: "critical",
   not_budget_mapped: "neutral",
+};
+
+/* Four verdicts, and UNKNOWN is one of them. A fleet mid-upgrade is
+ * unknown, not incapable, and colouring the two alike would make an
+ * agent look broken for the duration of an upgrade. */
+const VERDICT_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
+  ready: "success",
+  warn: "warning",
+  blocked: "critical",
+  unknown: "neutral",
+};
+
+const VERDICT_LABEL: Record<string, string> = {
+  ready: "ready",
+  warn: "needs a decision",
+  blocked: "blocked",
+  unknown: "unknown",
+};
+
+/** The twelve dimensions, in the order an operator reads them. Labels
+ *  are the question each one answers, not the field name. */
+const DIMENSION_LABEL: Record<string, string> = {
+  identity: "Who is it",
+  tenant: "Whose is it",
+  scope: "Where can it operate",
+  capabilities: "What can it do",
+  skills: "What skills are bound",
+  autonomy_ceiling: "How autonomous is it",
+  approval_policy: "What approval is required",
+  budget: "What budget applies",
+  safety: "What safety constraints apply",
+  executor_reach: "Can the devices actually run it",
+  configuration_version: "Which configuration is this",
+  activation_state: "Where is it now",
+};
+
+const PROVENANCE_NOTE: Record<string, string> = {
+  recorded: "the configuration that is running is recorded",
+  unknown:
+    "this agent was activated before the platform recorded activation versions, so what is running cannot be named — re-run preflight and activate to record it",
+  inactive: "not running, so there is nothing to drift",
 };
 
 const PROPOSAL_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
@@ -254,8 +413,15 @@ export default function OperationalAgents() {
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<AgentView | null>(null);
+  const [preflight, setPreflight] = useState<Preflight | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeState | null>(null);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState<{ limit: string; period: string }>({
+    limit: "0",
+    period: "daily",
+  });
+  const [pauseDraft, setPauseDraft] = useState("");
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -287,18 +453,102 @@ export default function OperationalAgents() {
     void fetchAll();
   }, [fetchAll]);
 
+  /** Everything about one agent, from the contracts Central Command
+   *  already composes. Three reads, no derivation in the browser. */
+  const loadAgent = useCallback(
+    async (agentId: string) => {
+      const base = `/api/t/${tenantId}/operational-agents/${agentId}`;
+      const [detail, pre, run] = await Promise.all([
+        getJson<AgentView>(base),
+        getJson<Preflight>(`${base}/preflight`),
+        getJson<RuntimeState>(`${base}/runtime`),
+      ]);
+      setView(detail);
+      setPreflight(pre);
+      setRuntime(run);
+      setBudgetDraft({
+        limit: String(run.budget.limit ?? 0),
+        period: run.budget.period || "daily",
+      });
+      setPauseDraft(run.paused_reason ?? "");
+    },
+    [tenantId],
+  );
+
   const openAgent = useCallback(
     async (row: AgentRow) => {
       try {
-        setView(
-          await getJson<AgentView>(`/api/t/${tenantId}/operational-agents/${row.id}`),
-        );
+        await loadAgent(row.id);
       } catch (err) {
         toast(err instanceof Error ? err.message : "Failed to load agent", "error");
       }
     },
-    [tenantId, toast],
+    [loadAgent, toast],
   );
+
+  const refreshOpen = useCallback(
+    async (agentId: string) => {
+      await fetchAll();
+      if (view?.agent.id === agentId || preflight?.agent_id === agentId) {
+        await loadAgent(agentId);
+      }
+    },
+    [fetchAll, loadAgent, view, preflight],
+  );
+
+  /* A2: activation is a governed transition, not a status write. The
+   * page walks the same sequence the server enforces — it never decides
+   * anything, and a refusal is shown as the server's own reason. */
+
+  const runPreflight = async (agentId: string) => {
+    setBusy(true);
+    try {
+      const result = await postJson<Preflight>(
+        `/api/t/${tenantId}/operational-agents/${agentId}/preflight`,
+        {},
+      );
+      toast(
+        result.overall === "blocked"
+          ? `Preflight blocked: ${(result.blocked_dimensions ?? []).join(", ")}`
+          : `Preflight ${result.overall} for version ${result.configuration_version}`,
+        result.overall === "blocked" ? "error" : "success",
+      );
+      await refreshOpen(agentId);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Preflight failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const acknowledge = async (agentId: string) => {
+    setBusy(true);
+    try {
+      await postJson(`/api/t/${tenantId}/operational-agents/${agentId}/acknowledge`, {});
+      toast(
+        "Warnings accepted against this configuration version. Editing the agent invalidates this.",
+        "success",
+      );
+      await refreshOpen(agentId);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not acknowledge", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const patchAgent = async (agentId: string, body: Record<string, unknown>, note: string) => {
+    setBusy(true);
+    try {
+      await patchJson(`/api/t/${tenantId}/operational-agents/${agentId}`, body);
+      toast(note, "success");
+      await refreshOpen(agentId);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not save", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const transition = async (agentId: string, action: string) => {
     setBusy(true);
@@ -310,13 +560,10 @@ export default function OperationalAgents() {
           : `Agent ${action}d`,
         action === "activate" ? "success" : "info",
       );
-      await fetchAll();
-      if (view?.agent.id === agentId) {
-        setView(
-          await getJson<AgentView>(`/api/t/${tenantId}/operational-agents/${agentId}`),
-        );
-      }
+      await refreshOpen(agentId);
     } catch (err) {
+      // The server is the authority on activation. When it refuses, its
+      // reason is the message — this page does not invent one.
       toast(err instanceof Error ? err.message : `Could not ${action} the agent`, "error");
     } finally {
       setBusy(false);
@@ -419,6 +666,22 @@ export default function OperationalAgents() {
           ),
       },
       {
+        key: "activated_version",
+        header: "Running",
+        render: (r) =>
+          r.status !== "active" ? (
+            <span style={{ color: "var(--text-muted)" }}>—</span>
+          ) : r.configuration_drifted ? (
+            <span style={{ color: "var(--status-warning, #b45309)" }}>
+              v{r.activated_version} · edited to v{r.version}
+            </span>
+          ) : r.activated_version > 0 ? (
+            <span>v{r.activated_version}</span>
+          ) : (
+            <span style={{ color: "var(--text-muted)" }}>unknown</span>
+          ),
+      },
+      {
         key: "proposal_counts",
         header: "Proposals",
         render: (r) => {
@@ -439,6 +702,47 @@ export default function OperationalAgents() {
     ],
     [],
   );
+
+  /* What the page shows about activation comes from the STORED contract,
+   * not from logic here. Central Command enforces all of this again on
+   * the transition — this only spares an operator a refusal they can
+   * already see, and quotes the server's own words for why. */
+  const preflightCurrent = Boolean(
+    preflight?.exists && preflight.current && view &&
+      preflight.configuration_version === view.agent.version,
+  );
+
+  const activationBlocker: string | null = useMemo(() => {
+    if (!view || view.agent.status === "active") return null;
+    if (!preflight?.exists) {
+      return "Run preflight first — an agent cannot be activated without a reviewable readiness result.";
+    }
+    if (!preflightCurrent) {
+      return `The stored preflight is for version ${preflight.configuration_version}; this agent is now v${view.agent.version}. Re-run it.`;
+    }
+    if (preflight.overall === "blocked") {
+      return `Blocked by ${(preflight.blocked_dimensions ?? [])
+        .map((d) => DIMENSION_LABEL[d] ?? d)
+        .join(", ")}.`;
+    }
+    if (preflight.requires_acknowledgement && !preflight.acknowledgement_current) {
+      return "Someone must accept the warnings and unknowns above first.";
+    }
+    if (
+      preflight.requires_activation_approval &&
+      preflight.activation_approval?.state !== "approved"
+    ) {
+      const a = preflight.activation_approval;
+      return a
+        ? `Waiting on the approvals queue — ${a.received} of ${a.required} recorded${
+            a.state === "denied" ? ", and it was denied" : ""
+          }.`
+        : "Waiting on the approvals queue.";
+    }
+    return null;
+  }, [view, preflight, preflightCurrent]);
+
+  const activationReady = activationBlocker === null;
 
   const totals = useMemo(() => {
     const active = agents.filter((a) => a.status === "active").length;
@@ -610,10 +914,14 @@ export default function OperationalAgents() {
 
       <DetailPanel
         open={view !== null}
-        onClose={() => setView(null)}
+        onClose={() => {
+          setView(null);
+          setPreflight(null);
+          setRuntime(null);
+        }}
         title={view?.agent.name ?? ""}
         subtitle={view?.agent.actor}
-        width={720}
+        width={780}
       >
         {view ? (
           <div style={{ padding: "1.25rem 1.5rem" }}>
@@ -624,32 +932,163 @@ export default function OperationalAgents() {
                 size="sm"
               />
               <StatusBadge status={`v${view.agent.version}`} variant="neutral" size="sm" />
+              {/* A19.9: the version being EDITED and the version that is
+                  RUNNING are the same number until somebody edits an
+                  active agent — and the moment they differ is exactly
+                  when an operator needs to know. */}
+              {runtime?.configuration_drifted ? (
+                <StatusBadge
+                  status={`running v${runtime.activated_version}`}
+                  variant="warning"
+                  size="sm"
+                />
+              ) : null}
+              {runtime?.activation_provenance === "unknown" ? (
+                <StatusBadge status="running version unknown" variant="neutral" size="sm" />
+              ) : null}
+              {runtime?.paused_reason ? (
+                <StatusBadge status="held" variant="warning" size="sm" />
+              ) : null}
+              {runtime?.budget.exhausted ? (
+                <StatusBadge status="budget spent" variant="warning" size="sm" />
+              ) : null}
               {view.posture.stop_switch.active ? (
                 <StatusBadge status="stop switch active" variant="critical" size="sm" />
               ) : null}
             </div>
 
-            {canManage ? (
-              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem" }}>
-                {view.agent.status !== "active" && view.agent.status !== "retired" ? (
-                  <button
-                    className="btn btn-primary"
-                    disabled={busy}
-                    onClick={() => void transition(view.agent.id, "activate")}
-                  >
-                    Activate
-                  </button>
-                ) : null}
-                {view.agent.status === "active" ? (
+            {/* ── Activation: CREATE → CONFIGURE → PREFLIGHT →
+                   ACKNOWLEDGE → APPROVAL (where required) → ACTIVATE.
+                   Each step is enabled by the server's own contract; the
+                   page reflects it and never decides it. ── */}
+            {canManage && view.agent.status !== "retired" ? (
+              <div style={{ ...formStyle, marginBottom: "1.25rem" }}>
+                <div style={sectionTitle}>Activation</div>
+
+                {/* 1. PREFLIGHT — mandatory, and bound to this version. */}
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                   <button
                     className="btn"
                     disabled={busy}
-                    onClick={() => void transition(view.agent.id, "pause")}
+                    onClick={() => void runPreflight(view.agent.id)}
                   >
-                    Pause
+                    {preflightCurrent ? "Re-run preflight" : "Run preflight"}
                   </button>
+                  <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                    {!preflight?.exists
+                      ? "No readiness result yet. An agent cannot be activated without one."
+                      : preflightCurrent
+                        ? `Checked by ${preflight.produced_by} for version ${preflight.configuration_version}.`
+                        : `The stored result is for version ${preflight.configuration_version}; this agent is now v${view.agent.version}. Re-run it.`}
+                  </span>
+                </div>
+
+                {/* 2. ACKNOWLEDGE — a warning is not a veto, but a named
+                       person must accept it, and an edit invalidates that. */}
+                {preflightCurrent && preflight?.requires_acknowledgement ? (
+                  <div
+                    style={{
+                      ...blockStyle,
+                      borderLeftColor: "var(--status-warning, #b45309)",
+                      marginBottom: 0,
+                    }}
+                  >
+                    <strong>
+                      {(preflight.warn_dimensions ?? []).length +
+                        (preflight.unknown_dimensions ?? []).length}{" "}
+                      dimension(s) need a decision.
+                    </strong>{" "}
+                    {[...(preflight.warn_dimensions ?? []), ...(preflight.unknown_dimensions ?? [])]
+                      .map((d) => DIMENSION_LABEL[d] ?? d)
+                      .join(", ")}
+                    .
+                    <div style={{ marginTop: "0.5rem" }}>
+                      {preflight.acknowledgement_current ? (
+                        <span style={{ fontSize: "0.78rem" }}>
+                          Accepted by {preflight.acknowledged_by} for this version.
+                        </span>
+                      ) : (
+                        <button
+                          className="btn"
+                          disabled={busy}
+                          onClick={() => void acknowledge(view.agent.id)}
+                        >
+                          Accept these and continue
+                        </button>
+                      )}
+                      {preflight.acknowledged_by && !preflight.acknowledgement_current ? (
+                        <span
+                          style={{ marginLeft: "0.5rem", fontSize: "0.75rem", color: "var(--text-muted)" }}
+                        >
+                          A previous acceptance by {preflight.acknowledged_by} no longer
+                          applies — the configuration changed.
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
                 ) : null}
-                {view.agent.status !== "retired" ? (
+
+                {/* 3. APPROVAL — raised ONLY where activation would confer
+                       real unattended execution (D1). Decided on the one
+                       approvals queue, never here. */}
+                {preflightCurrent && preflight?.requires_activation_approval ? (
+                  <div
+                    style={{
+                      ...blockStyle,
+                      borderLeftColor: "var(--status-info, #2563eb)",
+                      marginBottom: 0,
+                    }}
+                  >
+                    <strong>Activating this would let it run without a human:</strong>{" "}
+                    {(preflight.unattended_classes ?? [])
+                      .map((c) => c.replace(/_/g, " "))
+                      .join(", ")}
+                    .
+                    <div style={{ marginTop: "0.375rem", fontSize: "0.78rem" }}>
+                      {preflight.activation_approval
+                        ? `${preflight.activation_approval.received} of ${preflight.activation_approval.required} approval(s) recorded${
+                            preflight.activation_approval.policy_name
+                              ? ` · ${preflight.activation_approval.policy_name}`
+                              : ""
+                          }${
+                            preflight.activation_approval.approvers.length > 0
+                              ? ` · ${preflight.activation_approval.approvers
+                                  .map((a) => `${a.approver} ${a.decision}`)
+                                  .join(", ")}`
+                              : ""
+                          }`
+                        : "Waiting for a decision."}
+                    </div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>
+                      It is waiting on the approvals queue, under the same permission and
+                      the same ledger a node action uses. Approving authorizes activation;
+                      you still activate it here.
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* 4. ACTIVATE — the server is the authority. The button
+                       reflects the stored contract and the server refuses
+                       independently with its own reason. */}
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                  {view.agent.status !== "active" ? (
+                    <button
+                      className="btn btn-primary"
+                      disabled={busy || !activationReady}
+                      title={activationBlocker ?? undefined}
+                      onClick={() => void transition(view.agent.id, "activate")}
+                    >
+                      Activate
+                    </button>
+                  ) : (
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => void transition(view.agent.id, "pause")}
+                    >
+                      Pause
+                    </button>
+                  )}
                   <button
                     className="btn btn-danger"
                     disabled={busy}
@@ -657,7 +1096,308 @@ export default function OperationalAgents() {
                   >
                     Retire
                   </button>
+                  {activationBlocker ? (
+                    <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                      {activationBlocker}
+                    </span>
+                  ) : null}
+                </div>
+
+                {preflight?.contract?.authority ? (
+                  <div style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
+                    {preflight.contract.authority}
+                  </div>
                 ) : null}
+              </div>
+            ) : null}
+
+            {/* ── Readiness: the twelve dimensions, as the server
+                   composed them. Rendered, never recomputed. ── */}
+            {preflight?.exists && preflight.dimensions ? (
+              <div style={sectionStyle}>
+                <div style={sectionTitle}>
+                  Is it ready
+                  {preflight.overall ? (
+                    <StatusBadge
+                      status={VERDICT_LABEL[preflight.overall] ?? preflight.overall}
+                      variant={VERDICT_VARIANT[preflight.overall] ?? "neutral"}
+                      size="sm"
+                    />
+                  ) : null}
+                </div>
+                {!preflightCurrent ? (
+                  <div style={{ ...blockStyle, borderLeftColor: "var(--status-warning, #b45309)" }}>
+                    This result describes version {preflight.configuration_version}, not the
+                    current v{view.agent.version}. It is shown for reference and cannot
+                    activate anything.
+                  </div>
+                ) : null}
+                {preflight.dimensions.map((d) => (
+                  <div key={d.dimension} style={{ marginBottom: "0.625rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem" }}>
+                      <span style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
+                        {DIMENSION_LABEL[d.dimension] ?? d.dimension.replace(/_/g, " ")}
+                      </span>
+                      <StatusBadge
+                        status={VERDICT_LABEL[d.verdict] ?? d.verdict}
+                        variant={VERDICT_VARIANT[d.verdict] ?? "neutral"}
+                        size="sm"
+                      />
+                    </div>
+                    <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                      {d.detail}
+                    </div>
+                  </div>
+                ))}
+                {preflight.contract?.unknown ? (
+                  <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                    {preflight.contract.unknown}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {/* ── Runtime: only what the platform actually observes ── */}
+            {runtime ? (
+              <div style={sectionStyle}>
+                <div style={sectionTitle}>What it is doing now</div>
+                <div style={rowStyle}>
+                  <span>Running configuration</span>
+                  <span>
+                    {runtime.activation_provenance === "recorded"
+                      ? `v${runtime.activated_version}`
+                      : runtime.activation_provenance === "inactive"
+                        ? "not running"
+                        : "unknown"}
+                    {runtime.configuration_drifted ? (
+                      <span style={{ color: "var(--status-warning, #b45309)" }}>
+                        {" "}
+                        · edited since (now v{runtime.configuration_version})
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "0 0 0.5rem" }}>
+                  {PROVENANCE_NOTE[runtime.activation_provenance]}
+                </div>
+                <div style={rowStyle}>
+                  <span>Last evaluated</span>
+                  <span>
+                    {runtime.last_evaluated_at
+                      ? new Date(runtime.last_evaluated_at).toLocaleString()
+                      : "not yet — unknown, not idle"}
+                  </span>
+                </div>
+                <div style={rowStyle}>
+                  <span>Devices in scope</span>
+                  <span>
+                    {runtime.devices.in_scope} · {runtime.devices.seen_recently} seen
+                    recently · {runtime.devices.stale} stale
+                    {runtime.devices.never_reported > 0 ? (
+                      <span style={{ color: "var(--text-muted)" }}>
+                        {" "}
+                        · {runtime.devices.never_reported} never reported
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+                {runtime.devices.never_reported > 0 ? (
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "0 0 0.5rem" }}>
+                    A device the site has never reported is counted as neither healthy nor
+                    unhealthy.
+                  </div>
+                ) : null}
+                <div style={rowStyle}>
+                  <span>Proposals this window</span>
+                  <span>{runtime.proposals_in_window}</span>
+                </div>
+                <div style={{ ...rowStyle, borderBottom: "none" }}>
+                  <span>Preflight</span>
+                  <span>
+                    {runtime.preflight.exists
+                      ? runtime.preflight.current
+                        ? `${runtime.preflight.overall}, current`
+                        : `${runtime.preflight.overall}, stale`
+                      : "none"}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Budget and safety: configuration, not a status read ── */}
+            {runtime ? (
+              <div style={sectionStyle}>
+                <div style={sectionTitle}>Budget and safety</div>
+                <div style={rowStyle}>
+                  <span>Unattended executions used</span>
+                  <span>
+                    {runtime.budget.limit > 0
+                      ? `${runtime.budget.executions_used} of ${runtime.budget.limit} this ${runtime.budget.period}`
+                      : `${runtime.budget.executions_used} · no per-agent limit set`}
+                    {runtime.budget.exhausted ? (
+                      <span style={{ color: "var(--status-warning, #b45309)" }}> · spent</span>
+                    ) : null}
+                  </span>
+                </div>
+                {runtime.budget.exhausted ? (
+                  <div style={{ ...blockStyle, borderLeftColor: "var(--status-warning, #b45309)" }}>
+                    The budget is spent, so nothing runs unattended until it resets. This
+                    agent keeps observing, keeps proposing, and still executes whatever a
+                    person approves.
+                  </div>
+                ) : null}
+                {canManage ? (
+                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+                    <div>
+                      <label style={labelStyle} htmlFor="budget-limit">
+                        Executions allowed unattended (0 = no per-agent limit)
+                      </label>
+                      <input
+                        id="budget-limit"
+                        className="input"
+                        type="number"
+                        min={0}
+                        max={10000}
+                        value={budgetDraft.limit}
+                        onChange={(e) =>
+                          setBudgetDraft((b) => ({ ...b, limit: e.target.value }))
+                        }
+                        style={{ width: "10rem" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={labelStyle} htmlFor="budget-period">
+                        Per
+                      </label>
+                      <select
+                        id="budget-period"
+                        className="input"
+                        value={budgetDraft.period}
+                        onChange={(e) =>
+                          setBudgetDraft((b) => ({ ...b, period: e.target.value }))
+                        }
+                      >
+                        <option value="daily">day</option>
+                        <option value="weekly">week</option>
+                        <option value="monthly">month</option>
+                      </select>
+                    </div>
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() =>
+                        void patchAgent(
+                          view.agent.id,
+                          {
+                            execution_budget: Number(budgetDraft.limit) || 0,
+                            budget_period: budgetDraft.period,
+                          },
+                          "Budget saved. This is configuration, so it bumps the version and the preflight must be re-run.",
+                        )
+                      }
+                    >
+                      Save budget
+                    </button>
+                  </div>
+                ) : null}
+                <div style={rowStyle}>
+                  <span>Paused</span>
+                  <span>{runtime.paused_reason ?? "no"}</span>
+                </div>
+                {canManage ? (
+                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ flex: "1 1 16rem" }}>
+                      <label style={labelStyle} htmlFor="pause-reason">
+                        Hold this agent (a reason pauses it; clearing it resumes)
+                      </label>
+                      <input
+                        id="pause-reason"
+                        className="input"
+                        value={pauseDraft}
+                        onChange={(e) => setPauseDraft(e.target.value)}
+                        placeholder="held by ops during the DC move"
+                        style={{ width: "100%" }}
+                      />
+                    </div>
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() =>
+                        void patchAgent(
+                          view.agent.id,
+                          { paused_reason: pauseDraft },
+                          pauseDraft
+                            ? "Held. Nothing runs unattended; it still observes and proposes."
+                            : "Resumed.",
+                        )
+                      }
+                    >
+                      {pauseDraft ? "Hold" : "Resume"}
+                    </button>
+                  </div>
+                ) : null}
+                <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                  A hold is a runtime control, so it does not change the configuration
+                  version or invalidate an approval. It can only tighten — it cannot
+                  resume an agent this tenant or site has stopped.
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Skills: bindings, and where they actually landed ── */}
+            {(preflight?.skills?.length ?? 0) > 0 || (runtime?.skills_by_id?.length ?? 0) > 0 ? (
+              <div style={sectionStyle}>
+                <div style={sectionTitle}>Skills</div>
+                {(preflight?.skills ?? []).map((s) => (
+                  <div key={s.skill_id} style={{ marginBottom: "0.75rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem" }}>
+                      <span style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
+                        {s.name || s.skill_id}
+                      </span>
+                      <StatusBadge
+                        status={
+                          s.usable === true ? "usable" : s.usable === false ? "unusable" : "unknown"
+                        }
+                        variant={
+                          s.usable === true ? "success" : s.usable === false ? "critical" : "neutral"
+                        }
+                        size="sm"
+                      />
+                    </div>
+                    <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                      {s.reason}
+                    </div>
+                    {s.recommended.length > 0 ? (
+                      <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                        Recommends {s.recommended.map((a) => a.replace(/_/g, " ")).join(", ")}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {(runtime?.skills_by_id ?? []).map((s) => (
+                  <div key={s.skill_id} style={{ marginBottom: "0.75rem" }}>
+                    <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
+                      {s.skill_id} — where it landed
+                    </div>
+                    {s.devices.map((d) => (
+                      <div key={d.device_agent_id} style={rowStyle}>
+                        <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                          {d.device_agent_id}
+                        </span>
+                        <span style={{ color: "var(--text-muted)" }}>
+                          {d.status}
+                          {d.detail ? ` · ${d.detail}` : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                <div style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
+                  A skill composes capabilities this agent already holds. It never widens
+                  permission, scope, capability, autonomy or approval authority, and it
+                  installs only onto devices in this agent's own scope that can run what it
+                  recommends.
+                </div>
               </div>
             ) : null}
 
