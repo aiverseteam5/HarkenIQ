@@ -85,6 +85,7 @@ async def fleet_poll_loop(state) -> None:
                                 firmware=dev.get("firmware"),
                                 device_class=dev.get("device_class", ""),
                                 last_seen_at=_last_seen(dev),
+                                capabilities=dev.get("capabilities"),
                             )
                         # R3b-3: ingest action outcomes for fleet learning
                         outcomes = snapshot.get("outcomes", [])

@@ -132,6 +132,7 @@ class SiteManagerReporter:
         public_key_pem: Optional[bytes] = None,
         firmware: Optional[list[dict]] = None,
         device_class: str = "",
+        capabilities: Optional[dict] = None,
     ) -> Optional["harkeniq_pb2.RegistrationAck"]:
         """Register this agent with the Site Manager (best-effort).
 
@@ -152,6 +153,7 @@ class SiteManagerReporter:
             firmware_json=json.dumps(firmware) if firmware else "",
             device_class=device_class,
             enrollment_token=self.enrollment_token,
+            capabilities_json=json.dumps(capabilities) if capabilities else "",
         )
         ack = await self._call("RegisterAgent", request, want_response=True)
         if ack is not None and not ack.accepted:

@@ -26,8 +26,8 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0013"),
-    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0009"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0014"),
+    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
     "console": (REPO / "services/console", "HARKEN_CONSOLE_DSN", "0004"),
@@ -426,3 +426,82 @@ class TestExistingDatabase:
         assert {"actor", "authorization_basis", "proposal_id"} <= _columns(
             db, "sm_directives"
         )
+
+    def test_cc_0014_adds_capabilities_without_backfilling(self, tmp_path):
+        """The Capability Registry column lands on an existing fleet.
+
+        The absence of a backfill is the assertion. NULL means "this
+        device has not declared"; an empty declaration would mean "this
+        device declared that it can do nothing". Backfilling the second
+        would make /api/capabilities report every pre-Registry device as
+        incapable, and the Operational Agent's zero-reach refusal would
+        then strip bound action classes from every fleet that upgraded
+        Central Command before its agents.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("alter table cc_fleet_cache drop column capabilities")
+        con.execute(
+            "insert into cc_sites (id, tenant_id, site_name, sm_endpoint, "
+            "sm_token, license_fingerprint, status, registered_at, "
+            "last_seen_at) values ('s1', 't1', 'DC-1', 'sm:50051', 'tok', "
+            "'fp', 'active', '2026-08-31 00:00:00', '2026-08-31 00:00:00')"
+        )
+        con.execute(
+            "insert into cc_fleet_cache (id, site_id, agent_id, agent_name, "
+            "vendor, model, device_class, observation, health, service_tag, "
+            "snapshot_at) values ('d1', 's1', 'node-1', 'n1', 'Dell', "
+            "'R750', 'server', 'observed', 'ok', 'ST1', "
+            "'2026-08-31 00:00:00')"
+        )
+        con.execute("update alembic_version set version_num='0013'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "capabilities" in _columns(db, "cc_fleet_cache")
+        con = sqlite3.connect(db)
+        try:
+            value = con.execute(
+                "select capabilities from cc_fleet_cache where id='d1'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert value is None, (
+            "an existing device must read as UNDECLARED, not as declaring "
+            "an empty capability set"
+        )
+
+    def test_sm_0010_adds_capabilities_without_backfilling(self, tmp_path):
+        """Same rule at the Site Manager: unknown is not empty."""
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("alter table devices drop column capabilities")
+        con.execute(
+            "insert into sites (id, name, status, created_at) "
+            "values ('s1', 'site-1', 'active', '2026-08-31 00:00:00')"
+        )
+        con.execute(
+            "insert into devices (id, site_id, agent_id, agent_name, vendor, "
+            "model, service_tag, device_class, first_seen_at, last_seen_at) "
+            "values ('d1', 's1', 'node-1', 'n1', 'Dell', 'R750', 'ST1', "
+            "'server', '2026-08-31 00:00:00', '2026-08-31 00:00:00')"
+        )
+        con.execute("update alembic_version set version_num='0009'")
+        con.commit()
+        con.close()
+
+        _alembic("sm", db, "upgrade", "head")
+        assert _version(db) == SERVICES["sm"][2]
+        assert "capabilities" in _columns(db, "devices")
+        con = sqlite3.connect(db)
+        try:
+            value = con.execute(
+                "select capabilities from devices where id='d1'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert value is None

@@ -48,6 +48,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
+from harkeniq.capabilities import effective_actions
+from harkeniq_cc.capabilities import reachable_action_classes
 from harkeniq_cc.autonomy import (
     AUTONOMOUS,
     DENIED,
@@ -573,6 +575,24 @@ def evaluate(
                     # means the executor does not have it. Never propose
                     # into a class the platform cannot run.
                     continue
+                # Capability Registry: the contract describing a class
+                # says the PLATFORM governs it, not that THIS device can
+                # run it. A switch bound to CLEAR_COUNTERS passes every
+                # check above and is refused by the node every time,
+                # because SONiC exposes no gNMI counter clear -- the
+                # proposal, the human approval and the dispatch were all
+                # wasted, and nothing upstream could say why.
+                #
+                # Unknown never blocks: a device that has not declared
+                # may well be capable, and refusing it would silence an
+                # agent for an entire fleet mid-upgrade. Only a device
+                # that HAS declared, and did not name this class, is a
+                # proven no.
+                device_reach = effective_actions(
+                    getattr(device, "capabilities", None)
+                )
+                if device_reach is not None and action_type not in device_reach:
+                    continue
                 # The key names the CONDITION, not just the class: a
                 # new incident is new work, but the same open incident
                 # must not be re-proposed every pass. Without the
@@ -687,6 +707,42 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 
+def _capability_view(
+    action_type: str, in_scope: list, reach: dict
+) -> dict[str, Any]:
+    """Can the devices this agent reaches actually run this class?
+
+    Reported ALONGSIDE the disposition, never merged into it. Autonomy
+    and capability are different questions with different remedies: an
+    autonomous class no device can execute is not "denied", it is
+    "granted and unrunnable", and telling an operator the first when the
+    second is true sends them to the wrong page.
+    """
+    capable = 0
+    undeclared = 0
+    for device in in_scope:
+        device_reach = effective_actions(getattr(device, "capabilities", None))
+        if device_reach is None:
+            undeclared += 1
+        elif action_type in device_reach:
+            capable += 1
+    if capable:
+        state = "available"
+    elif undeclared:
+        state = "unknown"
+    elif in_scope:
+        state = "no_effective_reach"
+    else:
+        state = "no_devices_in_scope"
+    return {
+        "implemented": True,
+        "reach": state,
+        "reachable_devices": capable,
+        "undeclared_devices": undeclared,
+        "devices_in_scope": len(in_scope),
+    }
+
+
 def agent_view(
     *,
     agent,
@@ -722,6 +778,11 @@ def agent_view(
         .get("stop_switch", {})
         .get("active", False)
     )
+    # Capability Registry: this page CONSUMES capability truth, it does
+    # not carry a capability contract of its own. Reach is computed over
+    # the agent's own in-scope devices from their own declarations --
+    # the same fact /api/capabilities reports, read from the same place.
+    reach = reachable_action_classes(in_scope)
 
     can_do: list[dict[str, Any]] = []
     for action_type in sorted(bound_action_classes(capabilities)):
@@ -734,6 +795,11 @@ def agent_view(
                 "disposition_reason": (
                     "no executor on this platform implements this action class"
                 ),
+                "capability": {
+                    "implemented": False,
+                    "reachable_devices": 0,
+                    "reach": "unimplemented",
+                },
                 "blocking_conditions": [],
                 "risk": None,
                 "evidence": None,
@@ -758,6 +824,7 @@ def agent_view(
             "evidence": row.get("evidence"),
             "learning": row.get("learning") or [],
             "advancement": row.get("advancement"),
+            "capability": _capability_view(action_type, in_scope, reach),
         })
 
     by_status: dict[str, int] = {}

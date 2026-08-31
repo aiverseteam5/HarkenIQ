@@ -22,6 +22,28 @@ logger = logging.getLogger("harkeniq.actions")
 
 DEFAULT_ALLOW_LIST = ["IDENTIFY_LED", "COLLECT_DIAGNOSTICS", "FAN_RESET"]
 
+#: The action classes this executor's OWN dispatch chain implements
+#: (Redfish direct path). Capability Registry: this is a declaration of
+#: implementation REACH, never of policy -- ``allow_list`` above is the
+#: policy, and the two are deliberately separate because the Registry has
+#: to be able to say "the code can do this, but this node does not permit
+#: it", which a single merged list can never express.
+#:
+#: Kept honest by test_capability_declaration_truthful: every member must
+#: actually dispatch, and every ActionType outside it must not.
+EXECUTOR_DISPATCH_ACTIONS = frozenset({
+    "IDENTIFY_LED",
+    "COLLECT_DIAGNOSTICS",
+    "FAN_RESET",
+    "CONFIG_RESTORE",
+    "FIRMWARE_UPDATE",
+    "FIRMWARE_ROLLBACK",
+    "SEL_CLEAR",
+    "BMC_RESET",
+    "POWER_CYCLE",
+    "POWER_CAP_ADJUST",
+})
+
 _VENDOR_IDS = {
     "dell": {"chassis": "System.Embedded.1", "manager": "iDRAC.Embedded.1"},
     "hpe": {"chassis": "1", "manager": "1"},

@@ -309,10 +309,16 @@ Agent's capability registry — not silent drops.
   positioning call, unresolved.
 - **C9 (PRD §6):** credential rotation is sold as a feature but has no
   surface; deferred deliberately, unscheduled.
-- **Ledger truth notes:** R4-0 "Prometheus metrics" (registry unwired — no
-  service exposes /metrics) and R6 interface actions (INTERFACE_RESET
-  unimplemented; network preconditions unpopulated → fail closed) overstate;
-  correct the status ledger at the next milestone entry.
+- **Ledger truth notes:** ~~R4-0 "Prometheus metrics" (registry unwired — no
+  service exposes /metrics)~~ **CLOSED by E0.3** (mounted on all three
+  services). ~~R6 interface actions (INTERFACE_RESET unimplemented)~~
+  **CLOSED by the Capability Registry (A17, 2026-08-31)** — and not by
+  implementing it: the Registry makes the gap machine-readable
+  (`implemented: false`, zero effective reach, bindings and proposals
+  refused with a reason) rather than a note in a design doc, which is
+  what a ledger-truth problem actually needs. The Registry also found a
+  SECOND class of the same shape, `CLEAR_COUNTERS`. Network
+  preconditions unpopulated → fail closed remains true and is unchanged.
 - **Incident resolution reasons:** absence-inference ratified (D3); explicit
   reasons only on a concrete compliance/product requirement.
 

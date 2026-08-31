@@ -160,6 +160,7 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                 peers=list(request.peers),
                 firmware_json=request.firmware_json,
                 device_class=request.device_class,
+                capabilities_json=request.capabilities_json,
             )
         except ValueError as exc:
             # E1.3: the device is enrolled at another site. Refused with a
@@ -750,6 +751,10 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                             {"firmware": device.firmware}
                         ) if device.firmware else "",
                         device_class=device.device_class or "server",
+                        capabilities_json=(
+                            json.dumps(device.capabilities)
+                            if device.capabilities else ""
+                        ),
                     )
                 )
 

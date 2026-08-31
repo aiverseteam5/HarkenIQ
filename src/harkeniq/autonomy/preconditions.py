@@ -349,3 +349,68 @@ ACTION_RISK = {
     ActionType.INTERFACE_DISABLE: "high",
     ActionType.INTERFACE_ENABLE: "low",
 }
+
+
+# ---------------------------------------------------------------------------
+# Action reversibility (Capability Registry)
+# ---------------------------------------------------------------------------
+#
+# The ONE genuinely new declaration the Capability Registry introduces, and
+# it sits here beside ACTION_RISK deliberately: reversibility is a property
+# of the action class itself, not of an agent, a device, or a page. Risk says
+# how much a mistake costs; reversibility says whether a mistake can be
+# undone, and they are not the same axis -- SEL_CLEAR is risk "low" and
+# permanently destroys the event log, while POWER_CYCLE is risk "medium" and
+# the device comes back to the state it was in.
+#
+# The Registry REPORTS this. It does not decide anything with it: no
+# autonomy grant, no approval requirement and no execution gate reads it in
+# this slice. It exists so an operator, and a future capability execution
+# gate, can see the axis that ACTION_RISK alone never expressed.
+
+#: No device state changes at all -- there is nothing to reverse.
+REV_NONE = "none"
+#: The device returns to its prior state on its own; no operator step.
+REV_SELF_REVERTING = "self_reverting"
+#: A governed action class restores the prior state. Named in INVERSE_ACTION.
+REV_REVERSIBLE = "reversible"
+#: Destroys state that cannot be recovered by any action in the platform.
+REV_IRREVERSIBLE = "irreversible"
+
+ACTION_REVERSIBILITY = {
+    # Reads and identification
+    ActionType.COLLECT_DIAGNOSTICS: REV_NONE,
+    ActionType.IDENTIFY_LED: REV_REVERSIBLE,
+    # Component restarts: the component comes back up by itself
+    ActionType.FAN_RESET: REV_SELF_REVERTING,
+    ActionType.BMC_RESET: REV_SELF_REVERTING,
+    ActionType.POWER_CYCLE: REV_SELF_REVERTING,
+    # Settings writes: the prior value is recorded and can be written back
+    ActionType.POWER_CAP_ADJUST: REV_REVERSIBLE,
+    ActionType.CONFIG_RESTORE: REV_REVERSIBLE,
+    # Firmware: the standby bank holds the prior image (R4-3 blue-green)
+    ActionType.FIRMWARE_UPDATE: REV_REVERSIBLE,
+    ActionType.FIRMWARE_ROLLBACK: REV_REVERSIBLE,
+    # Log and counter clears destroy the record itself. Nothing restores it.
+    ActionType.SEL_CLEAR: REV_IRREVERSIBLE,
+    ActionType.CLEAR_COUNTERS: REV_IRREVERSIBLE,
+    # Network admin state
+    ActionType.INTERFACE_DISABLE: REV_REVERSIBLE,
+    ActionType.INTERFACE_ENABLE: REV_REVERSIBLE,
+    # A reset bounces the link and it comes back; no persistent change.
+    ActionType.INTERFACE_RESET: REV_SELF_REVERTING,
+}
+
+#: For REV_REVERSIBLE classes, the action class that restores the prior
+#: state. Where an action is its own inverse (write the recorded prior
+#: value back) it names itself, which is the honest answer rather than a
+#: null that reads as "no way back".
+INVERSE_ACTION = {
+    ActionType.IDENTIFY_LED: ActionType.IDENTIFY_LED,
+    ActionType.POWER_CAP_ADJUST: ActionType.POWER_CAP_ADJUST,
+    ActionType.CONFIG_RESTORE: ActionType.CONFIG_RESTORE,
+    ActionType.FIRMWARE_UPDATE: ActionType.FIRMWARE_ROLLBACK,
+    ActionType.FIRMWARE_ROLLBACK: ActionType.FIRMWARE_UPDATE,
+    ActionType.INTERFACE_DISABLE: ActionType.INTERFACE_ENABLE,
+    ActionType.INTERFACE_ENABLE: ActionType.INTERFACE_DISABLE,
+}

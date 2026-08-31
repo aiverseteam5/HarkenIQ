@@ -18,9 +18,11 @@ from typing import Iterable, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.autonomy import build_autonomy
+from harkeniq_cc.capabilities import build_capability_registry
 from harkeniq_cc.db.repos import (
     ApprovalPolicyRepo,
     AutonomyBudgetRepo,
+    FleetCacheRepo,
     LearnedSignalRepo,
     OrgUnitRepo,
     OutcomeHistoryRepo,
@@ -140,6 +142,39 @@ async def load_autonomy_contract(
         sites=sites,
         learned_signals=learned,
         approval_policies=policies,
+        site_id=site_id,
+        action_type=action_type,
+    )
+
+
+async def load_capability_registry(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    scope=None,
+    site_id: Optional[str] = None,
+    action_type: Optional[str] = None,
+) -> dict:
+    """Fetch the caller's visible fleet and compose the Registry.
+
+    Same discipline as `load_autonomy_contract`, and for the same
+    reason: the Console and the Operational Agent must read capability
+    truth from ONE loader over ONE set of reads. If the page and the
+    agent could see different capability sets, an operator would approve
+    a proposal the agent should never have made and neither surface
+    could explain why.
+
+    `scope` is the E1.2 resolved scope. It is passed into the repository
+    read, so what the Registry describes is exactly the fleet this
+    principal may see -- never more, and never the whole tenant as a
+    convenience.
+    """
+    devices = await FleetCacheRepo(session).list_all(tenant_id, scope=scope)
+    sites = await SiteRepo(session).list_all(tenant_id, scope=scope)
+    return build_capability_registry(
+        tenant_id=tenant_id,
+        devices=devices,
+        sites=sites,
         site_id=site_id,
         action_type=action_type,
     )

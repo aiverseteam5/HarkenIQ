@@ -126,6 +126,13 @@ message AgentRegistration {
   // a claim rather than a fact, and correlation, blast radius, error
   // budgets and (since E1.2) authority all resolve from it.
   string enrollment_token = 12;
+  // Capability Registry: what this node's executor can ACTUALLY do.
+  // {version, protocol, device_class, allow_list, implemented, effective,
+  // reach_known}. The node is the only authoritative source -- everything
+  // above it reflects this and may not declare a capability of its own.
+  // Empty from a node predating the Registry, which reads UNKNOWN
+  // upstream: never "capable", never "incapable".
+  string capabilities_json = 13;
 }
 
 message RegistrationAck {
@@ -263,6 +270,10 @@ message FleetDevice {
   string service_tag = 9;       // R4-2: warranty lookup key
   string inventory_json = 10;   // R4-2: {"firmware": [{component,name,version}]}
   string device_class = 11;     // R6: "server" (default when absent) | "switch"
+  // Capability Registry: the node's own capability declaration, carried
+  // verbatim from registration. Empty means the device has not declared,
+  // which Central Command reports as unknown reach rather than none.
+  string capabilities_json = 12;
 }
 
 message FleetIncident {

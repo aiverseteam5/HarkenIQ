@@ -60,6 +60,11 @@ const TENANT_NAV: SidebarSection[] = [
       // Approvals because it answers the question one step earlier \u2014
       // what needs an approval at all.
       { key: "/autonomy", label: "Autonomy", icon: "\u2696" },
+      // Capability Registry: what the executors can actually DO. Sits
+      // immediately after Autonomy because the two are the adjacent
+      // halves of one question -- Autonomy answers "may it run without
+      // a human", this answers "can it run at all".
+      { key: "/capabilities", label: "Capabilities", icon: "\u2692" },
       // A0+A1: the product noun. Sits next to Autonomy because it is
       // the actor the trust ladder governs.
       { key: "/operational-agents", label: "Operational Agents", icon: "\u25C8" },
