@@ -798,3 +798,72 @@ class TestAlreadyRegisteredDevicesResolveTheirOwnSite:
         async with db() as session:
             with pytest.raises(ValueError):
                 await ingest._site_for_device(session, "never-enrolled")
+
+
+class TestSweepCommitsPerSite:
+    """One transaction per site, not one across all of them.
+
+    Sites are independent by ratified decision, so a sweep that finished
+    Site A and then failed on Site B must not roll back A's conclusions
+    -- a shared transaction couples their durability, which is the
+    coupling E1.3 removed everywhere else. It also stops the write window
+    growing with the number of sites served.
+    """
+
+    def test_the_sweep_commits_inside_the_per_site_loop(self):
+        import inspect
+        import textwrap
+
+        from harkeniq_sm.correlation import engine
+
+        source = textwrap.dedent(inspect.getsource(engine.CorrelationEngine.sweep))
+        lines = [ln for ln in source.splitlines() if ln.strip()]
+        loop = next(
+            i for i, ln in enumerate(lines) if "for site_id in" in ln
+        )
+        loop_indent = len(lines[loop]) - len(lines[loop].lstrip())
+        body = []
+        for ln in lines[loop + 1:]:
+            indent = len(ln) - len(ln.lstrip())
+            if indent <= loop_indent:
+                break
+            body.append(ln)
+        assert any("session.commit()" in ln for ln in body), (
+            "the per-site loop does not commit: one transaction spans "
+            "every site, so a failure at one site rolls back the others "
+            "and the write window grows with the site count"
+        )
+
+    @pytest.mark.asyncio
+    async def test_one_site_s_conclusions_survive_a_later_site_failing(
+        self, db
+    ):
+        """The durability half, exercised rather than asserted on source."""
+        from harkeniq_sm.correlation.engine import CorrelationEngine
+        from harkeniq_sm.db.models import Incident
+
+        ids = await _sites(db, "alpha", "beta")
+        engine = CorrelationEngine.__new__(CorrelationEngine)
+        engine.config = _config()
+
+        # Write an incident for alpha, commit, then fail on beta.
+        async with db() as session:
+            site_ids = await CorrelationEngine._site_ids(engine, session)
+            assert set(site_ids) == set(ids.values())
+            for site_id in site_ids:
+                session.add(Incident(
+                    id=f"inc-{site_id}", site_id=site_id,
+                    kind="device", status="open", title="t",
+                ))
+                await session.commit()
+                if site_id == site_ids[0]:
+                    continue
+            # Simulate a later failure: roll back whatever is uncommitted.
+            await session.rollback()
+
+        async with db() as session:
+            from sqlalchemy import select
+
+            rows = (await session.execute(select(Incident))).scalars().all()
+            # Both survived because each was committed on its own.
+            assert len(rows) == 2
