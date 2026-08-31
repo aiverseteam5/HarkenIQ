@@ -49,10 +49,20 @@ jobs:
             -e HARKENIQ_POLLING_SENSOR_INTERVAL=10 \
             harkeniq-agent:smoke
           sleep 25
-          docker logs agent 2>&1 | tail -20
-          # The agent must reach OBSERVING and complete a poll cycle.
+          docker logs agent 2>&1 | tail -30
+          # The agent must reach OBSERVING and complete a full poll cycle.
+          # Assert on the state machine, not on a protocol-specific line:
+          # "Poll complete" comes from the Redfish poller, which the gNMI
+          # path never constructs, so it could never match here.
           docker logs agent 2>&1 | grep -q "BOOTING -> OBSERVING" || exit 1
-          docker logs agent 2>&1 | grep -q "Poll complete" || exit 1
+          docker logs agent 2>&1 | grep -q "OBSERVING -> EVALUATING: sensor poll complete" || exit 1
+          docker logs agent 2>&1 | grep -q "EVALUATING -> DECIDING: verdicts produced" || exit 1
+          # A booted agent that logs errors is not a passing gate (QA-040
+          # detection net, same rule as scripts/e2e-compose-gate.sh).
+          if docker logs agent 2>&1 | grep -E "ERROR|CRITICAL|Traceback|sampling failed"; then
+            echo "::error::agent logged an error during the smoke run"
+            exit 1
+          fi
 
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/v')

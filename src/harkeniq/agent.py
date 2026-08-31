@@ -527,14 +527,17 @@ class Agent:
                 snapshot = monitor.measure()
                 level = monitor.evaluate(snapshot)
                 if level != last_level:
-                    logger.warning(
-                        "Resource level %s (rss=%.1fMB cpu=%.1f%%, profile=%s)",
-                        level.name, snapshot.rss_mb, snapshot.cpu_pct,
-                        monitor.profile.name,
-                    ) if last_level is not None else logger.info(
-                        "Resource monitor active: profile=%s rss=%.1fMB",
-                        monitor.profile.name, snapshot.rss_mb,
-                    )
+                    if last_level is None:
+                        logger.info(
+                            "Resource monitor active: profile=%s rss=%.1fMB",
+                            monitor.profile.name, snapshot.memory_rss_mb,
+                        )
+                    else:
+                        logger.warning(
+                            "Resource level %s (rss=%.1fMB cpu=%.1f%%, profile=%s)",
+                            level.name, snapshot.memory_rss_mb,
+                            snapshot.cpu_percent, monitor.profile.name,
+                        )
                     last_level = level
             except Exception as e:  # noqa: BLE001 — monitoring must not kill the agent
                 logger.warning("Resource sampling failed: %s", e)
