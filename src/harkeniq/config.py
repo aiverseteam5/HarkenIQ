@@ -151,6 +151,13 @@ def _coerce(raw: str, default: Any) -> Any:
             return float(raw)
         except ValueError as e:
             raise ConfigError(f"expected number, got {raw!r}") from e
+    if isinstance(default, list):
+        # A list default got the raw STRING back, so `actions.allow_list`
+        # set by environment became a list of CHARACTERS and the node
+        # refused every action -- silently, because a refusal is the
+        # fail-closed direction. Found while building the S6 two-site
+        # acceptance, where each node needs its own allow list.
+        return [item.strip() for item in raw.split(",") if item.strip()]
     return raw
 
 
