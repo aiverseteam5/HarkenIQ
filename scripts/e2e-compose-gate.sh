@@ -2072,15 +2072,27 @@ echo "read 200 / write 403 for an operator; no new permission"
 step "A4/G: a machine principal cannot rewrite the catalogue either"
 # A3's ceiling holds: an authenticated agent reads fleet.view and nothing
 # it could use to widen what it may itself propose.
-if [ -n "${A3_TOKEN:-}" ]; then
+#
+# Deliberately $N_TOKEN, not $A3_TOKEN. A3 REVOKES its main identity to
+# prove revocation is immediate, so that token answers 401 -- which is a
+# refusal, but the wrong one: it would prove the token is dead rather
+# than that a LIVE machine principal lacks the permission. `a3-narrow` is
+# never revoked, so 403 here is the ceiling talking.
+if [ -n "${N_TOKEN:-}" ]; then
   M_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-    -H "Authorization: Bearer $A3_TOKEN" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $N_TOKEN" -H 'Content-Type: application/json' \
     -d '{"entries":[]}' http://localhost:8090/api/capabilities/catalogue)
   [ "$M_CODE" = "403" ] || {
-    echo "a machine principal rewrote the catalogue ($M_CODE)" >&2; exit 1; }
-  echo "machine principal refused (403): it cannot widen its own capability"
+    echo "a live machine principal rewrote the catalogue ($M_CODE)" >&2; exit 1; }
+  # And it can still READ it -- fleet.view is inside the A20.3 ceiling.
+  R_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $N_TOKEN" \
+    http://localhost:8090/api/capabilities/catalogue)
+  [ "$R_CODE" = "200" ] || {
+    echo "a machine principal cannot read the catalogue ($R_CODE)" >&2; exit 1; }
+  echo "live machine principal: read 200, write 403 -- it cannot widen its own capability"
 else
-  echo "no machine token in scope at this point; covered by unit tests"
+  echo "no live machine token in scope; covered by unit tests"
 fi
 
 step "A4/H: the catalogue write is audited and the chain still verifies"
