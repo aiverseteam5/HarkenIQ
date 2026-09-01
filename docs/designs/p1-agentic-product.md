@@ -1757,3 +1757,191 @@ Manager's new gate needed it. Rather than copy it, it moved to the shared
 services now ask "what does this device's protocol implement", and a
 second copy would be a second answer to the question the Registry exists
 to answer once.
+
+## 25. A5 — the canonical governed agent interaction contract (spec A22)
+
+A5 was scoped as "MCP Tier-1: five read tools over a protocol." The
+inspection said otherwise, and the reframing is the slice.
+
+**The gap is not tools, and it is not locality. It is this:**
+
+> You cannot ask an agent what it would do about an incident, right now,
+> without it doing anything.
+
+`run_once` exists (`agent_runtime.py:410`) with no trigger; evaluation is
+cadence-only at 120s. There is no simulation, dry-run or preview surface
+anywhere in Central Command — and the "validation/simulation" pair the
+design record assigned to A2 shipped only its validation half as
+preflight. The simulation half was silently dropped, with no amendment
+and no deferral note, exactly like `/api/v1`.
+
+### The defect A4 shipped, found by A5's own inspection
+
+A4 made five action classes addressable. **Four of them can never
+succeed**, and the fifth was already broken the same way:
+
+```
+IDENTIFY_LED       requires 'target'           executor.py:169
+CONFIG_RESTORE     requires 'attributes_json'  executor.py:199
+POWER_CAP_ADJUST   requires 'target_watts'     executor.py:340
+INTERFACE_*        reads params["interface"]   gnmi.py:363  -> ""
+
+evaluator emits    params = {"reason": ...}    operational_agent.py:681
+```
+
+Every proposal carries the same generic payload. There is no
+action-parameter schema anywhere in the repository. Governance held —
+the node refused, and the refusal became attributed evidence in the error
+budget, which is fail-closed and correct — but the platform was making a
+promise it could not keep, and A4's headline was materially weaker than
+reported. This instance is mine.
+
+### Where a truthful parameter value comes from
+
+Central Command holds **no component identity for any device**. Not a
+drive bay, not a port name:
+
+```
+CCIncident        db/models.py:752    subsystem, title, correlation_meta
+FleetIncident     harkeniq.proto:292  subsystem, title, correlation_meta_json
+FleetDevice       harkeniq.proto:274  subsystems_json = severity map only
+IncidentService   sm/incidents.py:37  open_device_incident(device.id, subsystem)
+correlation_meta  sm/incidents.py:46  {"severity": ..., "onsets": ...}
+```
+
+That is deliberate: consolidation exists to collapse N sensor faults into
+one subsystem incident. The node funnel works because `ActionRow.sensor_id`
+carries the component from the skill that fired; the CC evaluator has no
+equivalent.
+
+But the identity is not missing — it is **discarded**:
+
+```
+skills/engine.py:87   sensor_id = f"{skill.target}:{sensor.name}"
+sm/ingest.py:218      subsystem = sensor_id.split(":", 1)[0]
+```
+
+`disk:Disk.Bay.3` → subsystem `disk`, component `Disk.Bay.3`. The Site
+Manager parses off the prefix and throws the remainder away. A5 stops
+throwing it away and carries it on an additive, nullable snapshot field,
+computed from the Site Manager's own verdict stream. **No backfill**:
+absent means the Site Manager has not reported, which is unknown, and
+unknown is never "no components" (A17.4's rule, third application).
+
+### Parameters were already declared in a fifth place
+
+```yaml
+# skills/disk-health.yaml
+action:
+  type: IDENTIFY_LED
+  params:
+    target: "{name}"
+```
+
+The skill layer has carried a per-skill parameter contract in untrusted
+YAML since R1. That is the house pattern again — the same fact declared
+in five places with no single answer. The canonical declaration lives
+beside `ACTION_RISK` and `ACTION_REVERSIBILITY` in the shared module, and
+the skill block becomes a consumer validated against it, not a peer of
+it.
+
+### Ten defects the inspection found
+
+A5 fixes the first five, which it stands directly on. D6–D10 are named
+follow-ups, not silent drops.
+
+| # | Defect |
+|---|---|
+| D1 | `/api/attention/` is declared READ_SCOPED and applies no scope — and it is the one read EVERY agent must hold |
+| D2 | `legacy_open` synthesizes a tenant-wide grant for a grantless principal, inverting A0's "no scope rows = no devices" at the A3 seam |
+| D3 | `api/attention.py` duplicates `governance.load_attention`; the `band` filter reorders `rank`, so an agent and an operator see different priorities |
+| D4 | Autonomous dispatch skips the CC gates — paused, retired and revoked agents still dispatch |
+| D5 | `load_agent_scope` resolves with `role_permissions=["*"]`, so `.permits("action.approve")` returns True |
+| D6 | `list_device_outcome_dicts` is oldest-first `LIMIT 50000` and feeds attention risk on both paths |
+| D7 | No evidence-freshness gate; attention emits no freshness field at all |
+| D8 | `/api/policies/groups/{id}` returns approver emails and Keycloak subjects at `fleet.view` |
+| D9 | `/api/autonomy/` hardcodes `actor_species="human"` |
+| D10 | `AGENT_PERMISSIONS` and `MACHINE_PRINCIPAL_CEILING` are two constants holding one value |
+
+D3's fix direction is settled by the code's own stated intent: the
+endpoint's comment says *"rank 1 always means first in the tenant, never
+first on the page"* while the implementation filters before ranking.
+
+### Why `POST /proposals` is not in A5
+
+A20.10 says external proposal submission belongs with its first real
+consumer. A5 honours that literally: it defines the ingress contract and
+extracts the verdict function, and makes the **CC-resident evaluator**
+that function's first consumer, in production. This resolves the
+spec-versus-design contradiction (the spec assigned ingress to A5, design
+§7E to A6) without amending either, and lets A6 add the route on a
+function already proven under load.
+
+### Dry-run needs no ceiling change
+
+`MACHINE_PRINCIPAL_CEILING` already carries `fleet.view`. A dry-run route
+guarded at `fleet.view` is therefore reachable by an agent's own identity
+with A20 untouched. The self-restriction — an identity may dry-run its
+own agent and no other — is an object-level gate, which is the layer
+E1.2 already assigns that question to. Widening the ceiling to reach the
+same outcome would have promoted an object question into a permission.
+
+### The two dangers recorded before they were reachable
+
+**A permissive ingress body.** `evaluate()` writes `status=approved` and
+`decided_by="autonomy:level-N"` for autonomous proposals, and
+`authorization_basis` is the field the *node* reads to decide whether its
+lease gate applies at all. A `POST /proposals` accepting `disposition`,
+`authorization_basis` or `status` from a request body would be a remote
+party writing a self-signed, already-approved execution order carrying a
+flag that waives the node's last refusal. A5 does not build the route;
+A22.15 records why it must never take those fields.
+
+**"One governance model" is already false one hop down.** The Site
+Manager's own HTTP API has `POST /api/actions/{id}/approve` with a
+self-asserted actor, gated only by the shared `site_token` — the same
+token Central Command holds in order to dispatch. It consults no approval
+policy, writes no approval records and has no scope. No A5 consumer ever
+receives, resolves or proxies to a Site Manager endpoint, and that is
+written down rather than left to habit.
+
+### A finding A5 made and deliberately did not fix
+
+Proving the parameter chain on the live stack surfaced something older
+than A5. A Dell drive's component name is its **Model**:
+
+```
+src/harkeniq/redfish/dell.py:81
+    name=drive_json.get("Model", drive_json.get("Name", ""))
+```
+
+So a real disk fault produces `sensor_id = "disk:SAMSUNG MZ7LH960HAJR-00005"`,
+four identical drives collapse to one name, and `IDENTIFY_LED` receives a
+model string while its executor builds
+`/redfish/v1/Chassis/{chassis}/Drives/{target}`.
+
+**A5 does not change this, and A5 is not made worse by it.** What A5
+guarantees is parity: Central Command now supplies exactly the value the
+node's own `disk-health` skill would have supplied for the same condition
+(`target: "{name}"`), instead of supplying nothing at all. Whether that
+identifier addresses the right Redfish resource is the protocol
+normaliser's contract with the executor, it predates this slice by five
+releases, and fixing it means changing `NormalizedDrive.name` — which the
+skills, the executor path, the trending baselines keyed on `sensor_id`
+and every stored verdict all read.
+
+That is its own slice, and it is recorded here rather than fixed quietly
+in the middle of one that was scoped for something else.
+
+### Named follow-ups A5 leaves open
+
+`D6`–`D10` from the table above, plus:
+
+- **Dell drive identity** — the finding above.
+- **`AGENT_PERMISSIONS` / `MACHINE_PRINCIPAL_CEILING`** (D10) — two
+  constants holding one value. A5 stood directly next to this while
+  wiring the dry-run and used the runtime's own constant rather than
+  fixing it in passing.
+- **Enforcing D2** — A22.10 stages this deliberately. The report ships in
+  A5; withdrawing the synthesized grant is a later slice, once tenants
+  can act on what the report tells them.

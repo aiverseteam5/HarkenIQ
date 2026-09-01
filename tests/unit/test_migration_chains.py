@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0018"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0019"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -632,6 +632,52 @@ class TestExistingDatabase:
         assert not any("secret" in c for c in columns), (
             "a machine identity must have nowhere to store a client secret"
         )
+
+    def test_cc_0019_adds_components_and_does_not_backfill(self, tmp_path):
+        """A22.4: NULL means unknown, and [] would be a claim nobody checked.
+
+        Backfilling an empty list would assert that an existing incident
+        affects no component -- and Central Command turns "no component"
+        into a refusal to propose, so the lie would be silent and would
+        look exactly like correct fail-closed behaviour.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("alter table cc_incidents drop column components")
+        con.execute(
+            "insert into cc_incidents "
+            "(incident_id, tenant_id, site_id, kind, status, title, "
+            " device_agent_id, subsystem, confidence, inferred, "
+            " first_seen_at, last_seen_at) "
+            "values ('inc-old','t1','s1','device','open','pre-A5 disk fault',"
+            "'node-1','disk',0.9,0,datetime('now'),datetime('now'))"
+        )
+        con.execute("update alembic_version set version_num='0018'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "components" in _columns(db, "cc_incidents")
+
+        con = sqlite3.connect(db)
+        value = con.execute(
+            "select components from cc_incidents where incident_id='inc-old'"
+        ).fetchone()[0]
+        con.close()
+        assert value is None, (
+            "an incident that predates A5 must read UNKNOWN, not 'no "
+            "components affected'"
+        )
+
+    def test_cc_0019_downgrades(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        _alembic("cc", db, "downgrade", "0018")
+        assert "components" not in _columns(db, "cc_incidents")
+        _alembic("cc", db, "upgrade", "head")
+        assert "components" in _columns(db, "cc_incidents")
 
     def test_cc_0017_does_not_backfill_identities(self, tmp_path):
         """Unknown is not zero, and it is not an identity either.

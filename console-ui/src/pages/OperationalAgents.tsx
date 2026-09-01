@@ -402,6 +402,39 @@ const checkRow: CSSProperties = {
   fontSize: "0.8125rem",
 };
 
+/** A5 (A22.7): what this agent WOULD propose against current state.
+ *  Composed entirely by Central Command through the same
+ *  `govern_proposal` the runtime uses. The page renders it and derives
+ *  nothing — a preview the browser reasoned about could show an operator
+ *  something the runtime would never do. */
+interface DryRun {
+  agent_id: string;
+  agent_version: number;
+  status: string;
+  evaluated_at: string;
+  devices_in_scope: number;
+  would_propose: Array<{
+    device_agent_id: string;
+    site_id: string;
+    action_type: string;
+    params: Record<string, string>;
+    disposition: string;
+    disposition_reason: string;
+    authorization_basis: string;
+    requires_human: boolean;
+    rationale: string;
+  }>;
+  withheld: Array<{
+    device_agent_id: string;
+    action_type: string;
+    subsystem: string;
+    condition: string;
+    code: string;
+    reason: string;
+  }>;
+  contract: { governs: string; wrote_nothing: string; same_reasoning: string };
+}
+
 /* ── Page ─────────────────────────────────────────── */
 
 export default function OperationalAgents() {
@@ -422,6 +455,8 @@ export default function OperationalAgents() {
     period: "daily",
   });
   const [pauseDraft, setPauseDraft] = useState("");
+  const [dryRun, setDryRun] = useState<DryRun | null>(null);
+  const [dryRunning, setDryRunning] = useState(false);
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -707,6 +742,25 @@ export default function OperationalAgents() {
    * not from logic here. Central Command enforces all of this again on
    * the transition — this only spares an operator a refusal they can
    * already see, and quotes the server's own words for why. */
+  /** Ask the agent what it would do. Writes nothing, decides nothing.
+   *  Available whatever the agent's status — the point of a preview is
+   *  to see the answer BEFORE switching anything on. */
+  const runDryRun = useCallback(async () => {
+    if (!view) return;
+    setDryRunning(true);
+    try {
+      setDryRun(
+        await getJson<DryRun>(
+          `/api/t/${tenantId}/operational-agents/${view.agent.id}/dry-run`,
+        ),
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Dry run failed", "error");
+    } finally {
+      setDryRunning(false);
+    }
+  }, [tenantId, view, toast]);
+
   const preflightCurrent = Boolean(
     preflight?.exists && preflight.current && view &&
       preflight.configuration_version === view.agent.version,
@@ -918,6 +972,7 @@ export default function OperationalAgents() {
           setView(null);
           setPreflight(null);
           setRuntime(null);
+          setDryRun(null);
         }}
         title={view?.agent.name ?? ""}
         subtitle={view?.agent.actor}
@@ -1343,6 +1398,108 @@ export default function OperationalAgents() {
                 </div>
               </div>
             ) : null}
+
+            {/* ── A5: what would you do? (A22.7) ── */}
+            <div style={sectionStyle}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "0.5rem",
+                }}
+              >
+                <div style={sectionTitle}>What would this agent do?</div>
+                <button className="btn" disabled={dryRunning} onClick={() => void runDryRun()}>
+                  {dryRunning ? "Reasoning…" : "Dry run"}
+                </button>
+              </div>
+              <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                Ask the agent what it would propose against the estate as it stands right
+                now. Nothing is created, nothing is dispatched, no budget is spent and no
+                decision is recorded.
+              </div>
+
+              {dryRun ? (
+                <div style={{ marginTop: "0.75rem" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                    v{dryRun.agent_version} · {dryRun.devices_in_scope} device
+                    {dryRun.devices_in_scope === 1 ? "" : "s"} in scope ·{" "}
+                    {new Date(dryRun.evaluated_at).toLocaleString()}
+                  </div>
+
+                  {dryRun.would_propose.length === 0 ? (
+                    <div
+                      style={{
+                        fontSize: "0.8125rem",
+                        marginTop: "0.5rem",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      Nothing to propose. That is a real answer, not a failure — the estate
+                      shows nothing this agent is bound to act on.
+                    </div>
+                  ) : null}
+
+                  {dryRun.would_propose.map((p, i) => (
+                    <div key={`${p.device_agent_id}-${p.action_type}-${i}`} style={{ marginTop: "0.75rem" }}>
+                      <div
+                        style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem" }}
+                      >
+                        <span style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
+                          {p.action_type.replace(/_/g, " ")}{" "}
+                          <span style={{ fontFamily: "var(--font-mono, monospace)", fontWeight: 400 }}>
+                            {p.device_agent_id}
+                          </span>
+                        </span>
+                        <StatusBadge
+                          status={p.requires_human ? "needs a human" : "unattended"}
+                          variant={p.requires_human ? "warning" : "success"}
+                          size="sm"
+                        />
+                      </div>
+                      {/* The parameters the node would actually receive. Before A5
+                          every proposal carried {"reason": …} whatever the class,
+                          so four classes could never have executed. */}
+                      <div style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono, monospace)", color: "var(--text-muted)" }}>
+                        {Object.entries(p.params)
+                          .filter(([k]) => k !== "reason")
+                          .map(([k, v]) => `${k}=${v}`)
+                          .join("  ") || "no parameters"}
+                      </div>
+                      <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                        {p.rationale}
+                      </div>
+                      {p.disposition_reason ? (
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                          {p.disposition_reason}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+
+                  {dryRun.withheld.length > 0 ? (
+                    <div style={{ marginTop: "1rem" }}>
+                      <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
+                        Considered and withheld
+                      </div>
+                      {dryRun.withheld.map((w, i) => (
+                        <div key={`${w.device_agent_id}-${w.action_type}-${i}`} style={rowStyle}>
+                          <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                            {w.action_type.replace(/_/g, " ")} · {w.device_agent_id}
+                          </span>
+                          <span style={{ color: "var(--text-muted)" }}>{w.reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: "0.75rem" }}>
+                    {dryRun.contract.same_reasoning} {dryRun.contract.wrote_nothing}
+                  </div>
+                </div>
+              ) : null}
+            </div>
 
             {/* ── Skills: bindings, and where they actually landed ── */}
             {(preflight?.skills?.length ?? 0) > 0 || (runtime?.skills_by_id?.length ?? 0) > 0 ? (

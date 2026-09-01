@@ -35,6 +35,7 @@ from harkeniq_cc.db.repos import (
 from harkeniq_cc.scope import (
     PRINCIPAL_AGENT,
     PRINCIPAL_USER,
+    SCOPE_ONLY_MARKER,
     ResolvedScope,
     resolve,
 )
@@ -83,19 +84,24 @@ async def load_agent_scope(
 ) -> ResolvedScope:
     """An Operational Agent's scope, through the same resolver.
 
-    An agent's *authority* is its A0 capability bindings plus the
-    autonomy contract -- it does not call the HTTP API, the CC-resident
-    evaluator does. What converges here is WHERE, which is what "no
-    hidden expansion of scope" is about. `role_permissions=["*"]` says
-    "the grant carries no permission narrowing", not "the agent may do
-    anything": every action it proposes still passes the bindings, the
-    autonomy contract and the node funnel.
+    WHERE, never WHETHER (A22.13). This used to resolve with
+    ``role_permissions=["*"]`` and justify it: an agent's authority is its
+    A0 bindings plus the autonomy contract, and *it does not call the HTTP
+    API, the CC-resident evaluator does*. A3 removed that premise -- an
+    agent holds a credential now -- and resolved that way the scope
+    answered ``permits("action.approve")`` with True. It could have
+    approved its own proposals. It was latent only because all four call
+    sites read `.site_ids`.
+
+    `SCOPE_ONLY_MARKER` keeps the grant arithmetic identical, so no agent
+    loses reach, while making a permission question on this scope an
+    error instead of a yes.
     """
     return await load_scope(
         session,
         tenant_id=tenant_id,
         principal_ref=agent_id,
-        role_permissions=["*"],
+        role_permissions=[SCOPE_ONLY_MARKER],
         principal_type=PRINCIPAL_AGENT,
         # An agent is not a realm principal: its id is a CC row id, so
         # its grants carry no realm and are never narrowed by one.
@@ -185,13 +191,30 @@ async def load_attention(
     *,
     tenant_id: str,
     site_id: Optional[str] = None,
+    scope=None,
+    band: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> dict:
-    """Fetch every input and compose the attention answer.
+    """Fetch every input and compose the attention answer. ONE of these.
 
-    Same argument as the autonomy loader: `/api/attention` and the
-    Operational Agent evaluator must rank the same devices from the same
-    evidence, or the agent would act on a picture the operator has never
-    seen. The composition stays pure in `harkeniq_cc.attention`.
+    `/api/attention` and the Operational Agent evaluator must rank the
+    same devices from the same evidence, or the agent acts on a picture
+    the operator has never seen. That was written down here and then NOT
+    done: the router carried a near-verbatim copy whose `band` filter ran
+    BEFORE ranking, so filtering reordered `rank` -- and rank is what
+    decides which devices consume an agent's proposal budget. A5 (A22.11)
+    makes this the only implementation.
+
+    `scope` is E1.2's resolver (A22.9). It was missing entirely, so a
+    site-scoped principal read every site's attention state -- and this is
+    the ONE read every Operational Agent is required to hold. Both callers
+    now supply the caller's own scope, which is also what makes "HTTP and
+    in-process rank identically" true for a given principal rather than
+    only for a tenant-wide one.
+
+    `band` is a PURE FILTER applied AFTER ranking, which is what the
+    endpoint's own contract always claimed: rank 1 means first in the
+    principal's scope, never first on the page.
     """
     from harkeniq_cc.attention import build_attention
     from harkeniq_cc.db.repos import (
@@ -206,7 +229,7 @@ async def load_attention(
     from harkeniq_cc.predictive import cohort_failure_rates, score_device
     from harkeniq_cc.warranty.base import warranty_status
 
-    devices = await FleetCacheRepo(session).list_all(tenant_id)
+    devices = await FleetCacheRepo(session).list_all(tenant_id, scope=scope)
     if site_id:
         devices = [d for d in devices if d.site_id == site_id]
     outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
@@ -214,12 +237,14 @@ async def load_attention(
         [d.service_tag for d in devices], tenant_id=tenant_id,
     )
     cve_entries = await CveFeedRepo(session).list_all(tenant_id=tenant_id)
-    pending_routes = await ApprovalRouteRepo(session).list_pending(tenant_id)
+    pending_routes = await ApprovalRouteRepo(session).list_pending(
+        tenant_id, scope=scope,
+    )
     patterns = await FleetPatternRepo(session).list_patterns(tenant_id=tenant_id)
-    sites = await SiteRepo(session).list_all(tenant_id)
+    sites = await SiteRepo(session).list_all(tenant_id, scope=scope)
     learned = await LearnedSignalRepo(session).list_active(tenant_id)
     open_incidents = await IncidentRepo(session).list_incidents(
-        tenant_id, status="open", site_id=site_id, limit=1000,
+        tenant_id, status="open", site_id=site_id, limit=1000, scope=scope,
     )
 
     cohorts = cohort_failure_rates(outcomes)
@@ -243,7 +268,7 @@ async def load_attention(
         risk.agent_name = dev.agent_name
         risks.append(risk)
 
-    return build_attention(
+    result = build_attention(
         devices=devices,
         risks=risks,
         exposures=match_exposures(devices, cve_entries),
@@ -255,3 +280,11 @@ async def load_attention(
         learned_signals=learned,
         incidents=open_incidents,
     )
+    # AFTER ranking, never before. Rank is assigned over the principal's
+    # whole scope, so "rank 1" always means first in that scope.
+    if band:
+        result["items"] = [i for i in result["items"] if i.get("band") == band]
+    if limit is not None:
+        result["items"] = result["items"][:limit]
+    result["returned"] = len(result["items"])
+    return result

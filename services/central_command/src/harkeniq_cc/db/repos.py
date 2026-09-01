@@ -1969,6 +1969,12 @@ class IncidentRepo:
             row.correlation_meta = dict(inc["correlation_meta"])
         if inc.get("explanation"):
             row.explanation = dict(inc["explanation"])
+        # A22.4: None means the Site Manager did not report, which must stay
+        # distinguishable from "reported, and nothing is affected". Only an
+        # actual report overwrites -- a poll from an older SM never erases a
+        # newer SM's answer.
+        if inc.get("components") is not None:
+            row.components = list(inc["components"])
         opened = inc.get("opened_at_unix")
         if opened:
             row.opened_at = datetime.fromtimestamp(opened, tz=timezone.utc)

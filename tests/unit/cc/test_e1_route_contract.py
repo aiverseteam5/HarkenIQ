@@ -118,6 +118,10 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("DELETE", "/api/scope-grants/{grant_id}"): ("role.manage", OBJECT_GATED, True),
     ("GET", "/api/tenant-settings/scope-enforcement"): ("fleet.view", UNSCOPED, False),
     ("PUT", "/api/tenant-settings/scope-enforcement"): ("role.manage", TENANT_GATED, True),
+    # A22.10: the report half of report-before-enforce. UNSCOPED because
+    # the whole point is a tenant-wide census an admin acts on; it names
+    # principals and grant counts, never device or site data.
+    ("GET", "/api/tenant-settings/scope-enforcement/impact"): ("fleet.view", UNSCOPED, False),
 
     # -- site registration -----------------------------------------
     ("POST", "/api/sites/register"):            ("site.manage", TENANT_GATED, True),
@@ -165,6 +169,14 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/operational-agents/{agent_id}/preflight"):
         ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/operational-agents/{agent_id}/runtime"):
+        ("fleet.view", READ_SCOPED, False),
+    # A5 (A22.7/A22.8): it writes NOTHING, so it is a GET and governed as
+    # a read at `fleet.view` -- which A20.3's machine ceiling already
+    # carries, letting an agent dry-run ITSELF with no ceiling change.
+    # Drafted as a POST; the mutation invariant below refused it, and the
+    # verb was the thing that was wrong. "Its own and no other" is an
+    # object-level gate inside the handler, not a permission.
+    ("GET", "/api/operational-agents/{agent_id}/dry-run"):
         ("fleet.view", READ_SCOPED, False),
     # A3 (spec A20): the machine-identity lifecycle. No new permission —
     # whoever may build and activate an agent may credential it, and the

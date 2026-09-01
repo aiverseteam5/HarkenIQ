@@ -2182,6 +2182,301 @@ print("execution_permitted is the dispatch path;", len(decision),
       "inputs across 3 stages, none dropped, capability supplied")
 A4PY
 
+# ---------------------------------------------------------------------------
+# A5 — the canonical governed agent interaction contract (spec A22)
+# ---------------------------------------------------------------------------
+
+step "A5/A: every governed class declares what it requires to run"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/capabilities/ \
+  | python3 -c "
+import sys, json
+rows = {r['action_type']: r for r in json.load(sys.stdin)['classes']}
+# The A4 defect, now visible in the contract: these four require a
+# parameter, and before A5 the evaluator emitted {'reason': ...} for
+# every class, so each was proposed, approved, dispatched and refused.
+assert rows['IDENTIFY_LED']['required_parameters'] == ['target'], rows['IDENTIFY_LED']
+assert rows['INTERFACE_DISABLE']['required_parameters'] == ['interface']
+assert rows['POWER_CAP_ADJUST']['required_parameters'] == ['target_watts']
+assert rows['CONFIG_RESTORE']['required_parameters'] == ['attributes_json']
+# Whole-device classes take none, and that is an answer, not a gap.
+for name in ('SEL_CLEAR', 'BMC_RESET', 'COLLECT_DIAGNOSTICS'):
+    assert rows[name]['required_parameters'] == [], name
+# Addressable is not executable: two classes are implemented and still
+# cannot be proposed, and each names the input that is missing (A22.5).
+for name in ('POWER_CAP_ADJUST', 'CONFIG_RESTORE'):
+    assert rows[name]['parameters_resolvable'] is False, name
+    assert rows[name]['parameter_reason'], name
+assert rows['IDENTIFY_LED']['parameters_resolvable'] is True
+# Unimplemented classes still declare, so 'no executor' and 'takes no
+# parameters' stay distinguishable (A21.9 unchanged).
+assert rows['INTERFACE_RESET']['implemented'] is False
+assert rows['INTERFACE_RESET']['required_parameters'] == ['interface']
+print('parameter contract served for', len(rows), 'classes;',
+      'unsatisfiable named:', rows['POWER_CAP_ADJUST']['parameter_reason'][:48])
+"
+
+step "A5/B: the Site Manager carries component identity to Central Command"
+# A verdict's sensor id is '<subsystem>:<component>'; the SM parsed off
+# the subsystem and DISCARDED the remainder, so CC held no drive bay and
+# no port name for any device. Asserted on the real snapshot column.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM information_schema.columns
+    WHERE table_name='cc_incidents' AND column_name='components'" \
+  | grep -q '^1$' \
+  || { echo "cc_incidents.components missing" >&2; exit 1; }
+# NO BACKFILL: an incident the SM has not reported on stays NULL, which
+# is UNKNOWN. Writing [] would assert 'nothing affected' -- a fact nobody
+# checked -- and CC turns 'no component' into a refusal to propose.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_incidents WHERE components = '[]'::jsonb" \
+  | grep -q '^0$' \
+  || { echo "A5 backfilled an empty component list" >&2; exit 1; }
+echo "component identity column present, nothing backfilled"
+
+step "A5/C: a real fault resolves a real parameter, end to end"
+# The headline, proven on hardware evidence rather than on an empty list.
+# Before A5 EVERY proposal carried params={"reason": ...}, so IDENTIFY_LED
+# was proposed, approved by a human, dispatched, and refused at the node
+# with "IDENTIFY_LED requires a 'target' param" -- every single time.
+curl -skf -X POST https://localhost:9000/test/inject-fault \
+  -H 'Content-Type: application/json' \
+  -d '{"fault_type":"disk","target":"Solid State Disk 0:1:0","params":{"health":"Critical"}}' \
+  > /dev/null
+wait_for "disk incident carries its component at CC" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+     \"SELECT count(*) FROM cc_incidents WHERE subsystem='disk' AND components IS NOT NULL\" \
+   | grep -qv '^ *0 *$'"
+A5_COMPONENT=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT components->0->>'component' FROM cc_incidents
+    WHERE subsystem='disk' AND components IS NOT NULL LIMIT 1" | tr -d '\r' | sed 's/^ *//;s/ *$//')
+[ -n "$A5_COMPONENT" ] || { echo "no component reported for a disk incident" >&2; exit 1; }
+echo "the Site Manager named the component: $A5_COMPONENT"
+
+A5_SITE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT site_id FROM cc_incidents WHERE subsystem='disk' AND components IS NOT NULL LIMIT 1" \
+  | tr -d ' \r')
+A5_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a5-parameters $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+A5_BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_proposals" | tr -d ' \r')
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A5_AGENT/dry-run" \
+  | A5_COMPONENT="$A5_COMPONENT" python3 -c "
+import os, sys, json
+r = json.load(sys.stdin)
+component = os.environ['A5_COMPONENT']
+assert r['dry_run'] is True
+assert r['wrote'] == [], r['wrote']
+led = [p for p in r['would_propose'] if p['action_type'] == 'IDENTIFY_LED']
+assert led, ('no IDENTIFY_LED proposed against an open disk incident',
+             r['would_propose'], r['withheld'])
+for p in led:
+    # The parameter the node would actually receive, resolved from the
+    # component the Site Manager reported -- the same value the node's
+    # OWN disk-health skill would have supplied for this condition.
+    assert p['params'].get('target') == component, (p['params'], component)
+    assert p['requires_human'] is True, 'IDENTIFY_LED is mapped to no level'
+print('dry run:', len(r['would_propose']), 'would propose,',
+      len(r['withheld']), 'withheld; target resolved to', component)
+"
+A5_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_proposals" | tr -d ' \r')
+[ "$A5_BEFORE" = "$A5_AFTER" ] \
+  || { echo "dry-run wrote proposals ($A5_BEFORE -> $A5_AFTER)" >&2; exit 1; }
+echo "dry-run created nothing: cc_agent_proposals still $A5_AFTER"
+
+step "A5/D: an agent may dry-run ITSELF and no other (A22.8, no ceiling change)"
+# fleet.view is already in MACHINE_PRINCIPAL_CEILING, so this needs no
+# widening. 'its own and no other' is an object gate, not a permission.
+A5_SELF=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_NARROW/dry-run")
+[ "$A5_SELF" = "200" ] \
+  || { echo "an agent could not dry-run itself ($A5_SELF)" >&2; exit 1; }
+A5_OTHER=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$AGENT_ID/dry-run")
+[ "$A5_OTHER" = "403" ] \
+  || { echo "an agent dry-ran ANOTHER agent ($A5_OTHER)" >&2; exit 1; }
+# And reasoning about what it would do still confers nothing.
+A5_APPROVE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $N_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"decisions":[]}' http://localhost:8090/api/approvals/batch)
+[ "$A5_APPROVE" = "403" ] \
+  || { echo "dry-run leaked approval authority ($A5_APPROVE)" >&2; exit 1; }
+echo "self 200, other 403, approve 403: discovery is not execution permission"
+
+step "A5/E: /api/attention is SCOPED (D1) and ranks identically everywhere"
+# It was declared READ_SCOPED and applied no scope -- and it is the one
+# read EVERY Operational Agent is required to hold.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/attention/" >/tmp/a5-attention-all.json
+python3 - <<'A5PY'
+import json
+items = json.load(open('/tmp/a5-attention-all.json'))['items']
+ranks = {i['agent_id']: i['rank'] for i in items}
+assert ranks, 'attention returned nothing to rank'
+assert sorted(ranks.values()) == list(range(1, len(ranks) + 1)), ranks
+print('attention ranked', len(ranks), 'devices, contiguous from 1')
+A5PY
+# The band filter must NOT renumber rank: it filtered BEFORE ranking, and
+# rank decides which devices consume an agent's proposal budget.
+for BAND in high medium low insufficient_data; do
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/attention/?band=$BAND" \
+    | python3 -c "
+import sys, json
+all_ranks = {i['agent_id']: i['rank']
+             for i in json.load(open('/tmp/a5-attention-all.json'))['items']}
+for item in json.load(sys.stdin)['items']:
+    assert item['rank'] == all_ranks[item['agent_id']], (item, all_ranks)
+"
+done
+echo "band is a pure filter: rank 1 means first in the tenant, not first on the page"
+
+step "A5/F: a machine principal reads attention through its own scope"
+curl -sf -H "Authorization: Bearer $N_TOKEN" \
+  "http://localhost:8090/api/attention/" \
+  | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+print('agent reads attention:', r['returned'], 'items in its own scope')
+"
+
+step "A5/G: enforcement impact is REPORTED before it is enforced (D2)"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/tenant-settings/scope-enforcement/impact \
+  | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+# Reporting is not enforcing. A22.10 stages this deliberately: legacy_open
+# is the DEFAULT and an existing tenant may hold no grant rows at all.
+assert r['enforced'] is False, r['scope_enforcement']
+assert 'no grant' in r['invariant']
+# And it admits what it cannot know, so a short list is not mistaken for
+# a complete one.
+assert r['enumerable'] is False
+assert 'never acted will not appear' in r['enumerable_note']
+print('impact report:', len(r['agents_without_grant']), 'agents,',
+      len(r['observed_principals_without_grant']), 'observed principals at risk')
+"
+
+step "A5/H: dispatch re-checks CURRENT lifecycle, on both bases (D4)"
+# A19 D3 said an approved proposal is never a guarantee of execution.
+# Autonomous dispatch asked only the budget and the human-approved path
+# asked NOTHING, so a proposal approved yesterday still ran today for an
+# agent since paused, retired or revoked. Asserted on the shipped source
+# BEFORE the basis is consulted -- staging a stale approval against a
+# live stack would prove one status, and the gate needs the rule.
+A5_ROOT="$_REPO_ROOT" python3 - <<'A5PY'
+import os
+import pathlib
+
+root = pathlib.Path(os.environ["A5_ROOT"])
+rt = (root / "services/central_command/src/harkeniq_cc/agent_runtime.py").read_text()
+
+body = rt.split("async def dispatch_decided(")[1]
+loop = body.split("for proposal in pending:")[1]
+gate = loop.index("_dispatch_permitted(")
+basis = loop.index("BASIS_AUTONOMOUS")
+assert gate < basis, "the lifecycle gate must run BEFORE the basis is consulted"
+
+check = rt.split("async def _dispatch_permitted(")[1].split("\nasync def ")[0]
+for expected in ("STATUS_RETIRED", "paused_reason", "STATUS_ACTIVE",
+                 "AgentIdentityRepo", "STATUS_REVOKED"):
+    assert expected in check, expected
+print("dispatch re-checks lifecycle and identity on both bases, before the basis")
+A5PY
+
+# And the credential really does stop the moment the agent is retired.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A3_NARROW/retire" >/dev/null
+A5_DEAD=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
+  http://localhost:8090/api/fleet/)
+[ "$A5_DEAD" = "401" ] \
+  || { echo "a retired agent's token still authenticated ($A5_DEAD)" >&2; exit 1; }
+echo "retired agent: token 401, dispatch gated on current state"
+
+step "A5/I: an agent scope answers WHERE, never WHETHER (D5)"
+# `load_agent_scope` resolved with role_permissions=["*"], so the scope
+# answered permits("action.approve") with True. Asserted on the shipped
+# source: the wildcard must be GONE, not merely unused.
+A5_ROOT="$_REPO_ROOT" python3 - <<'A5PY'
+import os
+import pathlib
+
+root = pathlib.Path(os.environ["A5_ROOT"])
+gov = (root / "services/central_command/src/harkeniq_cc/governance.py").read_text()
+scope = (root / "services/central_command/src/harkeniq_cc/scope.py").read_text()
+
+body = gov.split("async def load_agent_scope(")[1].split("\nasync def ")[0]
+# Only the CODE. The docstring deliberately quotes the old wildcard to
+# explain what was removed, and matching prose would be a false positive.
+code = body.split('"""')[2] if body.count('"""') >= 2 else body
+assert 'role_permissions=["*"]' not in code, "the wildcard is still there"
+assert "SCOPE_ONLY_MARKER" in code, "load_agent_scope must resolve scope-only"
+# And the guard is real: permits() refuses such a scope outright.
+assert "if self.scope_only:" in scope
+assert "SCOPE_ONLY_MARKER" in scope
+print("agent scope resolves WHERE only; permits() refuses the question")
+A5PY
+
+step "A5/J: one attention composer, asserted structurally (D3)"
+A5_ROOT="$_REPO_ROOT" python3 - <<'A5PY'
+import os
+import pathlib
+
+root = pathlib.Path(os.environ["A5_ROOT"])
+api = (root / "services/central_command/src/harkeniq_cc/api/attention.py").read_text()
+# The router carried a near-verbatim copy of the composer whose band
+# filter ran before ranking. A behavioural test alone would pass again
+# the moment somebody copies it back.
+assert "build_attention" not in api, "the router composes attention again"
+assert "load_attention" in api
+print("the attention router is a thin caller over the one composer")
+A5PY
+
+step "A5/K: a skill cannot declare its own parameter vocabulary"
+# skills/disk-health.yaml has carried its own params block since R1 -- a
+# FIFTH place the same fact was declared. parse_skill is the untrusted
+# YAML boundary, so that is where it is now reconciled.
+A5_ROOT="$_REPO_ROOT" PYTHONPATH="$_REPO_ROOT/src" python3 - <<'A5PY'
+import os
+import pathlib
+
+import yaml
+
+from harkeniq.errors import SkillValidationError
+from harkeniq.skills.loader import parse_skill
+
+root = pathlib.Path(os.environ["A5_ROOT"])
+shipped = sorted((root / "skills").glob("*.yaml"))
+assert shipped, "no shipped skills found"
+for path in shipped:
+    parse_skill(yaml.safe_load(path.read_text()), source=str(path))
+
+bad = {
+    "name": "gate", "version": 1, "target": "disk",
+    "rules": [{
+        "condition": "health == 'Critical'", "verdict": "CRITICAL",
+        "message": "m",
+        "action": {"type": "IDENTIFY_LED", "params": {"reason": "r"}},
+    }],
+}
+try:
+    parse_skill(bad)
+except SkillValidationError as e:
+    assert "requires 'target'" in str(e), e
+else:
+    raise AssertionError("a skill omitting a required parameter was accepted")
+print(len(shipped), "shipped skills validate; a skill missing a required param is refused")
+A5PY
+
 step "A2: put the tenant ladder back where the gate found it"
 # Level 2 was raised only to make an unattended grant exist for A2/C.
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

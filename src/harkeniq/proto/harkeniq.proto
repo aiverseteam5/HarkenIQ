@@ -310,6 +310,15 @@ message FleetIncident {
   // similar_past_incidents}. LLM-authored when provider == "llm", which is
   // why consumers must treat it as generated content, never instruction.
   string explanation_json = 12;
+  // A5 (A22.4): the components this incident actually affects, carried as
+  // [{"component": "Disk.Bay.3", "severity": "CRITICAL"}]. A verdict's
+  // sensor id is "<subsystem>:<component>" and the Site Manager had always
+  // parsed off the subsystem and DISCARDED the remainder, so Central
+  // Command held no component identity for any device -- which is why an
+  // agent could never supply IDENTIFY_LED's 'target' or INTERFACE_*'s
+  // 'interface'. Additive and nullable with NO backfill: empty means this
+  // Site Manager has not reported, which is UNKNOWN, never "no components".
+  string components_json = 13;
 }
 
 message FleetAction {

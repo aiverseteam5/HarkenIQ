@@ -178,6 +178,17 @@ def build_capability_registry(
             # -- what the PLATFORM implements ---------------------------
             "implemented": fact["implemented"],
             "implemented_by": fact["implemented_by"],
+            # -- what the class REQUIRES to run (A5, A22.2) -------------
+            # Beside `reach`, never merged into it: "an executor can do
+            # this here" and "anything can supply what it needs" are
+            # different facts with different fixes, and A17.7 already
+            # settled that they stay separate. A class can be implemented,
+            # permitted and reachable and still be unproposable because
+            # nothing in this platform can name a target wattage.
+            "parameters": fact["parameters"],
+            "required_parameters": fact["required"],
+            "parameters_resolvable": fact["agent_resolvable"],
+            "parameter_reason": fact["unsatisfiable_reason"],
             # -- what THIS caller's fleet can actually do ---------------
             "reach": reach,
             "effective_device_count": len(capable),

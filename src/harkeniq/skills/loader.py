@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import yaml
 
+from harkeniq.autonomy.preconditions import validate_param_names
 from harkeniq.errors import SkillValidationError
 from harkeniq.models import (
     ActionRecommendation,
@@ -155,6 +156,14 @@ def _parse_rule(name: str, target: str, index: int, raw: Any) -> SkillRule:
         params = a.get("params", {})
         if not isinstance(params, dict):
             raise SkillValidationError(name, f"rule {index}: action params must be a mapping")
+        # A22.2: the skill's params block is a CONSUMER of the platform's
+        # one parameter declaration, never a peer of it. `parse_skill`
+        # remains the untrusted-YAML boundary, so this is where a skill
+        # that names a parameter the class does not declare -- or omits
+        # one it requires -- is refused, rather than at the node.
+        ok, why = validate_param_names(action_type, params.keys())
+        if not ok:
+            raise SkillValidationError(name, f"rule {index}: {why}")
         action = ActionRecommendation(type=action_type, params={str(k): str(v) for k, v in params.items()})
 
     return SkillRule(
