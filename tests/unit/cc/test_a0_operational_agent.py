@@ -30,6 +30,27 @@ from harkeniq_cc.operational_agent import (
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
 
 
+def _catalogue() -> dict:
+    """The platform default catalogue, as the runtime resolves it.
+
+    A4: `evaluate()` takes the condition -> capability mapping as an
+    INPUT rather than reading a module constant, so a test that supplies
+    none gets no candidates -- the fail-closed answer, and the reason
+    these tests build the same seed production does.
+    """
+    from harkeniq_cc.capability_catalogue import SEED
+
+    out: dict[str, list[dict]] = {}
+    for entry in SEED:
+        out.setdefault(entry["subsystem"], []).append({
+            "action_type": entry["action_type"],
+            "because": entry["because"],
+            "provenance": entry["provenance"],
+        })
+    return out
+
+
+
 def _agent(**kw):
     base = dict(
         id="ag1", tenant_id="t1", name="Night Shift", description="",
@@ -198,6 +219,7 @@ class TestPolicyOnlyEverTightens:
 class TestEvaluate:
     def _run(self, agent, caps, devices, incidents, contract, **kw):
         return evaluate(
+            catalogue=_catalogue(),
             agent=agent,
             scopes=[_scope("site", "s1")],
             capabilities=caps,
@@ -367,6 +389,7 @@ class TestEvaluate:
 
     def test_a_device_outside_scope_is_invisible(self):
         got = evaluate(
+            catalogue=_catalogue(),
             agent=_agent(),
             scopes=[_scope("site", "s1")],
             capabilities=[_cap("action_class", "SEL_CLEAR")],

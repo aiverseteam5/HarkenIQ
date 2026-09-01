@@ -82,6 +82,16 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
         ("site.manage", OBJECT_GATED, True),
     # READ_SCOPED like /api/fleet/{device_id}: an out-of-scope device is
     # 404, never 403, because a 403 confirms it exists.
+    # A4 (spec A21): the condition -> capability catalogue. Reads are
+    # fleet.view like the rest of the Registry surface; the write is
+    # TENANT authority (site.manage + tenant object gate), the same rule
+    # S5's autonomy budgets follow -- tenant governance has no site
+    # dimension, so a cluster-scoped principal may read why their agent
+    # proposes what it does and may not rewrite it for everyone else.
+    ("GET", "/api/capabilities/catalogue"):
+        ("fleet.view", READ_SCOPED, False),
+    ("PUT", "/api/capabilities/catalogue"):
+        ("site.manage", OBJECT_GATED, True),
     ("GET", "/api/capabilities/devices/{device_id}"):
         ("fleet.view", READ_SCOPED, False),
 

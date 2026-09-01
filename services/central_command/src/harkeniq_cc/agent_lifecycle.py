@@ -131,6 +131,7 @@ async def _per_device_reach(devices, bound: set[str]) -> list[dict]:
 async def _validate_skills(
     session, state, *, tenant_id: str, skill_refs: list[str],
     reach: dict, platform_implemented: set[str],
+    catalogue_classes: Optional[set[str]] = None,
 ) -> list[dict]:
     """Fetch each bound skill and judge it against executor reach.
 
@@ -161,6 +162,7 @@ async def _validate_skills(
         row = validate_skill_against_reach(
             skill_id, recommended, platform_implemented,
             set(reach.get("implemented") or ()), bool(reach.get("unknown")),
+            catalogue_classes=catalogue_classes,
         )
         row["name"] = getattr(definition, "name", skill_id)
         row["version"] = str(getattr(definition, "version", "") or "")
@@ -223,9 +225,18 @@ async def run_preflight(session, state, *, tenant_id: str, agent, actor: str) ->
     stop = await StopSwitchRepo(session).get(tenant_id)
     safety = contract.get("safety_state") or {}
 
+    # A21.8: a skill may recommend only what this tenant's catalogue maps.
+    from harkeniq_cc.db.repos import CapabilityCatalogueRepo
+
+    catalogue_classes = {
+        r.action_type
+        for r in await CapabilityCatalogueRepo(session).list_for_tenant(tenant_id)
+        if r.enabled
+    }
     skill_rows = await _validate_skills(
         session, state, tenant_id=tenant_id, skill_refs=skill_refs,
         reach=reach, platform_implemented=platform_implemented,
+        catalogue_classes=catalogue_classes,
     )
 
     executions = await executions_used(session, tenant_id, agent)

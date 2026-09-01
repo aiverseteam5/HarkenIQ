@@ -1494,3 +1494,51 @@ class CCAgentIdentity(Base):
         DateTime(timezone=True), nullable=True
     )
     last_seen_source: Mapped[str] = mapped_column(String(255), default="")
+
+
+class CCCapabilityCatalogue(Base):
+    """A4: which capability is a candidate for which condition (A21.1).
+
+    `REMEDIATION_CANDIDATES` was a module constant: an agent could propose
+    only what a hardcoded dict named, and an operator could neither see it
+    nor change it. Seven implemented, node-executable capabilities were
+    invisible to every agent as a result.
+
+    NOT a second capability-authority model (A21.2). The Capability
+    Registry remains the only authority on whether an executor can perform
+    an action; a row here that names an unimplemented class is refused on
+    write and inert on read. Being in this table is not being permitted,
+    in scope, autonomous, approved, or executable.
+    """
+
+    __tablename__ = "cc_capability_catalogue"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The observed condition. Every value is one the runtime actually
+    #: produces -- skill `health_summary` keys and agent `sensor_id`
+    #: prefixes -- plus the synthesized `bmc` unreachable condition.
+    subsystem: Mapped[str] = mapped_column(String(64), index=True)
+    action_type: Mapped[str] = mapped_column(String(64))
+    #: Why this action answers this condition, in an operator's words.
+    because: Mapped[str] = mapped_column(String(512), default="")
+    #: Where the mapping came from, so "why can my agent propose this?"
+    #: has an answer that names a source.
+    provenance: Mapped[str] = mapped_column(String(255), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "subsystem", "action_type",
+            name="uq_cc_capability_catalogue_entry",
+        ),
+    )

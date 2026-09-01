@@ -118,6 +118,22 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
         }
         prop_repo = AgentProposalRepo(session)
         audit = AuditRepo(session)
+
+        # A4 (A21.1): the condition -> capability mapping is the tenant's
+        # catalogue now, not a module constant. Loaded ONCE per pass and
+        # handed to the pure evaluator, so what an agent may propose is
+        # something an operator can see and change.
+        from harkeniq_cc.capability_catalogue import candidates_for
+        from harkeniq_cc.db.repos import CapabilityCatalogueRepo
+
+        catalogue_rows = await CapabilityCatalogueRepo(session).list_for_tenant(
+            tenant_id
+        )
+        catalogue = {
+            sub: candidates_for(catalogue_rows, sub)
+            for sub in {r.subsystem for r in catalogue_rows}
+        }
+
         midnight = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0,
         )
@@ -141,6 +157,7 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             )
             seen_keys = await prop_repo.all_dedupe_keys(tenant_id)
             proposals = evaluate(
+                catalogue=catalogue,
                 agent=agent,
                 scopes=scopes,
                 resolved_site_ids=agent_scope.site_ids,

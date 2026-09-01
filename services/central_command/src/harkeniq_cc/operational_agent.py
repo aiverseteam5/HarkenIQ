@@ -180,53 +180,19 @@ BASIS_AUTONOMOUS = "autonomous_grant"
 # A subsystem absent from this table yields NO candidate. Silence is the
 # correct answer for a condition the platform has no remediation for.
 
-REMEDIATION_CANDIDATES: dict[str, list[dict[str, str]]] = {
-    "disk": [{
-        "action_type": "IDENTIFY_LED",
-        "because": "a failing drive has to be found before it can be replaced",
-        "provenance": "skills/disk-health.yaml",
-    }],
-    "fan": [{
-        "action_type": "COLLECT_DIAGNOSTICS",
-        "because": "capture the fault state before the evidence rotates away",
-        "provenance": "skills/fan-health.yaml",
-    }],
-    "memory": [{
-        "action_type": "COLLECT_DIAGNOSTICS",
-        "because": "capture the fault state before the evidence rotates away",
-        "provenance": "skills/memory-health.yaml",
-    }],
-    "psu": [{
-        "action_type": "COLLECT_DIAGNOSTICS",
-        "because": "capture the fault state before the evidence rotates away",
-        "provenance": "skills/psu-health.yaml",
-    }],
-    "thermal": [{
-        "action_type": "FAN_RESET",
-        "because": "a stuck fan controller is the recoverable half of a thermal fault",
-        "provenance": "skills/thermal-health.yaml",
-    }],
-    "log": [{
-        "action_type": "SEL_CLEAR",
-        "because": "a saturated event log hides the next fault behind the last one",
-        "provenance": "A2.1 action semantics; granted at autonomy level 2",
-    }],
-    "interface": [{
-        "action_type": "CLEAR_COUNTERS",
-        "because": "reset the counter baseline so the next error rate is measurable",
-        "provenance": "R6 network actions (A9 D6)",
-    }],
-}
-
-#: Applied when the platform can no longer reach the device's management
-#: controller while its node is still reporting. BMC_RESET is the R3a
-#: action whose entire purpose is this condition.
-UNREACHABLE_CANDIDATE = {
-    "action_type": "BMC_RESET",
-    "because": "the management controller stopped answering while the node kept reporting",
-    "provenance": "R3a action semantics; granted at autonomy level 2",
-}
-
+#: A4 (spec A21): the condition -> capability mapping MOVED.
+#:
+#: It was a module constant here, which is why seven implemented,
+#: node-executable capabilities were invisible to every agent: an agent
+#: could propose only what this dict named, and an operator could neither
+#: see it nor change it. It now lives in `cc_capability_catalogue`, seeded
+#: from `capability_catalogue.SEED` so no tenant's behaviour changed on
+#: upgrade.
+#:
+#: `evaluate()` therefore takes the catalogue as an INPUT. A caller that
+#: supplies none gets no candidates, which is the fail-closed answer: a
+#: hardcoded fallback would be the constant surviving as a shadow default,
+#: and the two would drift.
 #: Device observations that mean "the BMC is not answering". Anything
 #: else, including an empty string, is NOT treated as unreachable: an
 #: unobserved state must never be read as a fault (OQ-12).
@@ -478,10 +444,22 @@ def _observed_conditions(device, incidents: list[dict]) -> list[dict]:
     return conditions
 
 
-def _candidates_for(condition: dict) -> list[dict]:
-    if condition["kind"] == "unreachable":
-        return [UNREACHABLE_CANDIDATE]
-    return REMEDIATION_CANDIDATES.get(condition["subsystem"], [])
+def _candidates_for(condition: dict, catalogue: dict) -> list[dict]:
+    """Candidate actions for one observed condition, from the catalogue.
+
+    An unreachable controller is a SYNTHESIZED condition -- the evaluator
+    derives it rather than a node reporting it -- so it is looked up under
+    its own subsystem key like any other.
+
+    A subsystem the catalogue does not name yields NO candidate. Silence
+    is the correct answer: inventing a remediation for an unmapped
+    condition is exactly what the catalogue exists to prevent.
+    """
+    from harkeniq_cc.capability_catalogue import SUBSYSTEM_UNREACHABLE
+
+    key = (SUBSYSTEM_UNREACHABLE if condition["kind"] == "unreachable"
+           else condition["subsystem"])
+    return catalogue.get(key, [])
 
 
 def _rationale(agent_name: str, device, condition: dict, candidate: dict,
@@ -528,6 +506,11 @@ def evaluate(
     #: E1.2: sites an `org_unit` scope expands to, resolved by the ONE
     #: scope resolver before this pure function is called.
     resolved_site_ids: Iterable[str] = (),
+    #: A4 (A21.1): {subsystem: [candidate, ...]} from the tenant's
+    #: capability catalogue, resolved by the caller. Required, and with no
+    #: hardcoded fallback: a default here would be the old module constant
+    #: surviving as a shadow, and the two would drift.
+    catalogue: Optional[dict[str, list[dict]]] = None,
     now: Optional[datetime] = None,
 ) -> list[dict[str, Any]]:
     """One evaluation pass for one agent. Pure: no I/O, no clock of its own.
@@ -537,6 +520,7 @@ def evaluate(
     produce the same proposals in the same order.
     """
     now = now or datetime.now(timezone.utc)
+    catalogue = catalogue or {}
     attention_by_device = attention_by_device or {}
     open_keys = set(open_dedupe_keys)
     actor = attribution_key(agent.id, agent.version)
@@ -579,7 +563,7 @@ def evaluate(
         for condition in conditions:
             if made_for_device:
                 break
-            for candidate in _candidates_for(condition):
+            for candidate in _candidates_for(condition, catalogue):
                 action_type = candidate["action_type"]
                 if action_type not in allowed_classes:
                     continue

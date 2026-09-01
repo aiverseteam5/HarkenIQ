@@ -51,7 +51,6 @@ from harkeniq_cc.operational_agent import (
     KIND_READ,
     KIND_SKILL,
     READ_CAPABILITIES,
-    REMEDIATION_CANDIDATES,
     REQUIRED_READS,
     SCOPE_DEVICE,
     SCOPE_DEVICE_CLASS,
@@ -61,7 +60,6 @@ from harkeniq_cc.operational_agent import (
     STATUS_DRAFT,
     STATUS_PAUSED,
     STATUS_RETIRED,
-    UNREACHABLE_CANDIDATE,
     agent_view,
     attribution_key,
     resolve_scope,
@@ -556,15 +554,22 @@ async def catalogue(
     sites = await SiteRepo(session).list_all(user.tenant_id)
     devices = await FleetCacheRepo(session).list_all(user.tenant_id)
 
-    # Which conditions the platform knows a remediation for. Stated so an
-    # operator can see WHY binding a class to an agent would ever fire.
+    # Which conditions THIS TENANT has a remediation mapped for. A4: read
+    # from the catalogue, not a module constant, so the answer to "why
+    # would binding this class ever fire?" is the same object an operator
+    # can see and change.
+    from harkeniq_cc.capability_catalogue import SUBSYSTEM_UNREACHABLE
+    from harkeniq_cc.db.repos import CapabilityCatalogueRepo
+
     triggers: dict[str, list[str]] = {}
-    for subsystem, candidates in REMEDIATION_CANDIDATES.items():
-        for cand in candidates:
-            triggers.setdefault(cand["action_type"], []).append(subsystem)
-    triggers.setdefault(UNREACHABLE_CANDIDATE["action_type"], []).append(
-        "unreachable management controller"
-    )
+    for row in await CapabilityCatalogueRepo(session).list_for_tenant(
+        user.tenant_id
+    ):
+        if not row.enabled:
+            continue
+        label = ("unreachable management controller"
+                 if row.subsystem == SUBSYSTEM_UNREACHABLE else row.subsystem)
+        triggers.setdefault(row.action_type, []).append(label)
 
     return {
         "action_classes": [

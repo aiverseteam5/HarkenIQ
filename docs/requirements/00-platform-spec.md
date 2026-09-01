@@ -1510,3 +1510,103 @@ CREDENTIAL, not the Operational Agent. A4, A5, A6 and MCP may make an
 agent substantially more capable — through the governed Capability
 Registry, RBAC, scope, autonomy, approval and execution architecture that
 already exists. What stays narrow is authentication.
+
+### A21 — 2026-09-01 — A4: governed capability expansion is about ADDRESSABILITY, not autonomy (decided: Vinod)
+
+The platform implements 12 of its 14 action types. An Operational Agent
+could propose 6, and one of those six had no executor at all. Seven
+implemented, governed, node-executable capabilities were invisible to
+every agent — not forbidden, not fenced, not denied; **unreachable**,
+because nothing mapped a condition to them.
+
+A4 makes implemented capabilities addressable by a governed agent and
+makes Capability Registry truth load-bearing at runtime. It adds no
+permission, no authority and no autonomy.
+
+**A21.1 — The condition→capability mapping becomes governed data.**
+`REMEDIATION_CANDIDATES` was a module constant: an agent could propose
+only what a hardcoded dict named, and an operator could neither see it
+nor change it. It becomes `cc_capability_catalogue` — tenant-scoped,
+readable, auditable, seeded so that no tenant's behaviour changes on
+upgrade. Each entry keeps `subsystem`, `action_type`, `because`,
+`provenance` and `enabled`.
+
+**A21.2 — The catalogue is not a second capability-authority model.**
+It answers one question: *which capability is a candidate for which
+observed condition.* The Capability Registry remains the only authority
+on whether an executor can perform an action, and the catalogue can
+never contradict it: an entry naming a class no executor implements is
+refused on write and inert on read. Being in the catalogue is not being
+permitted, in scope, autonomous, approved, or executable.
+
+**A21.3 — Capability ≠ authority, and A4 collapses nothing.** Capability
+asks whether the executor can perform the action; permission whether the
+actor may address it; scope where; autonomy whether it may proceed
+unattended; approval whether a human must decide; execution whether this
+concrete action may happen now. Six questions, six answers, unchanged.
+
+**A21.4 — The interface subsystem was dead and is repaired.** It mapped
+only to `CLEAR_COUNTERS`, which no executor implements — and A17's
+zero-reach rule then refused the binding. A switch-scoped agent could
+observe an interface incident and never act on it, though R6 shipped
+`INTERFACE_ENABLE` and `INTERFACE_DISABLE` on gNMI. The catalogue maps
+the subsystem to those implemented actions instead. This is a mapping
+correction, not a new node capability.
+
+**A21.5 — Newly addressable classes enter as `not_budget_mapped`, which
+means A NAMED HUMAN IS REQUIRED.** A4 does not modify the autonomy
+ladder. No class is mapped into it, `COLLECT_DIAGNOSTICS` and
+`IDENTIFY_LED` included. Each newly addressable class keeps its existing
+risk, budget mapping, approval requirement, executor availability and
+safety semantics.
+
+**Evidence of effectiveness is not authority to execute unattended.**
+`COLLECT_DIAGNOSTICS` at 8/8 SUCCESS is an argument for a future
+decision, not a reason to widen a boundary inside a slice about
+addressability. Any autonomy promotion is a separate explicit product
+decision and its own amendment. This is deliberate sequencing: **A4 asks
+what a governed agent may address; S5 and its successors ask what it may
+execute unattended.**
+
+**A21.6 — `execution_permitted()` becomes a real production gate.**
+E1.3 shipped a ten-input fail-closed execution model and A17.8 recorded
+that its `capability` slot was unsupplied. The broader truth this slice
+found: the function had **no production caller at all** — the runtime
+used hand-written sequential checks at the Site Manager alongside it.
+A4 routes the Site Manager's existing dispatch checks *through* that one
+function and supplies `capability` from the Registry. This is
+consolidation of two parallel statements of one model, **not a second
+execution engine**: no check is added, none is removed, and an
+unevaluated input still refuses.
+
+**A21.7 — The node remains the final execution authority.** The node
+funnel is untouched: allow list, preconditions, stop switch, lease and
+blast radius are unchanged, and the node's refusal remains final and
+still becomes attributed evidence.
+
+**A21.8 — Skills gain one rule and no authority.** A skill may recommend
+only actions the tenant's catalogue names AND the Registry validates. It
+still cannot expand permission, scope, capability authority, autonomy or
+approval authority (A19.10, unchanged).
+
+**A21.9 — `CLEAR_COUNTERS` and `INTERFACE_RESET` stay unimplemented, and
+stay honest.** A4 changes their VISIBILITY, not their status. An
+operator can see that the class exists in the governed vocabulary, that
+no executor implements it, that it therefore cannot execute, and what
+would have to change. Faking the capability and deleting the class are
+both refused (A17.6).
+
+**A21.10 — Firmware classes are campaign work, not incident
+remediation.** `FIRMWARE_UPDATE` and `FIRMWARE_ROLLBACK` are implemented
+and remain reachable only through S6 campaigns. They are deliberately
+absent from the condition catalogue: an agent does not propose a
+firmware update in response to a fault, and inventing a condition for
+them would be inventing a remediation model nobody asked for.
+
+**A21.11 — Nothing new was introduced.** No new permission (catalogue
+reads are `fleet.view`, writes `site.manage`, both E1.2-scoped), no
+second RBAC, scope resolver, approval system, execution engine,
+capability-authority model or identity path. No MCP. No natural-language
+builder. UNKNOWN remains neither capable nor incapable; unimplemented
+remains never executable; policy-disabled remains distinct from
+unimplemented.
