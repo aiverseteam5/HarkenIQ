@@ -178,6 +178,34 @@ def check_capabilities(bound_classes, class_rows: dict, reach: dict) -> dict:
         return _row("capabilities", UNKNOWN,
                     f"the autonomy contract describes no row for "
                     f"{', '.join(missing_rows)}", bound=bound)
+
+    # A5 (A22.5): implemented and permitted is not the same as PROPOSABLE.
+    # A class whose required parameter nothing in this platform can supply
+    # will never produce a proposal, and a preflight that called that
+    # READY would be telling a customer their agent is switched on and
+    # working when it can only ever do nothing.
+    from harkeniq.capabilities import parameter_contract
+
+    unsatisfiable = {
+        name: parameter_contract(name)["unsatisfiable_reason"]
+        for name in bound
+        if not parameter_contract(name)["agent_resolvable"]
+    }
+    if unsatisfiable and len(unsatisfiable) == len(bound):
+        return _row(
+            "capabilities", BLOCKED,
+            "every bound class requires a parameter this platform cannot "
+            f"supply, so this agent would propose nothing: "
+            f"{'; '.join(unsatisfiable.values())}",
+            bound=bound, unsatisfiable=sorted(unsatisfiable),
+        )
+    if unsatisfiable:
+        return _row(
+            "capabilities", WARN,
+            f"{', '.join(sorted(unsatisfiable))} will never be proposed: "
+            f"{'; '.join(unsatisfiable.values())}",
+            bound=bound, unsatisfiable=sorted(unsatisfiable),
+        )
     return _row("capabilities", READY,
                 f"{len(bound)} class(es) bound and implemented in scope",
                 bound=bound)

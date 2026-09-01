@@ -26,7 +26,10 @@ def fan_skill(rules=None, trending=None, default_verdict=None):
                 "condition": "speed_rpm < threshold_low_critical",
                 "verdict": "CRITICAL",
                 "message": "Fan {name} at {speed_rpm} RPM below {threshold_low_critical}",
-                "action": {"type": "IDENTIFY_LED"},
+                # A22.2: IDENTIFY_LED requires a target, and `parse_skill`
+                # now refuses a skill that omits it -- the class could
+                # never have executed without one.
+                "action": {"type": "IDENTIFY_LED", "params": {"target": "{name}"}},
             },
             {
                 "condition": "health == 'Warning'",

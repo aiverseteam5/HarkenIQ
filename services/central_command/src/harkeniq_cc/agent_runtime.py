@@ -85,6 +85,9 @@ async def _incidents_by_device(session, tenant_id: str) -> dict[str, list[dict]]
             "site_id": row.site_id,
             "diagnosis": bool(row.explanation),
             "confidence": row.confidence,
+            # A22.4: WHICH component. None means the Site Manager has not
+            # reported -- unknown, never "none affected".
+            "components": row.components,
         })
     return out
 
@@ -112,10 +115,10 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
         # agent's own scope by the SAME answer the operator sees is the
         # point of binding it: the agent works the list a human would
         # work, in the same order, rather than inventing a priority.
-        attention = {
-            item["agent_id"]: item
-            for item in (await load_attention(session, tenant_id=tenant_id))["items"]
-        }
+        # A22.11: loaded PER AGENT below, with that agent's own scope, so
+        # its rank means "first in what I can act on". Ranking against the
+        # whole tenant let devices the agent can never touch reorder the
+        # list that decides which devices consume its proposal budget.
         prop_repo = AgentProposalRepo(session)
         audit = AuditRepo(session)
 
@@ -148,6 +151,12 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             agent_scope = await load_agent_scope(
                 session, tenant_id=tenant_id, agent_id=agent.id
             )
+            attention = {
+                item["agent_id"]: item
+                for item in (await load_attention(
+                    session, tenant_id=tenant_id, scope=agent_scope,
+                ))["items"]
+            }
             contract = await load_autonomy_contract(
                 session,
                 tenant_id=tenant_id,
@@ -196,6 +205,52 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             await repo.mark_evaluated(agent)
         await session.commit()
     return created
+
+
+async def _dispatch_permitted(session, tenant_id: str, proposal) -> tuple[bool, str]:
+    """May this proposal be dispatched AT ALL, right now? (A22.12.)
+
+    Runs on BOTH bases. The autonomous path asked `_unattended_allowed`
+    and the human-approved path asked nothing, so a proposal approved
+    yesterday still dispatched today for an agent that had since been
+    PAUSED, RETIRED, or whose credential had been REVOKED. A19's D3 says
+    an approved proposal is not a guarantee of execution; that was
+    reported and not enforced.
+
+    Current state is authoritative over a stored decision. This adds no
+    new authority and grants nothing -- it can only withhold.
+    """
+    from harkeniq_cc.machine_identity import STATUS_REVOKED
+    from harkeniq_cc.operational_agent import (
+        STATUS_ACTIVE, STATUS_RETIRED, parse_attribution,
+    )
+
+    parsed = parse_attribution(getattr(proposal, "actor", "") or "")
+    if parsed is None:
+        # Not an Operational Agent's proposal. The node funnel and the
+        # existing approval path own it; there is no agent to re-check.
+        return True, ""
+    agent_id, _version = parsed
+    agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
+    if agent is None:
+        return False, "the agent that made this proposal no longer exists"
+    status = getattr(agent, "status", "")
+    if status == STATUS_RETIRED:
+        return False, "the agent that made this proposal has been retired"
+    if status != STATUS_ACTIVE:
+        return False, f"the agent that made this proposal is {status or 'inactive'}"
+    if getattr(agent, "paused_reason", ""):
+        return False, f"the agent that made this proposal is paused: {agent.paused_reason}"
+
+    # A3: a revoked credential stops already-approved work. The identity
+    # is optional -- an agent that never had one is governed by its row
+    # alone -- but a REVOKED one is an explicit withdrawal.
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+
+    identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent_id)
+    if identity is not None and identity.status == STATUS_REVOKED:
+        return False, "this agent's machine identity has been revoked"
+    return True, ""
 
 
 async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, str]:
@@ -252,6 +307,35 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
         audit = AuditRepo(session)
         client = SMClient(state.config.sm_tls_ca)
         for proposal in pending:
+            # A22.12: current lifecycle and identity, on BOTH bases,
+            # BEFORE the basis is even consulted. An approved proposal
+            # keeps its version and is never a guarantee of execution.
+            ok, why = await _dispatch_permitted(session, tenant_id, proposal)
+            if not ok:
+                # The DECISION is left exactly as it stands. `withhold_
+                # unattended` clears `decided_by`/`decided_at`, which is
+                # right when an autonomous grant is withdrawn and wrong
+                # here: a named human approved this, and a lifecycle
+                # refusal must not erase that person from the record.
+                # Only the dispatch is refused (A22.12).
+                first = proposal.dispatch_reason != why[:512]
+                proposal.dispatch_reason = why[:512]
+                if first:
+                    # One entry per distinct cause, not one per loop --
+                    # the reconciliation runs continuously and a paused
+                    # agent would otherwise flood the audit chain.
+                    await audit.append(
+                        actor=proposal.actor,
+                        action="agent_proposal.dispatch_withheld",
+                        subject=proposal.id,
+                        tenant_id=tenant_id,
+                        detail={
+                            "reason": why[:200],
+                            "action_type": proposal.action_type,
+                            "authorization_basis": proposal.authorization_basis,
+                        },
+                    )
+                continue
             if proposal.authorization_basis == BASIS_AUTONOMOUS:
                 allowed, why = await _unattended_allowed(
                     session, tenant_id, proposal,

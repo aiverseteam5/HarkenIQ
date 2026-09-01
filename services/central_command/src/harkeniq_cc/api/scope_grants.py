@@ -402,6 +402,96 @@ async def get_enforcement(
     }
 
 
+@settings_router.get("/scope-enforcement/impact")
+async def enforcement_impact(
+    days: int = 90,
+    user=Depends(require_any_permission("fleet.view", "audit.view")),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Who would lose access if this tenant enforced scope today? (A22.10.)
+
+    The report half of report-before-enforce. The final invariant is
+    unconditional -- no grant means no operational scope, for humans and
+    agents alike -- but `legacy_open` is the DEFAULT posture and an
+    existing tenant may hold no grant rows at all, so enforcing it in
+    the same slice that decides it would lock real customers out of a
+    running system.
+
+    Central Command cannot enumerate a realm's principals (that is
+    Keycloak's, and E1.4's), so this reports the two populations it CAN
+    name truthfully:
+
+      * every Operational Agent, which CC owns outright, and
+      * every principal OBSERVED acting in this tenant's audit log,
+
+    against the grants that actually exist. An admin can act on both
+    lists. What it deliberately does not do is guess at principals who
+    have never acted -- `enumerable` says so, so nobody mistakes a short
+    list for a complete one.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from harkeniq_cc.db.models import CCAuditLog
+    from harkeniq_cc.db.repos import OperationalAgentRepo
+    from harkeniq_cc.operational_agent import parse_attribution
+    from harkeniq_cc.scope import PRINCIPAL_AGENT, PRINCIPAL_USER, is_active
+    from sqlalchemy import select
+
+    tenant_id = user.tenant_id
+    mode = await TenantSettingsRepo(session).enforcement(tenant_id)
+    grants = await ScopeGrantRepo(session).list_all(tenant_id)
+    granted = {
+        (g.principal_type or PRINCIPAL_USER, g.principal_ref)
+        for g in grants if is_active(g)
+    }
+
+    covered_agents = {ref for kind, ref in granted if kind == PRINCIPAL_AGENT}
+    agents_at_risk = [
+        {"agent_id": a.id, "name": a.name, "status": a.status}
+        for a in await OperationalAgentRepo(session).list_all(tenant_id)
+        if a.status != "retired" and a.id not in covered_agents
+    ]
+
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    actors = (await session.execute(
+        select(CCAuditLog.actor)
+        .where(CCAuditLog.tenant_id == tenant_id, CCAuditLog.ts >= since)
+        .distinct()
+    )).scalars().all()
+    covered_users = {ref for kind, ref in granted if kind == PRINCIPAL_USER}
+    people_at_risk = sorted({
+        actor for actor in actors
+        if actor
+        # An agent's attribution key is not a human principal; agents are
+        # reported by identity above, where the answer is exact.
+        and parse_attribution(actor) is None
+        and actor not in covered_users
+        and not actor.startswith(("system", "campaign:"))
+    })
+
+    return {
+        "tenant_id": tenant_id,
+        "scope_enforcement": mode,
+        "enforced": mode == "strict",
+        "active_grants": len(granted),
+        "agents_without_grant": agents_at_risk,
+        "observed_principals_without_grant": people_at_risk,
+        "observed_window_days": int(days),
+        # The honest limit, stated in the payload rather than a doc: a
+        # principal who has never acted cannot appear here.
+        "enumerable": False,
+        "enumerable_note": (
+            "Central Command cannot list a realm's principals; this names "
+            "every Operational Agent and every principal seen acting in the "
+            "last {} days. A principal who has never acted will not appear."
+        ).format(int(days)),
+        "invariant": (
+            "no grant -> no operational scope -> no operational data -> no "
+            "proposal target"
+        ),
+    }
+
+
 async def _preflight(session, tenant_id: str, caller_scope=None):
     """Run the L1 check over every grant in the tenant."""
     grants = await ScopeGrantRepo(session).list_all(tenant_id)

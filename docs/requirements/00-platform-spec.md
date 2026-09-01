@@ -1610,3 +1610,157 @@ capability-authority model or identity path. No MCP. No natural-language
 builder. UNKNOWN remains neither capable nor incapable; unimplemented
 remains never executable; policy-disabled remains distinct from
 unimplemented.
+
+### A22 — 2026-09-01 — A5: the canonical governed agent interaction contract (decided: Vinod)
+
+**Context.** A0–A1 made the Operational Agent an object, A2 made it a
+product, A3 gave it an identity and A4 made seven stranded capabilities
+addressable. What no slice has produced is the *contract* through which a
+governed agent interacts with those capabilities: what a capability
+actually requires in order to run, and how anyone — an operator, the
+agent itself, or a later external consumer — asks the platform what the
+agent *would* do without anything happening. A5 establishes that
+contract. It is deliberately neither MCP nor externalization; both are
+later slices that adapt to what A5 defines.
+
+**A22.1 — A5 is CC-resident, and that is a decision, not a limitation.**
+The evaluator keeps its in-process residency because it is the only
+caller that can obtain the complete consistent decision state — twelve
+inputs, of which `open_dedupe_keys` is structurally unavailable to an
+HTTP caller. An external decider built today would re-propose
+permanently-refused work on every pass. A5 therefore *enables*
+externalization by defining the canonical semantics; it does not perform
+it. A6 may later expose ingress; MCP later becomes a thin protocol
+adapter over the proven contract. Neither may own RBAC, scope, the
+capability registry, autonomy, approval or execution authority.
+
+**A22.2 — The action-parameter contract is ONE platform declaration.**
+Every governed ActionType declares what it requires to execute: parameter
+names, types, whether each is required or optional, constraints and
+defaults where they exist, and where a truthful value may come from. The
+declaration lives beside `ACTION_RISK` and `ACTION_REVERSIBILITY` in the
+shared module, so Central Command, the Console, skills, Operational
+Agents, the node and any future MCP consumer derive from the same file.
+Independent parameter schemas in CC, Console, Skills, Node or MCP are
+refused. A skill's own `action.params` block becomes a CONSUMER validated
+against this declaration, not a peer of it — it was a fifth undeclared
+schema site and is now bound to the platform's answer.
+
+**A22.3 — Parameters are validated before a proposal exists.** The
+evaluator may not emit a generic `params={"reason": ...}` for every
+class. A proposal whose parameters do not satisfy the declaration is not
+created. This is the fix for the defect A4 introduced: `IDENTIFY_LED`,
+`CONFIG_RESTORE`, `POWER_CAP_ADJUST`, `INTERFACE_ENABLE` and
+`INTERFACE_DISABLE` were made addressable while the evaluator could
+supply none of their required parameters, so each would be proposed,
+approved by a human, dispatched, and refused at the node every time.
+Governance held — the node refused and the refusal became attributed
+evidence — but the platform was making promises it could not keep.
+
+**A22.4 — Component identity travels, and unknown stays unknown.** A
+verdict's `sensor_id` is `"<subsystem>:<component>"`; the Site Manager
+has always parsed off the subsystem and discarded the remainder, so
+Central Command held no component identity for any device — no drive
+bay, no port name. The affected components now ride the fleet snapshot on
+an additive, nullable field, computed from the Site Manager's own verdict
+stream. There is NO backfill: an absent field means the Site Manager has
+not reported, which is unknown, never "no components". A class whose
+required parameter cannot be resolved from reported evidence is not
+proposed, and the reason is reported by name. The platform never guesses
+a component.
+
+**A22.5 — Addressable is not executable.** A capability that is in the
+tenant's catalogue, implemented by an executor and permitted by policy,
+but whose parameter contract cannot be satisfied for a given device, is
+reported as exactly that. It is not hidden, not silently dropped, and not
+presented as executable. `POWER_CAP_ADJUST` and `CONFIG_RESTORE` remain
+in this state after A5 and are truthfully described: no policy input
+exists for a target wattage, and drift detail is agent-side. Naming the
+missing input is the deliverable; inventing one is refused.
+
+**A22.6 — One governed verdict function.** The per-proposal decision is
+lifted out of the evaluator's loop into a single named function that
+takes governed context and returns a verdict. Its first and only
+production consumer in A5 is the CC-resident evaluator. Dry-run and
+normal evaluation call the same function — a preview that reasoned
+differently from the runtime would be worse than no preview.
+
+**A22.7 — Dry-run is a first-class contract, not a debug endpoint.** On
+demand, scoped to one agent, it returns what the agent WOULD propose
+against current governed context, machine-readable, with the same
+dispositions, blocking conditions, evidence and parameters a real pass
+would produce. It writes nothing, dispatches nothing, creates no
+execution state, consumes no budget, and bypasses no scope, RBAC,
+capability, autonomy or approval rule. "Writes nothing" is proven by
+table snapshot, not asserted.
+
+**A22.8 — Dry-run authority: humans and the agent's own identity.** A
+governed Operational Agent may invoke its own dry-run. This requires NO
+change to A20's `MACHINE_PRINCIPAL_CEILING`: the route is guarded at
+`fleet.view`, which the ceiling already carries, and reasoning about what
+one would propose is a read. The agent's restriction is an object-level
+gate — an identity may dry-run its own agent and no other — and its
+results are bounded by its own tenant, scope and identity exactly as a
+real pass is. Dry-run is not execution authority and confers none.
+
+**A22.9 — `/api/attention` is scoped.** It is declared READ_SCOPED and
+applied no scope filter, so a site-scoped principal read every site's
+attention state. It is also the one read every Operational Agent is
+required to hold. E1.2's resolver now filters it like every other
+site-anchored read.
+
+**A22.10 — No grant means no operational scope, for every principal.**
+The synthesized tenant-wide grant a grantless principal receives under
+`legacy_open` inverts A0's own rule ("no scope rows = no devices") at the
+A3 seam. The final invariant is unconditional and applies to humans and
+agents alike: no grant → no operational scope → no operational data → no
+proposal target. Because `legacy_open` is the default posture and
+existing tenants may hold no grant rows, enforcement is staged: Central
+Command first REPORTS which principals would lose access, with enough
+detail to remediate, and enforcement follows in a later slice once
+tenants can act on it. This is a migration strategy and explicitly not a
+weaker final security model; the reporting surface is a deliverable, not
+a log line.
+
+**A22.11 — One attention composer.** The HTTP read and the in-process
+composer were near-verbatim duplicates whose `band` filter reordered
+`rank`, so an agent and an operator could see different priorities for
+identical state. There is one composer; `band` is a pure filter applied
+after ranking, which is what the endpoint's own contract already claimed.
+
+**A22.12 — Dispatch re-checks current lifecycle and identity.**
+Autonomous dispatch bypassed the CC-side gates, so a paused, retired or
+revoked agent still dispatched. A19's D3 semantics are unchanged and now
+enforced on both paths: an approved proposal retains its version and is
+never a guarantee of execution. Current identity, lifecycle, tenant,
+scope and hard safety gates remain authoritative at dispatch, and the
+node remains the final execution authority.
+
+**A22.13 — Effective permission is per grant and can never be `*`.** The
+agent scope loader resolved with `role_permissions=["*"]`, so the
+resulting scope answered `permits("action.approve")` with True. It was
+latent only because every call site read `.site_ids`. The wildcard is
+removed at the source rather than patched at call sites: a scope resolved
+for scope-expansion purposes carries no permissions and cannot be asked a
+permission question. The established model — route authorization →
+repository scope filter → object-level mutation gate — is preserved, and
+no route decorator is added.
+
+**A22.14 — Discovery, decision and execution stay three questions.**
+*What capabilities exist, what do they require, is the executor
+implemented* is discovery. *What would this agent propose right now* is
+decision. *May this concrete proposal execute now* is execution.
+Capability discovery is never execution permission, and no A5 surface may
+collapse them. The canonical path is unchanged: Operational Agent →
+machine identity → RBAC/scope → capability catalogue → Capability
+Registry → current context → A5 interaction contract → autonomy/approval
+→ existing proposal/action path → existing execution funnel → Site
+Manager → node.
+
+**A22.15 — What A5 does not build.** No MCP. No external proposal
+ingress. No `POST /proposals`. No `/api/v1`, which is not a ratified
+deliverable. No external runtime or per-instance identity. No new
+permission. No autonomy change: no action class is mapped into the
+autonomy ladder by A5, and A21's rule stands — evidence of effectiveness
+is not authority to execute unattended. No Site Manager surface is
+exposed to any A5 consumer, directly or by proxy.

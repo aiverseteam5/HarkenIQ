@@ -33,12 +33,21 @@ and is deliberately not attempted here.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, Optional
 
 from harkeniq.autonomy.preconditions import (
+    ACTION_PARAMETERS,
     ACTION_REVERSIBILITY,
     ACTION_RISK,
     INVERSE_ACTION,
+    PTYPE_INTEGER,
+    PTYPE_JSON_OBJECT,
+    PTYPE_STRING,
+    REASON_PARAM,
+    SRC_CAMPAIGN,
+    SRC_COMPONENT,
+    SRC_UNAVAILABLE,
 )
 from harkeniq.models import ActionType
 
@@ -134,6 +143,8 @@ def action_facts() -> dict[str, dict[str, Any]]:
             "inverse_action": inverse.value if inverse else None,
             "implemented_by": impls[action.value],
             "implemented": bool(impls[action.value]),
+            # A22.2: what the class REQUIRES, beside what implements it.
+            **parameter_contract(action.value),
         }
     return facts
 
@@ -215,3 +226,181 @@ def effective_actions(declaration: Optional[dict]) -> Optional[frozenset[str]]:
     if effective is None:
         return None
     return frozenset(str(a) for a in effective)
+
+
+# ---------------------------------------------------------------------------
+# Action parameter contract: validation and resolution (spec A22.2, A22.3)
+# ---------------------------------------------------------------------------
+#
+# The declaration lives beside ACTION_RISK; the behaviour lives here, next
+# to `action_facts`, because every consumer that already asks this module
+# "what can this executor do" now asks it "and what does that require".
+# One import site, one answer.
+
+def parameter_specs(action_type: str) -> tuple:
+    """The declared parameters of one action class. () for unknown."""
+    try:
+        return ACTION_PARAMETERS[ActionType(action_type)]
+    except (KeyError, ValueError):
+        return ()
+
+
+def parameter_contract(action_type: str) -> dict:
+    """The parameter contract as a consumer reads it.
+
+    `satisfiable` is the fact A22.5 exists for: a class can be governed,
+    implemented and permitted and still have no way to obtain a truthful
+    value for something it requires. That is reported by name, never
+    hidden and never presented as executable.
+    """
+    specs = parameter_specs(action_type)
+    unsatisfiable = [
+        s for s in specs if s.required and s.source == SRC_UNAVAILABLE
+    ]
+    return {
+        "parameters": [
+            {
+                "name": s.name,
+                "type": s.type,
+                "required": s.required,
+                "source": s.source,
+                "default": s.default,
+                "constraint": s.constraint,
+                "missing_input": s.missing_input,
+            }
+            for s in specs
+        ] + [{
+            "name": REASON_PARAM.name,
+            "type": REASON_PARAM.type,
+            "required": False,
+            "source": REASON_PARAM.source,
+            "default": None,
+            "constraint": REASON_PARAM.constraint,
+            "missing_input": "",
+        }],
+        "required": [s.name for s in specs if s.required],
+        "agent_resolvable": not unsatisfiable,
+        "unsatisfiable_reason": (
+            f"{unsatisfiable[0].name}: {unsatisfiable[0].missing_input}"
+            if unsatisfiable else ""
+        ),
+    }
+
+
+def _type_ok(spec, value) -> tuple[bool, str]:
+    if spec.type == PTYPE_STRING:
+        if not isinstance(value, str) or not value.strip():
+            return False, f"{spec.name!r} must be a non-empty string"
+        return True, ""
+    if spec.type == PTYPE_INTEGER:
+        if isinstance(value, bool):
+            return False, f"{spec.name!r} must be an integer"
+        if isinstance(value, int):
+            return True, ""
+        try:
+            int(str(value))
+        except (TypeError, ValueError):
+            return False, f"{spec.name!r} must be an integer"
+        return True, ""
+    if spec.type == PTYPE_JSON_OBJECT:
+        # The wire carries a JSON STRING; the executor parses it. Matching
+        # the executor exactly is the point -- a contract that accepts what
+        # the executor rejects is not a contract.
+        if not isinstance(value, str) or not value.strip():
+            return False, f"{spec.name!r} must be a JSON object as a string"
+        try:
+            parsed = json.loads(value)
+        except ValueError as e:
+            return False, f"{spec.name!r} is not valid JSON: {e}"
+        if not isinstance(parsed, dict) or not parsed:
+            return False, f"{spec.name!r} must be a non-empty JSON object"
+        return True, ""
+    return False, f"{spec.name!r} has an undeclared type {spec.type!r}"
+
+
+def validate_action_params(action_type: str, params: dict) -> tuple[bool, str]:
+    """Does this payload satisfy the class's declared contract? (A22.3.)
+
+    Called BEFORE a proposal exists, and by skill validation. Strict on
+    unknown keys deliberately: a typo caught here is caught once, while a
+    typo that reaches the node is a proposal a human approves, a dispatch
+    that travels three services, and a refusal whose cause is invisible.
+    """
+    try:
+        action = ActionType(action_type)
+    except ValueError:
+        return False, f"{action_type!r} is not an action class this platform governs"
+
+    specs = {s.name: s for s in ACTION_PARAMETERS[action]}
+    specs[REASON_PARAM.name] = REASON_PARAM
+    given = dict(params or {})
+
+    for name in sorted(given):
+        if name not in specs:
+            return False, (
+                f"{action.value} does not declare a parameter {name!r} "
+                f"(declared: {', '.join(sorted(specs)) or 'none'})"
+            )
+    for name, spec in sorted(specs.items()):
+        if name not in given:
+            if spec.required:
+                return False, f"{action.value} requires a {name!r} parameter"
+            continue
+        ok, why = _type_ok(spec, given[name])
+        if not ok:
+            return False, why
+    return True, ""
+
+
+def resolve_action_params(
+    action_type: str, *, component: str = "", reason: str = "",
+) -> tuple[Optional[dict], str]:
+    """Build a valid payload from reported evidence, or refuse and say why.
+
+    This is the whole of A22.4's consumer side. It NEVER guesses: a class
+    needing a component gets one only if the Site Manager reported one,
+    and a class needing something this platform cannot supply is refused
+    with the missing input named. Returning ``({"reason": ...}, "")`` for
+    everything is precisely the defect A5 exists to fix.
+    """
+    try:
+        action = ActionType(action_type)
+    except ValueError:
+        return None, f"{action_type!r} is not an action class this platform governs"
+
+    params: dict[str, Any] = {}
+    if reason:
+        params[REASON_PARAM.name] = reason
+
+    for spec in ACTION_PARAMETERS[action]:
+        if spec.source == SRC_UNAVAILABLE:
+            if spec.required:
+                return None, (
+                    f"{action.value} requires {spec.name!r} and "
+                    f"{spec.missing_input}"
+                )
+            continue
+        if spec.source == SRC_COMPONENT:
+            if not component:
+                return None, (
+                    f"{action.value} requires {spec.name!r}, which names the "
+                    f"affected component, and no component was reported for "
+                    f"this condition"
+                )
+            params[spec.name] = component
+            continue
+        if spec.source == SRC_CAMPAIGN:
+            if spec.required:
+                return None, (
+                    f"{action.value} requires {spec.name!r}, which only "
+                    f"campaign orchestration supplies; it is not proposed "
+                    f"in response to a fault"
+                )
+            continue
+        # SRC_DEFAULT: the executor applies the same value. Leaving it out
+        # keeps the payload honest about what was actually decided.
+
+    ok, why = validate_action_params(action.value, params)
+    if not ok:  # pragma: no cover - the loop above cannot produce this
+        return None, why
+    return params, ""

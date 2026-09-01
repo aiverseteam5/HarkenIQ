@@ -359,6 +359,11 @@ class TestTheGovernanceHolds:
                 incident_id="inc-2", tenant_id=TENANT, site_id=site_id,
                 kind="device", status="open", title="disk failing",
                 device_agent_id="node-1", subsystem="disk",
+                # A22.4: IDENTIFY_LED requires a 'target'. Before A5 the
+                # evaluator emitted params={"reason": ...} for every class,
+                # so this proposal reached a human and would have been
+                # refused at the node. The component is what makes it real.
+                components=[{"component": "Disk.Bay.3", "severity": "CRITICAL"}],
             ))
             await session.commit()
         await _make_agent(

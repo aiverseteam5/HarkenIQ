@@ -48,7 +48,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
-from harkeniq.capabilities import effective_actions
+from harkeniq.capabilities import (
+    effective_actions,
+    parameter_contract,
+    resolve_action_params,
+)
 from harkeniq_cc.agent_activation import activation_provenance
 from harkeniq_cc.capabilities import (
     implemented_actions,
@@ -429,6 +433,9 @@ def _observed_conditions(device, incidents: list[dict]) -> list[dict]:
             "subsystem": "bmc",
             "detail": f"device observation is {observation!r}",
             "incident_ids": [],
+            # A whole-device condition names no component, and the classes
+            # it maps to (BMC_RESET, POWER_CYCLE) require none.
+            "components": [],
         })
     for inc in incidents:
         subsystem = (inc.get("subsystem") or "").lower()
@@ -440,8 +447,42 @@ def _observed_conditions(device, incidents: list[dict]) -> list[dict]:
             "detail": inc.get("title") or f"open {subsystem} incident",
             "incident_ids": [inc.get("incident_id")],
             "diagnosis": bool(inc.get("diagnosis") or inc.get("explanation")),
+            # A22.4: carried verbatim. None (Site Manager has not reported)
+            # and [] (reported, nothing named) are different answers and the
+            # parameter resolver treats them the same way -- refuse -- but
+            # for reasons an operator can tell apart.
+            "components": inc.get("components"),
         })
     return conditions
+
+
+#: Severity order for choosing WHICH component a proposal addresses when a
+#: subsystem fault names several. Newest-first is the Site Manager's order;
+#: severity beats recency because a CRITICAL drive matters more than a
+#: WARNING one reported a minute later.
+_SEVERITY_RANK = {"CRITICAL": 0, "WARNING": 1, "TRENDING": 2}
+
+
+def _primary_component(condition: dict) -> str:
+    """The component a proposal for this condition should address.
+
+    Returns "" when nothing was reported, which the parameter resolver
+    turns into a refusal naming the missing evidence. One proposal
+    addresses one component: a device with three failing drives gets one
+    IDENTIFY_LED for the worst of them and the rest ride in the evidence,
+    because lighting three LEDs at once identifies nothing.
+    """
+    components = condition.get("components") or []
+    if not isinstance(components, list):
+        return ""
+    ranked = sorted(
+        (c for c in components if isinstance(c, dict) and c.get("component")),
+        key=lambda c: (
+            _SEVERITY_RANK.get(str(c.get("severity", "")).upper(), 9),
+            str(c.get("at", "")),
+        ),
+    )
+    return str(ranked[0]["component"]) if ranked else ""
 
 
 def _candidates_for(condition: dict, catalogue: dict) -> list[dict]:
@@ -492,6 +533,211 @@ def _rationale(agent_name: str, device, condition: dict, candidate: dict,
     return head
 
 
+#: Refusal codes that are normal traffic, not findings. A class the agent
+#: is not bound to, or an already-open proposal, is the system working;
+#: listing them in a dry-run would bury the answers that matter.
+_QUIET_CODES = frozenset({"not_bound", "duplicate"})
+
+
+def govern_proposal(
+    *,
+    agent,
+    actor: str,
+    device,
+    condition: dict,
+    candidate: dict,
+    allowed_classes,
+    class_rows: dict,
+    autonomy_contract: dict,
+    attention: Optional[dict] = None,
+    stop_switch_active: bool = False,
+    open_dedupe_keys=(),
+    now=None,
+) -> dict:
+    """One governed verdict for one (agent, device, condition, capability).
+
+    THE function, singular (A22.6). The evaluator's loop called an inline
+    body, so there was no name for "what does governance say about this
+    one candidate" -- which is exactly the thing a dry-run has to answer
+    and a later external ingress has to call. Extracting it is what makes
+    the preview and the runtime provably the same reasoning rather than
+    two implementations that agree today.
+
+    Returns ``{"admitted", "code", "reason", "proposal", "dedupe_key"}``.
+    It decides; it does not write, and it never widens anything: every
+    check below already existed and none was added or removed.
+    """
+    now = now or datetime.now(timezone.utc)
+    action_type = candidate["action_type"]
+
+    if action_type not in allowed_classes:
+        return _refused("not_bound", f"{action_type} is not bound to this agent")
+
+    class_row = class_rows.get(action_type)
+    if class_row is None:
+        # The contract does not describe this class, which means the
+        # executor does not have it. Never propose into a class the
+        # platform cannot run.
+        return _refused(
+            "capability_unimplemented",
+            f"no executor on this platform implements {action_type}",
+        )
+
+    # Capability Registry: the contract describing a class says the
+    # PLATFORM governs it, not that THIS device can run it. A switch bound
+    # to CLEAR_COUNTERS passes every check above and is refused by the node
+    # every time, because SONiC exposes no gNMI counter clear -- the
+    # proposal, the human approval and the dispatch were all wasted, and
+    # nothing upstream could say why.
+    #
+    # CAPABILITY, NOT POLICY: the test is what the device's protocol
+    # IMPLEMENTS, not what its allow list currently permits. A node that
+    # implements a class but does not permit it must still be proposed for
+    # -- the node's refusal is the ratified final authority and becomes
+    # attributed evidence in the error budget, which is exactly how an
+    # operator learns the policy is wrong. Silently withholding the
+    # proposal would hide that.
+    #
+    # Unknown never blocks: a device that has not declared may well be
+    # capable, and refusing it would silence an agent for an entire fleet
+    # mid-upgrade. Only a device that HAS declared, whose protocol does not
+    # implement this class, is a proven no.
+    device_reach = implemented_actions(getattr(device, "capabilities", None))
+    if device_reach is not None and action_type not in device_reach:
+        return _refused(
+            "device_incapable",
+            f"this device's protocol does not implement {action_type}",
+        )
+
+    # A22.3: parameters BEFORE a proposal exists. Until A5 every proposal
+    # carried params={"reason": ...} regardless of class, so IDENTIFY_LED,
+    # CONFIG_RESTORE, POWER_CAP_ADJUST and INTERFACE_* were proposed,
+    # approved by a human, dispatched, and refused at the node every time.
+    component = _primary_component(condition)
+    params, why = resolve_action_params(
+        action_type, component=component, reason=candidate["because"],
+    )
+    if params is None:
+        return _refused("parameters_unresolvable", why)
+
+    # The key names the CONDITION, not just the class: a new incident is
+    # new work, but the same open incident must not be re-proposed every
+    # pass. Without the condition, a permanently-refused action came back
+    # on the next cycle forever (live-stack finding). A5 adds the
+    # component, because two failing drives under one incident are two
+    # pieces of work -- and the pre-A5 key is checked too, so an upgrade
+    # does not re-propose everything currently open.
+    condition_ref = (
+        (condition.get("incident_ids") or [None])[0] or condition["kind"]
+    )
+    base_key = f"{agent.id}:{device.agent_id}:{action_type}:{condition_ref}"
+    dedupe_key = f"{base_key}:{component}" if component else base_key
+    open_keys = set(open_dedupe_keys)
+    if dedupe_key in open_keys or base_key in open_keys:
+        return _refused("duplicate", "an equivalent proposal is already open")
+
+    disposition_verdict = effective_disposition(
+        agent, class_row, stop_switch_active,
+    )
+    blocking = disposition_verdict["blocking_conditions"]
+    disposition = disposition_verdict["disposition"]
+
+    if device.site_id in _suppressed_sites(class_row):
+        disposition = REQUIRES_APPROVAL
+        blocking = blocking + [{
+            "code": "site_suppressed",
+            "detail": (
+                "a fault domain at this site is suppressing correlated "
+                "conclusions; a human should look before anything runs here"
+            ),
+            "scope": "site",
+            "site_id": device.site_id,
+        }]
+
+    if disposition == DENIED:
+        status = PROPOSAL_BLOCKED
+    elif disposition == AUTONOMOUS:
+        status = PROPOSAL_APPROVED
+    else:
+        status = PROPOSAL_AWAITING
+
+    attention = attention or {}
+    evidence = {
+        "observed": condition["detail"],
+        "condition_kind": condition["kind"],
+        "subsystem": condition["subsystem"],
+        "incident_ids": [i for i in condition.get("incident_ids", []) if i],
+        "has_diagnosis": bool(condition.get("diagnosis")),
+        "remediation_provenance": candidate["provenance"],
+        # A22.4: the component this proposal addresses, and every other
+        # component the same condition names. One action identifies one
+        # drive; the operator still needs to know there were three.
+        "component": component,
+        "components_reported": condition.get("components"),
+        "attention": {
+            "rank": attention.get("rank"),
+            "band": attention.get("band"),
+            "driver": attention.get("attention_driver"),
+            "risk_score": attention.get("risk_score"),
+        } if attention else None,
+        "outcome_evidence": class_row.get("evidence"),
+        "learned_signals": class_row.get("learning") or [],
+        "device": {
+            "vendor": getattr(device, "vendor", ""),
+            "model": getattr(device, "model", ""),
+            "device_class": getattr(device, "device_class", "server"),
+            "health": getattr(device, "health", ""),
+            "observation": getattr(device, "observation", ""),
+        },
+        "contract_version": autonomy_contract.get("contract_version"),
+        "evaluated_at": now.isoformat(),
+    }
+
+    return {
+        "admitted": True,
+        "code": "",
+        "reason": "",
+        "dedupe_key": dedupe_key,
+        "proposal": {
+            "tenant_id": agent.tenant_id,
+            "agent_id": agent.id,
+            "actor": actor,
+            "agent_version": agent.version,
+            "site_id": device.site_id,
+            "device_agent_id": device.agent_id,
+            "action_type": action_type,
+            "params": params,
+            "rationale": _rationale(
+                agent.name, device, condition, candidate, class_row,
+            ),
+            "evidence": evidence,
+            "disposition": disposition,
+            "disposition_reason": (
+                disposition_verdict["disposition_reason"]
+                or (blocking[0]["detail"] if blocking else "")
+            ),
+            "blocking_conditions": blocking,
+            "authorization_basis": (
+                BASIS_AUTONOMOUS if disposition == AUTONOMOUS else BASIS_HUMAN
+            ),
+            "status": status,
+            "decided_by": (
+                f"autonomy:level-{class_row.get('granted_at_level')}"
+                if disposition == AUTONOMOUS else ""
+            ),
+            "decided_at": now if disposition == AUTONOMOUS else None,
+            "dedupe_key": dedupe_key,
+        },
+    }
+
+
+def _refused(code: str, reason: str) -> dict:
+    return {
+        "admitted": False, "code": code, "reason": reason,
+        "proposal": None, "dedupe_key": "",
+    }
+
+
 def evaluate(
     *,
     agent,
@@ -503,6 +749,11 @@ def evaluate(
     attention_by_device: Optional[dict[str, dict]] = None,
     open_dedupe_keys: Iterable[str] = (),
     proposals_today: int = 0,
+    #: A5 (A22.7): when a list is passed, every candidate governance
+    #: WITHHELD is appended with the reason. The runtime passes None; the
+    #: dry-run passes a list, which is how a preview says "and here is what
+    #: I did NOT propose, and why" without a second evaluator existing.
+    withheld: Optional[list] = None,
     #: E1.2: sites an `org_unit` scope expands to, resolved by the ONE
     #: scope resolver before this pure function is called.
     resolved_site_ids: Iterable[str] = (),
@@ -564,144 +815,34 @@ def evaluate(
             if made_for_device:
                 break
             for candidate in _candidates_for(condition, catalogue):
-                action_type = candidate["action_type"]
-                if action_type not in allowed_classes:
-                    continue
-                class_row = class_rows.get(action_type)
-                if class_row is None:
-                    # The contract does not describe this class, which
-                    # means the executor does not have it. Never propose
-                    # into a class the platform cannot run.
-                    continue
-                # Capability Registry: the contract describing a class
-                # says the PLATFORM governs it, not that THIS device can
-                # run it. A switch bound to CLEAR_COUNTERS passes every
-                # check above and is refused by the node every time,
-                # because SONiC exposes no gNMI counter clear -- the
-                # proposal, the human approval and the dispatch were all
-                # wasted, and nothing upstream could say why.
-                #
-                # CAPABILITY, NOT POLICY: the test is what the device's
-                # protocol IMPLEMENTS, not what its allow list currently
-                # permits. A node that implements a class but does not
-                # permit it must still be proposed for -- the node's
-                # refusal is the ratified final authority and becomes
-                # attributed evidence in the error budget, which is
-                # exactly how an operator learns the policy is wrong.
-                # Silently withholding the proposal would hide that.
-                #
-                # Unknown never blocks: a device that has not declared
-                # may well be capable, and refusing it would silence an
-                # agent for an entire fleet mid-upgrade. Only a device
-                # that HAS declared, whose protocol does not implement
-                # this class, is a proven no.
-                device_reach = implemented_actions(
-                    getattr(device, "capabilities", None)
+                verdict = govern_proposal(
+                    agent=agent,
+                    actor=actor,
+                    device=device,
+                    condition=condition,
+                    candidate=candidate,
+                    allowed_classes=allowed_classes,
+                    class_rows=class_rows,
+                    autonomy_contract=autonomy_contract,
+                    attention=attention_by_device.get(device.agent_id),
+                    stop_switch_active=stop_switch_active,
+                    open_dedupe_keys=open_keys,
+                    now=now,
                 )
-                if device_reach is not None and action_type not in device_reach:
+                if not verdict["admitted"]:
+                    if withheld is not None and verdict["code"] not in _QUIET_CODES:
+                        withheld.append({
+                            "device_agent_id": device.agent_id,
+                            "site_id": device.site_id,
+                            "action_type": candidate["action_type"],
+                            "subsystem": condition["subsystem"],
+                            "condition": condition["detail"],
+                            "code": verdict["code"],
+                            "reason": verdict["reason"],
+                        })
                     continue
-                # The key names the CONDITION, not just the class: a
-                # new incident is new work, but the same open incident
-                # must not be re-proposed every pass. Without the
-                # condition, a permanently-refused action came back on
-                # the next cycle forever (live-stack finding).
-                condition_ref = (
-                    (condition.get("incident_ids") or [None])[0]
-                    or condition["kind"]
-                )
-                dedupe_key = (
-                    f"{agent.id}:{device.agent_id}:{action_type}:{condition_ref}"
-                )
-                if dedupe_key in open_keys:
-                    continue
-
-                verdict = effective_disposition(
-                    agent, class_row, stop_switch_active,
-                )
-                blocking = verdict["blocking_conditions"]
-                disposition = verdict["disposition"]
-
-                if device.site_id in _suppressed_sites(class_row):
-                    disposition = REQUIRES_APPROVAL
-                    blocking = blocking + [{
-                        "code": "site_suppressed",
-                        "detail": (
-                            "a fault domain at this site is suppressing "
-                            "correlated conclusions; a human should look "
-                            "before anything runs here"
-                        ),
-                        "scope": "site",
-                        "site_id": device.site_id,
-                    }]
-
-                if disposition == DENIED:
-                    status = PROPOSAL_BLOCKED
-                elif disposition == AUTONOMOUS:
-                    status = PROPOSAL_APPROVED
-                else:
-                    status = PROPOSAL_AWAITING
-
-                attention = attention_by_device.get(device.agent_id) or {}
-                evidence = {
-                    "observed": condition["detail"],
-                    "condition_kind": condition["kind"],
-                    "subsystem": condition["subsystem"],
-                    "incident_ids": [
-                        i for i in condition.get("incident_ids", []) if i
-                    ],
-                    "has_diagnosis": bool(condition.get("diagnosis")),
-                    "remediation_provenance": candidate["provenance"],
-                    "attention": {
-                        "rank": attention.get("rank"),
-                        "band": attention.get("band"),
-                        "driver": attention.get("attention_driver"),
-                        "risk_score": attention.get("risk_score"),
-                    } if attention else None,
-                    "outcome_evidence": class_row.get("evidence"),
-                    "learned_signals": class_row.get("learning") or [],
-                    "device": {
-                        "vendor": getattr(device, "vendor", ""),
-                        "model": getattr(device, "model", ""),
-                        "device_class": getattr(device, "device_class", "server"),
-                        "health": getattr(device, "health", ""),
-                        "observation": getattr(device, "observation", ""),
-                    },
-                    "contract_version": autonomy_contract.get("contract_version"),
-                    "evaluated_at": now.isoformat(),
-                }
-
-                proposals.append({
-                    "tenant_id": agent.tenant_id,
-                    "agent_id": agent.id,
-                    "actor": actor,
-                    "agent_version": agent.version,
-                    "site_id": device.site_id,
-                    "device_agent_id": device.agent_id,
-                    "action_type": action_type,
-                    "params": {"reason": candidate["because"]},
-                    "rationale": _rationale(
-                        agent.name, device, condition, candidate, class_row,
-                    ),
-                    "evidence": evidence,
-                    "disposition": disposition,
-                    "disposition_reason": (
-                        verdict["disposition_reason"]
-                        or (blocking[0]["detail"] if blocking else "")
-                    ),
-                    "blocking_conditions": blocking,
-                    "authorization_basis": (
-                        BASIS_AUTONOMOUS if disposition == AUTONOMOUS
-                        else BASIS_HUMAN
-                    ),
-                    "status": status,
-                    "decided_by": (
-                        f"autonomy:level-{class_row.get('granted_at_level')}"
-                        if disposition == AUTONOMOUS else ""
-                    ),
-                    "decided_at": now if disposition == AUTONOMOUS else None,
-                    "dedupe_key": dedupe_key,
-                })
-                open_keys.add(dedupe_key)
+                proposals.append(verdict["proposal"])
+                open_keys.add(verdict["dedupe_key"])
                 budget_left -= 1
                 made_for_device = True
                 break
@@ -747,7 +888,16 @@ def _capability_view(
         allowed = effective_actions(declaration)
         if allowed is not None and action_type in allowed:
             permitted += 1
-    if permitted:
+    # A5 (A22.5): a class whose required parameter nothing can supply is
+    # never proposable, however capable and permitted the nodes are.
+    # Reporting it as "available" would present it as executable, which
+    # is exactly what A22.5 forbids -- and it is a different problem with
+    # a different remedy from a policy or a reach problem, so it gets its
+    # own name rather than being folded into one of theirs.
+    contract = parameter_contract(action_type)
+    if not contract["agent_resolvable"]:
+        state = "no_parameter_source"
+    elif permitted:
         state = "available"
     elif capable:
         # The code is there and no node permits it. The agent will
@@ -768,6 +918,11 @@ def _capability_view(
         "capable_devices": capable,
         "undeclared_devices": undeclared,
         "devices_in_scope": len(in_scope),
+        # Beside, never merged: what it requires, and whether anything
+        # here can supply it.
+        "required_parameters": contract["required"],
+        "parameters_resolvable": contract["agent_resolvable"],
+        "parameter_reason": contract["unsatisfiable_reason"],
     }
 
 

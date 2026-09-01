@@ -40,6 +40,7 @@ from harkeniq_sm.db.repos import (
     IncidentRepo,
     SiteRepo,
     StatusRepo,
+    TelemetryRepo,
 )
 from harkeniq_sm.ingest import IngestService
 
@@ -998,10 +999,14 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             for inc in open_incidents:
                 # Resolve device_agent_id from device_id
                 device_agent_id = ""
+                components: list[dict] = []
                 if inc.device_id:
                     dev = await DeviceRepo(session).get(inc.device_id)
                     if dev:
                         device_agent_id = dev.agent_id
+                    components = await TelemetryRepo(session).affected_components(
+                        inc.device_id, inc.subsystem or "",
+                    )
                 fleet_incidents.append(
                     harkeniq_pb2.FleetIncident(
                         incident_id=inc.id,
@@ -1023,6 +1028,13 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                         ),
                         explanation_json=(
                             json.dumps(inc.explanation) if inc.explanation else ""
+                        ),
+                        # A22.4: WHICH component, not just which subsystem.
+                        # Empty stays empty -- an incident with no reported
+                        # component is unknown at Central Command, and an
+                        # agent refuses to propose rather than guess one.
+                        components_json=(
+                            json.dumps(components) if components else ""
                         ),
                     )
                 )

@@ -544,9 +544,22 @@ async def _record_executions(stack, site_id, actor: str, count: int):
 
 async def _autonomous_proposal(stack, site_id, actor: str, agent_id: str,
                                basis="autonomous_grant", key="k1"):
-    from harkeniq_cc.db.models import CCAgentProposal
+    """An approved proposal, for an agent that is actually RUNNING.
+
+    A5 (A22.12) re-checks current lifecycle at dispatch, so an agent left
+    in `draft` here would be correctly refused -- a proposal attributed to
+    an agent nobody ever switched on must not execute. In production only
+    an active agent proposes at all (`EVALUATING_STATUSES`), so activating
+    the row is what makes this shortcut match the runtime rather than
+    weakening the gate to match the shortcut.
+    """
+    from harkeniq_cc.db.models import CCAgentProposal, CCOperationalAgent
 
     async with stack.sessionmaker() as session:
+        agent = await session.get(CCOperationalAgent, agent_id)
+        if agent is not None and agent.status == "draft":
+            agent.status = "active"
+            agent.activated_version = agent.version
         row = CCAgentProposal(
             tenant_id=TENANT, agent_id=agent_id, actor=actor, agent_version=1,
             site_id=site_id, device_agent_id="node-1", action_type="SEL_CLEAR",

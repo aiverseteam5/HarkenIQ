@@ -16,26 +16,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
-from harkeniq_cc.attention import build_attention
+from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.db.repos import (
-    ApprovalRouteRepo,
-    CveFeedRepo,
-    FleetCacheRepo,
-    FleetPatternRepo,
-    IncidentRepo,
-    LearnedSignalRepo,
-    OutcomeHistoryRepo,
-    SiteRepo,
-    WarrantyRepo,
-)
-from harkeniq_cc.exposure import match_exposures
-from harkeniq_cc.predictive import (
-    cohort_failure_rates,
-    score_device,
-)
-from harkeniq_cc.warranty.base import warranty_status
+from harkeniq_cc.governance import load_attention
 
 router = APIRouter(prefix="/api/attention", tags=["attention"])
 
@@ -51,74 +34,28 @@ async def attention(
     ),
     limit: int = Query(200, ge=1, le=1000),
     user: UserContext = Depends(require_permission("fleet.view")),
+    scope=Depends(get_scope),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Ranked attention list plus a site rollup, with evidence and the
     next governed capability for each device.
 
-    Every read below is tenant-scoped by its repository; `site_id` narrows
-    within the tenant and can never widen beyond it.
+    A thin caller over the ONE composer (A22.11). This router used to
+    carry a near-verbatim copy whose `band` filter ran before ranking, so
+    an operator filtering to "high" and an Operational Agent reading the
+    same tenant saw different priorities for identical state -- and rank
+    decides which devices consume an agent's proposal budget.
+
+    E1.2 scope is now applied (A22.9). It never was: the route was
+    declared READ_SCOPED and filtered nothing, so a site-scoped principal
+    read every site. This is also the one read every Operational Agent is
+    required to hold, which is why it is the first defect A5 fixes.
     """
-    tenant_id = user.tenant_id
-
-    devices = await FleetCacheRepo(session).list_all(tenant_id)
-    if site_id:
-        devices = [d for d in devices if d.site_id == site_id]
-
-    outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
-    warranty_map = await WarrantyRepo(session).get_map(
-        [d.service_tag for d in devices], tenant_id=tenant_id
+    return await load_attention(
+        session,
+        tenant_id=user.tenant_id,
+        site_id=site_id,
+        scope=scope,
+        band=band,
+        limit=limit,
     )
-    cve_entries = await CveFeedRepo(session).list_all(tenant_id=tenant_id)
-    pending_routes = await ApprovalRouteRepo(session).list_pending(tenant_id)
-    patterns = await FleetPatternRepo(session).list_patterns(tenant_id=tenant_id)
-    sites = await SiteRepo(session).list_all(tenant_id)
-    # S3: durable learned signals — what the fleet already knows. Survives
-    # restart, which is what lets yesterday's learning reach today's answer.
-    learned = await LearnedSignalRepo(session).list_active(tenant_id)
-    # S4: open incidents, so attention can point at a real diagnosis.
-    open_incidents = await IncidentRepo(session).list_incidents(
-        tenant_id, status="open", site_id=site_id, limit=1000,
-    )
-
-    # Score with the existing model — this endpoint adds no risk maths.
-    cohorts = cohort_failure_rates(outcomes)
-    by_device: dict[str, list[dict]] = {}
-    for oc in outcomes:
-        by_device.setdefault(oc["device_agent_id"], []).append(oc)
-
-    risks = []
-    for dev in devices:
-        warranty = warranty_map.get(dev.service_tag)
-        risk = score_device(
-            agent_id=dev.agent_id,
-            outcomes=by_device.get(dev.agent_id, []),
-            cohort_failure_rate=cohorts.get((dev.vendor, dev.model)),
-            health=dev.health,
-            warranty_status=warranty_status(warranty.end_date) if warranty else "",
-            vendor=dev.vendor,
-            model=dev.model,
-        )
-        risk.site_id = dev.site_id
-        risk.agent_name = dev.agent_name
-        if band and risk.band != band:
-            continue
-        risks.append(risk)
-
-    result = build_attention(
-        devices=devices,
-        risks=risks,
-        exposures=match_exposures(devices, cve_entries),
-        warranty_map=warranty_map,
-        pending_routes=pending_routes,
-        patterns=patterns,
-        sites=sites,
-        tenant_id=tenant_id,
-        learned_signals=learned,
-        incidents=open_incidents,
-    )
-    # Rank is assigned before truncation, so "rank 1" always means first in
-    # the tenant, never first on the page.
-    result["items"] = result["items"][:limit]
-    result["returned"] = len(result["items"])
-    return result

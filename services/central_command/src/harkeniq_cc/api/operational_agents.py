@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -443,8 +445,12 @@ def _enforce_delegation_ceiling(creator_scope, scopes) -> None:
             )
 
 
-def _scope_rule_within(creator_scope, rule) -> bool:
-    """Does the creator hold `site.manage` over this requested scope?
+def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> bool:
+    """Does the caller hold `permission` over this scope rule?
+
+    ONE implementation, asked by the delegation ceiling with
+    `site.manage` and by A5's dry-run with `fleet.view`. A hand-written
+    second copy is what made S6's headline org-unit case a 500.
 
     Note what does NOT count: contextual visibility. A cluster manager
     who can see Region West as a breadcrumb cannot bind an agent to it,
@@ -452,19 +458,19 @@ def _scope_rule_within(creator_scope, rule) -> bool:
     `contextual_unit_ids`.
     """
     if rule.scope_type == SCOPE_SITE:
-        return creator_scope.permits("site.manage", site_id=rule.scope_ref)
+        return creator_scope.permits(permission, site_id=rule.scope_ref)
     if rule.scope_type == SCOPE_ORG_UNIT:
         path = creator_scope.unit_paths.get(rule.scope_ref, "")
         return bool(path) and creator_scope.permits(
-            "site.manage", org_unit_path=path
+            permission, org_unit_path=path
         )
     if rule.scope_type == SCOPE_DEVICE:
         return creator_scope.permits(
-            "site.manage", device_agent_id=rule.scope_ref
+            permission, device_agent_id=rule.scope_ref
         )
     # `device_class` spans the whole fleet, so only a tenant-wide
     # principal may delegate one. Anything narrower would silently widen.
-    return creator_scope.permits("site.manage", tenant_object=True)
+    return creator_scope.permits(permission, tenant_object=True)
 
 
 async def _agent_scope_rules(repo, agent_id):
@@ -1369,6 +1375,216 @@ async def get_identity(
             "detail": "this agent has no machine identity",
         }
     return {"exists": True, **_identity_dict(row, agent)}
+
+
+# ---------------------------------------------------------------------------
+# Dry-run: what WOULD this agent do, right now (A22.7)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{agent_id}/dry-run",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def dry_run_agent(
+    agent_id: str,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """What this agent WOULD propose against current state. Writes nothing.
+
+    The capability A5 exists for: until now you could not ask an agent
+    what it would do about an incident without it doing it. `run_once`
+    had no trigger and evaluation was cadence-only, so commissioning an
+    agent meant switching it on and watching.
+
+    A READ, and a GET, because it writes nothing. It was drafted as a
+    POST and the route contract refused it -- "a mutation must resolve
+    its target to a scope" -- which was the right answer to the wrong
+    shape: the fix is the verb, not an exception carved into an invariant
+    that exists to stop exactly this.
+
+    Governed as a read (A22.8): `fleet.view`, which A20.3's machine
+    ceiling already carries, so an agent may invoke its OWN dry-run with
+    no change to that ceiling. The self-restriction is an object-level
+    gate below -- an identity may dry-run its own agent and no other --
+    because "which object" is the layer E1.2 assigns that question to,
+    and widening the ceiling to reach the same outcome would promote an
+    object question into a permission.
+
+    It calls the SAME `govern_proposal` the runtime calls (A22.6). A
+    preview that reasoned differently from the runtime would be worse
+    than no preview. It creates no proposal, spends no budget, dispatches
+    nothing and decides nothing.
+    """
+    # AGENT_PERMISSIONS from its existing home, deliberately: it and
+    # MACHINE_PRINCIPAL_CEILING are two constants holding one value with
+    # nothing tying them together (defect D10), and that is a NAMED
+    # follow-up, not something A5 fixes in passing while standing next
+    # to it. Using the runtime's own constant keeps the preview and the
+    # runtime asking the contract the same way.
+    from harkeniq_cc.agent_runtime import AGENT_PERMISSIONS, _incidents_by_device
+    from harkeniq_cc.capability_catalogue import candidates_for
+    from harkeniq_cc.db.repos import (
+        AgentProposalRepo, CapabilityCatalogueRepo, FleetCacheRepo,
+    )
+    from harkeniq_cc.governance import (
+        load_agent_scope, load_attention, load_autonomy_contract,
+    )
+    from harkeniq_cc.machine_identity import is_machine
+    from harkeniq_cc.operational_agent import (
+        BASIS_AUTONOMOUS, attribution_key, evaluate, resolve_scope,
+    )
+
+    tenant_id = user.tenant_id
+    agent = await _require_agent(session, tenant_id, agent_id)
+
+    # A22.8: an agent reasons about ITSELF and nothing else. `user_id` is
+    # the agent id for a machine principal, which is what makes this one
+    # comparison rather than a second identity model.
+    if is_machine(user) and user.user_id != agent_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "a machine identity may dry-run its own agent and no other"
+            ),
+        )
+
+    repo = OperationalAgentRepo(session)
+    scopes = await repo.list_scopes(agent_id)
+
+    # A preview shows what the agent would do across ITS OWN reach, which
+    # may span sites this caller cannot operate. Narrowing the answer to
+    # the caller would be worse than refusing it -- a partial preview is
+    # not what the agent would do -- so the caller must be able to reach
+    # every site the agent's scope names. Same rule activation applies,
+    # and asked explicitly rather than falling through to the tenant
+    # question on an empty site id (the A2 completion-slice finding).
+    if not is_machine(user):
+        for row in scopes:
+            if not _scope_rule_within(scope, row, "fleet.view"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"this agent reaches {row.scope_type} "
+                        f"{row.scope_ref!r}, which is outside your authorized "
+                        "scope; a preview shows what the agent would do "
+                        "across its whole reach, and narrowing it would not "
+                        "be what the agent would do"
+                    ),
+                )
+
+    devices = await FleetCacheRepo(session).list_all(tenant_id)
+    incidents = await _incidents_by_device(session, tenant_id)
+    caps = await repo.list_capabilities(agent_id)
+    agent_scope = await load_agent_scope(
+        session, tenant_id=tenant_id, agent_id=agent_id,
+    )
+    attention = {
+        item["agent_id"]: item
+        for item in (await load_attention(
+            session, tenant_id=tenant_id, scope=agent_scope,
+        ))["items"]
+    }
+    contract = await load_autonomy_contract(
+        session,
+        tenant_id=tenant_id,
+        actor_id=attribution_key(agent_id, agent.version),
+        actor_species="agent",
+        permissions=AGENT_PERMISSIONS,
+    )
+    catalogue_rows = await CapabilityCatalogueRepo(session).list_for_tenant(
+        tenant_id
+    )
+    catalogue = {
+        sub: candidates_for(catalogue_rows, sub)
+        for sub in {r.subsystem for r in catalogue_rows}
+    }
+    prop_repo = AgentProposalRepo(session)
+    midnight = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+
+    # The SAME resolver the evaluator uses, so "in scope" here and "in
+    # scope" there cannot drift (the A17 lesson, applied to the preview).
+    in_scope = resolve_scope(scopes, devices, agent_scope.site_ids)
+
+    withheld: list[dict] = []
+    would_propose = evaluate(
+        catalogue=catalogue,
+        agent=agent,
+        scopes=scopes,
+        resolved_site_ids=agent_scope.site_ids,
+        capabilities=caps,
+        devices=devices,
+        incidents_by_device=incidents,
+        autonomy_contract=contract,
+        attention_by_device=attention,
+        open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
+        proposals_today=await prop_repo.count_since(
+            tenant_id, agent_id, midnight,
+        ),
+        withheld=withheld,
+    )
+
+    # Read every ORM attribute BEFORE the rollback below: a rollback
+    # expires the identity map, and touching an expired attribute would
+    # try to lazy-load on a closed transaction.
+    agent_version = agent.version
+    agent_status = agent.status
+
+    # Nothing above added, flushed or committed. Rolling back is belt and
+    # braces: A22.7 says "writes nothing" and the acceptance proves it by
+    # table snapshot, so the code should not be the only thing asserting it.
+    await session.rollback()
+
+    return {
+        "agent_id": agent_id,
+        "agent_version": agent_version,
+        "actor": attribution_key(agent_id, agent_version),
+        "status": agent_status,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "dry_run": True,
+        "wrote": [],
+        "devices_in_scope": len(in_scope),
+        "would_propose": [
+            {
+                "device_agent_id": p["device_agent_id"],
+                "site_id": p["site_id"],
+                "action_type": p["action_type"],
+                # A22.2: the REAL parameters, resolved and validated. This
+                # is the field that would have exposed the A4 defect: every
+                # proposal used to carry {"reason": ...} whatever the class.
+                "params": p["params"],
+                "disposition": p["disposition"],
+                "disposition_reason": p["disposition_reason"],
+                "blocking_conditions": p["blocking_conditions"],
+                "authorization_basis": p["authorization_basis"],
+                "requires_human": p["authorization_basis"] != BASIS_AUTONOMOUS,
+                "rationale": p["rationale"],
+                "evidence": p["evidence"],
+            }
+            for p in would_propose
+        ],
+        "withheld": withheld,
+        "contract": {
+            "governs": (
+                "This is what the agent WOULD propose. It confers nothing: "
+                "a proposal still passes RBAC, scope, the Capability "
+                "Registry, the parameter contract, the autonomy contract, "
+                "the approval ledger and the node's own funnel."
+            ),
+            "wrote_nothing": (
+                "No proposal was created, no budget spent, no directive "
+                "dispatched and no decision recorded."
+            ),
+            "same_reasoning": (
+                "Composed by the same govern_proposal() the runtime calls, "
+                "so a preview cannot disagree with what actually happens."
+            ),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

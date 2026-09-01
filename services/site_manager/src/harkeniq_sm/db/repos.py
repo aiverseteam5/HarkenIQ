@@ -268,6 +268,48 @@ class TelemetryRepo:
         await self.session.flush()
         return row
 
+    async def affected_components(
+        self, device_id: str, subsystem: str, *, limit: int = 200,
+    ) -> list[dict]:
+        """The components a subsystem fault actually names (A22.4).
+
+        A verdict's sensor id is ``"<subsystem>:<component>"``. Ingest has
+        always split off the subsystem and thrown the remainder away, so
+        an incident said "this device's disks are unhealthy" and nothing
+        downstream could say WHICH disk. That is why an Operational Agent
+        could never supply IDENTIFY_LED's ``target``.
+
+        Returns the newest non-OK verdict per component, newest first. An
+        empty list means nothing was reported -- the caller reports that
+        as unknown and refuses to propose, rather than guessing a
+        component.
+        """
+        prefix = f"{(subsystem or '').strip()}:"
+        if prefix == ":":
+            return []
+        rows = (await self.session.execute(
+            select(VerdictReportRow)
+            .where(
+                VerdictReportRow.device_id == device_id,
+                VerdictReportRow.sensor_id.like(f"{prefix}%"),
+                VerdictReportRow.severity.notin_(("OK", "HEALTHY")),
+            )
+            .order_by(VerdictReportRow.time.desc())
+            .limit(limit)
+        )).scalars().all()
+        seen: dict[str, dict] = {}
+        for row in rows:
+            component = row.sensor_id.split(":", 1)[1]
+            if not component or component in seen:
+                continue
+            seen[component] = {
+                "component": component,
+                "severity": row.severity,
+                "skill_name": row.skill_name,
+                "at": row.time.isoformat() if row.time else "",
+            }
+        return list(seen.values())
+
     async def add_heartbeat(
         self,
         device_id: str,

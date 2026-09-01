@@ -81,6 +81,21 @@ ENFORCEMENT_LEGACY_OPEN = "legacy_open"
 ENFORCEMENT_STRICT = "strict"
 ENFORCEMENT_MODES = (ENFORCEMENT_LEGACY_OPEN, ENFORCEMENT_STRICT)
 
+#: A5 (A22.13). A scope resolved to answer WHERE, never WHETHER.
+#:
+#: `load_agent_scope` used to resolve with ``role_permissions=["*"]`` and
+#: say why: an agent's authority is its bindings, and it does not call the
+#: HTTP API. A3 removed that premise -- an agent now holds a credential --
+#: and a scope resolved that way answers ``permits("action.approve")`` with
+#: True. It was latent only because every call site read `.site_ids`.
+#:
+#: The wildcard is gone rather than patched at the call sites. This marker
+#: preserves the grant arithmetic EXACTLY (a grant survives resolution
+#: whenever it survived under ``"*"``, so no agent loses reach) while
+#: matching no real permission and not being ``"*"``, so a permission
+#: question fails closed even if the louder guard below is bypassed.
+SCOPE_ONLY_MARKER = "__scope_only__"
+
 #: The permission an L1 preflight requires somebody to hold at tenant
 #: scope before a tenant may be switched to strict.
 ADMIN_PERMISSION = "role.manage"
@@ -216,6 +231,10 @@ class ResolvedScope:
     #: org unit id -> its materialized path. Lets a caller ask about a
     #: unit by id without re-reading the tree.
     unit_paths: Mapping[str, str] = field(default_factory=dict)
+    #: A22.13: resolved for expansion only. `.site_ids` and the coverage
+    #: helpers are meaningful; `permits()` is not, and says so loudly
+    #: rather than answering a question this scope was never built for.
+    scope_only: bool = False
 
     # -- the decision -------------------------------------------------
 
@@ -235,7 +254,17 @@ class ResolvedScope:
         is what stops two narrow grants from adding up to a broad one: a
         grant covering the target but lacking the permission does not
         borrow it from a grant that has it elsewhere.
+
+        A scope resolved for EXPANSION ONLY refuses the question (A22.13).
+        Answering False would be fail-closed and silent; a caller that
+        asks a where-scope a whether-question has a bug, and it should
+        surface as one rather than as a mysterious refusal.
         """
+        if self.scope_only:
+            raise ScopeError(
+                "this scope was resolved to answer WHERE, not WHETHER; ask "
+                "the principal's own authorization scope for a permission"
+            )
         for grant in self.grants:
             if permission not in grant.permissions and "*" not in grant.permissions:
                 continue
@@ -370,6 +399,9 @@ def effective_permissions(
         # An empty list is a real statement: "this grant carries no
         # permissions". It is not the same as null.
         return frozenset()
+    if SCOPE_ONLY_MARKER in role:
+        # Same survival rule as "*", carrying no permission out of it.
+        return frozenset({SCOPE_ONLY_MARKER})
     if "*" in role:
         return frozenset(requested)
     return frozenset(role & requested)
@@ -447,6 +479,7 @@ def resolve(
         )
 
     return _project(
+        scope_only=SCOPE_ONLY_MARKER in set(role_permissions),
         tenant_id=tenant_id,
         principal_type=principal_type,
         principal_ref=principal_ref,
@@ -460,6 +493,7 @@ def resolve(
 
 def _project(
     *,
+    scope_only: bool = False,
     tenant_id: str,
     principal_type: str,
     principal_ref: str,
@@ -508,6 +542,7 @@ def _project(
         contextual_unit_ids=frozenset(contextual),
         site_unit_paths=dict(site_unit_paths),
         unit_paths={u.id: u.path for u in unit_by_id.values()},
+        scope_only=scope_only,
     )
 
 

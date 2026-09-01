@@ -181,7 +181,19 @@ class SMClient:
                         correlation_meta = json.loads(inc.correlation_meta_json)
                     except (ValueError, TypeError):
                         correlation_meta = {}
+                # A22.4: WHICH component. Absent means the Site Manager has
+                # not reported one, which is UNKNOWN -- never "no components"
+                # -- so it stays None and an agent refuses rather than guesses.
+                components = None
+                if inc.components_json:
+                    try:
+                        parsed = json.loads(inc.components_json)
+                    except (ValueError, TypeError):
+                        parsed = None
+                    if isinstance(parsed, list):
+                        components = parsed
                 incidents.append({
+                    "components": components,
                     "incident_id": inc.incident_id,
                     "kind": inc.kind,
                     "status": inc.status,

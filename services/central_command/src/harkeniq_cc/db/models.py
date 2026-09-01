@@ -762,6 +762,11 @@ class CCIncident(Base):
     inferred: Mapped[bool] = mapped_column(default=False)
     correlation_meta: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     explanation: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    #: A5 (A22.4): the components this incident names, as
+    #: [{"component", "severity", "skill_name", "at"}]. NULL means the Site
+    #: Manager has not reported -- unknown, not empty. No backfill: writing
+    #: [] would assert that nothing is affected, which nobody checked.
+    components: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from harkeniq.models import ActionType
 
@@ -414,3 +414,239 @@ INVERSE_ACTION = {
     ActionType.INTERFACE_DISABLE: ActionType.INTERFACE_ENABLE,
     ActionType.INTERFACE_ENABLE: ActionType.INTERFACE_DISABLE,
 }
+
+
+# ---------------------------------------------------------------------------
+# Action parameter contract (spec A22.2)
+# ---------------------------------------------------------------------------
+#
+# The missing half of the capability contract. The Registry could say an
+# executor implements a class; nothing could say what that class REQUIRES
+# in order to run. So A4 made five classes addressable whose executors
+# demand a parameter the evaluator has never supplied -- every proposal
+# carried params={"reason": ...} and was refused at the node.
+#
+# This sits beside ACTION_RISK and ACTION_REVERSIBILITY because it is the
+# same kind of fact: a property of the action CLASS, true regardless of
+# which agent asks, which device answers or which page renders it. Central
+# Command, the Console, skills, the node and any future MCP consumer read
+# it here. A second copy anywhere is a second answer.
+#
+# WHAT A SOURCE MEANS
+# -------------------
+# Declaring the parameter is not enough -- something has to be able to
+# SUPPLY it truthfully. `source` records that, and `SRC_UNAVAILABLE` is a
+# first-class answer: POWER_CAP_ADJUST needs a target wattage and this
+# platform holds no power policy, so the honest report is "addressable,
+# implemented, and not proposable here because nothing can say what the
+# cap should be". Naming the missing input is the deliverable. Inventing
+# one would be worse than the defect.
+
+#: Resolvable from the affected component the Site Manager reports for an
+#: incident -- the ``<component>`` half of a verdict's
+#: ``"<subsystem>:<component>"`` sensor id (A22.4).
+SRC_COMPONENT = "component"
+#: The declaration itself carries a safe default; no caller input needed.
+SRC_DEFAULT = "default"
+#: Supplied by campaign orchestration (S6 / firmware), never by an agent
+#: reacting to a fault (A21.10).
+SRC_CAMPAIGN = "campaign"
+#: Free-form context carried for audit and explanation. No executor reads
+#: it, so it never gates execution and is accepted on every class.
+SRC_ANNOTATION = "annotation"
+#: Nothing in this platform can supply a truthful value yet. A class with
+#: an unsatisfied required parameter of this source is reported, never
+#: proposed, and never presented as executable (A22.5).
+SRC_UNAVAILABLE = "unavailable"
+
+PARAM_SOURCES = (
+    SRC_COMPONENT, SRC_DEFAULT, SRC_CAMPAIGN, SRC_ANNOTATION, SRC_UNAVAILABLE,
+)
+
+#: Parameter value types. Deliberately three: the wire is JSON and the
+#: executors read exactly these shapes. A richer type system here would be
+#: a type system nobody asked for.
+PTYPE_STRING = "string"
+PTYPE_INTEGER = "integer"
+PTYPE_JSON_OBJECT = "json_object"
+
+
+@dataclass(frozen=True)
+class ParamSpec:
+    """One parameter of one action class."""
+
+    name: str
+    type: str
+    required: bool
+    source: str
+    #: Present only when ``source`` is SRC_DEFAULT. The executor applies
+    #: the same default; declaring it here lets a caller SEE it.
+    default: Any = None
+    #: Human-readable constraint, for the operator and the Console. Not
+    #: machine-enforced beyond ``type`` -- a regex here would be a fourth
+    #: place to get a device's identifier grammar wrong.
+    constraint: str = ""
+    #: Present only when ``source`` is SRC_UNAVAILABLE: what would have
+    #: to exist for this parameter to be supplied.
+    missing_input: str = ""
+
+
+#: Accepted on every class, required by none. Existing skill YAML and
+#: every node-proposed action already carry it; refusing it would break
+#: the node funnel to satisfy a contract that does not read it.
+REASON_PARAM = ParamSpec(
+    name="reason", type=PTYPE_STRING, required=False, source=SRC_ANNOTATION,
+    constraint="free-form explanation carried for audit; no executor reads it",
+)
+
+ACTION_PARAMETERS: dict[ActionType, tuple[ParamSpec, ...]] = {
+    # -- no parameters: the class acts on the device as a whole ------------
+    ActionType.COLLECT_DIAGNOSTICS: (),
+    ActionType.SEL_CLEAR: (),
+    ActionType.BMC_RESET: (),
+    ActionType.FAN_RESET: (),
+
+    # -- component-addressed: the affected component IS the parameter -----
+    ActionType.IDENTIFY_LED: (
+        ParamSpec(
+            name="target", type=PTYPE_STRING, required=True,
+            source=SRC_COMPONENT,
+            constraint="a drive identifier the device's protocol exposes",
+        ),
+    ),
+    ActionType.INTERFACE_DISABLE: (
+        ParamSpec(
+            name="interface", type=PTYPE_STRING, required=True,
+            source=SRC_COMPONENT,
+            constraint="a port name the device's protocol exposes",
+        ),
+    ),
+    ActionType.INTERFACE_ENABLE: (
+        ParamSpec(
+            name="interface", type=PTYPE_STRING, required=True,
+            source=SRC_COMPONENT,
+            constraint="a port name the device's protocol exposes",
+        ),
+    ),
+
+    # -- defaulted: the executor already has a safe answer ------------------
+    ActionType.POWER_CYCLE: (
+        ParamSpec(
+            name="reset_type", type=PTYPE_STRING, required=False,
+            source=SRC_DEFAULT, default="ForceRestart",
+            constraint="a Redfish ResetType the device advertises",
+        ),
+    ),
+
+    # -- unsatisfiable today, and said so out loud (A22.5) -----------------
+    ActionType.POWER_CAP_ADJUST: (
+        ParamSpec(
+            name="target_watts", type=PTYPE_INTEGER, required=True,
+            source=SRC_UNAVAILABLE,
+            constraint="the chassis power cap to write, in watts",
+            missing_input=(
+                "no power policy exists in this platform, so nothing can "
+                "say what the cap should be; a thermal incident does not "
+                "imply a target wattage"
+            ),
+        ),
+    ),
+    ActionType.CONFIG_RESTORE: (
+        ParamSpec(
+            name="attributes_json", type=PTYPE_JSON_OBJECT, required=True,
+            source=SRC_UNAVAILABLE,
+            constraint="a non-empty object of attribute -> policy value",
+            missing_input=(
+                "drift detail is computed agent-side by the R4-2 compliance "
+                "loop and never reaches Central Command; the drifted "
+                "attributes and their policy values are not on the wire"
+            ),
+        ),
+    ),
+
+    # -- campaign-supplied: never proposed on a fault (A21.10) -------------
+    ActionType.FIRMWARE_UPDATE: (
+        ParamSpec(
+            name="target_version", type=PTYPE_STRING, required=True,
+            source=SRC_CAMPAIGN, constraint="the version the image installs",
+        ),
+        ParamSpec(
+            name="image_uri", type=PTYPE_STRING, required=False,
+            source=SRC_CAMPAIGN, constraint="where the node fetches the image",
+        ),
+        ParamSpec(
+            name="component", type=PTYPE_STRING, required=False,
+            source=SRC_DEFAULT, default="bmc",
+            constraint="only 'bmc' is implemented (R4-3)",
+        ),
+    ),
+    ActionType.FIRMWARE_ROLLBACK: (
+        ParamSpec(
+            name="component", type=PTYPE_STRING, required=False,
+            source=SRC_DEFAULT, default="bmc",
+            constraint="only 'bmc' is implemented (R4-3)",
+        ),
+        ParamSpec(
+            name="expected_version", type=PTYPE_STRING, required=False,
+            source=SRC_CAMPAIGN,
+            constraint="verified against the standby bank after the swap",
+        ),
+    ),
+
+    # -- unimplemented classes still declare, and stay honest (A21.9) ------
+    #
+    # No executor implements these on any protocol. Their parameter
+    # contract is what it WOULD be, which is the same courtesy the
+    # Registry already extends by naming them at all. Declaring nothing
+    # here would make "unimplemented" and "takes no parameters"
+    # indistinguishable.
+    ActionType.CLEAR_COUNTERS: (
+        ParamSpec(
+            name="interface", type=PTYPE_STRING, required=True,
+            source=SRC_COMPONENT,
+            constraint="a port name the device's protocol exposes",
+        ),
+    ),
+    ActionType.INTERFACE_RESET: (
+        ParamSpec(
+            name="interface", type=PTYPE_STRING, required=True,
+            source=SRC_COMPONENT,
+            constraint="a port name the device's protocol exposes",
+        ),
+    ),
+}
+
+
+def validate_param_names(
+    action_type: ActionType, names: Iterable[str],
+) -> tuple[bool, str]:
+    """Are these the parameter names this class declares? (A22.2.)
+
+    NAMES ONLY, deliberately. A skill's params are templates -- ``"{name}"``,
+    ``"{life_left_pct}%"`` -- so a value cannot be type-checked until the
+    substitution happens at the node. What IS statically true is which
+    parameters exist and which are required, and that is exactly what a
+    skill was previously free to get wrong: `skills/disk-health.yaml` has
+    carried its own ``params: {target: "{name}"}`` block since R1, a fifth
+    place the same fact was declared with nothing reconciling them.
+    """
+    specs = {s.name: s for s in ACTION_PARAMETERS.get(action_type, ())}
+    specs[REASON_PARAM.name] = REASON_PARAM
+    given = {str(n) for n in names}
+    unknown = sorted(given - set(specs))
+    if unknown:
+        return False, (
+            f"{action_type.value} does not declare "
+            f"{', '.join(repr(u) for u in unknown)} "
+            f"(declared: {', '.join(sorted(specs))})"
+        )
+    missing = sorted(
+        name for name, spec in specs.items()
+        if spec.required and name not in given
+    )
+    if missing:
+        return False, (
+            f"{action_type.value} requires "
+            f"{', '.join(repr(m) for m in missing)}"
+        )
+    return True, ""
