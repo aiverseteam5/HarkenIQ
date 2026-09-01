@@ -670,6 +670,7 @@ def validate_skill_against_reach(
     platform_implemented: set,
     scope_implemented: set,
     scope_unknown: bool,
+    catalogue_classes: Optional[set] = None,
 ) -> dict:
     """Is this skill usable by THIS agent, on the devices it reaches?
 
@@ -679,12 +680,33 @@ def validate_skill_against_reach(
 
     A skill that recommends nothing (pure diagnosis) is always usable:
     it composes observation, and observation needs no executor.
+
+    A4 (A21.8) adds ONE rule and no authority: a skill may recommend only
+    actions the tenant's capability catalogue names. A skill is a
+    composition over capabilities the agent already holds -- recommending
+    a class the tenant never mapped to any condition would be the skill
+    introducing a capability by the back door, which is the one thing a
+    skill may never do. `None` means "no catalogue supplied", which skips
+    the check rather than refusing everything.
     """
     recommended = sorted({str(a).upper() for a in recommended})
     if not recommended:
         return {"skill_id": skill_id, "usable": True, "recommended": [],
                 "unsupported": [],
                 "reason": "recommends no action; diagnosis only"}
+    if catalogue_classes is not None:
+        uncatalogued = [a for a in recommended if a not in catalogue_classes]
+        if uncatalogued:
+            return {
+                "skill_id": skill_id, "usable": False,
+                "recommended": recommended, "unsupported": uncatalogued,
+                "reason": (
+                    f"recommends {', '.join(uncatalogued)}, which this "
+                    f"tenant's capability catalogue does not map to any "
+                    f"condition; a skill composes capabilities the agent "
+                    f"already holds and cannot introduce one"
+                ),
+            }
     absent = [a for a in recommended if a not in platform_implemented]
     if absent:
         return {"skill_id": skill_id, "usable": False,

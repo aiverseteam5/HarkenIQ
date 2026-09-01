@@ -600,6 +600,95 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 ),
             )
 
+    async def _sm_execution_decision(
+        self, *, action_type: str, device, device_site_id: str,
+        authorization: str,
+    ):
+        """The six execution inputs the Site Manager OWNS (A21.6).
+
+        One function, one fail-closed rule. An input this stage owns and
+        does not supply refuses, exactly as it always did -- narrowing
+        `required` to this stage's inputs never weakens the rule inside
+        it, it only stops the Site Manager asserting things it cannot see.
+
+        RBAC (`permission`) is Central Command's. The lease, preconditions
+        and blast radius are the node's, and the node remains the final
+        execution authority (A21.7).
+        """
+        from harkeniq.capabilities import effective_actions, implemented_actions
+        from harkeniq_sm.stopswitch import (
+            SM_DISPATCH_INPUTS,
+            execution_permitted,
+        )
+
+        # -- site safety -----------------------------------------------------
+        # E1.3: THIS DEVICE'S OWN SITE decides. A halt at another site this
+        # Site Manager happens to serve must not stop this one, and a halt
+        # at this one must not be escapable by the process serving others.
+        site_stop: object = True
+        if self.stopswitch is not None and device_site_id:
+            async with self.sessionmaker() as session:
+                halt = await self.stopswitch.state_for(session, device_site_id)
+            if halt.halted:
+                site_stop = halt.reason
+
+        # The enforcer's in-memory flag still counts. A Site Manager
+        # mid-upgrade may carry one that has not been persisted yet, and a
+        # halt live in the process must never be escapable because of it.
+        manager_halt: object = True
+        if self.autonomy is not None and self.autonomy.stop_switch_active:
+            manager_halt = "a stop switch is active"
+
+        # -- autonomy --------------------------------------------------------
+        autonomy: object = True
+        if (
+            self.autonomy is not None
+            and authorization == "autonomous_grant"
+        ):
+            async with self.sessionmaker() as session:
+                from harkeniq_sm.db.repos import ErrorBudgetRepo
+
+                # E0.2: this site's withdrawal, not the Site Manager's.
+                dropped = await ErrorBudgetRepo(session).dropped_back_types(
+                    device_site_id
+                )
+            if action_type in dropped:
+                autonomy = (
+                    f"autonomy for {action_type} was withdrawn by the error "
+                    f"budget; a human decision is required"
+                )
+
+        # -- capability (A17.8's reserved slot, finally supplied) -------------
+        # The device's OWN declaration, which SM migration 0010 already
+        # stores. UNKNOWN never refuses: a device that has not declared
+        # could turn out to be capable, and a fleet mid-upgrade is entirely
+        # undeclared. Only a declared-and-absent class refuses here, and
+        # the node's allow list remains the final word either way.
+        capability: object = True
+        declaration = getattr(device, "capabilities", None) if device else None
+        implemented = implemented_actions(declaration)
+        if implemented is not None and action_type not in implemented:
+            effective = effective_actions(declaration) or frozenset()
+            capability = (
+                f"{action_type} is not implemented by this device's protocol"
+                if action_type not in effective
+                else f"{action_type} is not available on this device"
+            )
+
+        return execution_permitted(
+            required=SM_DISPATCH_INPUTS,
+            # The tenant switch is carried by the site state above; a
+            # tenant halt lands as a site halt for every site it covers.
+            tenant_stop=True,
+            site_stop=site_stop,
+            manager_halt=manager_halt,
+            # The device was resolved at THIS site or dispatch already
+            # refused, so scope for this stage is settled.
+            agent_scope=True,
+            capability=capability,
+            autonomy=autonomy,
+        )
+
     async def DispatchAction(self, request, context):
         """A1: queue one decided action for a device on this site.
 
@@ -657,44 +746,32 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         # everything again; this refusal just avoids queueing work that
         # is already known to be refused.
         #
-        # E1.3: THIS DEVICE'S OWN SITE decides. A halt at another site
-        # this Site Manager happens to serve must not stop this one, and
-        # a halt at this one must not be escapable by the process serving
-        # others -- which is exactly what a single Site Manager-wide
-        # boolean would have done in both directions.
-        if self.stopswitch is not None and device_site_id:
-            async with self.sessionmaker() as session:
-                halt = await self.stopswitch.state_for(session, device_site_id)
-            if halt.halted:
-                return harkeniq_pb2.ActionDispatchAck(
-                    accepted=False, reason=halt.reason
-                )
-
-        if self.autonomy is not None:
-            # The enforcer's in-memory flag still counts. A Site Manager
-            # mid-upgrade may be carrying one that has not been persisted
-            # yet, and a halt that is live in the process must never be
-            # escapable just because it is not in the table.
-            if self.autonomy.stop_switch_active:
-                return harkeniq_pb2.ActionDispatchAck(
-                    accepted=False, reason="a stop switch is active"
-                )
-            if request.authorization == "autonomous_grant":
-                async with self.sessionmaker() as session:
-                    from harkeniq_sm.db.repos import ErrorBudgetRepo
-
-                    # E0.2: this site's withdrawal, not the Site Manager's.
-                    dropped = await ErrorBudgetRepo(session).dropped_back_types(
-                        device_site_id
-                    )
-                if action_type in dropped:
-                    return harkeniq_pb2.ActionDispatchAck(
-                        accepted=False,
-                        reason=(
-                            f"autonomy for {action_type} was withdrawn by the "
-                            f"error budget; a human decision is required"
-                        ),
-                    )
+        # A4 (spec A21.6): these checks now run THROUGH
+        # `execution_permitted`, the fail-closed model E1.3 shipped and
+        # that -- until this slice -- had no production caller at all.
+        # Every check below existed before and none was added or removed;
+        # what changed is that the model and the runtime are one thing
+        # instead of two statements of the same rule that could drift.
+        #
+        # The Site Manager evaluates the six inputs it OWNS. RBAC is
+        # Central Command's and the lease, preconditions and blast radius
+        # are the node's -- passing True for those here would assert that
+        # a precondition passed when nobody checked it.
+        decision = await self._sm_execution_decision(
+            action_type=action_type,
+            device=device,
+            device_site_id=device_site_id,
+            authorization=request.authorization,
+        )
+        if not decision.permitted:
+            logger.info(
+                "DispatchAction refused %s on %s: %s (%s)",
+                action_type, request.device_agent_id,
+                decision.reason, decision.refused_by,
+            )
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False, reason=decision.reason
+            )
 
         directive_id = await self.directives.enqueue_action(
             device_id=device_id,

@@ -32,7 +32,8 @@ an approval policy, a precondition or the node itself.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
@@ -154,3 +155,139 @@ async def device_capabilities(
         "fleet": registry["fleet"],
         "contract": registry["contract"],
     }
+
+
+# ---------------------------------------------------------------------------
+# A4: the condition -> capability catalogue (spec A21)
+# ---------------------------------------------------------------------------
+#
+# The Registry above answers "can this action run at all, and where". The
+# catalogue answers a different question: "which capability is a CANDIDATE
+# for which observed condition". It is the first mutation this router
+# carries, and it is deliberately narrow -- the Registry still authors
+# nothing, and the catalogue can never contradict it.
+
+
+class CatalogueEntry(BaseModel):
+    subsystem: str = Field(..., min_length=1, max_length=64)
+    action_type: str = Field(..., min_length=1, max_length=64)
+    because: str = Field("", max_length=512)
+    provenance: str = Field("", max_length=255)
+    enabled: bool = True
+
+
+class CatalogueBody(BaseModel):
+    """Full replacement, for the reason A0's bindings are.
+
+    An operator reasoning about what their agents may propose should see
+    the complete set in one request, not reconstruct it from a history of
+    deltas.
+    """
+
+    entries: list[CatalogueEntry]
+
+
+@router.get(
+    "/catalogue",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def get_catalogue(
+    request: Request,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Which capability is a candidate for which condition.
+
+    Registry reach is joined BESIDE each entry, never merged into it
+    (A17.7, applied to a third consumer): "this condition maps to this
+    action" and "an executor can currently perform it here" are different
+    facts, and an operator debugging a silent agent needs to see which one
+    is missing.
+    """
+    from harkeniq_cc.capability_catalogue import catalogue_view
+    from harkeniq_cc.db.repos import CapabilityCatalogueRepo
+
+    rows = await CapabilityCatalogueRepo(session).list_for_tenant(user.tenant_id)
+    await session.commit()  # a lazy seed for a new tenant is a real write
+    registry = await load_capability_registry(
+        session, tenant_id=user.tenant_id, scope=scope,
+    )
+    return {
+        "tenant_id": user.tenant_id,
+        **catalogue_view(rows, registry),
+    }
+
+
+@router.put(
+    "/catalogue",
+    dependencies=[Depends(require_permission("site.manage"))],
+)
+async def put_catalogue(
+    body: CatalogueBody,
+    request: Request,
+    user: UserContext = Depends(require_permission("site.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Replace this tenant's catalogue.
+
+    Tenant governance has no site dimension, so changing it is TENANT
+    authority -- the same rule S5's autonomy budgets follow. A
+    cluster-scoped principal may READ why their agent proposes what it
+    does and may not rewrite the mapping for everyone else.
+
+    Refuses on CAPABILITY, never on policy (A17.7). A class whose node
+    allow lists happen to exclude it today is a valid entry: an allow list
+    is mutable operator policy, and refusing on it would make it
+    impossible to configure ahead of a config rollout. What cannot be
+    mapped is a class no executor IMPLEMENTS.
+    """
+    from harkeniq.capabilities import action_facts
+
+    from harkeniq_cc.api.deps import forbid_out_of_scope
+    from harkeniq_cc.capability_catalogue import catalogue_view, validate_entry
+    from harkeniq_cc.db.repos import AuditRepo, CapabilityCatalogueRepo
+
+    forbid_out_of_scope(
+        scope, "site.manage", what="capability catalogue", tenant_object=True,
+    )
+
+    facts = action_facts()
+    implemented = {k for k, v in facts.items() if v.get("implemented")}
+    seen: set[tuple[str, str]] = set()
+    for entry in body.entries:
+        ok, reason = validate_entry(
+            entry.subsystem, entry.action_type,
+            known=facts.keys(), implemented=implemented,
+        )
+        if not ok:
+            raise HTTPException(400, reason)
+        key = (entry.subsystem.lower(), entry.action_type.upper())
+        if key in seen:
+            raise HTTPException(
+                400,
+                f"{entry.action_type} is mapped to {entry.subsystem} twice; "
+                f"one condition maps to one action once",
+            )
+        seen.add(key)
+
+    actor = user.email or user.user_id
+    repo = CapabilityCatalogueRepo(session)
+    written = await repo.replace(
+        user.tenant_id, [e.model_dump() for e in body.entries], actor,
+    )
+    await AuditRepo(session).append(
+        actor=actor,
+        action="capability_catalogue.replaced",
+        subject=user.tenant_id,
+        tenant_id=user.tenant_id,
+        detail={
+            "entries": written,
+            "mappings": sorted(f"{s}:{a}" for s, a in seen),
+        },
+    )
+    await session.commit()
+    rows = await repo.list_for_tenant(user.tenant_id)
+    return {"tenant_id": user.tenant_id, "entries": written,
+            **catalogue_view(rows, None)}

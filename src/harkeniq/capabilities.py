@@ -175,6 +175,29 @@ def declare(
     return declaration
 
 
+def implemented_actions(declaration: Optional[dict]) -> Optional[frozenset[str]]:
+    """What a device's PROTOCOL implements, or None when unknown.
+
+    The capability half of a declaration, without the node's allow list
+    applied. This is what a consumer DECIDES with; `effective_actions` is
+    what it displays.
+
+    Lives here rather than in one service because three of them now ask
+    the question -- Central Command's registry, its agent preflight, and
+    the Site Manager's execution gate (A21.6). A second copy would be a
+    second answer to "can this device do this", which is the one thing
+    the Registry exists to prevent.
+    """
+    if not isinstance(declaration, dict):
+        return None
+    if not declaration.get("reach_known"):
+        return None
+    implemented = declaration.get("implemented")
+    if implemented is None:
+        return None
+    return frozenset(str(a) for a in implemented)
+
+
 def effective_actions(declaration: Optional[dict]) -> Optional[frozenset[str]]:
     """What a declared device can actually do, or None when unknown.
 

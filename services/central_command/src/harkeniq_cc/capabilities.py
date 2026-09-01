@@ -359,18 +359,8 @@ def reachable_action_classes(devices: Iterable[Any]) -> dict[str, Any]:
     }
 
 
-def implemented_actions(declaration: Optional[dict]) -> Optional[frozenset[str]]:
-    """What a device's PROTOCOL implements, or None when unknown.
-
-    The capability half of a declaration, without the node's allow list
-    applied. This is what a consumer decides with; ``effective_actions``
-    is what it displays.
-    """
-    if not isinstance(declaration, dict):
-        return None
-    if not declaration.get("reach_known"):
-        return None
-    implemented = declaration.get("implemented")
-    if implemented is None:
-        return None
-    return frozenset(str(a) for a in implemented)
+#: A4: re-exported from the shared module, which now owns it. Three
+#: services ask "what does this device's protocol implement" -- the
+#: registry, the agent preflight and the Site Manager's execution gate --
+#: and a second copy would be a second answer.
+from harkeniq.capabilities import implemented_actions  # noqa: E402,F401

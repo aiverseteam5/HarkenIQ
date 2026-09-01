@@ -183,7 +183,30 @@ class ExecutionDecision:
         }
 
 
-def execution_permitted(**inputs) -> ExecutionDecision:
+#: A4 (spec A21.6): WHICH STAGE OWNS WHICH INPUT.
+#:
+#: `execution_permitted` is one model evaluated in three places, because
+#: no single place can see all ten inputs: RBAC is decided at Central
+#: Command, the site's own safety and the device's declared capability at
+#: the Site Manager, and the lease, preconditions and blast radius at the
+#: node that holds them.
+#:
+#: Splitting it is the honest shape. The alternative -- having the Site
+#: Manager pass True for inputs it cannot see -- would assert that a
+#: precondition passed when nobody checked it, which is exactly the
+#: failure the fail-closed default exists to prevent.
+#:
+#: A test asserts these three partition DECISION_INPUTS exactly, so an
+#: input can never be dropped by the split or evaluated by nobody.
+CC_INPUTS = ("permission",)
+SM_DISPATCH_INPUTS = (
+    "tenant_stop", "site_stop", "manager_halt",
+    "agent_scope", "capability", "autonomy",
+)
+NODE_INPUTS = ("lease", "preconditions", "blast_radius")
+
+
+def execution_permitted(required=DECISION_INPUTS, **inputs) -> ExecutionDecision:
     """May this action run, considering every governing input?
 
     Each keyword is either ``True``/``None`` (this input does not
@@ -194,8 +217,14 @@ def execution_permitted(**inputs) -> ExecutionDecision:
     That default is the whole point. The failure this guards against is
     an autonomy level being read as permission to act: autonomy is one
     input, evaluated seventh, and it can only ever fail to object.
+
+    `required` names the inputs THIS STAGE owns (A21.6). It defaults to
+    all ten, so the full-chain meaning is unchanged; a stage passes its
+    own tuple and the inputs it does not own are evaluated by the stage
+    that holds them. Narrowing `required` never weakens the rule inside a
+    stage: an input the stage owns and did not supply still refuses.
     """
-    for name in DECISION_INPUTS:
+    for name in required:
         if name not in inputs:
             return ExecutionDecision(
                 permitted=False,

@@ -1953,6 +1953,235 @@ PLAT=$(curl -s -o /dev/null -w '%{http_code}' \
 [ "$PLAT" = "401" ] || { echo "a platform token reached CC ($PLAT): A12.1 broken" >&2; exit 1; }
 echo "platform-realm token at CC: 401 (A12.1 unamended)"
 
+# ===========================================================================
+# A4 governed capability expansion (spec A21), live.
+#
+# The headline is NOT that more capabilities are reachable. It is that
+# making them reachable widened nothing else: not RBAC, not scope, not
+# autonomy, not approval, not execution.
+# ===========================================================================
+
+step "A4/A: the catalogue is served, and the interface subsystem is alive"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/capabilities/catalogue | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+by = {s["subsystem"]: s for s in d["subsystems"]}
+assert "interface" in by, sorted(by)
+iface = {e["action_type"] for e in by["interface"]["candidates"]}
+# It mapped ONLY to CLEAR_COUNTERS, which no executor implements, so a
+# switch-scoped agent had no proposable action at all.
+assert "CLEAR_COUNTERS" not in iface, iface
+assert iface == {"INTERFACE_DISABLE", "INTERFACE_ENABLE"}, iface
+# Registry reach is joined BESIDE the mapping, never merged into it.
+entry = by["interface"]["candidates"][0]
+assert "capability" in entry and entry["because"] and entry["provenance"]
+assert "grants nothing" in d["contract"]["authority"]
+print("catalogue live:", len(d["subsystems"]), "subsystems | interface ->",
+      sorted(iface))
+'
+
+step "A4/B: implemented classes that were unreachable are now addressable"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/operational-agents/catalogue | python3 -c '
+import sys, json
+by = {c["action_type"]: c for c in json.load(sys.stdin)["action_classes"]}
+for newly in ("POWER_CAP_ADJUST", "POWER_CYCLE", "CONFIG_RESTORE",
+              "INTERFACE_ENABLE", "INTERFACE_DISABLE"):
+    assert by[newly]["proposable"] is True, (newly, by[newly])
+    assert by[newly]["observed_conditions"], newly
+# Deliberate exclusions stay excluded AND say why.
+assert by["FIRMWARE_UPDATE"]["proposable"] is False, by["FIRMWARE_UPDATE"]
+assert by["CLEAR_COUNTERS"]["proposable"] is False
+assert by["CLEAR_COUNTERS"]["note"]
+print("newly addressable: POWER_CAP_ADJUST, POWER_CYCLE, CONFIG_RESTORE,",
+      "INTERFACE_ENABLE, INTERFACE_DISABLE")
+'
+
+step "A4/C: an unimplemented class can never be mapped (refuse on CAPABILITY)"
+for A4_CLASS in CLEAR_COUNTERS INTERFACE_RESET; do
+  CODE=$(curl -s -o /tmp/a4_map.json -w '%{http_code}' -X PUT \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"entries\":[{\"subsystem\":\"interface\",\"action_type\":\"$A4_CLASS\"}]}" \
+    http://localhost:8090/api/capabilities/catalogue)
+  [ "$CODE" = "400" ] || { echo "$A4_CLASS was mapped ($CODE)" >&2; exit 1; }
+  python3 -c "
+import json
+d = json.load(open('/tmp/a4_map.json'))['detail']
+assert 'no executor' in d, d
+print('$A4_CLASS refused:', d[:78])
+"
+done
+# ...and it is still in the governed vocabulary, not deleted (A17.6/A21.9).
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/capabilities/ \
+  | python3 -c "
+import sys, json
+rows = {c['action_type']: c for c in json.load(sys.stdin)['classes']}
+for cls in ('CLEAR_COUNTERS', 'INTERFACE_RESET'):
+    assert cls in rows, cls
+    assert rows[cls]['reach'] == 'unimplemented', rows[cls]
+print('both unimplemented classes still governed and truthfully reported')
+"
+
+step "A4/D: a campaign-only class is refused with ITS reason, not a generic one"
+CODE=$(curl -s -o /tmp/a4_fw.json -w '%{http_code}' -X PUT \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"entries":[{"subsystem":"fan","action_type":"FIRMWARE_UPDATE"}]}' \
+  http://localhost:8090/api/capabilities/catalogue)
+[ "$CODE" = "400" ] || { echo "FIRMWARE_UPDATE was mapped ($CODE)" >&2; exit 1; }
+python3 -c "
+import json
+d = json.load(open('/tmp/a4_fw.json'))['detail']
+assert 'campaigns' in d, d
+print('firmware refused:', d[:88])
+"
+
+step "A4/E: capability selection widens NO autonomy"
+# The whole ratified point of option A. The tenant ladder is at 0 here,
+# and every newly addressable class must still require a human.
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+by = {c["action_type"]: c for c in d["action_classes"]}
+for newly in ("INTERFACE_ENABLE", "INTERFACE_DISABLE", "POWER_CAP_ADJUST",
+              "COLLECT_DIAGNOSTICS", "IDENTIFY_LED"):
+    row = by[newly]
+    assert row["disposition"] != "autonomous", (newly, row["disposition"])
+    assert row["approval"]["required"] is True, (newly, row["approval"])
+    # A21.5: not budget-mapped means a named human, however effective the
+    # class has proven to be. Evidence is not authority.
+    assert row["budget_mapped"] is False or row["disposition"] != "autonomous", newly
+print("every newly addressable class still requires a named human:",
+      {k: by[k]["disposition"] for k in
+       ("INTERFACE_ENABLE", "POWER_CAP_ADJUST", "COLLECT_DIAGNOSTICS")})
+'
+
+step "A4/F: capability selection widens NO permission and NO scope"
+# A viewer may READ the catalogue and may not rewrite it; an operator
+# likewise. No new permission was invented for any of this.
+V_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
+  http://localhost:8090/api/capabilities/catalogue)
+[ "$V_CODE" = "200" ] || { echo "operator cannot read the catalogue ($V_CODE)" >&2; exit 1; }
+W_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+  -H "Authorization: Bearer $OP_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"entries":[]}' http://localhost:8090/api/capabilities/catalogue)
+[ "$W_CODE" = "403" ] || { echo "operator rewrote the catalogue ($W_CODE)" >&2; exit 1; }
+echo "read 200 / write 403 for an operator; no new permission"
+
+step "A4/G: a machine principal cannot rewrite the catalogue either"
+# A3's ceiling holds: an authenticated agent reads fleet.view and nothing
+# it could use to widen what it may itself propose.
+#
+# Deliberately $N_TOKEN, not $A3_TOKEN. A3 REVOKES its main identity to
+# prove revocation is immediate, so that token answers 401 -- which is a
+# refusal, but the wrong one: it would prove the token is dead rather
+# than that a LIVE machine principal lacks the permission. `a3-narrow` is
+# never revoked, so 403 here is the ceiling talking.
+if [ -n "${N_TOKEN:-}" ]; then
+  M_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+    -H "Authorization: Bearer $N_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"entries":[]}' http://localhost:8090/api/capabilities/catalogue)
+  [ "$M_CODE" = "403" ] || {
+    echo "a live machine principal rewrote the catalogue ($M_CODE)" >&2; exit 1; }
+  # And it can still READ it -- fleet.view is inside the A20.3 ceiling.
+  R_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $N_TOKEN" \
+    http://localhost:8090/api/capabilities/catalogue)
+  [ "$R_CODE" = "200" ] || {
+    echo "a machine principal cannot read the catalogue ($R_CODE)" >&2; exit 1; }
+  echo "live machine principal: read 200, write 403 -- it cannot widen its own capability"
+else
+  echo "no live machine token in scope; covered by unit tests"
+fi
+
+step "A4/H: the catalogue write is audited and the chain still verifies"
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"entries":[
+        {"subsystem":"log","action_type":"SEL_CLEAR","because":"gate","provenance":"gate"},
+        {"subsystem":"interface","action_type":"INTERFACE_DISABLE","because":"gate","provenance":"gate"}
+      ]}' \
+  http://localhost:8090/api/capabilities/catalogue | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['entries'] == 2, d
+print('catalogue replaced:', d['entries'], 'entries')
+"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/audit/?action=capability_catalogue.replaced&page_size=20" \
+  | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['entries']
+assert rows, 'the catalogue rewrite was not audited'
+assert all(r['actor'] for r in rows), rows[:1]
+print('capability_catalogue.replaced:', len(rows), 'entry(ies), actor',
+      rows[0]['actor'])
+"
+
+step "A4/I: editing the catalogue changes what is proposable, live"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/operational-agents/catalogue | python3 -c '
+import sys, json
+by = {c["action_type"]: c for c in json.load(sys.stdin)["action_classes"]}
+assert by["SEL_CLEAR"]["proposable"] is True
+assert by["INTERFACE_DISABLE"]["proposable"] is True
+# Removed by the replacement above, so no longer proposable.
+assert by["POWER_CAP_ADJUST"]["proposable"] is False, by["POWER_CAP_ADJUST"]
+print("proposable set follows the catalogue, not a constant")
+'
+# Put the platform default back so later steps and re-runs are unchanged.
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "$(A4_SRC="$_REPO_ROOT/services/central_command/src" python3 -c '
+import json, os, sys
+sys.path.insert(0, os.environ["A4_SRC"])
+from harkeniq_cc.capability_catalogue import SEED
+print(json.dumps({"entries": [dict(e) for e in SEED]}))
+')" http://localhost:8090/api/capabilities/catalogue >/dev/null
+echo "platform default catalogue restored"
+
+step "A4/J: execution_permitted() is part of PRODUCTION dispatch"
+# It had NO production caller at all: the runtime used hand-written
+# sequential checks alongside the model. Asserted on the shipped SOURCE --
+# a behavioural test would pass just as well against the checks it
+# replaced, and reading the files needs no service dependencies on the
+# gate host (gate-caught: importing the servicer needs grpc).
+A4_ROOT="$_REPO_ROOT" python3 - <<'A4PY'
+import os
+import pathlib
+import re
+
+root = pathlib.Path(os.environ["A4_ROOT"])
+sm = (root / "services/site_manager/src/harkeniq_sm/stopswitch.py").read_text()
+grpc_src = (root / "services/site_manager/src/harkeniq_sm/grpc_server.py").read_text()
+
+
+def tuple_of(name, text):
+    """The names in `NAME = (...)`, however it happens to be wrapped."""
+    m = re.search(name + r"\s*=\s*\((.*?)\)", text, re.S)
+    assert m, name + " not found"
+    return set(re.findall(r'"([a-z_]+)"', m.group(1)))
+
+
+decision = tuple_of("DECISION_INPUTS", sm)
+cc = tuple_of("CC_INPUTS", sm)
+smi = tuple_of("SM_DISPATCH_INPUTS", sm)
+node = tuple_of("NODE_INPUTS", sm)
+
+# No input may be dropped by the split, or owned by two stages.
+assert cc | smi | node == decision, (cc | smi | node) ^ decision
+assert len(cc) + len(smi) + len(node) == len(decision), "an input is owned twice"
+# A17.8's reserved slot, finally supplied by a real stage.
+assert "capability" in smi, smi
+
+# The dispatch path defers to the model rather than re-checking inline.
+assert "execution_permitted(" in grpc_src
+assert "SM_DISPATCH_INPUTS" in grpc_src
+assert "_sm_execution_decision(" in grpc_src
+assert "decision.permitted" in grpc_src
+print("execution_permitted is the dispatch path;", len(decision),
+      "inputs across 3 stages, none dropped, capability supplied")
+A4PY
+
 step "A2: put the tenant ladder back where the gate found it"
 # Level 2 was raised only to make an unattended grant exist for A2/C.
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

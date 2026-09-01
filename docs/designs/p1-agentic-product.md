@@ -1645,3 +1645,115 @@ A20.3 bounds the **credential**, not the Operational Agent. A4, A5, A6 and
 MCP may make an agent substantially more capable, through the governed
 Capability Registry, RBAC, scope, autonomy, approval and execution
 architecture that already exists. What stays narrow is authentication.
+
+---
+
+## 24. A4 — governed capability expansion (spec A21)
+
+A4 is not "add more permissions." It is not even mostly about new
+capabilities.
+
+The platform implements **12 of its 14 action types**. An Operational
+Agent could propose **6**, and one of those six had no executor at all.
+So seven implemented, governed, node-executable capabilities were
+invisible to every agent — not forbidden, not fenced, not denied.
+**Unreachable**, because nothing mapped a condition to them.
+
+### The three findings the inspection produced
+
+**Seven implemented capabilities had no path to an agent.**
+`REMEDIATION_CANDIDATES` mapped 7 subsystems to 6 action types, and
+nothing else could ever be proposed because nothing else was ever a
+candidate. `CONFIG_RESTORE`, `POWER_CYCLE`, `POWER_CAP_ADJUST`,
+`INTERFACE_ENABLE`, `INTERFACE_DISABLE`, `FIRMWARE_UPDATE` and
+`FIRMWARE_ROLLBACK` were implemented and unreachable.
+
+**A whole subsystem was dead.** `interface` mapped *only* to
+`CLEAR_COUNTERS`, which no executor implements — and A17's zero-reach
+rule then refused that binding. **A switch-scoped agent had no proposable
+action at all**: it could observe an interface incident and never act on
+it, though R6 shipped `INTERFACE_ENABLE` and `INTERFACE_DISABLE` on gNMI.
+R6 built the network actions; A0's condition table never learned they
+existed.
+
+**`execution_permitted()` had no production caller.** A17.8 recorded that
+its `capability` slot was unsupplied. The broader truth: the ten-input
+fail-closed gate E1.3 shipped was referenced only by its own module and
+by tests, while the runtime used hand-written sequential checks alongside
+it. The model function and the runtime path were two different things —
+the tenth instance of the house pattern, and the one A17.8 said had to
+land before capability-dependent expansion.
+
+### The mapping became data, and the vocabulary was not invented
+
+`cc_capability_catalogue` is tenant-scoped, readable and auditable, and
+seeded so no tenant's behaviour changed on upgrade. It is **not** a second
+capability-authority model: the Registry remains the only authority on
+whether an executor can perform an action, and an entry naming an
+unimplemented class is refused on write and inert on read.
+
+Every subsystem in the seed is a condition the runtime actually produces
+— `health_summary` keys from the shipped skills, `sensor_id` prefixes the
+agent emits (`log:sel`, `config:<policy>`, `os:*`), and the synthesized
+unreachable-controller condition. Keying an entry on a condition that
+never occurs is exactly the failure the slice exists to fix, so a test
+asserts the vocabulary rather than trusting it.
+
+`evaluate()` takes the catalogue as an **input** with no hardcoded
+fallback. A default would have been the old constant surviving as a
+shadow, and the two would drift; a caller that supplies none gets no
+candidates, which is the fail-closed answer.
+
+### What was deliberately left alone
+
+**Firmware stays campaign work.** `FIRMWARE_UPDATE` and
+`FIRMWARE_ROLLBACK` are implemented and reachable through S6. They are
+absent from the condition catalogue because an agent does not propose a
+firmware update in response to a fault, and inventing a condition for
+them would be inventing a remediation model nobody asked for.
+
+**`CLEAR_COUNTERS` and `INTERFACE_RESET` stay unimplemented.** SONiC
+exposes counter-clear only over CLI and `INTERFACE_RESET` was never
+implemented on any protocol; both are node work with their own risk
+surface, not governance work. A4 changed their **visibility**, not their
+status: an operator can see the class exists, that no executor implements
+it, and what would have to change. Faking and deleting are both refused.
+
+**Nothing was mapped into the autonomy ladder** (ratified option A).
+Every newly addressable class arrives as `not_budget_mapped`, which means
+a named human is required. `COLLECT_DIAGNOSTICS` sits at 8/8 SUCCESS on
+the live stack and still cannot run unattended, and that is the point:
+**evidence of effectiveness is not authority to execute unattended.** A4
+asks what a governed agent may address; S5 and its successors ask what it
+may execute without anybody watching.
+
+### The execution gate stopped being a parallel statement
+
+`execution_permitted()` now runs in the Site Manager's dispatch path.
+Every check that was there before is still there, none was added, and none
+was removed — what changed is that the model and the runtime are one
+thing.
+
+It could not simply be called with all ten inputs: no single place sees
+them all. RBAC is decided at Central Command, the site's own safety and
+the device's declared capability at the Site Manager, and the lease,
+preconditions and blast radius at the node. So the inputs carry an
+explicit owner — `CC_INPUTS`, `SM_DISPATCH_INPUTS`, `NODE_INPUTS` — and a
+test asserts the three **partition** the ten exactly, so an input can
+never be dropped by the split or owned twice. The alternative, having the
+Site Manager pass `True` for inputs it cannot see, would assert that a
+precondition passed when nobody checked it.
+
+`capability` is supplied from the device's own declaration, which SM
+migration 0010 already stored. UNKNOWN never refuses — a fleet
+mid-upgrade is entirely undeclared — and the node's allow list remains
+the final word either way.
+
+### A smaller thing worth recording
+
+`implemented_actions` existed only in Central Command, and the Site
+Manager's new gate needed it. Rather than copy it, it moved to the shared
+`harkeniq.capabilities` module and Central Command re-exports it: three
+services now ask "what does this device's protocol implement", and a
+second copy would be a second answer to the question the Registry exists
+to answer once.

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_cc.db.models import (
     CCAgentIdentity,
     CCAgentPreflight,
+    CCCapabilityCatalogue,
     CCAgentSkillInstall,
     CCCampaign,
     CCCampaignDispatch,
@@ -3146,3 +3147,92 @@ class AgentIdentityRepo:
         row.last_seen_at = utcnow()
         if source:
             row.last_seen_source = source[:255]
+
+
+class CapabilityCatalogueRepo:
+    """A4: the condition -> capability catalogue (A21.1).
+
+    Seeds lazily on first read for a tenant the migration did not cover
+    (one created after the upgrade). The seed is read from the SEED
+    constant, never duplicated here -- a second copy would drift from the
+    one the runtime reads.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_for_tenant(
+        self, tenant_id: str, *, seed_if_empty: bool = True
+    ) -> Sequence[CCCapabilityCatalogue]:
+        rows = (
+            await self.session.execute(
+                select(CCCapabilityCatalogue)
+                .where(CCCapabilityCatalogue.tenant_id == tenant_id)
+                .order_by(
+                    CCCapabilityCatalogue.subsystem,
+                    CCCapabilityCatalogue.action_type,
+                )
+            )
+        ).scalars().all()
+        if rows or not seed_if_empty:
+            return rows
+        await self.seed(tenant_id, actor="platform-default")
+        return (
+            await self.session.execute(
+                select(CCCapabilityCatalogue)
+                .where(CCCapabilityCatalogue.tenant_id == tenant_id)
+                .order_by(
+                    CCCapabilityCatalogue.subsystem,
+                    CCCapabilityCatalogue.action_type,
+                )
+            )
+        ).scalars().all()
+
+    async def seed(self, tenant_id: str, actor: str) -> int:
+        """Write the platform default catalogue for a tenant. Idempotent."""
+        from harkeniq_cc.capability_catalogue import SEED
+
+        existing = {
+            (r.subsystem, r.action_type)
+            for r in await self.list_for_tenant(tenant_id, seed_if_empty=False)
+        }
+        written = 0
+        for entry in SEED:
+            if (entry["subsystem"], entry["action_type"]) in existing:
+                continue
+            self.session.add(CCCapabilityCatalogue(
+                tenant_id=tenant_id, subsystem=entry["subsystem"],
+                action_type=entry["action_type"], because=entry["because"],
+                provenance=entry["provenance"], enabled=True,
+                created_by=actor, updated_by=actor,
+            ))
+            written += 1
+        if written:
+            await self.session.flush()
+        return written
+
+    async def replace(
+        self, tenant_id: str, entries: list[dict], actor: str
+    ) -> int:
+        """Full replacement of a tenant's catalogue.
+
+        Replacement rather than patch, for the reason A0's bindings are:
+        an operator reasoning about what their agents may propose should
+        see the complete set in one request, not reconstruct it from a
+        history of deltas.
+        """
+        for row in await self.list_for_tenant(tenant_id, seed_if_empty=False):
+            await self.session.delete(row)
+        await self.session.flush()
+        for entry in entries:
+            self.session.add(CCCapabilityCatalogue(
+                tenant_id=tenant_id,
+                subsystem=str(entry["subsystem"]).lower(),
+                action_type=str(entry["action_type"]).upper(),
+                because=str(entry.get("because", ""))[:512],
+                provenance=str(entry.get("provenance", ""))[:255],
+                enabled=bool(entry.get("enabled", True)),
+                created_by=actor, updated_by=actor,
+            ))
+        await self.session.flush()
+        return len(entries)

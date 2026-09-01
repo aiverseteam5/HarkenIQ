@@ -353,10 +353,25 @@ class TestDetailAndCatalogue:
         by_type = {c["action_type"]: c for c in cat["action_classes"]}
         assert by_type["SEL_CLEAR"]["proposable"] is True
         assert by_type["SEL_CLEAR"]["observed_conditions"] == ["log"]
-        # A class with no observed condition mapped must say so rather
-        # than looking like a live option.
-        assert by_type["POWER_CAP_ADJUST"]["proposable"] is False
-        assert by_type["POWER_CAP_ADJUST"]["note"]
+
+        # A4 (A21): POWER_CAP_ADJUST is implemented, and until this slice
+        # nothing mapped a condition to it -- so an agent could never
+        # propose it. The thermal condition now names it.
+        assert by_type["POWER_CAP_ADJUST"]["proposable"] is True
+        assert "thermal" in by_type["POWER_CAP_ADJUST"]["observed_conditions"]
+
+        # A class with no observed condition mapped must still say so
+        # rather than looking like a live option. FIRMWARE_UPDATE is the
+        # DELIBERATE case now (A21.10): implemented, reachable through S6
+        # campaigns, and absent from the condition catalogue because an
+        # agent does not propose a firmware update in response to a fault.
+        assert by_type["FIRMWARE_UPDATE"]["proposable"] is False
+        assert by_type["FIRMWARE_UPDATE"]["note"]
+
+        # And the interface subsystem is no longer dead: it mapped only to
+        # CLEAR_COUNTERS, which no executor implements.
+        assert by_type["INTERFACE_DISABLE"]["proposable"] is True
+        assert by_type["CLEAR_COUNTERS"]["proposable"] is False
         assert cat["scope_options"]["sites"][0]["name"] == "DC-1"
         await client.aclose()
 

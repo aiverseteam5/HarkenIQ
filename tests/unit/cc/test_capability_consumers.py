@@ -40,6 +40,27 @@ SERVER_DECL = declare(
 SWITCH_DECL = declare("gnmi", ["INTERFACE_DISABLE", "INTERFACE_ENABLE"], "switch")
 
 
+def _catalogue() -> dict:
+    """The platform default catalogue, as the runtime resolves it.
+
+    A4: `evaluate()` takes the condition -> capability mapping as an
+    INPUT rather than reading a module constant, so a test that supplies
+    none gets no candidates -- the fail-closed answer, and the reason
+    these tests build the same seed production does.
+    """
+    from harkeniq_cc.capability_catalogue import SEED
+
+    out: dict[str, list[dict]] = {}
+    for entry in SEED:
+        out.setdefault(entry["subsystem"], []).append({
+            "action_type": entry["action_type"],
+            "because": entry["because"],
+            "provenance": entry["provenance"],
+        })
+    return out
+
+
+
 async def _stack(role: str = "tenant_owner"):
     config = CCConfig(tenant_id=TENANT, insecure=True)
     configure_auth("", "", "", insecure=True)
@@ -422,6 +443,7 @@ def _contract(level=2):
 
 def _run(caps, devices, incidents, **kw):
     return evaluate(
+        catalogue=_catalogue(),
         agent=_agent_obj(),
         scopes=[SimpleNamespace(scope_type="site", scope_ref="s1")],
         capabilities=caps,
