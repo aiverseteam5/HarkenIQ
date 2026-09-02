@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_cc_state, get_scope, get_session, require_permission
 from harkeniq_cc.approval_policy import MODE_AUTO_APPROVE
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     ApprovalGroupRepo,
@@ -225,7 +226,7 @@ async def create_policy(
         group_id=body.group_id,
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="policy.create",
         subject=policy.id,
         tenant_id=user.tenant_id,
@@ -263,7 +264,7 @@ async def update_policy(
     updates = body.model_dump(exclude_none=True)
     await repo.update(policy, **updates)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="policy.update",
         subject=policy_id,
         tenant_id=user.tenant_id,
@@ -297,7 +298,7 @@ async def delete_policy(
         raise HTTPException(status_code=404, detail="policy not found")
     await repo.delete(policy)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="policy.delete",
         subject=policy_id,
         tenant_id=user.tenant_id,
@@ -363,7 +364,7 @@ async def create_group(
         escalation_chain=body.escalation_chain,
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="group.create",
         subject=group.id,
         tenant_id=user.tenant_id,
@@ -430,7 +431,7 @@ async def add_group_member(
         principal_ref=getattr(body, "principal_ref", "") or "",
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="group.member.add",
         subject=group_id,
         tenant_id=user.tenant_id,
@@ -469,7 +470,7 @@ async def remove_group_member(
         raise HTTPException(status_code=404, detail="member not found")
     await repo.remove_member(member)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="group.member.remove",
         subject=group_id,
         tenant_id=user.tenant_id,
@@ -506,7 +507,7 @@ async def update_group(
     updates = body.model_dump(exclude_none=True)
     await repo.update(group, **updates)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="group.update",
         subject=group_id,
         tenant_id=user.tenant_id,
@@ -540,7 +541,7 @@ async def delete_group(
         raise HTTPException(status_code=404, detail="group not found")
     await repo.delete(group)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="group.delete",
         subject=group_id,
         tenant_id=user.tenant_id,
@@ -604,7 +605,7 @@ async def create_autonomy_budget(
         learning_ramp_config=body.learning_ramp_config,
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="autonomy.upsert",
         subject=budget.id,
         tenant_id=user.tenant_id,
@@ -642,7 +643,7 @@ async def delete_autonomy_budget(
         raise HTTPException(status_code=404, detail="budget not found")
     await repo.delete(budget)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="autonomy.delete",
         subject=budget_id,
         tenant_id=user.tenant_id,
@@ -666,7 +667,7 @@ async def _flip_stop_switch(active: bool, user, session, state) -> dict:
         user.tenant_id, active, changed_by=user.user_id
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="stop_switch.activate" if active else "stop_switch.deactivate",
         subject=user.tenant_id,
         tenant_id=user.tenant_id,

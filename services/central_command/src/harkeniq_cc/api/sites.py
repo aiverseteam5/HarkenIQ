@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_cc_state, get_scope, get_session, require_permission
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo, FleetCacheRepo, OrgUnitRepo, SiteRepo
 from harkeniq_cc.sm_client import SMClient
@@ -132,7 +133,7 @@ async def register_site(
         sm_result = {"accepted": False, "site_token": "", "reason": str(exc)}
 
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="site.register",
         subject=site.id,
         tenant_id=user.tenant_id,
@@ -245,7 +246,7 @@ async def set_site_org_unit(
 
     site.org_unit_id = unit.id
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="org_unit.site_attached",
         subject=site.id,
         tenant_id=user.tenant_id,

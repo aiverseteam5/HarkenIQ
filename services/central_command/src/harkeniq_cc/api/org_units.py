@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo, OrgUnitRepo
 from harkeniq_cc.org_tree import (
@@ -298,7 +299,7 @@ async def create_org_unit(
         created_by=user.user_id,
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="org_unit.created",
         subject=unit.id,
         tenant_id=user.tenant_id,
@@ -420,7 +421,7 @@ async def update_org_unit(
 
     unit.updated_by = user.user_id
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="org_unit.moved" if "parent_id" in changes else "org_unit.updated",
         subject=unit.id,
         tenant_id=user.tenant_id,
@@ -471,7 +472,7 @@ async def delete_org_unit(
     }
     await repo.delete(unit)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="org_unit.deleted",
         subject=unit_id,
         tenant_id=user.tenant_id,

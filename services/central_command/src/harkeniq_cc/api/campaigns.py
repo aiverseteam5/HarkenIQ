@@ -44,6 +44,7 @@ from harkeniq_cc.api.deps import (
     get_session,
     require_permission,
 )
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.autonomy import AUTONOMOUS, DENIED
 from harkeniq_cc.campaign_runner import (
@@ -414,6 +415,7 @@ async def create_campaign(
     )
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_of(user),
         action="campaign.created",
         subject=campaign.id,
         tenant_id=user.tenant_id,
@@ -470,7 +472,7 @@ async def preflight_campaign(
         scope_rules=rules,
         resolved_site_ids=await _rule_reach(session, user.tenant_id, rules),
         caller_scope=scope,
-        actor=user.email or user.user_id,
+        actor=user.email or user.user_id, actor_ref=actor_of(user),
     )
     await session.commit()
     targets = await repo.targets(campaign_id)
@@ -519,7 +521,7 @@ async def acknowledge_campaign(
         tenant_id=user.tenant_id,
         campaign=campaign,
         exclude_device_ids=body.exclude or [],
-        actor=user.email or user.user_id,
+        actor=user.email or user.user_id, actor_ref=actor_of(user),
     )
     await session.commit()
     return {"campaign_id": campaign_id, "status": campaign.status, **result}
@@ -580,7 +582,7 @@ async def submit_campaign(
         )
     campaign.status = STATUS_RUNNING if autonomous else STATUS_AWAITING_APPROVAL
     await AuditRepo(session).append(
-        actor=user.email or user.user_id,
+        actor=user.email or user.user_id, actor_ref=actor_of(user),
         action="campaign.submitted",
         subject=campaign.id,
         tenant_id=user.tenant_id,
@@ -614,7 +616,7 @@ async def cancel_campaign(
         raise HTTPException(409, f"campaign already {campaign.status}")
     campaign.status = STATUS_CANCELLED
     await AuditRepo(session).append(
-        actor=user.email or user.user_id,
+        actor=user.email or user.user_id, actor_ref=actor_of(user),
         action="campaign.cancelled",
         subject=campaign.id,
         tenant_id=user.tenant_id,

@@ -1227,6 +1227,93 @@ echo "$A23_BOOT" | grep -q "keycloak_realm is required" || {
   echo "$A23_BOOT" | tail -20 >&2; exit 1; }
 echo "refused: keycloak_realm is required in secure mode"
 
+step "A23-2: new audit rows carry a STABLE actor_ref; the chain hashes none of it"
+# Every write above was made by real Keycloak identities. The ledger
+# must name them by subject, not by address, and the owner's subject
+# must be what the impact census compares to grants.
+curl -sf -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/audit/?page_size=200" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+rows = d['entries']
+assert rows, 'no audit rows'
+with_ref = [r for r in rows if r.get('actor_ref')]
+assert with_ref, 'no row carries actor_ref'
+owner = [r for r in rows if r.get('actor_ref') == '$OWNER_SUB']
+assert owner, 'the owner is never recorded by subject'
+emails = [r for r in with_ref if '@' in (r['actor'] or '') and r['actor_ref'] and '@' not in r['actor_ref']]
+print(len(rows), 'rows;', len(with_ref), 'with actor_ref;', len(owner), 'by the owner;',
+      len(emails), 'recorded by email but identified by subject')
+"
+
+step "A23-2: a real 0019 -> 0020 upgrade on PostgreSQL with existing rows"
+# Take the live database back to 0019 (drop the column and its index,
+# rewind the version), then let Central Command's own alembic bring it
+# forward. Existing rows come back with actor_ref NULL -- no backfill --
+# and the chain, which never hashed the column, still verifies.
+BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "select count(*) from cc_audit_log")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  drop index if exists ix_cc_audit_log_tenant_actor_ref;
+  alter table cc_audit_log drop column actor_ref;
+  update alembic_version set version_num='0019';" > /dev/null
+docker compose exec -T central-command sh -c \
+  "cd /app/services/central_command && alembic upgrade head" 2>&1 | tail -1
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  select version_num from alembic_version;
+  select count(*) from cc_audit_log where actor_ref is null;
+  select count(*) from cc_audit_log;
+  select indexname from pg_indexes where tablename='cc_audit_log' and indexname='ix_cc_audit_log_tenant_actor_ref';" \
+  | python3 -c "
+import sys
+lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+version, nulls, total, index = lines[0], int(lines[1]), int(lines[2]), lines[3]
+assert version == '0020', version
+assert total == int('$BEFORE') and nulls == total, (nulls, total, '$BEFORE')
+assert index == 'ix_cc_audit_log_tenant_actor_ref', index
+print('0020 applied on PostgreSQL:', total, 'existing rows, all actor_ref NULL, index present')
+"
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['valid'], d
+print('chain still valid after the upgrade:', d['length'], 'entries')"
+
+step "A23-2: readers are dual-form -- legacy rows by display string, new rows by subject"
+# A new write after the upgrade carries the subject again; the historical
+# rows (now NULL) are still found by their legacy actor string, and the
+# impact census does not report the granted owner as ungranted merely
+# because older rows name them differently.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"a23-2 probe","unit_type":"cluster"}' \
+  http://localhost:8090/api/org-units/ > /dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/audit/?actor=$OWNER_SUB&page_size=50" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+new = [r for r in d['entries'] if r['actor_ref'] == '$OWNER_SUB']
+assert new, 'the post-upgrade write did not carry actor_ref'
+print('by subject:', d['total'], 'row(s); newest carries actor_ref')"
+LEGACY_ACTOR=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "select actor from cc_audit_log where actor_ref is null and actor <> '' order by seq limit 1")
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/audit/?actor=$LEGACY_ACTOR&page_size=5" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['total'] >= 1, d
+assert any(r['actor_ref'] is None for r in d['entries']), 'legacy rows must read with actor_ref null'
+print('by legacy actor string', repr('$LEGACY_ACTOR'[:24]), '->', d['total'], 'row(s), actor_ref null')"
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/tenant-settings/scope-enforcement/impact | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert '$OWNER_SUB' not in d['observed_principals_without_grant'], d['observed_principals_without_grant']
+assert 'actor_ref' in d['identity_basis']
+print('census: owner not reported as ungranted;',
+      len(d['observed_principals_without_grant']), 'without grant,',
+      len(d['unresolved_legacy_actors']), 'unresolved legacy actor(s)')"
+
 step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"legacy_open"}' \

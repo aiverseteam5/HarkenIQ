@@ -39,6 +39,7 @@ from harkeniq_cc.api.deps import (
     require_any_permission,
     require_permission,
 )
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import ROLE_PERMISSIONS
 from harkeniq_cc.db.repos import (
     AuditRepo,
@@ -316,7 +317,7 @@ async def create_grant(
         note=body.note,
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="scope.granted",
         subject=body.principal_ref,
         tenant_id=user.tenant_id,
@@ -370,7 +371,7 @@ async def revoke_grant(
 
     await repo.revoke(grant, user.user_id)
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="scope.revoked",
         subject=grant.principal_ref,
         tenant_id=user.tenant_id,
@@ -452,7 +453,6 @@ async def enforcement_impact(
 
     from harkeniq_cc.db.models import CCAuditLog
     from harkeniq_cc.db.repos import OperationalAgentRepo
-    from harkeniq_cc.operational_agent import parse_attribution
     from harkeniq_cc.scope import PRINCIPAL_AGENT, PRINCIPAL_USER, is_active
     from sqlalchemy import select
 
@@ -472,21 +472,20 @@ async def enforcement_impact(
     ]
 
     since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
-    actors = (await session.execute(
-        select(CCAuditLog.actor)
+    observed = (await session.execute(
+        select(CCAuditLog.actor, CCAuditLog.actor_ref)
         .where(CCAuditLog.tenant_id == tenant_id, CCAuditLog.ts >= since)
         .distinct()
-    )).scalars().all()
+    )).all()
     covered_users = {ref for kind, ref in granted if kind == PRINCIPAL_USER}
-    people_at_risk = sorted({
-        actor for actor in actors
-        if actor
-        # An agent's attribution key is not a human principal; agents are
-        # reported by identity above, where the answer is exact.
-        and parse_attribution(actor) is None
-        and actor not in covered_users
-        and not actor.startswith(("system", "campaign:"))
-    })
+    agent_ids = {a.id for a in await OperationalAgentRepo(session).list_all(tenant_id)}
+    census = _census_actors(
+        observed,
+        evidence=await _identity_evidence(session, tenant_id),
+        covered_users=covered_users,
+        agent_ids=agent_ids,
+    )
+    people_at_risk = sorted(census["without_grant"])
 
     return {
         "tenant_id": tenant_id,
@@ -495,6 +494,18 @@ async def enforcement_impact(
         "active_grants": len(granted),
         "agents_without_grant": agents_at_risk,
         "observed_principals_without_grant": people_at_risk,
+        # A23-2: how each of those was recognised, and what could NOT be.
+        "observed_principals_detail": census["detail"],
+        "unresolved_legacy_actors": census["unresolved"],
+        "identity_basis": (
+            "stable principal identity: cc_audit_log.actor_ref where present; "
+            "a legacy actor is resolved only through actor_of() (subject, "
+            "attribution key) or through in-repo evidence pairing an email "
+            "with a subject (approval records, approval-group members). An "
+            "email that no record pairs with a subject is reported as "
+            "unresolved, never matched by guess and never counted as a "
+            "different person."
+        ),
         "observed_window_days": int(days),
         # The honest limit, stated in the payload rather than a doc: a
         # principal who has never acted cannot appear here.
@@ -508,6 +519,90 @@ async def enforcement_impact(
             "no grant -> no operational scope -> no operational data -> no "
             "proposal target"
         ),
+    }
+
+
+async def _identity_evidence(session, tenant_id: str) -> dict[str, str]:
+    """Email -> stable subject, from records the platform itself wrote.
+
+    Two stores pair an address with a subject at write time:
+    `cc_approval_records` (approver_ref + approver_email, E0.1) and
+    `cc_approval_group_members` (principal_ref + user_email). Those pairs
+    are evidence, not inference: the subject and the address were
+    observed together on one authenticated request. Nothing else is
+    consulted, and an address with no such pair stays unresolved.
+    """
+    from sqlalchemy import select as _select
+
+    from harkeniq_cc.db.models import (
+        CCApprovalGroup,
+        CCApprovalGroupMember,
+        CCApprovalRecord,
+    )
+
+    out: dict[str, str] = {}
+    rows = (await session.execute(
+        _select(CCApprovalRecord.approver_email, CCApprovalRecord.approver_ref)
+        .where(CCApprovalRecord.tenant_id == tenant_id)
+        .distinct()
+    )).all()
+    rows += (await session.execute(
+        _select(CCApprovalGroupMember.user_email, CCApprovalGroupMember.principal_ref)
+        .join(CCApprovalGroup, CCApprovalGroup.id == CCApprovalGroupMember.group_id)
+        .where(CCApprovalGroup.tenant_id == tenant_id)
+        .distinct()
+    )).all()
+    for email, ref in rows:
+        email = (email or "").strip().lower()
+        ref = (ref or "").strip()
+        if email and ref and "@" in email and "@" not in ref:
+            out.setdefault(email, ref)
+    return out
+
+
+def _census_actors(observed, *, evidence, covered_users, agent_ids) -> dict:
+    """Resolve every observed audit actor to a STABLE identity (A23-2).
+
+    Pure. `observed` is (actor, actor_ref) pairs. Precedence: the stored
+    `actor_ref`; then what the one helper can derive from the legacy
+    string; then an in-repo email->subject pair. Agents, campaigns and
+    the system are not people and are reported elsewhere or not at all.
+    What cannot be resolved is listed as such -- an unrecognised display
+    string is not evidence of a second person.
+    """
+    from harkeniq_cc.actor import actor_of
+
+    # The ledger's own new rows are evidence too: `actor_of()` wrote the
+    # display string and the stable reference together on ONE
+    # authenticated request, which is exactly the pairing the approval
+    # records carry. A person recorded by email before A23-2 and by
+    # (email, subject) after it is one person, provably.
+    evidence = dict(evidence)
+    for actor, actor_ref in observed:
+        actor = (actor or "").strip()
+        if actor_ref and "@" in actor and "@" not in actor_ref:
+            evidence.setdefault(actor.lower(), actor_ref)
+
+    forms: dict[str, set[str]] = {}
+    unresolved: set[str] = set()
+    for actor, actor_ref in observed:
+        actor = actor or ""
+        ref = actor_ref or actor_of(actor) or evidence.get(actor.strip().lower())
+        if not ref:
+            if actor and not actor.startswith(("system", "campaign:", "machine:")):
+                unresolved.add(actor)
+            continue
+        if ref in agent_ids or ref.startswith(("campaign:", "system")):
+            continue
+        forms.setdefault(ref, set()).add(actor)
+    without = {ref for ref in forms if ref not in covered_users}
+    return {
+        "without_grant": without,
+        "detail": [
+            {"principal_ref": ref, "observed_as": sorted(forms[ref]), "granted": ref in covered_users}
+            for ref in sorted(forms)
+        ],
+        "unresolved": sorted(unresolved),
     }
 
 
@@ -566,7 +661,7 @@ async def set_enforcement(
         user.tenant_id, body.mode, user.user_id
     )
     await AuditRepo(session).append(
-        actor=user.user_id,
+        actor=user.user_id, actor_ref=actor_of(user),
         action="scope.enforcement_changed",
         subject=user.tenant_id,
         tenant_id=user.tenant_id,

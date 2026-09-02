@@ -287,6 +287,14 @@ class CCAuditLog(Base):
     #: tenant-level, which is also what every pre-E1.2 row reads as:
     #: the site was never recorded and cannot be invented now.
     site_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    #: A23-2 (spec A23.7): the STABLE actor identity -- the same value
+    #: `cc_scope_grants.principal_ref` carries -- written by every new
+    #: row through the one `actor_of()` helper. DELIBERATELY OUTSIDE the
+    #: hash-chain payload, exactly like `site_id`: every chain written
+    #: before this column existed still verifies. NULL means the row
+    #: predates A23-2 (or its actor could not be resolved to a stable
+    #: identity); `actor` stays the display form and is never rewritten.
+    actor_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # R4-2 P12: SHA-256 hash chain (harkeniq.audit.chain); one chain per
     # service, seq unique so racing appenders fail instead of forking.
     seq: Mapped[int | None] = mapped_column(nullable=True)
@@ -296,6 +304,10 @@ class CCAuditLog(Base):
     __table_args__ = (
         Index("ix_cc_audit_log_ts", "ts"),
         Index("ix_cc_audit_log_tenant_id", "tenant_id"),
+        # The two reads that ask "what did THIS principal do": the audit
+        # API's actor filter and the enforcement-impact census, both
+        # within one tenant.
+        Index("ix_cc_audit_log_tenant_actor_ref", "tenant_id", "actor_ref"),
         UniqueConstraint("seq", name="uq_cc_audit_log_seq"),
     )
 
