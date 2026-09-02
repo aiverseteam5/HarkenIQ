@@ -1,223 +1,46 @@
-"""E1.2: the executable endpoint x persona x permission x scope matrix.
+"""E1.2 / A23: the executable endpoint x persona x permission x scope matrix.
 
 Ten personas against 68 protected endpoints is 680 cells, and a
 hand-maintained table that size is wrong within a week. So the matrix is
 executed, not read:
 
-1. **The declaration table below** states, per route, its permission and
-   its scope treatment. It is the only hand-written part.
+1. **The declaration table** (`harkeniq_cc.route_contract.ROUTE_CONTRACT`)
+   states, per route, its permission and its scope treatment. It is the
+   only hand-written part, and since A23 it is RUNTIME code: a
+   declaration only a test could see was a promise nothing kept.
 2. **The route-contract test** walks the running app's own route table
    and requires every `/api` route to appear. A new endpoint with no
    scope decision FAILS THE SUITE -- it cannot be forgotten.
-3. **The persona sweep** (test_e1_persona_matrix.py) derives every
-   expected outcome from this table and drives the real ASGI app.
+3. **The consumption census** (A23.2) inspects every scope-consuming
+   route's handler and fails the suite, by name, on one that accepts
+   `scope` and never reads it. Strict mode cannot help a handler that
+   never consumes the scope.
+4. **The persona sweep** (test_e1_persona_matrix.py) derives every
+   expected outcome from this table and drives the real ASGI app,
+   asserting narrowing on reads and refusal on mutations.
 
 No test here asserts that a UI hid something.
 """
 
 from __future__ import annotations
 
-import pytest
-
 from harkeniq_cc.app import create_app
 from harkeniq_cc.auth import ROLE_PERMISSIONS
 from harkeniq_cc.config import CCConfig
 from harkeniq_cc.db.base import make_engine, make_sessionmaker
+from harkeniq_cc.route_contract import (  # noqa: F401 -- re-exported for the matrix
+    OBJECT_GATED,
+    PUBLIC,
+    READ_SCOPED,
+    ROUTE_CONTRACT,
+    SCOPE_CONSUMING,
+    TENANT_GATED,
+    TREATMENTS,
+    UNSCOPED,
+    census,
+    scope_consumption,
+)
 from harkeniq_cc.runtime import AppState
-
-# Scope treatments. Exactly four, and every route is one of them.
-READ_SCOPED = "read_scoped"      # 200, rows filtered to the caller's scope
-OBJECT_GATED = "object_gated"    # 403 when the target is out of scope
-TENANT_GATED = "tenant_gated"    # needs a tenant-scope grant
-UNSCOPED = "unscoped"            # no scope dimension exists for this route
-
-TREATMENTS = {READ_SCOPED, OBJECT_GATED, TENANT_GATED, UNSCOPED}
-
-#: (method, path) -> (permission, treatment, audited)
-#:
-#: `permission` is what the route guard demands -- layer 1, "could this
-#: actor ever". `treatment` is what layers 2-4 do with the target.
-ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
-    # -- fleet and device reads ------------------------------------
-    ("GET", "/api/agents/"):                    ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/agents/{agent_id}"):          ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/fleet/"):                     ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/fleet/summary"):              ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/fleet/{device_id}"):          ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/sites/"):                     ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/sites/{site_id}"):            ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/incidents/"):                 ("incident.view", READ_SCOPED, False),
-    ("GET", "/api/incidents/{incident_id}"):    ("incident.view", READ_SCOPED, False),
-    ("GET", "/api/outcomes/metrics"):           ("fleet.view", READ_SCOPED, False),
-    # Capability Registry. READ_SCOPED, not UNSCOPED: unlike /api/autonomy
-    # (which describes tenant-wide posture) this describes the caller's
-    # actual DEVICES, so effective reach must be computed only over the
-    # fleet that caller may see. A scoped principal reading the whole
-    # tenant's reach would be a fleet-inventory leak wearing a
-    # capability label.
-    ("GET", "/api/capabilities/"):              ("fleet.view", READ_SCOPED, False),
-    # S6 campaigns. Reads are fleet.view and READ_SCOPED (an out-of-scope
-    # campaign is 404, never 403); configuration is site.manage and
-    # OBJECT_GATED, because the delegation ceiling is checked against the
-    # scope rows the campaign is being pointed at. No campaign.*
-    # permission exists -- the vocabulary is fixed.
-    ("GET", "/api/campaigns/"):                 ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/campaigns/{campaign_id}"):    ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/campaigns/{campaign_id}/targets"):
-        ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/campaigns/{campaign_id}/sites"):
-        ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/campaigns/{campaign_id}/waves"):
-        ("fleet.view", READ_SCOPED, False),
-    ("POST", "/api/campaigns/{campaign_id}/advance"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/campaigns/"):                ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/campaigns/{campaign_id}/preflight"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/campaigns/{campaign_id}/acknowledge"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/campaigns/{campaign_id}/submit"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/campaigns/{campaign_id}/cancel"):
-        ("site.manage", OBJECT_GATED, True),
-    # READ_SCOPED like /api/fleet/{device_id}: an out-of-scope device is
-    # 404, never 403, because a 403 confirms it exists.
-    # A4 (spec A21): the condition -> capability catalogue. Reads are
-    # fleet.view like the rest of the Registry surface; the write is
-    # TENANT authority (site.manage + tenant object gate), the same rule
-    # S5's autonomy budgets follow -- tenant governance has no site
-    # dimension, so a cluster-scoped principal may read why their agent
-    # proposes what it does and may not rewrite it for everyone else.
-    ("GET", "/api/capabilities/catalogue"):
-        ("fleet.view", READ_SCOPED, False),
-    ("PUT", "/api/capabilities/catalogue"):
-        ("site.manage", OBJECT_GATED, True),
-    ("GET", "/api/capabilities/devices/{device_id}"):
-        ("fleet.view", READ_SCOPED, False),
-
-    # -- approvals -------------------------------------------------
-    ("GET", "/api/approvals/"):                 ("action.approve", READ_SCOPED, False),
-    ("GET", "/api/approvals/history"):          ("action.approve", READ_SCOPED, False),
-    ("GET", "/api/approvals/{action_id}/records"): ("action.approve", READ_SCOPED, False),
-    ("POST", "/api/approvals/{action_id}/approve"): ("action.approve", OBJECT_GATED, True),
-    ("POST", "/api/approvals/{action_id}/deny"):    ("action.approve", OBJECT_GATED, True),
-    ("POST", "/api/approvals/batch"):           ("action.approve", OBJECT_GATED, True),
-
-    # -- the organizational tree -----------------------------------
-    ("GET", "/api/org-units/"):                 ("site.view", READ_SCOPED, False),
-    ("GET", "/api/org-units/{unit_id}"):        ("site.view", READ_SCOPED, False),
-    ("POST", "/api/org-units/"):                ("site.manage", OBJECT_GATED, True),
-    ("PATCH", "/api/org-units/{unit_id}"):      ("site.manage", OBJECT_GATED, True),
-    ("DELETE", "/api/org-units/{unit_id}"):     ("site.manage", OBJECT_GATED, True),
-    ("PUT", "/api/sites/{site_id}/org-unit"):   ("site.manage", OBJECT_GATED, True),
-
-    # -- scope administration --------------------------------------
-    ("GET", "/api/scope-grants/"):              ("user.view", READ_SCOPED, False),
-    ("GET", "/api/scope-grants/me"):            ("fleet.view", UNSCOPED, False),
-    ("POST", "/api/scope-grants/"):             ("role.manage", OBJECT_GATED, True),
-    ("DELETE", "/api/scope-grants/{grant_id}"): ("role.manage", OBJECT_GATED, True),
-    ("GET", "/api/tenant-settings/scope-enforcement"): ("fleet.view", UNSCOPED, False),
-    ("PUT", "/api/tenant-settings/scope-enforcement"): ("role.manage", TENANT_GATED, True),
-    # A22.10: the report half of report-before-enforce. UNSCOPED because
-    # the whole point is a tenant-wide census an admin acts on; it names
-    # principals and grant counts, never device or site data.
-    ("GET", "/api/tenant-settings/scope-enforcement/impact"): ("fleet.view", UNSCOPED, False),
-
-    # -- site registration -----------------------------------------
-    ("POST", "/api/sites/register"):            ("site.manage", TENANT_GATED, True),
-
-    # -- tenant governance: READ at permission, MUTATE at tenant scope
-    ("GET", "/api/policies/"):                  ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/autonomy"):          ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/groups"):            ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/groups/{group_id}"): ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/stop-switch"):       ("fleet.view", UNSCOPED, False),
-    ("POST", "/api/policies/"):                 ("site.manage", TENANT_GATED, True),
-    ("PATCH", "/api/policies/{policy_id}"):     ("site.manage", TENANT_GATED, True),
-    ("DELETE", "/api/policies/{policy_id}"):    ("site.manage", TENANT_GATED, True),
-    ("POST", "/api/policies/autonomy"):         ("site.manage", TENANT_GATED, True),
-    ("DELETE", "/api/policies/autonomy/{budget_id}"): ("site.manage", TENANT_GATED, True),
-    ("POST", "/api/policies/groups"):           ("site.manage", TENANT_GATED, True),
-    ("PATCH", "/api/policies/groups/{group_id}"):  ("site.manage", TENANT_GATED, True),
-    ("DELETE", "/api/policies/groups/{group_id}"): ("site.manage", TENANT_GATED, True),
-    ("POST", "/api/policies/groups/{group_id}/members"): ("site.manage", TENANT_GATED, True),
-    ("DELETE", "/api/policies/groups/{group_id}/members/{member_id}"):
-        ("site.manage", TENANT_GATED, True),
-    ("POST", "/api/policies/stop-switch"):      ("site.manage", TENANT_GATED, True),
-    ("POST", "/api/policies/stop-switch/deactivate"): ("site.manage", TENANT_GATED, True),
-
-    # -- Operational Agents ----------------------------------------
-    ("GET", "/api/operational-agents/"):            ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/operational-agents/catalogue"):   ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/operational-agents/{agent_id}"):  ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/operational-agents/{agent_id}/proposals"): ("fleet.view", UNSCOPED, False),
-    # Object-gated on the agent's SCOPE, not tenant-gated: a tenant gate
-    # would make the delegation ceiling unreachable (a tenant-wide
-    # creator can delegate anything), so the ceiling IS the gate.
-    ("POST", "/api/operational-agents/"):           ("site.manage", OBJECT_GATED, True),
-    ("PATCH", "/api/operational-agents/{agent_id}"): ("site.manage", OBJECT_GATED, True),
-    ("PUT", "/api/operational-agents/{agent_id}/bindings"): ("site.manage", OBJECT_GATED, True),
-    # A2: the governed activation lifecycle. Reads are fleet.view and
-    # READ_SCOPED (an out-of-scope agent is 404, never 403);
-    # configuration is site.manage and OBJECT_GATED via the delegation
-    # ceiling. Activation APPROVAL is not here -- it happens on
-    # /api/approvals, because there is one approval system.
-    ("POST", "/api/operational-agents/{agent_id}/preflight"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/operational-agents/{agent_id}/acknowledge"):
-        ("site.manage", OBJECT_GATED, True),
-    ("GET", "/api/operational-agents/{agent_id}/preflight"):
-        ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/operational-agents/{agent_id}/runtime"):
-        ("fleet.view", READ_SCOPED, False),
-    # A5 (A22.7/A22.8): it writes NOTHING, so it is a GET and governed as
-    # a read at `fleet.view` -- which A20.3's machine ceiling already
-    # carries, letting an agent dry-run ITSELF with no ceiling change.
-    # Drafted as a POST; the mutation invariant below refused it, and the
-    # verb was the thing that was wrong. "Its own and no other" is an
-    # object-level gate inside the handler, not a permission.
-    ("GET", "/api/operational-agents/{agent_id}/dry-run"):
-        ("fleet.view", READ_SCOPED, False),
-    # A3 (spec A20): the machine-identity lifecycle. No new permission —
-    # whoever may build and activate an agent may credential it, and the
-    # credential grants nothing by itself, so it is agent configuration
-    # under the same delegation ceiling. Status is a fleet.view read and
-    # never carries the secret.
-    ("POST", "/api/operational-agents/{agent_id}/identity"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/operational-agents/{agent_id}/identity/rotate"):
-        ("site.manage", OBJECT_GATED, True),
-    ("POST", "/api/operational-agents/{agent_id}/identity/revoke"):
-        ("site.manage", OBJECT_GATED, True),
-    ("GET", "/api/operational-agents/{agent_id}/identity"):
-        ("fleet.view", READ_SCOPED, False),
-    ("POST", "/api/operational-agents/{agent_id}/{transition}"):
-        ("site.manage", OBJECT_GATED, True),
-
-    # -- tenant-wide catalogues and analytics ----------------------
-    # No site dimension exists on these tables, so there is nothing to
-    # scope a read to. Their MUTATIONS are tenant-gated.
-    ("GET", "/api/attention/"):                 ("fleet.view", READ_SCOPED, False),
-    ("GET", "/api/autonomy/"):                  ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/outcomes/patterns"):          ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/predictive/risk"):            ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/learning/candidates"):        ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/learning/cycles"):            ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/learning/signals"):           ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/firmware/cve-feed"):          ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/firmware/exposure"):          ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/warranty/"):                  ("fleet.view", UNSCOPED, False),
-    ("POST", "/api/firmware/cve-feed"):         ("site.manage", TENANT_GATED, True),
-    ("POST", "/api/warranty/import"):           ("site.manage", TENANT_GATED, True),
-
-    # -- audit -----------------------------------------------------
-    ("GET", "/api/audit/"):                     ("audit.view", READ_SCOPED, False),
-    ("GET", "/api/audit/verify"):               ("audit.view", UNSCOPED, False),
-}
-
-#: Unauthenticated by design (E0.3): no tenant identifiers, same posture
-#: as any load balancer probe.
-PUBLIC = {("GET", "/healthz"), ("GET", "/metrics")}
 
 
 def _app():
@@ -314,3 +137,39 @@ class TestTheShapeOfTheContract:
         # A tripwire, not a target: if this moves, the endpoint x persona
         # sweep below has more or fewer cells than the design reviewed.
         assert reads >= 36 and mutations >= 26
+
+
+class TestDeclaredScopeIsConsumed:
+    """A23.2: declaration + runtime consumption + behaviour, together.
+
+    The first half of failure class B. A handler that accepts
+    ``scope=Depends(get_scope)`` and never reads the name has declared a
+    treatment it cannot keep, and the persona sweep would have to know
+    every such handler's shape to catch it. This census catches it by
+    name, from the source, for every scope-consuming route at once.
+    """
+
+    def test_every_scope_consuming_route_reads_the_scope(self):
+        problems = census(_app())
+        assert not problems, (
+            "these routes declare a scope treatment their handler does "
+            "not keep -- the scope is resolved and then ignored, so strict "
+            "mode cannot narrow or refuse anything here:\n  "
+            + "\n  ".join(problems)
+        )
+
+    def test_the_census_detects_the_lie_it_exists_for(self):
+        """The detector must fail on the exact shape A23 found."""
+
+        async def liar(scope=None):  # declared, never read
+            return {"ok": True}
+
+        async def honest(scope=None):
+            return {"sites": sorted(scope.site_ids)}
+
+        assert scope_consumption(liar).declares
+        assert not scope_consumption(liar).consumes
+        assert scope_consumption(honest).consumes
+
+    def test_scope_consuming_is_exactly_the_three_scoped_treatments(self):
+        assert SCOPE_CONSUMING == {READ_SCOPED, OBJECT_GATED, TENANT_GATED}

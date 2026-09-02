@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import WarrantyRepo
 from harkeniq_cc.warranty.base import WarrantyRecord, warranty_status
@@ -38,8 +38,28 @@ def warranty_dict(row) -> dict:
 async def list_warranty(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
+    """Warranty records for the devices the caller may see.
+
+    A23: a warranty row is keyed on a service tag and has no site of its
+    own, so the scope is applied through the fleet cache -- a scoped
+    principal reads the records of THEIR devices' tags and no other. A
+    tenant-wide caller reads every record, including tags imported for
+    devices the fleet has not reported yet.
+    """
     rows = await WarrantyRepo(session).list_all(tenant_id=user.tenant_id)
+    if not getattr(scope, "tenant_wide", False):
+        from harkeniq_cc.db.repos import FleetCacheRepo
+
+        tags = {
+            d.service_tag
+            for d in await FleetCacheRepo(session).list_all(
+                user.tenant_id, scope=scope
+            )
+            if d.service_tag
+        }
+        rows = [r for r in rows if r.service_tag in tags]
     return {
         "records": [warranty_dict(r) for r in rows],
         "tenant_id": user.tenant_id,
@@ -56,9 +76,15 @@ async def import_warranty(
     payload: dict = Body(...),
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Import warranty records: {"records": [{service_tag, vendor,
     service_level, start_date, end_date}, ...]}."""
+    # A23: an import rewrites tenant-wide records keyed on service tag,
+    # so it is TENANT authority, like the CVE feed.
+    forbid_out_of_scope(
+        scope, "site.manage", what="the warranty import", tenant_object=True
+    )
     raw = payload.get("records", [])
     records = [
         WarrantyRecord(

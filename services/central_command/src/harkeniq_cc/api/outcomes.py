@@ -72,9 +72,16 @@ async def list_patterns(
     limit: int = Query(200, ge=1, le=1000),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Detected fleet patterns (batch_failure, cross_site_batch, anomaly,
-    reliability), newest first."""
+    reliability), newest first.
+
+    A23: a pattern is tenant-level knowledge (a vendor/model cohort), but
+    its evidence names the SITES it was detected across. A scoped caller
+    reads the pattern with the site evidence narrowed to their own sites;
+    a pattern whose named sites are all outside their scope is absent.
+    """
     rows = await FleetPatternRepo(session).list_patterns(
         pattern_type=pattern_type, status=status or None, limit=limit,
         tenant_id=user.tenant_id,
@@ -85,13 +92,55 @@ async def list_patterns(
                 "pattern_id": r.id,
                 "pattern_type": r.pattern_type,
                 "description": r.description,
-                "affected_scope": r.affected_scope or {},
+                "affected_scope": _narrow_sites(r.affected_scope or {}, scope),
                 "confidence": r.confidence,
-                "evidence": r.evidence or {},
+                "evidence": _narrow_sites(r.evidence or {}, scope),
                 "status": r.status,
                 "detected_at": r.detected_at.isoformat() if r.detected_at else None,
             }
             for r in rows
+            if _pattern_visible(r, scope)
         ],
         "tenant_id": user.tenant_id,
     }
+
+
+_SITE_KEYS = ("sites", "site_failure_counts")
+
+
+def _visible_sites(scope) -> set[str] | None:
+    if scope is None or getattr(scope, "tenant_wide", False):
+        return None
+    return set(getattr(scope, "site_ids", ()) or ())
+
+
+def _narrow_sites(payload: dict, scope) -> dict:
+    """Drop site identifiers the caller may not see from a JSON blob."""
+    visible = _visible_sites(scope)
+    if visible is None:
+        return payload
+    out = dict(payload)
+    for key in _SITE_KEYS:
+        value = out.get(key)
+        if isinstance(value, dict):
+            out[key] = {k: v for k, v in value.items() if k in visible}
+        elif isinstance(value, list):
+            out[key] = [s for s in value if s in visible]
+    return out
+
+
+def _pattern_visible(row, scope) -> bool:
+    """A pattern that names sites is visible when at least one is the
+    caller's; one that names no site is cohort knowledge and visible."""
+    visible = _visible_sites(scope)
+    if visible is None:
+        return True
+    named: set[str] = set()
+    for blob in (row.affected_scope or {}, row.evidence or {}):
+        for key in _SITE_KEYS:
+            value = blob.get(key)
+            if isinstance(value, dict):
+                named |= set(value)
+            elif isinstance(value, list):
+                named |= set(value)
+    return not named or bool(named & visible)

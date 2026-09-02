@@ -87,6 +87,19 @@ class CCConfig:
                 "that tenant's own realm, or a platform identity becomes a "
                 "tenant operator"
             )
+        # A23 (spec A23.4): the check above short-circuited on an EMPTY
+        # realm, and `create_app` then fell back to the platform realm --
+        # so an unset realm booted Central Command against exactly the
+        # realm the check exists to refuse, and every grant was stamped
+        # with realm "" and narrowed by nothing. Secure mode requires the
+        # tenant realm to be named. There is no fallback any more.
+        if not self.insecure and not self.keycloak_realm:
+            errors.append(
+                "keycloak_realm is required in secure mode: Central Command "
+                "serves one tenant and must name that tenant's realm "
+                "(HARKEN_CC_KEYCLOAK_REALM). It will not fall back to the "
+                "platform realm."
+            )
         return errors
 
 

@@ -445,6 +445,37 @@ def _enforce_delegation_ceiling(creator_scope, scopes) -> None:
             )
 
 
+def _agent_visible(scope, rules) -> bool:
+    """May this caller READ this agent? (A23, READ_SCOPED made true.)
+
+    An agent is a scoped object: visible to a caller who reaches at
+    least one of its scope rules with `fleet.view`. An agent with no
+    rules reaches nothing and is a tenant-level object, visible to a
+    tenant-wide reader only. Out of scope is absent (404), never 403 --
+    a 403 confirms the agent exists.
+    """
+    if getattr(scope, "tenant_wide", False):
+        return True
+    return any(_scope_rule_within(scope, r, "fleet.view") for r in rules)
+
+
+async def _require_visible_agent(session, tenant_id: str, agent_id: str, scope):
+    """The agent, or 404 if it does not exist OR the caller cannot see it."""
+    agent = await _require_agent(session, tenant_id, agent_id)
+    rules = await OperationalAgentRepo(session).list_scopes(agent.id)
+    if not _agent_visible(scope, rules):
+        raise HTTPException(404, "operational agent not found")
+    return agent
+
+
+def _narrow_proposals(scope, proposals):
+    """A scoped reader sees the proposals made at THEIR sites."""
+    if getattr(scope, "tenant_wide", False):
+        return list(proposals)
+    visible = set(getattr(scope, "site_ids", ()) or ())
+    return [p for p in proposals if p.site_id and p.site_id in visible]
+
+
 def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> bool:
     """Does the caller hold `permission` over this scope rule?
 
@@ -546,6 +577,7 @@ async def _apply_bindings(
 async def catalogue(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """What an agent CAN be bound to in this tenant, and what each means.
 
@@ -557,8 +589,10 @@ async def catalogue(
     rather than a form's option list.
     """
     risks = action_risk_map()
-    sites = await SiteRepo(session).list_all(user.tenant_id)
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id)
+    # A23: the scope options are what THIS caller may bind -- their own
+    # sites and devices, not the tenant's inventory.
+    sites = await SiteRepo(session).list_all(user.tenant_id, scope=scope)
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
 
     # Which conditions THIS TENANT has a remediation mapped for. A4: read
     # from the catalogue, not a module constant, so the answer to "why
@@ -632,8 +666,15 @@ async def list_agents(
     items = []
     for agent in agents:
         scopes = await repo.list_scopes(agent.id)
+        # A23 (READ_SCOPED, made true): an agent the caller cannot reach
+        # is absent from the list, and proposal counts cover the
+        # caller's sites only.
+        if not _agent_visible(scope, scopes):
+            continue
         caps = await repo.list_capabilities(agent.id)
-        proposals = await prop_repo.list_for_agent(user.tenant_id, agent.id)
+        proposals = _narrow_proposals(
+            scope, await prop_repo.list_for_agent(user.tenant_id, agent.id)
+        )
         row = _agent_dict(agent, scopes, caps)
         row["proposal_counts"] = {
             status_name: sum(1 for p in proposals if p.status == status_name)
@@ -736,11 +777,14 @@ async def get_agent(
     answer composes from the same governed contracts the Console and a
     future MCP caller read.
     """
-    agent = await _require_agent(session, user.tenant_id, agent_id)
+    agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     repo = OperationalAgentRepo(session)
     scopes = await repo.list_scopes(agent.id)
     caps = await repo.list_capabilities(agent.id)
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id)
+    # A23: a scoped reader sees the agent's reach WITHIN their own scope.
+    # The agent may reach further; what it reaches beyond the caller is
+    # not the caller's to read.
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
     contract = await load_autonomy_contract(
         session,
         tenant_id=user.tenant_id,
@@ -748,8 +792,15 @@ async def get_agent(
         actor_species="agent",
         permissions=user.permissions,
     )
-    proposals = await AgentProposalRepo(session).list_for_agent(
-        user.tenant_id, agent.id,
+    from harkeniq_cc.autonomy import narrow_to_sites
+
+    contract = narrow_to_sites(
+        contract, None if getattr(scope, "tenant_wide", False) else set(scope.site_ids)
+    )
+    proposals = _narrow_proposals(
+        scope, await AgentProposalRepo(session).list_for_agent(
+            user.tenant_id, agent.id,
+        )
     )
     view = agent_view(
         agent=agent,
@@ -971,6 +1022,10 @@ async def acknowledge_agent(
     from harkeniq_cc.agent_lifecycle import acknowledge_preflight
 
     agent = await _require_agent(session, user.tenant_id, agent_id)
+    repo = OperationalAgentRepo(session)
+    # A23 (OBJECT_GATED, made true): acknowledging is a configuration
+    # step and sits under the same delegation ceiling as preflight.
+    _enforce_delegation_ceiling(scope, await _agent_scope_rules(repo, agent.id))
     try:
         result = await acknowledge_preflight(
             session, tenant_id=user.tenant_id, agent=agent,
@@ -992,7 +1047,7 @@ async def get_agent_preflight(
 ) -> dict:
     from harkeniq_cc.db.repos import AgentPreflightRepo
 
-    agent = await _require_agent(session, user.tenant_id, agent_id)
+    agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     row = await AgentPreflightRepo(session).current(agent.id)
     if row is None:
         return {
@@ -1054,7 +1109,7 @@ async def agent_runtime(
     """
     from harkeniq_cc.agent_lifecycle import runtime_state
 
-    agent = await _require_agent(session, user.tenant_id, agent_id)
+    agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     return await runtime_state(session, tenant_id=user.tenant_id, agent=agent)
 
 
@@ -1105,9 +1160,11 @@ async def list_proposals(
     refused is exactly what an operator needs to see before raising a
     level, and hiding them would make the governance invisible.
     """
-    await _require_agent(session, user.tenant_id, agent_id)
-    proposals = await AgentProposalRepo(session).list_for_agent(
-        user.tenant_id, agent_id, limit=limit,
+    await _require_visible_agent(session, user.tenant_id, agent_id, scope)
+    proposals = _narrow_proposals(
+        scope, await AgentProposalRepo(session).list_for_agent(
+            user.tenant_id, agent_id, limit=limit,
+        )
     )
     return {
         "proposals": [proposal_dict(p) for p in proposals],
@@ -1367,7 +1424,7 @@ async def get_identity(
     """Identity status. Read-only, and never the secret."""
     from harkeniq_cc.db.repos import AgentIdentityRepo
 
-    agent = await _require_agent(session, user.tenant_id, agent_id)
+    agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     row = await AgentIdentityRepo(session).get_for_agent(user.tenant_id, agent.id)
     if row is None:
         return {
@@ -1439,6 +1496,13 @@ async def dry_run_agent(
 
     tenant_id = user.tenant_id
     agent = await _require_agent(session, tenant_id, agent_id)
+    # A23 (READ_SCOPED): a human who cannot see this agent gets 404
+    # before the reach check below could 403 and confirm it exists.
+    if not is_machine(user):
+        if not _agent_visible(
+            scope, await OperationalAgentRepo(session).list_scopes(agent_id)
+        ):
+            raise HTTPException(404, "operational agent not found")
 
     # A22.8: an agent reasons about ITSELF and nothing else. `user_id` is
     # the agent id for a machine principal, which is what makes this one

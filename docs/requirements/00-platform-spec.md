@@ -1764,3 +1764,146 @@ permission. No autonomy change: no action class is mapped into the
 autonomy ladder by A5, and A21's rule stands — evidence of effectiveness
 is not authority to execute unattended. No Site Manager surface is
 exposed to any A5 consumer, directly or by proxy.
+
+### A23 — 2026-09-02 — D2/A23: enterprise authorization integrity (decided: Vinod)
+
+**Context.** An independent repository verification, reconstructed and
+re-executed on `main` at `f8a340e`, found that authorization integrity has
+two failure classes, not one. **(A) Synthesis escalation:** the
+`legacy_open` fallback in the scope resolver fires on an EMPTY grant list
+after lifecycle filtering, so a principal whose only grant has expired,
+been revoked, or points at a deleted org unit resolves tenant-wide with
+their full role permissions. Proven by executing `resolve()`: a
+site-narrowed principal becomes a tenant-wide holder of `action.approve`
+and `role.manage` the moment their grant expires. **(B) Declared but not
+enforced scope:** the route contract lives in a test file, no runtime code
+consumes a treatment, the generated persona sweep asserts only 403 versus
+not-403, and several handlers inject the caller's scope and never read it.
+Strict mode cannot help a handler that never consumes the scope. Two
+further findings: the campaign preflight UNIONS the caller's reach into the
+campaign's target set (a one-site campaign preflighted by a tenant owner
+targets the whole estate, proven by execution), and Central Command boots
+against the PLATFORM realm when `keycloak_realm` is unset in secure mode.
+Ratified decisions D1–D4 and the three follow-on decisions below are
+recorded here before any code.
+
+**A23.1 — Sequencing is B → identity → C → B′ → A, as five slices.**
+A23-1 enforcement, A23-2 identity, A23-3 recovery + delegation, A23-4
+synthesis, A23-5 strict birth. Each is one PR from verified main, merged
+and main-verified before the next starts. Synthesis is not removed first,
+and strict is not made the default, until enforcement, identity and
+recovery are proven. Modification to the ratified D1: campaign
+intersection and realm refusal are ENFORCEMENT and land in A23-1; the
+identity slice precedes B′ because the migration census B′ depends on
+compares email-recorded actors to subject-keyed grants and is wrong today.
+
+**A23.2 — A declared scope treatment is enforced at runtime, and proven
+by narrowing.** The route contract (`READ_SCOPED`, `OBJECT_GATED`,
+`TENANT_GATED`, `UNSCOPED`) becomes a runtime module. Three things must
+hold together for every route: the declared treatment, runtime
+consumption of the resolved scope by the handler, and a behavioural test.
+The test harness detects a handler that declares scope and never consumes
+it, and the persona matrix asserts actual row narrowing (a scoped
+principal never receives an out-of-scope site, device, incident, campaign,
+agent, grant or proposal identifier) and actual mutation protection (a
+scoped principal cannot reach an out-of-scope target with any mutation).
+A read is never 403 on an out-of-scope object; it is absent.
+
+**A23.3 — The campaign target invariant.** Actual target set = declared
+campaign target ∩ caller effective scope. Caller authority may constrain
+and may never enlarge. The persisted target set must equal the governed
+set that will execute. The campaign preflight no longer resolves the
+caller a second time with `role_permissions=["*"]` and `realm=""`; that
+shape was removed for agents by A22.13 and is removed for humans here.
+Campaign lifecycle mutations (acknowledge, submit, cancel, advance) are
+object-gated on every scope rule the campaign names, the same ceiling
+creation and preflight already apply.
+
+**A23.4 — Secure mode requires an explicit tenant realm.** With
+`insecure=false` and `keycloak_realm` unset, configuration validation
+fails and Central Command does not boot. The silent fallback to the
+platform realm is deleted. `platform_super_admin` is not removed by A23.
+
+**A23.5 — Metering is scope-free by design.** The usage reporter, the
+fleet poller, the evaluator, the campaign runner and the governance
+loaders' defaults call repositories with `scope=None`, meaning "no user is
+asking". That contract is pinned by a test before general scope hardening
+and is not an omission to be fixed: a strict tenant with zero grants still
+reports its full node count, and no user-authorization filter may ever
+touch the billing path.
+
+**A23.6 — Self-grant is refused outright.** Grantor principal == target
+principal refuses the grant with an explicit reason and audits the
+refusal, tenant-wide grantors included. Delegation is a transfer of
+bounded authority, never a way for a principal to modify its own.
+Delegated authority is bounded by the grantor's effective permissions AND
+the grantor's effective reachable scope, checked per grant on the exact
+target: a narrowed administrator cannot grant themselves withheld
+permissions, broaden their own subset, or broaden their own scope. (A23-3.)
+
+**A23.7 — Actor identity is `actor_ref`, outside the hash chain.**
+`cc_audit_log.actor_ref` (CC migration 0020): nullable for historical
+rows, indexed, the canonical stable `principal_ref` for every new write,
+DELIBERATELY outside `_chain_payload` (the `site_id` precedent from
+E1.2). `actor` is retained for compatibility and display; `detail` may
+carry a mutable display snapshot. One helper, `actor_of(user)`, is the
+only way a new audit row names its actor. No historical row is backfilled
+and no chained payload is rewritten. Readers understand `actor_ref` when
+present and legacy `actor` forms when it is NULL; the enforcement-impact
+census uses `actor_ref` where available. Canonical model: `principal_ref`
+is stable identity; email and display name are mutable snapshots. (A23-2.)
+
+**A23.8 — The last tenant `role.manage` authority cannot be configured
+away.** Revoking, setting an expiry on, or transitioning to strict past
+the last active tenant-scope grant carrying `role.manage` is refused with
+an explicit reason and audited, through ONE counting function shared by
+all three checks. Recorded limit: Keycloak-side user deactivation is
+outside Central Command's visibility; this protects grant configuration,
+not the identity provider's lifecycle. No platform-plane bypass is
+created; A12.1 stands. (A23-3.)
+
+**A23.9 — A vanished target never widens authority.** An org unit cannot
+be deleted while active grants reference it; grants are removed or
+reassigned first. A grant whose target no longer exists is retained as
+INERT: target missing, reach none, explicit reason, and evidence that the
+principal was previously administered. An inert grant never produces an
+empty grant list, so it can never trigger synthesis. A missing site
+resolves to zero operational reach with a reason and no data. (A23-3.)
+
+**A23.10 — Synthesis only for the never-granted, and never for agents.**
+The resolver distinguishes NEVER GRANTED from PREVIOUSLY GRANTED BUT NOW
+revoked, expired, orphaned or vanished. `legacy_open` synthesis is
+allowed only for the former. Any previously administered principal with no
+valid grant has zero operational reach. Operational Agents receive no
+synthesis under any posture (A0: no scope rows = no devices). The final
+invariant is unconditional: no grant → no operational scope. (A23-4.)
+
+**A23.11 — Strict birth.** A23-5 first pins every existing tenant's
+current posture explicitly by migration, then changes the default: a
+missing `cc_tenant_settings` row means STRICT. Secure defaults never
+depend on a Console provisioning signal. `missing row → legacy_open` is
+retired as a platform security invariant, and the compose gate proves a
+new tenant is strict, a pinned legacy tenant stays pinned, and
+`legacy_open` cannot be synthesized by a missing row. (A23-5.)
+
+**A23.12 — Invariants A23 must leave standing.** No grant never means
+tenant-wide authority. Revoked, expired or orphaned grants never mean
+tenant-wide authority. A vanished target never widens. Caller scope never
+enlarges campaign scope. Declared scope is runtime-enforced. Delegation
+requires reach AND authority. Self-grant is forbidden. The last
+`role.manage` authority cannot be configured away. Identity is stable via
+`principal_ref`/`actor_ref`. The historical chain is never rewritten.
+Secure CC requires an explicit realm. Metering is scope-free. Agents get
+no synthesis. Platform staff get no tenant-plane bypass. No new
+permission, no second RBAC, no second scope resolver, no second approval
+system, no second execution engine. A23 is foundational enterprise
+security for the full product — multi-region tenants, delegated
+administrators, many Site Managers, Operational Agents, campaigns,
+autonomous execution, external agents, MCP, event-driven operation and
+natural-language agent creation — and reduces none of it.
+
+**A23.13 — What A23 does not build.** No A6 ingress, no MCP, no S11, no
+Dell identity, no machine-ceiling change, no node-authority change, no
+platform break-glass, no scope-resolution cache (recorded as a scale
+follow-up), no Keycloak-side user lifecycle, and no change to the Site
+Manager's own site-token approve route (recorded by A22).

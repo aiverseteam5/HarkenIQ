@@ -649,3 +649,63 @@ def build_autonomy(
         },
         "action_classes": classes,
     }
+
+
+def narrow_to_sites(contract: dict, visible_site_ids) -> dict:
+    """The contract as a SCOPED reader may see it (A23).
+
+    The disposition, the ladder and the tenant posture are tenant-wide
+    facts and pass through unchanged. What is narrowed is every list
+    that names a SITE: the sites the contract was composed over, the
+    safety lists, the site-scoped blocking conditions. A cluster-scoped
+    principal learns nothing about sites outside their reach -- not
+    even that they exist and are not reporting. ``None`` means a
+    tenant-wide reader and returns the contract untouched.
+    """
+    if visible_site_ids is None:
+        return contract
+    visible = set(visible_site_ids)
+
+    def _site_ok(item) -> bool:
+        sid = item.get("site_id", "") if isinstance(item, dict) else ""
+        return not sid or sid in visible
+
+    out = dict(contract)
+    scope = dict(out.get("scope") or {})
+    scope["sites"] = [s for s in scope.get("sites", []) if s.get("id") in visible]
+    out["scope"] = scope
+
+    safety = dict(out.get("safety_state") or {})
+    safety["sites_reporting"] = [
+        s for s in safety.get("sites_reporting", []) if s in visible
+    ]
+    safety["sites_not_reporting"] = [
+        s for s in safety.get("sites_not_reporting", []) if s in visible
+    ]
+    safety["suppressions"] = [
+        s for s in safety.get("suppressions", []) if _site_ok(s)
+    ]
+    safety["site_stop_switches"] = [
+        s for s in safety.get("site_stop_switches", []) if _site_ok(s)
+    ]
+    safety["error_budgets"] = [
+        e for e in safety.get("error_budgets", []) if _site_ok(e)
+    ]
+    out["safety_state"] = safety
+
+    classes = []
+    for row in out.get("action_classes", []):
+        row = dict(row)
+        row["blocking_conditions"] = [
+            b for b in row.get("blocking_conditions", []) if _site_ok(b)
+        ]
+        # A site-scoped learned signal names its site; a cohort signal
+        # names a vendor/model and is tenant knowledge.
+        row["learning"] = [
+            sig for sig in row.get("learning", [])
+            if not (isinstance(sig, dict) and sig.get("scope_type") == "site"
+                    and sig.get("scope_ref") not in visible)
+        ]
+        classes.append(row)
+    out["action_classes"] = classes
+    return out

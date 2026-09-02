@@ -1287,6 +1287,18 @@ async def approval_records(
     # Tenant isolation: records carry their own tenant, so a subject from
     # another tenant reads as empty rather than leaking its approvers.
     records = [r for r in records if r.tenant_id == user.tenant_id]
+    # A23 (READ_SCOPED, made true): the subject sits at a site, and a
+    # caller who cannot see that site cannot see who approved work on
+    # it. Absent, never 403 -- a 403 confirms the subject exists.
+    site_id = ""
+    if subject_type == SUBJECT_ACTION:
+        route = await ApprovalRouteRepo(session).get_by_action_id(action_id)
+        site_id = getattr(route, "site_id", "") or ""
+    else:
+        proposal = await AgentProposalRepo(session).get(user.tenant_id, action_id)
+        site_id = getattr(proposal, "site_id", "") or ""
+    if site_id and not scope.covers_site(site_id):
+        records = []
     return {
         "subject_type": subject_type,
         "subject_ref": action_id,
