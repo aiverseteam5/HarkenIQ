@@ -109,8 +109,16 @@ async def preflight(
     scope_rules,
     resolved_site_ids,
     actor: str,
+    caller_scope=None,
 ) -> dict:
     """Resolve targets, ask the Registry about every one, and store it.
+
+    A23.3: `resolved_site_ids` is the campaign's OWN org-unit expansion
+    (see `scope.expand_rules_to_site_ids`), never the caller's reach.
+    `caller_scope`, when a human is preflighting, INTERSECTS: a device
+    the caller's effective scope does not cover is not a target, and
+    nothing the caller can see is ever added. The persisted target set
+    is therefore the governed set that will execute.
 
     This is the step that makes the product requirement true: a campaign
     must never discover that the executor cannot perform the capability
@@ -126,6 +134,13 @@ async def preflight(
 
     devices = await FleetCacheRepo(session).list_all(tenant_id)
     in_scope = resolve_scope(scope_rules, devices, resolved_site_ids)
+    if caller_scope is not None:
+        in_scope = [
+            d for d in in_scope
+            if caller_scope.covers_device(
+                d.agent_id, d.site_id or "", d.device_class or "server"
+            )
+        ]
     sites = {s.id: s.site_name for s in await SiteRepo(session).list_all(tenant_id)}
 
     rows: list[dict] = []

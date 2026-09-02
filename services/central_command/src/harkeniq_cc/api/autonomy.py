@@ -27,8 +27,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
+from harkeniq_cc.autonomy import narrow_to_sites
 from harkeniq_cc.governance import load_autonomy_contract
 
 router = APIRouter(prefix="/api/autonomy", tags=["autonomy"])
@@ -43,13 +44,18 @@ async def autonomy_contract(
     action_type: str | None = Query(None, description="one action class"),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """The tenant's autonomy contract: posture, evidence, safety, advancement.
 
     Every read below is tenant-scoped by its repository; `site_id`
-    narrows within the tenant and can never widen beyond it.
+    narrows within the tenant and can never widen beyond it. A23: the
+    disposition is tenant posture and every reader sees it; the lists
+    that NAME sites (safety, blocking conditions) are narrowed to the
+    caller's reach, so a cluster-scoped principal learns nothing about
+    sites outside it.
     """
-    return await load_autonomy_contract(
+    contract = await load_autonomy_contract(
         session,
         tenant_id=user.tenant_id,
         actor_id=f"user:{user.user_id}",
@@ -58,3 +64,5 @@ async def autonomy_contract(
         site_id=site_id,
         action_type=action_type,
     )
+    visible = None if getattr(scope, "tenant_wide", False) else set(scope.site_ids)
+    return narrow_to_sites(contract, visible)

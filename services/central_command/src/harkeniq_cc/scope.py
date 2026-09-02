@@ -546,6 +546,39 @@ def _project(
     )
 
 
+def expand_rules_to_site_ids(
+    rules: Iterable[Any], org_units: Iterable[Any], sites: Iterable[Any]
+) -> frozenset[str]:
+    """The sites a set of scope RULES reaches, through the org tree.
+
+    A23.3. This is what `resolve_scope`'s `resolved_site_ids` argument
+    was always meant to carry: the org-unit rules of the SUBJECT (an
+    agent, a campaign) flattened onto sites. The campaign preflight used
+    to pass the CALLER's resolved reach there instead, and the union
+    inside `resolve_scope` turned a one-site campaign into the caller's
+    whole estate. Pure, and it knows nothing about who is asking.
+    """
+    unit_by_id = {u.id: u for u in org_units}
+    site_list = list(sites)
+    out: set[str] = set()
+    for rule in rules:
+        scope_type = getattr(rule, "scope_type", "")
+        ref = getattr(rule, "scope_ref", "") or ""
+        if scope_type == SCOPE_SITE and ref:
+            out.add(ref)
+        elif scope_type == SCOPE_ORG_UNIT:
+            unit = unit_by_id.get(ref)
+            if unit is None:
+                continue  # a vanished unit reaches nothing
+            for site in site_list:
+                parent = unit_by_id.get(getattr(site, "org_unit_id", None) or "")
+                if parent is not None and is_descendant(parent.path, unit.path):
+                    out.add(site.id)
+        elif scope_type == SCOPE_TENANT:
+            out.update(s.id for s in site_list)
+    return frozenset(out)
+
+
 def empty_scope(tenant_id: str, principal_ref: str = "") -> ResolvedScope:
     """A scope that reaches nothing. What strict mode gives an ungranted
     principal, and the only safe default anywhere else."""

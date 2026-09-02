@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import CveFeedRepo, FleetCacheRepo
 from harkeniq_cc.exposure import match_exposures  # noqa: F401  (re-exported)
@@ -29,8 +29,15 @@ async def import_cve_feed(
     payload: dict = Body(...),
     user: UserContext = Depends(require_permission("site.manage")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
-    """Import CVE feed entries from an offline bundle: {"entries": [...]}."""
+    """Import CVE feed entries from an offline bundle: {"entries": [...]}.
+
+    A23: the feed is tenant governance with no site dimension, so the
+    write is TENANT authority -- a cluster-scoped site.manage holder may
+    read the feed and may not rewrite it for the whole estate.
+    """
+    forbid_out_of_scope(scope, "site.manage", what="the CVE feed", tenant_object=True)
     entries = payload.get("entries", [])
     imported = await CveFeedRepo(session).import_entries(
         entries if isinstance(entries, list) else [],
@@ -74,9 +81,13 @@ async def list_cve_feed(
 async def firmware_exposure(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
-    """Fleet CVE exposure: devices whose firmware matches feed entries."""
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id)
+    """CVE exposure: devices IN THE CALLER'S SCOPE whose firmware matches.
+
+    A23: one row per exposed device, so the device list is scoped.
+    """
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
     entries = await CveFeedRepo(session).list_all(tenant_id=user.tenant_id)
     exposures = match_exposures(devices, entries)
     return {

@@ -52,7 +52,9 @@ def create_app(state) -> FastAPI:
 
     configure_auth(
         keycloak_url=state.config.keycloak_url,
-        realm=state.config.keycloak_realm or "harkeniq-platform",
+        # A23.4: no fallback. Secure mode refuses an unset realm at
+        # `CCConfig.validate`; the lab (insecure) mode never consults it.
+        realm=state.config.keycloak_realm,
         client_id=state.config.keycloak_client_id,
         insecure=state.config.insecure,
         keycloak_public_url=getattr(state.config, "keycloak_public_url", ""),

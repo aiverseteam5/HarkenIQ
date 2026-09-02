@@ -67,14 +67,14 @@ from harkeniq_cc.campaigns import (
 )
 from harkeniq_cc.db.repos import AuditRepo, CampaignRepo, OrgUnitRepo, SiteRepo
 from harkeniq_cc.api.operational_agents import _scope_rule_within
-from harkeniq_cc.governance import load_autonomy_contract, load_scope
+from harkeniq_cc.governance import load_autonomy_contract
 from harkeniq_cc.operational_agent import (
     SCOPE_DEVICE,
     SCOPE_DEVICE_CLASS,
     SCOPE_ORG_UNIT,
     SCOPE_SITE,
 )
-from harkeniq_cc.scope import PRINCIPAL_USER
+from harkeniq_cc.scope import SCOPE_DEVICE, SCOPE_DEVICE_CLASS, expand_rules_to_site_ids
 
 logger = logging.getLogger("harkeniq.cc.api.campaigns")
 
@@ -238,6 +238,89 @@ async def _scope_rules(campaign_id: str, body_scopes) -> list:
     ]
 
 
+async def _rule_reach(session, tenant_id: str, rules) -> frozenset[str]:
+    """The sites a campaign's RULES reach, through the org tree (A23.3).
+
+    This is the campaign's own reach and knows nothing about the caller.
+    Device and device_class rules have no site of their own; they are
+    resolved against the fleet at preflight, and for visibility they are
+    treated as tenant-spanning (only a tenant-wide reader sees them).
+    """
+    units = await OrgUnitRepo(session).list_all(tenant_id)
+    sites = await SiteRepo(session).list_all(tenant_id)
+    return expand_rules_to_site_ids(rules, units, sites)
+
+
+def _visible_sites(scope):
+    if getattr(scope, "tenant_wide", False):
+        return None
+    return set(getattr(scope, "site_ids", ()) or ())
+
+
+async def _campaign_visible(session, tenant_id: str, scope, rules, site_rows) -> bool:
+    """May this caller READ this campaign? (A23, READ_SCOPED made true.)
+
+    Visible when the caller can see at least one site the campaign
+    reaches. Before preflight there are no site rows, so the reach is
+    derived from the scope rules through the tree -- the old check
+    treated "no site rows" as "visible to everyone", which made every
+    draft campaign in the tenant readable by any site-scoped principal.
+    """
+    visible = _visible_sites(scope)
+    if visible is None:
+        return True
+    reach = {s.site_id for s in site_rows}
+    if not reach:
+        reach = set(await _rule_reach(session, tenant_id, rules))
+        if any(r.scope_type in (SCOPE_DEVICE, SCOPE_DEVICE_CLASS) for r in rules):
+            return False
+    return bool(reach & visible)
+
+
+def _only_visible(scope, rows, key=lambda r: r.site_id):
+    """Narrow site-anchored campaign rows to the caller's sites."""
+    visible = _visible_sites(scope)
+    if visible is None:
+        return list(rows)
+    return [r for r in rows if key(r) in visible]
+
+
+async def _require_operable(session, tenant_id: str, scope, campaign_id: str):
+    """The campaign, gated for a LIFECYCLE mutation (A23.3).
+
+    Acknowledge, submit, cancel and advance change what will execute, so
+    they sit under the same ceiling as creation and preflight: the
+    caller must hold `site.manage` over EVERY scope rule the campaign
+    names. An invisible campaign is 404 first, so the gate never
+    confirms one the caller cannot see.
+    """
+    repo = CampaignRepo(session)
+    campaign = await repo.get(tenant_id, campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "campaign not found")
+    rules = list(await repo.scopes(campaign_id))
+    if not await _campaign_visible(
+        session, tenant_id, scope, rules, await repo.sites(campaign_id)
+    ):
+        raise HTTPException(404, "campaign not found")
+    _enforce_ceiling(scope, rules)
+    return repo, campaign
+
+
+async def _require_readable(session, tenant_id: str, scope, campaign_id: str):
+    """The campaign, or 404 if it does not exist or the caller cannot see it."""
+    repo = CampaignRepo(session)
+    campaign = await repo.get(tenant_id, campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "campaign not found")
+    if not await _campaign_visible(
+        session, tenant_id, scope, list(await repo.scopes(campaign_id)),
+        await repo.sites(campaign_id),
+    ):
+        raise HTTPException(404, "campaign not found")
+    return repo, campaign
+
+
 # ---------------------------------------------------------------------------
 # reads
 # ---------------------------------------------------------------------------
@@ -251,7 +334,15 @@ async def list_campaigns(
     scope=Depends(get_scope),
 ) -> dict:
     repo = CampaignRepo(session)
-    rows = await repo.list_all(user.tenant_id, status=status, scope=scope)
+    # A23: visibility is derived per campaign so a DRAFT (no site rows
+    # yet) is judged by its scope rules, not shown to everyone.
+    rows = [
+        c for c in await repo.list_all(user.tenant_id, status=status)
+        if await _campaign_visible(
+            session, user.tenant_id, scope,
+            list(await repo.scopes(c.id)), await repo.sites(c.id),
+        )
+    ]
     out = []
     for c in rows:
         out.append(_campaign_dict(
@@ -273,14 +364,16 @@ async def get_campaign(
         raise HTTPException(404, "campaign not found")
     sites = await repo.sites(campaign_id)
     # E1.2 layer 2: 404 rather than 403 -- a 403 confirms it exists.
-    if not getattr(scope, "tenant_wide", False):
-        visible = set(getattr(scope, "site_ids", ()) or ())
-        if sites and not {s.site_id for s in sites} & visible:
-            raise HTTPException(404, "campaign not found")
+    if not await _campaign_visible(
+        session, user.tenant_id, scope, list(await repo.scopes(campaign_id)), sites
+    ):
+        raise HTTPException(404, "campaign not found")
     targets = await repo.targets(campaign_id)
+    # A23: the aggregate is computed over the whole campaign (the status
+    # is one fact); the per-site and per-device ROWS are the caller's.
     detail = _campaign_dict(campaign, sites, targets)
-    detail["sites"] = [_site_dict(s) for s in sites]
-    detail["targets"] = [_target_dict(t) for t in targets]
+    detail["sites"] = [_site_dict(s) for s in _only_visible(scope, sites)]
+    detail["targets"] = [_target_dict(t) for t in _only_visible(scope, targets)]
     return detail
 
 
@@ -357,22 +450,26 @@ async def preflight_campaign(
             409, f"a campaign in status {campaign.status!r} cannot be re-preflighted"
         )
     rules = list(await repo.scopes(campaign_id))
+    if not await _campaign_visible(
+        session, user.tenant_id, scope, rules, await repo.sites(campaign_id)
+    ):
+        raise HTTPException(404, "campaign not found")
     _enforce_ceiling(scope, rules)
-    resolved = await load_scope(
-        session,
-        tenant_id=user.tenant_id,
-        principal_ref=user.user_id,
-        role_permissions=["*"],
-        principal_type=PRINCIPAL_USER,
-        realm="",
-    )
+    # A23.3: the target set is the campaign's OWN rules, expanded through
+    # the org tree, intersected with the caller's effective scope. This
+    # used to resolve the caller a second time -- with
+    # role_permissions=["*"] and realm="" -- and union THAT into the
+    # target set, so a one-site campaign preflighted by a tenant owner
+    # targeted the whole estate. Caller authority may constrain; it may
+    # never enlarge.
     summary = await run_preflight(
         session,
         request.app.state.cc,
         tenant_id=user.tenant_id,
         campaign=campaign,
         scope_rules=rules,
-        resolved_site_ids=resolved.site_ids,
+        resolved_site_ids=await _rule_reach(session, user.tenant_id, rules),
+        caller_scope=scope,
         actor=user.email or user.user_id,
     )
     await session.commit()
@@ -396,10 +493,7 @@ async def acknowledge_campaign(
     scope=Depends(get_scope),
 ) -> dict:
     """A named human excludes or accepts every warned/unknown target (D2)."""
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_operable(session, user.tenant_id, scope, campaign_id)
     if campaign.status not in EDITABLE_STATUSES:
         raise HTTPException(
             409, f"a campaign in status {campaign.status!r} cannot be acknowledged"
@@ -445,10 +539,7 @@ async def submit_campaign(
     runs autonomously needs no human, one that requires approval raises
     a site-wave decision per wave, and a denied class cannot proceed.
     """
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_operable(session, user.tenant_id, scope, campaign_id)
     targets = await repo.targets(campaign_id)
     ok, reason = can_seek_approval(campaign, targets)
     if not ok:
@@ -518,10 +609,7 @@ async def cancel_campaign(
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_operable(session, user.tenant_id, scope, campaign_id)
     if campaign.status in TERMINAL_STATUSES:
         raise HTTPException(409, f"campaign already {campaign.status}")
     campaign.status = STATUS_CANCELLED
@@ -553,10 +641,7 @@ async def advance_campaign_endpoint(
     double-execute, because the dispatch ledger's composite key makes a
     repeat physically unable to exist.
     """
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_operable(session, user.tenant_id, scope, campaign_id)
     if campaign.status not in (STATUS_RUNNING, STATUS_AWAITING_APPROVAL):
         raise HTTPException(
             409, f"a campaign in status {campaign.status!r} cannot advance"
@@ -585,10 +670,7 @@ async def campaign_waves(
     but the named devices that wave will act on, and the plan hash the
     decision binds to.
     """
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_readable(session, user.tenant_id, scope, campaign_id)
     return {
         "campaign_id": campaign_id,
         "approval_granularity": "site_wave",
@@ -604,7 +686,7 @@ async def campaign_waves(
                 "void_reason": w.void_reason or None,
                 "decided_by": w.decided_by or None,
             }
-            for w in await repo.waves(campaign_id)
+            for w in _only_visible(scope, await repo.waves(campaign_id))
         ],
     }
 
@@ -617,13 +699,13 @@ async def campaign_targets(
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_readable(session, user.tenant_id, scope, campaign_id)
     return {
         "campaign_id": campaign_id,
-        "targets": [_target_dict(t) for t in await repo.targets(campaign_id)],
+        "targets": [
+            _target_dict(t)
+            for t in _only_visible(scope, await repo.targets(campaign_id))
+        ],
     }
 
 
@@ -635,11 +717,10 @@ async def campaign_sites(
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
-    repo = CampaignRepo(session)
-    campaign = await repo.get(user.tenant_id, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
+    repo, campaign = await _require_readable(session, user.tenant_id, scope, campaign_id)
     return {
         "campaign_id": campaign_id,
-        "sites": [_site_dict(s) for s in await repo.sites(campaign_id)],
+        "sites": [
+            _site_dict(s) for s in _only_visible(scope, await repo.sites(campaign_id))
+        ],
     }

@@ -1103,6 +1103,130 @@ assert d['valid'], d
 print('chain valid,', d['length'], 'entries')
 "
 
+step "A23-1: a one-site campaign preflighted by a TENANT-WIDE owner targets ONE site"
+# The operator's site is E12_SITE (rows[0] of the site list, which sorts
+# by NAME, so it may be either site). "Out of scope" is therefore the
+# OTHER site, derived rather than assumed -- the first cut assumed site
+# B and proved nothing, because the operator was scoped to site B.
+A23_OTHER=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin); rows = d['sites'] if isinstance(d, dict) else d
+print([r['id'] for r in rows if r['id'] != '$E12_SITE'][0])")
+A23_OTHER_DEV=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/fleet/?site_id=$A23_OTHER&page_size=200" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['devices'][0]['agent_id'])")
+echo "operator site: $E12_SITE; out-of-scope site: $A23_OTHER (device $A23_OTHER_DEV)"
+
+# The union that made a one-site campaign an estate-wide one: the owner
+# reaches both sites; the campaign names the other site only. Every persisted
+# target must sit at the other site -- and there must BE targets, or the
+# assertion is vacuous.
+A23_CAMP=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"a23-one-site\",\"description\":\"a23\",\"action_type\":\"IDENTIFY_LED\",
+       \"params\":{\"target\":\"Drive 0\"},
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A23_OTHER\"}]}" \
+  http://localhost:8090/api/campaigns/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$A23_CAMP/preflight" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['targets'], 'preflight produced no targets'
+sites = {t['site_id'] for t in d['targets']}
+assert sites == {'$A23_OTHER'}, sites
+devices = sorted(t['device_agent_id'] for t in d['targets'])
+assert '$A23_OTHER_DEV' in devices, devices
+print('targets confined to the other site:', devices)
+"
+
+step "A23-1: declared scope is TRUE at runtime for a site-scoped reader"
+# The operator holds a site grant on E12_SITE (their site) under strict. The
+# campaign above lives at the other site: absent for the operator, present for
+# the owner. And NO fleet.view read may carry the other site's id or its device.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
+     http://localhost:8090/api/campaigns/$A23_CAMP)" = "404" ] || {
+  echo "a scoped operator read a other-site campaign" >&2; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8090/api/campaigns/$A23_CAMP)" = "200" ] || {
+  echo "the owner lost the campaign" >&2; exit 1; }
+for P in /api/campaigns/ /api/predictive/risk /api/firmware/exposure /api/warranty/ \
+         /api/operational-agents/ /api/operational-agents/catalogue /api/autonomy/ \
+         /api/learning/candidates /api/learning/signals /api/outcomes/patterns \
+         /api/fleet/ /api/incidents/ /api/attention/ /api/capabilities/; do
+  BODY=$(curl -s -H "Authorization: Bearer $OP_TOKEN" "http://localhost:8090$P")
+  if echo "$BODY" | grep -q "$A23_OTHER"; then
+    echo "GET $P leaked the other site's id to a scoped operator" >&2; exit 1; fi
+  if echo "$BODY" | grep -q "$A23_OTHER_DEV"; then
+    echo "GET $P leaked the other site's device to a scoped operator" >&2; exit 1; fi
+done
+echo "14 read routes: no other-site identifier reached the scoped operator"
+
+step "A23-1: a NARROWED owner cannot operate outside their site, and can inside it"
+# Every permission a tenant owner holds, reach limited to their site. This
+# is the delegation ceiling's whole purpose, and the persona the
+# generated mutation probe drives.
+tenant_realm_user gate-a23-owner@demo gate-a23-owner tenant_owner
+A23_TOKEN=$(tenant_token gate-a23-owner@demo gate-a23-owner)
+A23_SUB=$(python3 -c "
+import base64, json
+t = '$A23_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+[ "$(grant "$A23_SUB" site "$E12_SITE" tenant_owner)" = "201" ] || {
+  echo "narrowed owner grant refused" >&2; exit 1; }
+# cancel a other-site campaign: absent (404), never operated
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $A23_TOKEN" \
+     http://localhost:8090/api/campaigns/$A23_CAMP/cancel)" = "404" ] || {
+  echo "a narrowed owner operated a other-site campaign" >&2; exit 1; }
+# create a campaign reaching the other site: refused (403)
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $A23_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d "{\"name\":\"probe\",\"description\":\"\",\"action_type\":\"IDENTIFY_LED\",
+          \"params\":{\"target\":\"Drive 0\"},
+          \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A23_OTHER\"}]}" \
+     http://localhost:8090/api/campaigns/)" = "403" ] || {
+  echo "a narrowed owner created a other-site campaign" >&2; exit 1; }
+# tenant governance writes: the CVE feed and the enforcement posture
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $A23_TOKEN" \
+     -H "Content-Type: application/json" -d '{"entries":[]}' \
+     http://localhost:8090/api/firmware/cve-feed)" = "403" ] || {
+  echo "a narrowed owner rewrote the tenant CVE feed" >&2; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $A23_TOKEN" \
+     -H "Content-Type: application/json" -d '{"mode":"legacy_open"}' \
+     http://localhost:8090/api/tenant-settings/scope-enforcement)" = "403" ] || {
+  echo "a narrowed owner changed the tenant's enforcement posture" >&2; exit 1; }
+# ...and inside their site the same owner works: create, preflight, cancel.
+A23_INSIDE=$(curl -sf -X POST -H "Authorization: Bearer $A23_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"a23-inside\",\"description\":\"\",\"action_type\":\"IDENTIFY_LED\",
+       \"params\":{\"target\":\"Drive 0\"},
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\"}]}" \
+  http://localhost:8090/api/campaigns/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sf -X POST -H "Authorization: Bearer $A23_TOKEN" \
+  "http://localhost:8090/api/campaigns/$A23_INSIDE/preflight" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert {t['site_id'] for t in d['targets']} <= {'$E12_SITE'}, d['targets']
+print('narrowed owner preflighted inside their site:', len(d['targets']), 'target(s)')"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $A23_TOKEN" \
+     http://localhost:8090/api/campaigns/$A23_INSIDE/cancel)" = "200" ] || {
+  echo "the narrowed owner could not cancel their own own-site campaign" >&2; exit 1; }
+echo "outside: 404 / 403 / 403 / 403; inside: 201 / 200 / 200"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/campaigns/$A23_CAMP/cancel > /dev/null
+
+step "A23-1: a secure Central Command refuses to boot without a tenant realm"
+# The platform-realm fallback is gone. An unset realm in secure mode is
+# a configuration error at startup, not a live misconfiguration.
+A23_BOOT=$(timeout 120 docker compose run --rm --no-deps -T \
+  -e HARKEN_CC_KEYCLOAK_REALM= central-command 2>&1 || true)
+echo "$A23_BOOT" | grep -q "keycloak_realm is required" || {
+  echo "Central Command booted (or failed differently) with no realm:" >&2
+  echo "$A23_BOOT" | tail -20 >&2; exit 1; }
+echo "refused: keycloak_realm is required in secure mode"
+
 step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"legacy_open"}' \

@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import get_session, require_permission
+from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     CandidateSkillRepo,
@@ -26,10 +26,15 @@ async def list_candidates(
     status: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
-    """Candidate skills received from Site Managers, tenant-scoped."""
+    """Candidate skills received from Site Managers.
+
+    A23: a candidate carries the site and device it was generated from,
+    so the read is site-scoped like every other site-anchored row.
+    """
     rows = await CandidateSkillRepo(session).list_candidates(
-        user.tenant_id, status=status,
+        user.tenant_id, status=status, scope=scope,
     )
     return {
         "candidates": [
@@ -102,6 +107,7 @@ async def list_signals(
     scope_ref: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """Durable learned signals — the knowledge the loop produced (S3).
 
@@ -113,6 +119,14 @@ async def list_signals(
     rows = await LearnedSignalRepo(session).list_active(
         user.tenant_id, scope_type=scope_type, scope_ref=scope_ref,
     )
+    # A23: a site-scoped signal names its site. A cohort signal names a
+    # vendor/model and is tenant knowledge; it passes through unchanged.
+    if not getattr(scope, "tenant_wide", False):
+        visible = set(getattr(scope, "site_ids", ()) or ())
+        rows = [
+            s for s in rows
+            if s.scope_type != "site" or s.scope_ref in visible
+        ]
     return {
         "signals": [
             {

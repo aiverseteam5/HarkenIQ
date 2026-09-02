@@ -1576,13 +1576,17 @@ class CandidateSkillRepo:
         tenant_id: str,
         status: Optional[str] = None,
         limit: int = 200,
+        scope=None,
     ) -> Sequence[CCCandidateSkill]:
-        stmt = (
+        # A23: a candidate carries the site it was generated at, so the
+        # E1.2 read filter applies here like every other site-anchored
+        # row. `scope=None` is the internal (learning loop) caller.
+        stmt = apply_scope(
             select(CCCandidateSkill)
-            .where(CCCandidateSkill.tenant_id == tenant_id)
-            .order_by(CCCandidateSkill.received_at.desc())
-            .limit(limit)
-        )
+            .where(CCCandidateSkill.tenant_id == tenant_id),
+            CCCandidateSkill.site_id,
+            scope,
+        ).order_by(CCCandidateSkill.received_at.desc()).limit(limit)
         if status:
             stmt = stmt.where(CCCandidateSkill.status == status)
         return (await self.session.execute(stmt)).scalars().all()

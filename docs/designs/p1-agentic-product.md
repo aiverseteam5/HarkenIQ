@@ -1945,3 +1945,133 @@ in the middle of one that was scoped for something else.
 - **Enforcing D2** — A22.10 stages this deliberately. The report ships in
   A5; withdrawing the synthesized grant is a later slice, once tenants
   can act on what the report tells them.
+
+## 26. A23 — enterprise authorization integrity (spec A23)
+
+**Dated 2026-09-02 · Status: RATIFIED (D1–D4 + three follow-on decisions,
+Vinod) · Delivery: five PRs, A23-1 → A23-5, each main-verified before the
+next.** The validation report this section condenses was delivered on
+2026-09-02 from `main` at `f8a340e` and is the authority for the
+findings below; nothing here was inferred from comments or from passing
+tests.
+
+### The two failure classes
+
+**A — synthesis escalation.** `scope.py` synthesizes a tenant-wide grant
+when `not grants and enforcement == legacy_open`, evaluated AFTER
+lifecycle filtering. Executed against the real resolver with role
+permissions `fleet.view, site.manage, action.approve, role.manage`:
+
+| Principal state | legacy_open | strict |
+|---|---|---|
+| never granted | tenant-wide, full role | nothing |
+| only grant EXPIRED | tenant-wide, full role | nothing |
+| only grant REVOKED | tenant-wide, full role | nothing |
+| only grant → deleted org unit | tenant-wide, full role | nothing |
+| active grant on site s1 | s1 only | s1 only |
+
+A contractor grant expiring, or an administrator revoking a person's last
+grant, promotes that person to tenant-wide `action.approve` and
+`role.manage` today, with no strict flip involved. The agent path is the
+same: `load_agent_scope` resolves through the same branch, so an agent
+whose only grant expired evaluates attention across the whole tenant,
+while `list_scopes` (which ignores `expires_at`) still returns the raw
+row — two lifecycle answers.
+
+**B — declared but not enforced.** `ROUTE_CONTRACT` lived in
+`tests/unit/cc/test_e1_route_contract.py`. No runtime code consumed a
+treatment. The generated persona sweep asserted only 403 versus not-403,
+and row narrowing was spot-tested on four surfaces. Handlers found
+injecting `scope` and never reading it: campaign acknowledge, submit,
+cancel, advance, waves, targets, sites; `/api/scope-grants/` list;
+operational-agent list, get, preflight (GET), runtime, proposals,
+identity. Handlers declared UNSCOPED that emit per-device rows:
+`/api/predictive/risk`, `/api/firmware/exposure`, `/api/warranty/`,
+`/api/learning/candidates` (carries `site_id` + `source_device`), the
+operational-agent catalogue (every site in the tenant).
+
+### The campaign union, proven
+
+`preflight_campaign` resolved the CALLER a second time with
+`role_permissions=["*"]` and `realm=""` — the wildcard, realm-less shape
+A22.13 removed for agents — then called
+`resolve_scope(rules, devices, caller.site_ids)`, whose body does
+`site_ids |= resolved_site_ids`:
+
+| Campaign rule | Caller | Devices selected |
+|---|---|---|
+| site s1 only | tenant owner | all three sites |
+| site s1 only | cluster manager over s1+s2 | s1 and s2 |
+| site s1 only | reach limited to s1 | s1 |
+
+The enlarged set was persisted as targets, flowed into `plan_sites`, into
+the approval digest and into dispatch: the approver signed the enlarged
+blast radius. `_enforce_ceiling` already refused rules outside the caller,
+so the intended set was always the rules alone and the union was a pure
+defect. `resolve_scope`'s `resolved_site_ids` parameter meant "the
+agent's own org-unit expansion" for agents and became "the caller's
+reach" for campaigns; a dedicated rule expander removes the ambiguity.
+
+### Other findings recorded
+
+* `can_delegate` had ZERO production callers. `create_grant` checked
+  reach and narrowed the subset against the TARGET's role, never the
+  grantor's effective permissions; self-grant was not refused. (A23-3.)
+* `CCConfig.validate` passed an empty `keycloak_realm` in secure mode and
+  `app.py` fell back to `"harkeniq-platform"`; grants were stamped with
+  realm `""` and narrowed by `""`. (A23-1.)
+* `cc_audit_log.actor` was mixed: ~14 sites wrote `user.user_id`, ~20
+  wrote `user.email or user.user_id`; `/scope-enforcement/impact`
+  compared those strings to subject-keyed grants, so the A22.10 census
+  reported granted people as ungranted. (A23-2.)
+* Metering is scope-free by design and was safe: `usage_report_loop`
+  reads sites with `scope=None`, SM `GetUsageSnapshot` is per-site since
+  E0.2, identity aggregates ride a separate endpoint. Pinned, not fixed.
+* Scale (recorded, not A23): `get_scope` loads every org unit and every
+  site per request; `scope_sites` builds an `IN` list; the evaluator and
+  several handlers load the whole fleet cache. Fine for hundreds of
+  sites; a named follow-up for tens of thousands.
+
+### The three follow-on decisions (ratified 2026-09-02)
+
+1. **Self-grant: refused outright**, tenant-wide grantors included.
+   Delegated authority ≤ grantor effective permissions ∧ grantor
+   effective reach, per grant, on the exact target.
+2. **Actor identity: a new `actor_ref` column** outside the chain
+   payload; `actor` retained; one `actor_of(user)` helper; no backfill;
+   dual-form readers; census uses `actor_ref` where present.
+3. **Strict birth: after a pinning migration, a missing settings row
+   means STRICT.** Never dependent on a Console provisioning signal.
+
+### The five slices
+
+| Slice | Stage | Lands |
+|---|---|---|
+| A23-1 | B enforcement | runtime route contract + consumption census + narrowing/mutation matrix; every leaking read; campaign intersection and removal of the wildcard resolve; campaign lifecycle object gates; realm-unset refusal; metering pin |
+| A23-2 | identity | CC 0020 `actor_ref`, `actor_of()`, dual-form readers, corrected `/impact` |
+| A23-3 | C recovery | last-admin refusal at revoke/expiry/flip via one counting function; org-unit delete refused under grants + reassignment; inert vanished-target grants; delegation = reach ∧ authority ∧ no self-grant; agent lifecycle consistency |
+| A23-4 | B′ synthesis | never-granted vs previously-granted; no synthesis for agents |
+| A23-5 | A strict birth | pinning migration, then missing row → strict; gate proof |
+
+### A23-1 boundary (this slice)
+
+**In:** `harkeniq_cc/route_contract.py` as the runtime declaration the
+tests import; a scope-consumption census that fails the suite when a
+handler declares `READ_SCOPED`/`OBJECT_GATED` and never reads `scope`; a
+generated narrowing sweep (a strict, site-scoped persona must never
+receive an out-of-scope site, device, incident, campaign, agent, grant,
+proposal, warranty or candidate-skill identifier from ANY read route) and
+a generated mutation probe (a narrowed tenant owner must never reach an
+out-of-scope target with ANY object-gated or tenant-gated mutation);
+the leaking reads fixed and re-declared `READ_SCOPED`; campaign
+visibility derived from scope rules when no site rows exist yet, rows
+filtered to the caller's sites, lifecycle mutations gated on every rule,
+preflight targets = expanded rules ∩ caller scope with the wildcard
+resolve deleted; operational-agent visibility by scope rule (an
+out-of-scope agent is 404, its device and proposal rows are narrowed to
+the caller); `/api/scope-grants/` narrowed to grants the caller could
+have made; secure mode refuses an unset realm and the platform-realm
+fallback is deleted; the metering `scope=None` contract pinned by test.
+
+**Out (named slices):** everything in A23-2 through A23-5;
+`platform_super_admin`; the scale cache.
