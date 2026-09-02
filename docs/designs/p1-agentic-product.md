@@ -2075,3 +2075,25 @@ fallback is deleted; the metering `scope=None` contract pinned by test.
 
 **Out (named slices):** everything in A23-2 through A23-5;
 `platform_super_admin`; the scale cache.
+
+### A23-2 — identity (landed 2026-09-02)
+
+`cc_audit_log.actor_ref` (CC migration **0020**, nullable, indexed with
+the tenant, OUTSIDE `_chain_payload` exactly as `site_id` is) and the one
+helper `harkeniq_cc/actor.py::actor_of()`. A human resolves to the
+Keycloak subject, a machine principal to the agent id (A3 keys its grants
+on it), an attribution key to the agent across versions, a campaign actor
+to a versionless `campaign:<id>`, a bare subject to itself, and an email
+to **None** -- unresolvable is recorded as unresolvable, never guessed.
+Every API audit write passes `actor_ref=actor_of(user)` (a scanner test
+refuses one that does not); lifecycle functions that receive an actor
+string carry it through; a writer holding only an attribution key gets
+the derivation inside `append()`. Readers are dual-form: the audit API
+returns both columns and its actor filter answers to either form. The
+impact census resolves each observed actor to stable identity -- the
+stored `actor_ref`, then the helper, then in-repo evidence pairing an
+address with a subject (approval records, group members, and the
+ledger's own new rows) -- and reports what it cannot resolve as
+`unresolved_legacy_actors` rather than as a different person. Proven on
+real PostgreSQL by rewinding the live database to 0019 and upgrading with
+rows present: all NULL, index present, chain valid, both read forms.

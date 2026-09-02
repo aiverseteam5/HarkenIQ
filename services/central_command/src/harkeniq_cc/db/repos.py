@@ -96,6 +96,17 @@ def _audit_scoped(stmt, scope):
     return stmt.where(CCAuditLog.site_id.in_(site_ids))
 
 
+def _actor_matches(actor: str):
+    """Dual-form actor filter (A23-2).
+
+    A caller asking for one actor may hold the stable reference (matches
+    `actor_ref` on new rows) or a legacy display string (matches `actor`
+    on historical rows, which were never rewritten). Both forms answer,
+    so the history of a principal does not split at the migration.
+    """
+    return (CCAuditLog.actor_ref == actor) | (CCAuditLog.actor == actor)
+
+
 def apply_scope(stmt, column, scope):
     """Conjoin `scope_sites` onto a statement when it applies."""
     condition = scope_sites(column, scope)
@@ -1037,6 +1048,7 @@ class AuditRepo:
         tenant_id: str = "",
         detail: Optional[dict] = None,
         site_id: Optional[str] = None,
+        actor_ref: Optional[str] = None,
     ) -> CCAuditLog:
         """Append one entry to the tenant's hash chain.
 
@@ -1046,8 +1058,20 @@ class AuditRepo:
         so recording a site neither changes an entry's hash nor
         invalidates any chain written before this column existed. A test
         asserts that rather than trusting it.
+
+        A23-2: `actor_ref` is the STABLE identity, also outside the
+        payload. A writer holding a `UserContext` passes
+        ``actor_ref=actor_of(user)``; a writer holding only an
+        attribution string leaves it unset and the one helper derives
+        what it can (an agent id from an attribution key, a campaign
+        ref, a bare subject). An email derives to NULL -- unresolvable
+        is recorded as unresolvable, never guessed.
         """
         from harkeniq.audit.chain import next_link, pg_advisory_chain_lock
+        from harkeniq_cc.actor import actor_of
+
+        if actor_ref is None:
+            actor_ref = actor_of(actor)
 
         row = CCAuditLog(
             ts=utcnow(),
@@ -1057,6 +1081,7 @@ class AuditRepo:
             tenant_id=tenant_id,
             detail=detail,
             site_id=site_id,
+            actor_ref=actor_ref or None,
         )
         async with _audit_chain_lock:
             # R5-2: cross-replica serialization on PostgreSQL (held
@@ -1110,7 +1135,7 @@ class AuditRepo:
             select(CCAuditLog).where(CCAuditLog.tenant_id == tenant_id), scope
         )
         if actor is not None:
-            stmt = stmt.where(CCAuditLog.actor == actor)
+            stmt = stmt.where(_actor_matches(actor))
         if action is not None:
             stmt = stmt.where(CCAuditLog.action == action)
         if date_from is not None:
@@ -1139,7 +1164,7 @@ class AuditRepo:
             scope,
         )
         if actor is not None:
-            stmt = stmt.where(CCAuditLog.actor == actor)
+            stmt = stmt.where(_actor_matches(actor))
         if action is not None:
             stmt = stmt.where(CCAuditLog.action == action)
         if date_from is not None:

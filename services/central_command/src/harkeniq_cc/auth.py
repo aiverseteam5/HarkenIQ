@@ -230,6 +230,9 @@ async def _machine_principal(request: Request, validated) -> UserContext:
             if identity is not None:
                 await AuditRepo(session).append(
                     actor=f"machine:{validated.subject}",
+                    # A23-2: the stable identity is the agent, which
+                    # `machine:<sub>` alone cannot be resolved to.
+                    actor_ref=identity.agent_id,
                     action="agent_identity.auth_failed",
                     subject=identity.agent_id,
                     tenant_id=identity.tenant_id or tenant_id,

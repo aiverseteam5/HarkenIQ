@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.capabilities import (
     build_capability_registry,
@@ -279,6 +280,7 @@ async def put_catalogue(
     )
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_of(user),
         action="capability_catalogue.replaced",
         subject=user.tenant_id,
         tenant_id=user.tenant_id,

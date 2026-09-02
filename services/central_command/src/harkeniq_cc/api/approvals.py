@@ -57,6 +57,7 @@ from harkeniq_cc.approval_policy import (
     required_approvers,
     resolve_policy,
 )
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.campaigns import WAVE_PENDING_APPROVAL
 from harkeniq_cc.autonomy import action_risk_map
@@ -383,7 +384,7 @@ async def _record_and_evaluate(
     # would make a two-approver decision indistinguishable from a
     # one-approver decision in the record that is supposed to prove it.
     await AuditRepo(session).append(
-        actor=user.email or user.user_id,
+        actor=user.email or user.user_id, actor_ref=actor_of(user),
         action=f"approval.{decision}",
         subject=subject_ref,
         tenant_id=tenant_id,
@@ -644,7 +645,7 @@ async def _decide_agent_proposal(
                 }
 
     await AuditRepo(session).append(
-        actor=decided_by,
+        actor=decided_by, actor_ref=actor_of(user),
         action=f"action.{decision}",
         subject=proposal.id,
         tenant_id=user.tenant_id,
@@ -746,7 +747,7 @@ async def _decide_agent_activation(
         decision = DECISION_DENIED
 
     await AuditRepo(session).append(
-        actor=decided_by,
+        actor=decided_by, actor_ref=actor_of(user),
         action=f"operational_agent.activation_{decision}",
         subject=agent.id,
         tenant_id=user.tenant_id,
@@ -847,7 +848,7 @@ async def _decide_campaign_wave(
     wave.decided_at = datetime.now(timezone.utc)
 
     await AuditRepo(session).append(
-        actor=decided_by,
+        actor=decided_by, actor_ref=actor_of(user),
         action=f"campaign_wave.{decision}",
         subject=wave.campaign_id,
         tenant_id=user.tenant_id,
@@ -965,7 +966,7 @@ async def _route_decision(
         delivery = {"accepted": False, "delivered": False, "reason": str(exc)}
 
     await AuditRepo(session).append(
-        actor=decided_by,
+        actor=decided_by, actor_ref=actor_of(user),
         action=f"action.{decision}",
         subject=action_id,
         tenant_id=user.tenant_id,

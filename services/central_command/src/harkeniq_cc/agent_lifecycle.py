@@ -170,7 +170,9 @@ async def _validate_skills(
     return rows
 
 
-async def run_preflight(session, state, *, tenant_id: str, agent, actor: str) -> dict:
+async def run_preflight(
+    session, state, *, tenant_id: str, agent, actor: str, actor_ref: str = ""
+) -> dict:
     """Assemble every dimension and store the result immutably.
 
     Mandatory before activation. An operator must never be the first
@@ -286,7 +288,7 @@ async def run_preflight(session, state, *, tenant_id: str, agent, actor: str) ->
 
 
 async def acknowledge_preflight(
-    session, *, tenant_id: str, agent, actor: str
+    session, *, tenant_id: str, agent, actor: str, actor_ref: str = ""
 ) -> dict:
     """A named human accepts this configuration's warnings and unknowns.
 
@@ -324,7 +326,8 @@ async def acknowledge_preflight(
 
 
 async def install_bound_skills(
-    session, state, *, tenant_id: str, agent, preflight: dict, actor: str
+    session, state, *, tenant_id: str, agent, preflight: dict, actor: str,
+    actor_ref: str = "",
 ) -> dict:
     """Deliver every usable bound skill onto the devices that can use it.
 

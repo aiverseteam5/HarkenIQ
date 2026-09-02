@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq.capabilities import action_facts
 from harkeniq_cc.agent_activation import activation_provenance
@@ -734,6 +735,7 @@ async def create_agent(
     )
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_of(user),
         action="operational_agent.created",
         subject=agent.id,
         tenant_id=user.tenant_id,
@@ -887,6 +889,7 @@ async def update_agent(
     if paused_change is not None:
         await AuditRepo(session).append(
             actor=actor,
+            actor_ref=actor_of(user),
             action=(
                 "operational_agent.paused" if paused_change
                 else "operational_agent.resumed"
@@ -898,6 +901,7 @@ async def update_agent(
     if changed:
         await AuditRepo(session).append(
             actor=actor,
+            actor_ref=actor_of(user),
             action="operational_agent.updated",
             subject=agent.id,
             tenant_id=user.tenant_id,
@@ -946,6 +950,7 @@ async def replace_bindings(
     await repo.bump_version(agent, actor)
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_of(user),
         action="operational_agent.bound",
         subject=agent.id,
         tenant_id=user.tenant_id,
@@ -1029,7 +1034,7 @@ async def acknowledge_agent(
     try:
         result = await acknowledge_preflight(
             session, tenant_id=user.tenant_id, agent=agent,
-            actor=user.email or user.user_id,
+            actor=user.email or user.user_id, actor_ref=actor_of(user),
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -1257,7 +1262,7 @@ async def issue_identity(
         # Fails CLOSED and audited: a half-issued identity that nobody
         # recorded is worse than none at all.
         await AuditRepo(session).append(
-            actor=actor, action="agent_identity.issue_failed",
+            actor=actor, actor_ref=actor_of(user), action="agent_identity.issue_failed",
             subject=agent.id, tenant_id=user.tenant_id,
             detail={"reason": reason, "client_id": client_id},
         )
@@ -1271,7 +1276,7 @@ async def issue_identity(
         issued_by=actor,
     )
     await AuditRepo(session).append(
-        actor=actor, action="agent_identity.issued",
+        actor=actor, actor_ref=actor_of(user), action="agent_identity.issued",
         subject=agent.id, tenant_id=user.tenant_id,
         detail={"client_id": client_id, "realm": realm,
                 "subject": str(result.get("subject", ""))},
@@ -1331,7 +1336,7 @@ async def rotate_identity(
 
     await identities.mark_rotated(row, actor)
     await AuditRepo(session).append(
-        actor=actor, action="agent_identity.rotated",
+        actor=actor, actor_ref=actor_of(user), action="agent_identity.rotated",
         subject=agent.id, tenant_id=user.tenant_id,
         detail={"client_id": row.keycloak_client_id},
     )
@@ -1392,7 +1397,7 @@ async def revoke_identity(
         client_id=row.keycloak_client_id, enabled=False,
     )
     await AuditRepo(session).append(
-        actor=actor, action="agent_identity.revoked",
+        actor=actor, actor_ref=actor_of(user), action="agent_identity.revoked",
         subject=agent.id, tenant_id=user.tenant_id,
         detail={"client_id": row.keycloak_client_id, "reason": reason,
                 "keycloak_disabled": not kc_reason,
@@ -1751,7 +1756,7 @@ async def transition_agent(
                 client_id=identity.keycloak_client_id, enabled=False,
             )
             await AuditRepo(session).append(
-                actor=actor, action="agent_identity.retired",
+                actor=actor, actor_ref=actor_of(user), action="agent_identity.retired",
                 subject=agent.id, tenant_id=user.tenant_id,
                 detail={"client_id": identity.keycloak_client_id,
                         "keycloak_disabled": not kc_reason,
@@ -1760,6 +1765,7 @@ async def transition_agent(
 
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_of(user),
         action=f"operational_agent.{transition}d",
         subject=agent.id,
         tenant_id=user.tenant_id,

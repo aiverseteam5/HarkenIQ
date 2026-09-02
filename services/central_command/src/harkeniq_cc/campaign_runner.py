@@ -110,6 +110,7 @@ async def preflight(
     resolved_site_ids,
     actor: str,
     caller_scope=None,
+    actor_ref: str = "",
 ) -> dict:
     """Resolve targets, ask the Registry about every one, and store it.
 
@@ -192,6 +193,7 @@ async def preflight(
     summary["plans"] = plan_summary
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_ref or None,
         action="campaign.preflighted",
         subject=campaign.id,
         tenant_id=tenant_id,
@@ -226,6 +228,7 @@ async def acknowledge(
     campaign,
     exclude_device_ids: list[str],
     actor: str,
+    actor_ref: str = "",
 ) -> dict:
     """A named human settles every warned or unknown target (D2).
 
@@ -267,6 +270,7 @@ async def acknowledge(
 
     await AuditRepo(session).append(
         actor=actor,
+        actor_ref=actor_ref or None,
         action="campaign.acknowledged",
         subject=campaign.id,
         tenant_id=tenant_id,
@@ -497,7 +501,9 @@ async def settle_campaign(session, *, tenant_id: str, campaign) -> Optional[str]
     return terminal
 
 
-async def plan_sites(session, state, *, tenant_id: str, campaign, actor: str) -> dict:
+async def plan_sites(
+    session, state, *, tenant_id: str, campaign, actor: str, actor_ref: str = ""
+) -> dict:
     """Ask every in-scope site for its wave plan and store it immutably.
 
     Central Command never plans a wave. It names the eligible devices and
@@ -623,6 +629,7 @@ async def plan_sites(session, state, *, tenant_id: str, campaign, actor: str) ->
         })
         await AuditRepo(session).append(
             actor=actor,
+            actor_ref=actor_ref or None,
             action="campaign.plan_received",
             subject=campaign.id,
             tenant_id=tenant_id,

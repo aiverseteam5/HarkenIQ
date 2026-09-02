@@ -17,6 +17,10 @@ def _entry_dict(row) -> dict:
         "id": row.id,
         "ts": row.ts.isoformat() if row.ts else None,
         "actor": row.actor,
+        # A23-2: the stable identity. NULL on rows written before the
+        # column existed or whose actor could not be resolved; `actor`
+        # is the display form and is never rewritten.
+        "actor_ref": row.actor_ref,
         "action": row.action,
         "subject": row.subject,
         "tenant_id": row.tenant_id,

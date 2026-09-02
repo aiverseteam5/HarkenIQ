@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0019"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0020"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -715,3 +715,51 @@ class TestExistingDatabase:
         con.close()
         assert agents == 1, "the pre-A3 agent must survive the upgrade"
         assert rows == 0, "no identity may be invented for an existing agent"
+
+
+class TestCC0020AuditActorRef:
+    """A23-2 (spec A23.7): a stable actor identity, outside the chain."""
+
+    def test_cc_0020_adds_actor_ref_and_index_and_does_not_backfill(self, tmp_path):
+        """A historical row keeps actor_ref NULL: it was recorded by a
+        display string and cannot be resolved without the identity
+        provider. Guessing would be the fuzzy matching A23.7 forbids, and
+        rewriting `actor` would change its hash."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("drop index if exists ix_cc_audit_log_tenant_actor_ref")
+        con.execute("alter table cc_audit_log drop column actor_ref")
+        con.execute(
+            "insert into cc_audit_log (id, ts, actor, action, subject, tenant_id, "
+            " detail, site_id, seq, prev_hash, entry_hash) "
+            "values ('old1', datetime('now'), 'ops@example.com', 'approval.approved', "
+            "'act-1', 't1', null, null, 1, '', 'deadbeef')"
+        )
+        con.execute("update alembic_version set version_num='0019'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "actor_ref" in _columns(db, "cc_audit_log")
+
+        con = sqlite3.connect(db)
+        actor, actor_ref, entry_hash = con.execute(
+            "select actor, actor_ref, entry_hash from cc_audit_log where id='old1'"
+        ).fetchone()
+        indexes = {r[1] for r in con.execute("PRAGMA index_list(cc_audit_log)")}
+        con.close()
+        assert actor == "ops@example.com" and entry_hash == "deadbeef", (
+            "a historical row must be left exactly as written"
+        )
+        assert actor_ref is None, "no backfill: unresolved stays NULL"
+        assert "ix_cc_audit_log_tenant_actor_ref" in indexes
+
+    def test_cc_0020_downgrades(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        _alembic("cc", db, "downgrade", "0019")
+        assert "actor_ref" not in _columns(db, "cc_audit_log")
+        _alembic("cc", db, "upgrade", "head")
+        assert "actor_ref" in _columns(db, "cc_audit_log")

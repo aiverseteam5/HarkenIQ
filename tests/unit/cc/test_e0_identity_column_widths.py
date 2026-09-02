@@ -37,6 +37,8 @@ PRINCIPAL_COLUMNS = {
     # subject every machine token carries.
     "keycloak_sub", "revoked_by", "rotated_by", "acknowledged_by",
     "activation_acknowledged_by", "produced_by",
+    # A23-2: the audit log's stable actor identity.
+    "actor_ref",
 }
 EMAIL_COLUMNS = {"approver_email", "user_email", "actor_email", "email"}
 
