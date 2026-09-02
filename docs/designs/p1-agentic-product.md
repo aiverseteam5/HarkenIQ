@@ -2210,7 +2210,98 @@ not a self-grant exception and not a platform bypass); recorded here,
 not decided here.
 
 **Not in this slice, by the spec's own assignment:** never-granted vs
-previously-granted synthesis and agent synthesis (A23-4, pinned by two
-strict `xfail` tests that will fail the suite the day it lands), strict
-birth (A23-5), Keycloak-side user lifecycle (A23.8 recorded limit), and
-the scale cache.
+previously-granted synthesis and agent synthesis (A23-4, pinned at the
+time by two strict `xfail` tests; they flipped when A23-4 landed and the
+marks were removed), strict birth (A23-5), Keycloak-side user lifecycle
+(A23.8 recorded limit), and the scale cache.
+
+### A23-4 — synthesis only for the never-granted, and never for an agent (boundary approved 2026-09-02; landed 2026-09-02)
+
+Implements A23.10. Stage B′ of the ratified sequence; A23-1, A23-2 and
+A23-3 are on `main`.
+
+**What the inspection found on `main` at `4b9d2f2`, by tracing the
+read path.** `ScopeGrantRepo.list_for_principal` defaults to
+`include_revoked=False`, so a revoked row never left the database;
+`resolve()` then dropped expired rows with `is_active`, unknown scope
+types and rows narrowed to no permissions with `continue`; and the
+synthesis branch was `if not grants and enforcement == legacy_open`,
+with no principal-type check. Four disappearances converged on one
+empty list, and the empty list was the never-granted shape. The table
+retained everything — revocation is a timestamp — so the gap was
+purely in the read: nothing carried "this principal was administered
+before" from the repository to the decision. The same branch served
+`load_agent_scope`: an Operational Agent with no scope rows resolved
+tenant-wide under `legacy_open`, and an A5 test asserted that defect as
+present by name (the evaluator was protected only because a separate
+device function refuses on empty rows; the agent's HTTP reads and its
+attention feed were not).
+
+**Decisions inside the ratified boundary (recommended in the inspection
+report; approved by Vinod before code).**
+
+1. *Evidence is any row.* `ScopeGrantRepo.grant_evidence` returns every
+   row that has ever named the principal in this tenant — revoked,
+   expired, inert, unknown-typed, narrowed to nothing, made under another
+   realm — as `prior_grants`, an input the resolver reads for exactly
+   one decision. `resolve()` also counts every row in `grant_rows` as
+   evidence BEFORE the lifecycle filters. `ResolvedScope.previously_granted`
+   and `synthesis` (`granted` | `never_granted` | `previously_granted` |
+   `agent` | `strict`) report which branch was taken; `/api/scope-grants/me`
+   returns both. Evidence never authorizes: an evidence row adds no site,
+   no permission and no tenant flag, pinned by a test that passes an
+   ACTIVE tenant row as evidence and asserts nothing widened.
+2. *Cross-realm rows are evidence.* A row for this subject under another
+   realm authorizes nothing (E1.4) and still proves administration.
+   Fail closed.
+3. *Authenticated aliases are evidence, exact match only.* The token's
+   own email claim (subject and address arrive together on one
+   authenticated request) and the platform's recorded email↔subject
+   pairs — the A23-2 identity evidence, moved to
+   `harkeniq_cc/identity_evidence.py` as ONE implementation the impact
+   census and the loader both ask — find a legacy grant keyed by an
+   address. Such a row is evidence and confers nothing; an unrelated
+   address is not evidence. No display names, no usernames, no
+   approximate matching, per A23.7.
+4. *Agents get no synthesis under any posture.* The branch names the
+   principal type; an agent's reach is its rows (A0). The A5 test that
+   asserted the defect now asserts the fix; the impact report still lists
+   a scopeless agent, because reporting stayed and only the reach went.
+5. *No migration, no second store.* The evidence read is one query over
+   the existing table.
+
+**Verification.** `tests/unit/cc/test_a23_4_synthesis.py`: the mandated
+matrix 1–18 executed against `resolve()` and over the real app, the
+adversarial regression (narrow grant → revoke / expire / vanish the
+target → active read empty → resolve under `legacy_open` → NOT
+tenant-wide, zero devices, `permits` false everywhere), a structural pin
+that the synthesis branch names the principal type and constructs a
+synthesized grant in exactly one place, and the executed contrast
+between what the loader used to hand the resolver and what it hands it
+now. A23-3's two strict xfails lost their marks and pass. One A23-3
+test that had documented "kc-owner, now revoked, resolves tenant-wide
+under legacy_open (A23-4's case)" now asserts the revoked administrator
+sees no grants and cannot reach another's. Compose gate: one step on the
+wiped stack with real Keycloak and PostgreSQL — never-granted (tenant-wide,
+`never_granted`, devices visible), revoked (`previously_granted`, zero
+devices), expired via a database clock edit (same), the A23-3 orphan
+(inert, retained, zero devices), a machine token for an agent with no
+scope rows (`agent`, zero devices, still named by the impact report),
+and strict for both the never-granted human and the agent.
+
+**Deferred, recorded here.** `ResolvedScope.can_delegate` still has no
+production caller (A23-3 routed delegation through `check_delegation`);
+architectural cleanup, not an A23-4 dependency. The Operational Agent
+bindings path applies reach through its own E1.2 ceiling rather than
+`grant_integrity`; functionally equivalent for agents (no permissions
+delegated, never counted as administrators), noted as two
+implementations of one question.
+
+**A23-5 handoff.** Strict birth must ensure a newly created tenant holds
+its initial administrative authority at provisioning: A23.6 made the
+first tenant grant a two-person act, and A23-4 now makes a
+previously-granted principal ineffective rather than tenant-wide, so a
+tenant whose only administrator was ever revoked has NO principal who
+synthesizes their way back. Seed the first grant through the existing
+CC→Console internal channel; never a self-grant exception, never a
+platform bypass. Not implemented here.

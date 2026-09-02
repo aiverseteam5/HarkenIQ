@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Optional, Sequence
+from typing import Iterable, Any, Optional, Sequence
 
 from sqlalchemy import delete as sa_delete, false as sa_false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -957,6 +957,49 @@ class ScopeGrantRepo:
         grant.revoked_by = revoked_by
         await self.session.flush()
         return grant
+
+    async def grant_evidence(
+        self, tenant_id: str, principal_type: str, refs: Iterable[str],
+    ) -> Sequence[CCScopeGrant]:
+        """Every row that has EVER named this principal in this tenant.
+
+        A23-4 (spec A23.10). Revoked, expired, other-realm and
+        alias-keyed rows included; NOT an authorization read. The
+        resolver uses it for exactly one decision -- a principal with any
+        such row is previously granted and is never handed the
+        synthesized `legacy_open` tenant grant -- and for nothing else.
+
+        `refs` is the stable principal reference plus any authenticated
+        aliases of it (the token's own email claim; an email the platform
+        itself paired with the subject on an authenticated request). An
+        alias containing ``@`` is matched case-insensitively, because an
+        address is a mutable display string; a subject is matched
+        exactly. A row keyed by an alias authorizes nothing here and is
+        evidence only.
+        """
+        exact = sorted({r for r in refs if r and "@" not in r})
+        emails = sorted({r.strip().lower() for r in refs if r and "@" in r})
+        if not exact and not emails:
+            return []
+        clauses = []
+        if exact:
+            clauses.append(CCScopeGrant.principal_ref.in_(exact))
+        if emails:
+            clauses.append(func.lower(CCScopeGrant.principal_ref).in_(emails))
+        cond = clauses[0]
+        for c in clauses[1:]:
+            cond = cond | c
+        return (
+            await self.session.execute(
+                select(CCScopeGrant)
+                .where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.principal_type == principal_type,
+                    cond,
+                )
+                .order_by(CCScopeGrant.granted_at)
+            )
+        ).scalars().all()
 
     async def list_referencing(
         self, tenant_id: str, scope_type: str, scope_ref: str,

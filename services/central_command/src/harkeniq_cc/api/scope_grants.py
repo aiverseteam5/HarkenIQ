@@ -54,6 +54,7 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
     TenantSettingsRepo,
 )
+from harkeniq_cc.identity_evidence import identity_evidence
 from harkeniq_cc.grant_integrity import (
     GrantIntegrityError,
     check_delegation,
@@ -319,6 +320,13 @@ async def my_scope(
             for g in scope.inert_grants
         ],
         "administered": scope.administered,
+        # A23-4 (A23.10): synthesis is for the never-granted only, and
+        # never for an agent. `previously_granted` is evidence that a
+        # grant row has EVER named this principal -- revoked, expired,
+        # inert or otherwise ineffective included -- and it confers
+        # nothing. `synthesis` says which branch the resolver took.
+        "previously_granted": scope.previously_granted,
+        "synthesis": scope.synthesis,
     }
 
 
@@ -762,7 +770,7 @@ async def enforcement_impact(
     agent_ids = {a.id for a in await OperationalAgentRepo(session).list_all(tenant_id)}
     census = _census_actors(
         observed,
-        evidence=await _identity_evidence(session, tenant_id),
+        evidence=await identity_evidence(session, tenant_id),
         covered_users=covered_users,
         agent_ids=agent_ids,
     )
@@ -801,44 +809,6 @@ async def enforcement_impact(
             "proposal target"
         ),
     }
-
-
-async def _identity_evidence(session, tenant_id: str) -> dict[str, str]:
-    """Email -> stable subject, from records the platform itself wrote.
-
-    Two stores pair an address with a subject at write time:
-    `cc_approval_records` (approver_ref + approver_email, E0.1) and
-    `cc_approval_group_members` (principal_ref + user_email). Those pairs
-    are evidence, not inference: the subject and the address were
-    observed together on one authenticated request. Nothing else is
-    consulted, and an address with no such pair stays unresolved.
-    """
-    from sqlalchemy import select as _select
-
-    from harkeniq_cc.db.models import (
-        CCApprovalGroup,
-        CCApprovalGroupMember,
-        CCApprovalRecord,
-    )
-
-    out: dict[str, str] = {}
-    rows = (await session.execute(
-        _select(CCApprovalRecord.approver_email, CCApprovalRecord.approver_ref)
-        .where(CCApprovalRecord.tenant_id == tenant_id)
-        .distinct()
-    )).all()
-    rows += (await session.execute(
-        _select(CCApprovalGroupMember.user_email, CCApprovalGroupMember.principal_ref)
-        .join(CCApprovalGroup, CCApprovalGroup.id == CCApprovalGroupMember.group_id)
-        .where(CCApprovalGroup.tenant_id == tenant_id)
-        .distinct()
-    )).all()
-    for email, ref in rows:
-        email = (email or "").strip().lower()
-        ref = (ref or "").strip()
-        if email and ref and "@" in email and "@" not in ref:
-            out.setdefault(email, ref)
-    return out
 
 
 def _census_actors(observed, *, evidence, covered_users, agent_ids) -> dict:

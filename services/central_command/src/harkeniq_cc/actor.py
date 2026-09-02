@@ -88,3 +88,4 @@ def actor_of(principal: Any) -> Optional[str]:
     # It is not an identity we can vouch for.
     return None
 
+

@@ -1534,6 +1534,120 @@ d = json.load(sys.stdin)
 assert d['valid'], d
 print('chain valid,', d['length'], 'entries, refusals included')"
 
+step "A23-4: synthesis only for the never-granted, and never for an agent (A23.10)"
+# The previous step left the tenant strict. A..E run under legacy_open,
+# the posture the escalation lived in: a principal whose EFFECTIVE grant
+# list was empty used to be handed a synthesized tenant-wide grant, so
+# "granted once and lost it" read exactly like "never granted". F
+# returns to strict. Every line below is the resolver's own answer over
+# the real loader, the real repositories, real Keycloak identities.
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"legacy_open"}' http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+a234_me() { curl -sf -H "Authorization: Bearer $1" http://localhost:8090/api/scope-grants/me; }
+a234_fleet() {
+  curl -sf -H "Authorization: Bearer $1" "http://localhost:8090/api/fleet/?page_size=200" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('devices', d.get('items', []))))"
+}
+a234_sub() {
+  python3 -c "
+import base64, json
+t = '$1'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])"
+}
+a234_expect() {
+  # $1 label, $2 token, $3 tenant_wide, $4 synthesis, $5 previously_granted, $6 fleet count ("any" = >0)
+  a234_me "$2" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is $3, ('$1', d)
+assert d['synthesis'] == '$4', ('$1', d)
+assert d['previously_granted'] is $5, ('$1', d)
+if d['synthesis'] in ('previously_granted', 'agent', 'strict'):
+    # No effective grant: the answer must be reach NONE, not merely
+    # not-tenant-wide.
+    assert d['site_ids'] == [] and d['org_unit_paths'] == [], ('$1', d)
+    assert not [g for g in d['grants'] if not g['inert']], ('$1', d)
+print('$1: tenant_wide', d['tenant_wide'], '| synthesis', d['synthesis'], '| previously_granted', d['previously_granted'], '| effective grants', len([g for g in d['grants'] if not g['inert']]))"
+  N=$(a234_fleet "$2")
+  if [ "$6" = "any" ]; then
+    [ "$N" -gt 0 ] || { echo "$1: expected devices, saw $N" >&2; exit 1; }
+  else
+    [ "$N" = "$6" ] || { echo "$1: expected $6 device(s), saw $N" >&2; exit 1; }
+  fi
+  echo "$1: fleet read returned $N device(s)"
+}
+A234_SITE=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/sites/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['sites'][0]['id'])")
+
+# A. never granted: legacy behaviour, unchanged for the never-administered.
+tenant_realm_user gate-a234-never@demo gate-a234-never viewer
+NEVER_TOKEN=$(tenant_token gate-a234-never@demo gate-a234-never)
+a234_expect "A never-granted (legacy_open)" "$NEVER_TOKEN" True never_granted False any
+
+# B. previously granted, then revoked through the API.
+tenant_realm_user gate-a234-revoked@demo gate-a234-revoked viewer
+REV_TOKEN=$(tenant_token gate-a234-revoked@demo gate-a234-revoked)
+REV_SUB=$(a234_sub "$REV_TOKEN")
+[ "$(grant "$REV_SUB" site "$A234_SITE" viewer)" = "201" ] || { echo "B: grant refused" >&2; exit 1; }
+a234_expect "B before revoke (narrow grant)" "$REV_TOKEN" False granted True any
+REV_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/?principal_ref=$REV_SUB" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['grants'][0]['id'])")
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$REV_GID")
+[ "$RC" = "200" ] || { echo "B: revoke -> $RC" >&2; exit 1; }
+a234_expect "B previously granted, revoked" "$REV_TOKEN" False previously_granted True 0
+
+# C. previously granted, then expired (the clock, edited in the database).
+tenant_realm_user gate-a234-expired@demo gate-a234-expired viewer
+EXP_TOKEN=$(tenant_token gate-a234-expired@demo gate-a234-expired)
+EXP_SUB=$(a234_sub "$EXP_TOKEN")
+[ "$(grant "$EXP_SUB" site "$A234_SITE" viewer)" = "201" ] || { echo "C: grant refused" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "update cc_scope_grants set expires_at = now() - interval '1 day' where principal_ref = '$EXP_SUB'" > /dev/null
+a234_expect "C previously granted, expired" "$EXP_TOKEN" False previously_granted True 0
+
+# D. previously granted, target vanished (the orphan from the A23-3 step).
+a234_me "$ORPHAN_TOKEN" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is False and d['synthesis'] == 'granted' and d['previously_granted'] is True, d
+assert d['inert_grants'] and d['inert_grants'][0]['reason'] == 'org_unit_missing', d
+print('D previously granted, target vanished: tenant_wide False | synthesis granted (inert, retained) | previously_granted True')"
+N=$(a234_fleet "$ORPHAN_TOKEN"); [ "$N" = "0" ] || { echo "D: orphan saw $N device(s)" >&2; exit 1; }
+echo "D: fleet read returned 0 device(s)"
+
+# E. an Operational Agent with NO scope rows, authenticating as itself.
+A234_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a23-4 bare $(date +%s)\",\"scopes\":[],
+       \"capabilities\":[{\"kind\":\"read\",\"capability_ref\":\"fleet\"},
+                         {\"kind\":\"read\",\"capability_ref\":\"incidents\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+A234_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A234_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+A234_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$A234_AGENT&client_secret=$A234_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$A234_TOKEN" ] || { echo "E: no machine token" >&2; exit 1; }
+a234_expect "E agent with no scope rows (legacy_open)" "$A234_TOKEN" False agent False 0
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/tenant-settings/scope-enforcement/impact \
+  | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+assert '$A234_AGENT' in [a['agent_id'] for a in r['agents_without_grant']], r['agents_without_grant']
+print('E: the impact report still names the scopeless agent (reporting stayed; the reach went)')"
+
+# F. strict: nobody is synthesized, the never-granted included.
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"strict"}' http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+a234_expect "F never-granted (strict)" "$NEVER_TOKEN" False strict False 0
+a234_expect "F agent (strict)" "$A234_TOKEN" False agent False 0
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['valid'], d; print('chain valid,', d['length'], 'entries')"
+
 step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"legacy_open"}' \

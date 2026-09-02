@@ -707,8 +707,15 @@ class TestD2EnforcementIsReportedBeforeItIsEnforced:
         assert "no grant" in report["invariant"]
 
     @pytest.mark.asyncio
-    async def test_a_scopeless_agent_really_does_reach_everything_today(self):
-        """The defect itself, asserted -- not merely reported."""
+    async def test_a_scopeless_agent_reaches_nothing_under_any_posture(self):
+        """The defect this test used to assert as PRESENT, now closed.
+
+        Until A23-4, `legacy_open` synthesized tenant-wide reach for a
+        grantless principal of either kind, so "no scope rows = no
+        devices" (A0) was inverted for an agent. A23.10: an Operational
+        Agent receives no synthesis under any posture. The impact
+        report above still lists it -- reporting stayed; the reach went.
+        """
         stack = await _stack()
         site_a, site_b = await _seed(stack, sites=("DC-1", "DC-2"))
         async with stack.client() as c:
@@ -717,11 +724,11 @@ class TestD2EnforcementIsReportedBeforeItIsEnforced:
             scope = await load_agent_scope(
                 session, tenant_id=TENANT, agent_id=scopeless,
             )
-        # legacy_open synthesizes tenant-wide reach for a grantless
-        # principal, so "no scope rows = no devices" is inverted here.
-        assert scope.tenant_wide is True
-        assert {site_a, site_b} <= scope.site_ids
-        assert any(g.synthesized for g in scope.grants)
+        assert scope.tenant_wide is False
+        assert scope.site_ids == frozenset()
+        assert not any(g.synthesized for g in scope.grants)
+        assert scope.synthesis == "agent"
+        assert scope.is_empty()
 
     @pytest.mark.asyncio
     async def test_the_report_admits_it_cannot_enumerate_principals(self):
