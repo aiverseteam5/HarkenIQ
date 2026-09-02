@@ -130,6 +130,10 @@ async def get_scope(
             role_permissions=ROLE_PERMISSIONS.get(
                 user.role, list(user.permissions)
             ) or list(user.permissions),
+            # A23-4: the token's email claim is an authenticated alias of
+            # this subject. A legacy grant keyed by it is prior evidence
+            # (no synthesis), and still authorizes nothing.
+            aliases=[user.email] if user.email else (),
         )
 
 

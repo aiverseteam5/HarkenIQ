@@ -49,6 +49,7 @@ async def load_scope(
     role_permissions,
     principal_type: str = PRINCIPAL_USER,
     realm: str = "",
+    aliases: Iterable[str] = (),
 ) -> ResolvedScope:
     """Resolve one principal's authorization scope. E1.2.
 
@@ -59,13 +60,31 @@ async def load_scope(
 
     Humans and Operational Agents differ only in `principal_type`. The
     rows, the tree, the enforcement mode and the resolver are identical.
+
+    `aliases` (A23-4) are authenticated alternate references for the
+    SAME principal -- the token's own email claim -- used only to find
+    prior grant evidence. The platform's own recorded email<->subject
+    pairs are added here from the one identity-evidence implementation.
+    Evidence never authorizes: an alias-keyed row still confers nothing.
     """
+    from harkeniq_cc.identity_evidence import subject_aliases
     from harkeniq_cc.grant_integrity import role_ceiling_for
 
-    grants = await ScopeGrantRepo(session).list_for_principal(
+    repo = ScopeGrantRepo(session)
+    grants = await repo.list_for_principal(
         tenant_id, principal_ref, principal_type=principal_type,
         realm=realm,
     )
+    # A23.10: NEVER GRANTED versus PREVIOUSLY GRANTED. The authorization
+    # read above is realm-narrowed and revocation-filtered by design;
+    # this read is neither, because a revoked row, a stale-realm row or
+    # a row keyed by a recorded alias is still evidence that somebody
+    # administered this principal. Evidence decides one thing -- no
+    # synthesized tenant grant -- and adds no reach.
+    refs = {principal_ref, *aliases}
+    if principal_type == PRINCIPAL_USER:
+        refs |= await subject_aliases(session, tenant_id, principal_ref)
+    prior = await repo.grant_evidence(tenant_id, principal_type, refs)
     org_units = await OrgUnitRepo(session).list_all(tenant_id)
     sites = await SiteRepo(session).list_all(tenant_id)
     enforcement = await TenantSettingsRepo(session).enforcement(tenant_id)
@@ -82,6 +101,7 @@ async def load_scope(
         # asserted. Supplied here so the resolver stays ignorant of role
         # names and every caller of this loader narrows identically.
         role_ceiling_for=role_ceiling_for,
+        prior_grants=prior,
     )
 
 

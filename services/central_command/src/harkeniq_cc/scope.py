@@ -251,6 +251,21 @@ class ResolvedScope:
     #: rather than answering a question this scope was never built for.
     scope_only: bool = False
 
+    #: A23-4 (spec A23.10). True when ANY grant row has ever named this
+    #: principal in this tenant -- active, revoked, expired, inert,
+    #: unknown-typed, narrowed to nothing, or made under another realm.
+    #: Evidence of administration, never authority: it confers nothing
+    #: and it is what keeps `legacy_open` synthesis away from a principal
+    #: who was granted once and is now ineffective.
+    previously_granted: bool = False
+    #: Why the resolver did or did not synthesize tenant-wide reach:
+    #: ``granted`` (effective grants exist, nothing to synthesize),
+    #: ``never_granted`` (legacy_open, no evidence at all: synthesized),
+    #: ``previously_granted`` (legacy_open, evidence exists: NOT
+    #: synthesized), ``agent`` (an Operational Agent: never synthesized
+    #: under any posture), ``strict`` (strict enforcement: never).
+    synthesis: str = ""
+
     # -- the decision -------------------------------------------------
 
     def permits(
@@ -356,10 +371,14 @@ class ResolvedScope:
 
     @property
     def administered(self) -> bool:
-        """Was this principal ever deliberately granted anything that
-        still stands as a row? True for inert grants too. False for a
-        scope that holds only the synthesized `legacy_open` grant."""
-        return any(not g.synthesized for g in self.grants)
+        """Was this principal ever deliberately granted anything? True
+        for inert grants, and (A23-4) for revoked, expired or otherwise
+        ineffective ones whose rows still exist. False only for a scope
+        that holds nothing but the synthesized `legacy_open` grant --
+        the never-granted."""
+        return self.previously_granted or any(
+            not g.synthesized for g in self.grants
+        )
 
     @property
     def inert_grants(self) -> tuple[Grant, ...]:
@@ -496,6 +515,7 @@ def resolve(
     enforcement: str = ENFORCEMENT_LEGACY_OPEN,
     now: Optional[datetime] = None,
     role_ceiling_for: Optional[Any] = None,
+    prior_grants: Iterable[Any] = (),
 ) -> ResolvedScope:
     """Build a :class:`ResolvedScope` from rows. Pure.
 
@@ -508,8 +528,21 @@ def resolve(
     row RECORDS, or None when it recorded none (A23-3, see
     :func:`grant_permissions`). The loader supplies it from the role
     table; the resolver stays ignorant of role names.
+
+    `prior_grants` (A23-4, spec A23.10) are grant rows that name this
+    principal but are NOT authorization inputs: revoked rows, rows made
+    under another realm, rows keyed by an authenticated alias of the
+    same person. They are evidence that the principal was administered.
+    Every row in `grant_rows` is evidence too, whatever `is_active` says
+    about it. Evidence decides ONE thing: a principal with any of it is
+    never handed the synthesized tenant-wide grant. It never adds reach.
     """
     role_permissions = list(role_permissions)
+    rows = list(grant_rows)
+    # Evidence is counted BEFORE any lifecycle filter, so a row the
+    # filters below discard (revoked, expired, unknown type, narrowed to
+    # nothing) still says "this principal was granted once".
+    previously_granted = bool(rows) or any(True for _ in prior_grants)
     unit_by_id = {u.id: u for u in org_units}
     site_list = list(sites)
     known_site_ids = {s.id for s in site_list}
@@ -518,7 +551,7 @@ def resolve(
         unit = unit_by_id.get(getattr(site, "org_unit_id", None) or "")
         site_unit_paths[site.id] = unit.path if unit is not None else ""
 
-    active = [g for g in grant_rows if is_active(g, now=now)]
+    active = [g for g in rows if is_active(g, now=now)]
 
     grants: list[Grant] = []
     for row in active:
@@ -564,18 +597,31 @@ def resolve(
             )
         )
 
-    if not grants and enforcement == ENFORCEMENT_LEGACY_OPEN:
-        # Upgrade behaviour: a principal with no grants keeps exactly the
-        # tenant-wide reach they have today. Central Command cannot
-        # enumerate a realm's principals to backfill grants, so it must
-        # not pretend the absence of a grant is a decision.
-        #
-        # `grants` includes INERT grants, deliberately: a principal whose
-        # only grant points at a vanished target is administered, not
-        # ungranted, and gets nothing here (A23.9). Revoked and expired
-        # rows are filtered above and still reach this branch -- that is
-        # A23-4's never-granted-vs-previously-granted distinction, and
-        # the spec assigns it there.
+    # A23.10: synthesis is for the NEVER GRANTED, and never for an agent.
+    #
+    # Upgrade behaviour: a human principal with no grant evidence at all
+    # keeps, under `legacy_open`, exactly the tenant-wide reach they have
+    # today. Central Command cannot enumerate a realm's principals to
+    # backfill grants, so it must not pretend the absence of a grant is a
+    # decision. That is the ONLY case. A principal with any evidence --
+    # an inert grant (A23.9), a revoked or expired row, a row narrowed to
+    # nothing, a row under another realm (A23-4) -- was administered, and
+    # the ineffectiveness of what they were given is not a reason to hand
+    # them everything. An Operational Agent gets no synthesis under any
+    # posture: no scope rows = no devices (A0), and its reach is its
+    # rows, never a fallback.
+    if grants:
+        synthesis = "granted"
+    elif principal_type != PRINCIPAL_USER:
+        # Reported first, whatever the posture: an agent's answer is
+        # "your reach is your rows" under strict and legacy alike.
+        synthesis = "agent"
+    elif enforcement != ENFORCEMENT_LEGACY_OPEN:
+        synthesis = "strict"
+    elif previously_granted:
+        synthesis = "previously_granted"
+    else:
+        synthesis = "never_granted"
         grants.append(
             Grant(
                 scope_type=SCOPE_TENANT,
@@ -595,6 +641,8 @@ def resolve(
         unit_by_id=unit_by_id,
         sites=site_list,
         site_unit_paths=site_unit_paths,
+        previously_granted=previously_granted,
+        synthesis=synthesis,
     )
 
 
@@ -609,6 +657,8 @@ def _project(
     unit_by_id: Mapping[str, Any],
     sites: Sequence[Any],
     site_unit_paths: Mapping[str, str],
+    previously_granted: bool = False,
+    synthesis: str = "",
 ) -> ResolvedScope:
     all_grants = list(grants)
     # Projections are built from EFFECTIVE grants only. An inert grant
@@ -655,6 +705,8 @@ def _project(
         site_unit_paths=dict(site_unit_paths),
         unit_paths={u.id: u.path for u in unit_by_id.values()},
         scope_only=scope_only,
+        previously_granted=previously_granted,
+        synthesis=synthesis,
     )
 
 

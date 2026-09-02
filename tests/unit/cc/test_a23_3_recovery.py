@@ -10,11 +10,11 @@ The invariants under test:
     NO GRANT -> NO OPERATIONAL SCOPE
     A GRANT CAN NEVER DISAPPEAR INTO BROADER AUTHORITY
 
-Two cases are deliberately marked xfail rather than asserted green: a
-REVOKED or EXPIRED grant under `legacy_open` still synthesizes today.
-That is A23-4's never-granted-vs-previously-granted correction
-(A23.10), assigned there by the spec. The marks are strict, so the day
-A23-4 lands they flip and must be removed.
+Two cases here were strict xfails until A23-4 landed: a REVOKED or
+EXPIRED grant under `legacy_open` used to synthesize. A23.10's
+never-granted-vs-previously-granted correction removed that, and the
+marks with it; the cases now assert green and the full matrix lives in
+`test_a23_4_synthesis.py`.
 """
 
 from __future__ import annotations
@@ -868,11 +868,6 @@ class TestLifecycleFailsClosed:
             assert me["tenant_wide"] is False and me["site_ids"] == [], shape
             assert me["inert_grants"], shape
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="A23-4 (A23.10): a previously-granted principal whose grant was "
-               "revoked still synthesizes under legacy_open; assigned to A23-4",
-    )
     @pytest.mark.asyncio
     async def test_under_legacy_open_a_revoked_grant_does_not_synthesize(self):
         app, sm, estate = await _seed(strict=False)
@@ -885,11 +880,6 @@ class TestLifecycleFailsClosed:
             me = (await c.get("/api/scope-grants/me")).json()
             assert me["tenant_wide"] is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="A23-4 (A23.10): an expired grant (even to a vanished target) still "
-               "synthesizes under legacy_open; assigned to A23-4",
-    )
     @pytest.mark.asyncio
     async def test_under_legacy_open_an_expired_grant_to_a_legacy_target_does_not_synthesize(self):
         app, sm, estate = await _seed(strict=False)
@@ -1031,12 +1021,13 @@ class TestMixed:
             # Two admins: kc-second may revoke kc-owner...
             assert (await c.delete(f"/api/scope-grants/{gid}")).status_code == 200
         async with _client(app, "tenant_owner", "kc-owner") as c:
-            # ...and kc-owner, now revoked, resolves tenant-wide under
-            # legacy_open (A23-4's case) -- but even so cannot remove
-            # kc-second, because the COUNT is 1.
-            grants = (await c.get("/api/scope-grants/")).json()["grants"]
-            second = [g for g in grants if g["principal_ref"] == "kc-second"][0]["id"]
-            assert (await c.delete(f"/api/scope-grants/{second}")).status_code == 409
+            # ...and kc-owner, now revoked, resolves to NOTHING under
+            # legacy_open (A23-4: previously granted, no synthesis). The
+            # grant list is empty for them and kc-second's grant is out
+            # of their reach entirely -- the count never even gets asked.
+            assert (await c.get("/api/scope-grants/")).json()["grants"] == []
+            second = (await _rows_for(sm, "kc-second"))[0].id
+            assert (await c.delete(f"/api/scope-grants/{second}")).status_code in (403, 404)
         async with _client(app, "tenant_owner", "kc-orphan") as c:
             me = (await c.get("/api/scope-grants/me")).json()
             assert me["tenant_wide"] is False and me["site_ids"] == []
