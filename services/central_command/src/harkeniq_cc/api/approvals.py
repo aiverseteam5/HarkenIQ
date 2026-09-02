@@ -272,6 +272,8 @@ def _scope_snapshot(scope) -> dict:
                 "scope_type": g.scope_type,
                 "scope_ref": g.scope_ref,
                 "permissions": sorted(g.permissions),
+                # A23-3: an inert grant conferred nothing to this decision.
+                "inert": g.inert,
             }
             for g in scope.grants
         ],

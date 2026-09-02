@@ -5,20 +5,26 @@ Where authorization is administered. A grant is
 and it is the ONLY thing that confers authority. The organizational tree
 says where a site sits and grants nobody anything.
 
-Two rules this router exists to enforce, both of them arithmetic rather
-than review:
+The rules this router enforces are arithmetic rather than review, and
+they live in `harkeniq_cc.grant_integrity` so that every grant mutation
+-- here, the org-units router, the Operational Agent bindings path --
+meets the same ones (A23-3):
 
-* **Delegation cannot exceed the delegator.** A grantor may only hand
-  out scope they themselves hold, checked against their own resolved
-  scope. `role.manage` is required to grant at all.
-* **The last administrator cannot be locked out.** Switching a tenant to
-  strict enforcement runs a server-side preflight (ratified L1) and
-  refuses, atomically, if no active unexpired principal would still hold
-  `role.manage` at tenant scope afterwards.
+* **Delegation cannot exceed the delegator.** Reach AND authority, per
+  permission, on the exact target, against the grantor's own resolved
+  scope. `role.manage` is required to grant at all. Self-grant is
+  refused by identity (A23.6).
+* **The last administrator cannot be configured away.** Revoking,
+  overwriting, reassigning or expiring the last active tenant-scope
+  grant carrying `role.manage` is refused (A23.8), and so is switching
+  to strict without one (ratified L1) -- all through ONE counting
+  function, under a per-tenant transaction lock.
+* **A vanished target never widens.** A grant to a missing target is
+  reported inert here and reaches nothing in the resolver (A23.9).
 
-The preflight lives here and NOT in the resolver. A resolver that knew
-about administrators would carry that special case into every future
-caller of it.
+The counting function lives beside the resolver and NOT inside it. A
+resolver that knew about administrators would carry that special case
+into every future caller of it.
 """
 
 from __future__ import annotations
@@ -40,17 +46,33 @@ from harkeniq_cc.api.deps import (
     require_permission,
 )
 from harkeniq_cc.actor import actor_of
-from harkeniq_cc.auth import ROLE_PERMISSIONS
 from harkeniq_cc.db.repos import (
     AuditRepo,
+    FleetCacheRepo,
     OrgUnitRepo,
     ScopeGrantRepo,
     SiteRepo,
     TenantSettingsRepo,
 )
+from harkeniq_cc.grant_integrity import (
+    GrantIntegrityError,
+    check_delegation,
+    delegated_permissions,
+    describe_target,
+    grant_shape,
+    guard_last_admin,
+    lock_tenant_authorization,
+    refuse_self_grant,
+    role_ceiling_for,
+    role_permissions_for,
+    target_kwargs,
+    target_status,
+    token_permissions,
+)
 from harkeniq_cc.scope import (
     ENFORCEMENT_MODES,
     ENFORCEMENT_STRICT,
+    PRINCIPAL_AGENT,
     PRINCIPAL_TYPES,
     PRINCIPAL_USER,
     SCOPE_DEVICE,
@@ -59,7 +81,7 @@ from harkeniq_cc.scope import (
     SCOPE_SITE,
     SCOPE_TENANT,
     SCOPE_TYPES,
-    effective_permissions,
+    is_active,
     preflight_strict,
 )
 
@@ -88,8 +110,16 @@ class EnforcementRequest(BaseModel):
     mode: str = Field(..., description="legacy_open | strict")
 
 
-def _grant_dict(row) -> dict:
-    return {
+class ReassignRequest(BaseModel):
+    """Move a grant to a new target (A23.9's safe path off a doomed unit)."""
+
+    scope_type: str = Field(..., max_length=16)
+    scope_ref: str = Field("", max_length=128)
+    note: str = Field("", max_length=512)
+
+
+def _grant_dict(row, *, status: Optional[str] = None) -> dict:
+    out = {
         "id": row.id,
         "principal_type": row.principal_type,
         "principal_ref": row.principal_ref,
@@ -104,6 +134,38 @@ def _grant_dict(row) -> dict:
         "revoked_by": row.revoked_by,
         "note": row.note,
     }
+    if status is not None:
+        # A23-3: whether the target still exists, and whether the row
+        # confers anything right now. "missing" is the inert state the
+        # resolver gives zero reach and a reason.
+        out["target_status"] = status
+        out["effective"] = bool(is_active(row) and status != "missing")
+    return out
+
+
+def _realm(state) -> str:
+    return getattr(state.config, "keycloak_realm", "") or ""
+
+
+async def _refuse(session, user, exc: GrantIntegrityError, *, subject: str,
+                  detail: Optional[dict] = None) -> None:
+    """Record a security-sensitive refusal on the chain, then raise it.
+
+    A validation error (`exc.audit is None`) is not a security event and
+    is raised bare. Everything else -- self-grant, exceeding the grantor,
+    the last administrator -- is evidence somebody tried, and is written
+    through the one audit writer before the 4xx leaves.
+    """
+    if exc.audit:
+        await AuditRepo(session).append(
+            actor=user.user_id, actor_ref=actor_of(user),
+            action=exc.audit,
+            subject=subject,
+            tenant_id=user.tenant_id,
+            detail={**(detail or {}), **exc.detail, "refused": exc.reason},
+        )
+        await session.commit()
+    raise HTTPException(status_code=exc.status, detail=exc.reason)
 
 
 async def _resolve_scope_ref(session, tenant_id: str, scope_type: str, ref: str):
@@ -188,8 +250,20 @@ async def list_grants(
     # cluster's delegations; the tenant's whole authorization map is a
     # tenant-scope read. Out-of-scope grants are absent, never 403.
     rows = [r for r in rows if _grant_visible(scope, r)]
+    unit_ids = {u.id for u in await OrgUnitRepo(session).list_all(user.tenant_id)}
+    site_ids = {s.id for s in await SiteRepo(session).list_all(user.tenant_id)}
+    device_ids = None
+    if any(r.scope_type == SCOPE_DEVICE for r in rows):
+        device_ids = {
+            d.agent_id for d in await FleetCacheRepo(session).list_all(user.tenant_id)
+        }
     return {
-        "grants": [_grant_dict(r) for r in rows],
+        "grants": [
+            _grant_dict(r, status=target_status(
+                r, unit_ids=unit_ids, site_ids=site_ids, device_ids=device_ids,
+            ))
+            for r in rows
+        ],
         "scope_types": list(SCOPE_TYPES),
         "principal_types": list(PRINCIPAL_TYPES),
         "enforcement": await TenantSettingsRepo(session).enforcement(user.tenant_id),
@@ -231,15 +305,106 @@ async def my_scope(
                 "scope_type": g.scope_type,
                 "scope_ref": g.scope_ref,
                 "permissions": sorted(g.permissions),
+                "inert": g.inert,
+                "inert_reason": g.inert_reason or None,
             }
             for g in scope.grants
         ],
+        # A23.9: a grant whose target vanished is retained, reaches
+        # nothing, and says so. It is NOT absent -- absence is what the
+        # legacy posture synthesizes tenant-wide reach on.
+        "inert_grants": [
+            {"scope_type": g.scope_type, "scope_ref": g.scope_ref,
+             "reason": g.inert_reason}
+            for g in scope.inert_grants
+        ],
+        "administered": scope.administered,
     }
 
 
 # ---------------------------------------------------------------------------
 # Mutations
 # ---------------------------------------------------------------------------
+
+
+async def _admit_grant(
+    session, user, scope, state, *,
+    principal_type: str, principal_ref: str,
+    scope_type: str, scope_ref: str, unit_path: str,
+    role: str, permission_subset, expires_at,
+    exclude_ids=(), mutation: str, audit_subject: str,
+) -> None:
+    """Every rule a grant write must pass, in the order it meets them.
+
+    ONE admission path for create, overwrite-through-create and reassign
+    (A23-3). The rules themselves live in `grant_integrity`; this is the
+    sequence and the audit of a refusal.
+
+    1. self-grant -- by identity, before anything about the target;
+    2. reach -- the grantor holds `role.manage` over the exact target;
+    3. the delegated set -- a tenant role is named, the subset only
+       narrows it, and the grantor holds every member over that target;
+    4. the last administrator -- under the tenant lock, the write must
+       not take the tenant from >=1 to 0 administrators.
+    """
+    audit_detail = {
+        "principal_type": principal_type, "scope_type": scope_type,
+        "scope_ref": scope_ref, "role": role,
+    }
+    try:
+        refuse_self_grant(user, principal_type, principal_ref)
+    except GrantIntegrityError as exc:
+        await _refuse(session, user, exc, subject=audit_subject, detail=audit_detail)
+
+    target = target_kwargs(scope_type, scope_ref, unit_path)
+    what = describe_target(scope_type, scope_ref)
+    if principal_type == PRINCIPAL_AGENT:
+        # An agent's authority is its bindings, not permissions. The
+        # grantor still needs reach over the target (the same ceiling
+        # the bindings endpoint applies); nothing permission-shaped is
+        # delegated, so nothing permission-shaped is checked.
+        delegated: frozenset = frozenset()
+        if role:
+            raise HTTPException(
+                status_code=400,
+                detail="an agent grant carries no role; its authority is its bindings",
+            )
+    else:
+        try:
+            delegated = delegated_permissions(role, permission_subset)
+        except GrantIntegrityError as exc:
+            await _refuse(session, user, exc, subject=audit_subject, detail=audit_detail)
+        if permission_subset is not None:
+            rejected = sorted(set(p for p in permission_subset if p) - set(delegated))
+            if rejected:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"role {role!r} does not hold {', '.join(rejected)}; a "
+                        "permission subset may only narrow a role, never widen it"
+                    ),
+                )
+    try:
+        check_delegation(scope, permissions=delegated, target=target, what=what)
+    except GrantIntegrityError as exc:
+        await _refuse(session, user, exc, subject=audit_subject, detail=audit_detail)
+
+    try:
+        await guard_last_admin(
+            session,
+            tenant_id=user.tenant_id, realm=_realm(state), caller_scope=scope,
+            mutation=mutation, exclude_ids=exclude_ids,
+            caller_role_permissions=token_permissions(user),
+            replacement=grant_shape(
+                principal_type=principal_type, principal_ref=principal_ref,
+                scope_type=scope_type, scope_ref=scope_ref, role=role,
+                permission_subset=permission_subset, expires_at=expires_at,
+                realm=_realm(state),
+            ),
+            audit="scope.grant_refused",
+        )
+    except GrantIntegrityError as exc:
+        await _refuse(session, user, exc, subject=audit_subject, detail=audit_detail)
 
 
 @router.post("/", status_code=201)
@@ -263,47 +428,30 @@ async def create_grant(
         session, user.tenant_id, body.scope_type, body.scope_ref
     )
 
-    # The delegation ceiling. A grantor hands out only what they hold,
-    # and contextual visibility of an ancestor is not holding it.
-    if body.scope_type == SCOPE_TENANT:
-        forbid_out_of_scope(
-            scope, "role.manage", what="a tenant-wide grant", tenant_object=True
-        )
-    elif body.scope_type == SCOPE_ORG_UNIT:
-        forbid_out_of_scope(
-            scope, "role.manage",
-            what=f"org unit {body.scope_ref!r}", org_unit_path=unit_path,
-        )
-    elif body.scope_type == SCOPE_SITE:
-        forbid_out_of_scope(
-            scope, "role.manage",
-            what=f"site {body.scope_ref!r}", site_id=body.scope_ref,
-        )
-    else:
-        # device and device_class span whatever they match, so only a
-        # tenant-wide grantor may hand them out.
-        forbid_out_of_scope(
-            scope, "role.manage",
-            what=f"{body.scope_type} {body.scope_ref!r}", tenant_object=True,
-        )
+    # The same (principal, scope) posted again REPLACES the stored row
+    # through the repository's revive path -- its role, subset and
+    # expiry included. So an overwrite is judged as the mutation it is:
+    # the old row leaves the count and the new shape is what remains.
+    repo = ScopeGrantRepo(session)
+    existing = await repo.find(
+        user.tenant_id, body.principal_type, body.principal_ref,
+        body.scope_type, body.scope_ref,
+    )
+    await _admit_grant(
+        session, user, scope, state,
+        principal_type=body.principal_type, principal_ref=body.principal_ref,
+        scope_type=body.scope_type, scope_ref=body.scope_ref, unit_path=unit_path,
+        role=body.role, permission_subset=body.permission_subset,
+        expires_at=body.expires_at,
+        exclude_ids=(existing.id,) if existing is not None else (),
+        mutation=(
+            "replace this grant" if existing is not None and is_active(existing)
+            else "create this grant"
+        ),
+        audit_subject=body.principal_ref,
+    )
 
-    # A subset can only narrow. Checked HERE too, not merely at resolve
-    # time, so an attempt to widen is refused visibly rather than
-    # silently reduced to nothing later.
-    if body.permission_subset is not None and body.role:
-        role_perms = ROLE_PERMISSIONS.get(body.role, [])
-        granted = effective_permissions(role_perms, body.permission_subset)
-        rejected = sorted(set(body.permission_subset) - set(granted))
-        if rejected and "*" not in role_perms:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"role {body.role!r} does not hold {', '.join(rejected)}; a "
-                    "permission subset may only narrow a role, never widen it"
-                ),
-            )
-
-    grant = await ScopeGrantRepo(session).grant(
+    grant = await repo.grant(
         tenant_id=user.tenant_id,
         principal_type=body.principal_type,
         principal_ref=body.principal_ref,
@@ -326,26 +474,20 @@ async def create_grant(
             "principal_type": body.principal_type,
             "scope_type": body.scope_type,
             "scope_ref": body.scope_ref,
+            "role": body.role,
             "permission_subset": body.permission_subset,
             "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            "replaced": existing is not None,
         },
     )
     await session.commit()
     return _grant_dict(grant)
 
 
-@router.delete("/{grant_id}")
-async def revoke_grant(
-    grant_id: str,
-    user=Depends(require_permission("role.manage")),
-    session: AsyncSession = Depends(get_session),
-    scope=Depends(get_scope),
-) -> dict:
-    """Revoke a grant. A timestamp, never a delete.
-
-    An approval recorded under this grant keeps a `scope_snapshot` that
-    has to stay addressable afterwards (ratified L2).
-    """
+async def _require_coverable_grant(session, user, scope, grant_id: str):
+    """The grant, with the caller proven to hold `role.manage` over its
+    CURRENT target. A grant to a vanished unit resolves to a tenant-wide
+    question, so only a tenant-wide grantor may touch it: fail closed."""
     repo = ScopeGrantRepo(session)
     grant = await repo.get(user.tenant_id, grant_id)
     if grant is None:
@@ -368,6 +510,142 @@ async def revoke_grant(
             scope, "role.manage",
             what=f"a {grant.scope_type} grant", tenant_object=True,
         )
+    return repo, grant
+
+
+@router.post("/{grant_id}/reassign")
+async def reassign_grant(
+    grant_id: str,
+    body: ReassignRequest,
+    user=Depends(require_permission("role.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+    state=Depends(get_cc_state),
+) -> dict:
+    """Move a grant to a new target: revoke + grant, in one transaction.
+
+    A23.9's safe path off an org unit about to be deleted, and the only
+    way a grant changes target. Gated on BOTH ends -- the caller must
+    hold `role.manage` over the old target (or nobody could move a grant
+    out of their own cluster) and pass the full admission over the new
+    one: no self-grant, reach, every delegated permission held there,
+    and the last-administrator count. The old row is revoked and the
+    new one created or revived under the same principal, role, subset
+    and expiry; two audit entries name each other.
+    """
+    repo, grant = await _require_coverable_grant(session, user, scope, grant_id)
+    if grant.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="grant is already revoked")
+    if grant.principal_type == PRINCIPAL_AGENT:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "an Operational Agent's scope is changed through its bindings, "
+                "not by reassigning a grant"
+            ),
+        )
+    if body.scope_type not in SCOPE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scope_type must be one of {', '.join(SCOPE_TYPES)}",
+        )
+    if (body.scope_type, body.scope_ref) == (grant.scope_type, grant.scope_ref):
+        raise HTTPException(status_code=400, detail="the grant already names that target")
+
+    unit_path = await _resolve_scope_ref(
+        session, user.tenant_id, body.scope_type, body.scope_ref
+    )
+    replaced = await repo.find(
+        user.tenant_id, grant.principal_type, grant.principal_ref,
+        body.scope_type, body.scope_ref,
+    )
+    await _admit_grant(
+        session, user, scope, state,
+        principal_type=grant.principal_type, principal_ref=grant.principal_ref,
+        scope_type=body.scope_type, scope_ref=body.scope_ref, unit_path=unit_path,
+        role=grant.role, permission_subset=grant.permission_subset,
+        expires_at=grant.expires_at,
+        exclude_ids=tuple(i for i in (grant.id, getattr(replaced, "id", None)) if i),
+        mutation="reassign this grant",
+        audit_subject=grant.principal_ref,
+    )
+
+    old = {"grant_id": grant.id, "scope_type": grant.scope_type,
+           "scope_ref": grant.scope_ref}
+    await repo.revoke(grant, user.user_id)
+    moved = await repo.grant(
+        tenant_id=user.tenant_id,
+        principal_type=grant.principal_type,
+        principal_ref=grant.principal_ref,
+        scope_type=body.scope_type,
+        scope_ref=body.scope_ref,
+        permission_subset=grant.permission_subset,
+        role=grant.role,
+        realm=_realm(state),
+        granted_by=user.user_id,
+        expires_at=grant.expires_at,
+        note=body.note or grant.note,
+    )
+    audit = AuditRepo(session)
+    await audit.append(
+        actor=user.user_id, actor_ref=actor_of(user),
+        action="scope.revoked",
+        subject=grant.principal_ref,
+        tenant_id=user.tenant_id,
+        detail={**old, "reassigned_to": moved.id},
+    )
+    await audit.append(
+        actor=user.user_id, actor_ref=actor_of(user),
+        action="scope.granted",
+        subject=grant.principal_ref,
+        tenant_id=user.tenant_id,
+        site_id=body.scope_ref if body.scope_type == SCOPE_SITE else None,
+        detail={
+            "principal_type": grant.principal_type,
+            "scope_type": body.scope_type,
+            "scope_ref": body.scope_ref,
+            "role": grant.role,
+            "permission_subset": grant.permission_subset,
+            "expires_at": grant.expires_at.isoformat() if grant.expires_at else None,
+            "reassigned_from": grant.id,
+        },
+    )
+    await session.commit()
+    return {"revoked": _grant_dict(grant), "grant": _grant_dict(moved)}
+
+
+@router.delete("/{grant_id}")
+async def revoke_grant(
+    grant_id: str,
+    user=Depends(require_permission("role.manage")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+    state=Depends(get_cc_state),
+) -> dict:
+    """Revoke a grant. A timestamp, never a delete.
+
+    An approval recorded under this grant keeps a `scope_snapshot` that
+    has to stay addressable afterwards (ratified L2). A23.8: revoking
+    the last tenant-scope `role.manage` grant is refused, under the
+    tenant lock, and the refusal is audited.
+    """
+    repo, grant = await _require_coverable_grant(session, user, scope, grant_id)
+
+    if grant.revoked_at is None:
+        try:
+            await guard_last_admin(
+                session,
+                tenant_id=user.tenant_id, realm=_realm(state), caller_scope=scope,
+                mutation="revoke this grant", exclude_ids=(grant.id,),
+                audit="scope.revoke_refused",
+                caller_role_permissions=token_permissions(user),
+            )
+        except GrantIntegrityError as exc:
+            await _refuse(
+                session, user, exc, subject=grant.principal_ref,
+                detail={"grant_id": grant.id, "scope_type": grant.scope_type,
+                        "scope_ref": grant.scope_ref},
+            )
 
     await repo.revoke(grant, user.user_id)
     await AuditRepo(session).append(
@@ -398,9 +676,12 @@ async def get_enforcement(
     state=Depends(get_cc_state),
 ) -> dict:
     mode = await TenantSettingsRepo(session).enforcement(user.tenant_id)
-    check = await _preflight(session, user.tenant_id, caller_scope=scope)
+    current = _realm(state)
+    check = await _preflight(
+        session, user.tenant_id, caller_scope=scope, realm=current,
+        caller_role_permissions=token_permissions(user),
+    )
     census = await ScopeGrantRepo(session).realm_census(user.tenant_id)
-    current = getattr(state.config, "keycloak_realm", "") or ""
     usable = census.get(current, 0) + census.get("", 0)
     stale = sum(v for k, v in census.items() if k and k != current)
     return {
@@ -606,21 +887,20 @@ def _census_actors(observed, *, evidence, covered_users, agent_ids) -> dict:
     }
 
 
-async def _preflight(session, tenant_id: str, caller_scope=None):
-    """Run the L1 check over every grant in the tenant."""
+async def _preflight(session, tenant_id: str, caller_scope=None, realm: str = "",
+                     caller_role_permissions=None):
+    """Run the L1 check over every grant in the tenant.
+
+    Through the ONE counting function (A23.8): `role_permissions_for`
+    reads the role a grant records, and a grant naming none counts for
+    nothing -- counting it would let the flip pass on somebody who turns
+    out not to be an administrator. A stale-realm grant never counts.
+    """
     grants = await ScopeGrantRepo(session).list_all(tenant_id)
-
-    def role_permissions_for(row):
-        # The grant records the role it narrows (see the model note).
-        # A grant with no role named cannot be shown to carry
-        # `role.manage`, so it does NOT count toward the preflight:
-        # counting it would let the flip pass on somebody who turns out
-        # not to be an administrator, which is the exact lockout L1
-        # exists to prevent.
-        return ROLE_PERMISSIONS.get(getattr(row, "role", "") or "", [])
-
     return preflight_strict(
-        grants, role_permissions_for, caller_scope=caller_scope
+        grants, role_permissions_for, caller_scope=caller_scope, realm=realm,
+        caller_role_permissions=caller_role_permissions,
+        role_ceiling_for=role_ceiling_for,
     )
 
 
@@ -630,6 +910,7 @@ async def set_enforcement(
     user=Depends(require_permission("role.manage")),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
+    state=Depends(get_cc_state),
 ) -> dict:
     """Switch the tenant between legacy_open and strict.
 
@@ -649,12 +930,27 @@ async def set_enforcement(
     )
 
     if body.mode == ENFORCEMENT_STRICT:
-        check = await _preflight(session, user.tenant_id, caller_scope=scope)
+        # Under the same per-tenant lock the grant mutations take, so a
+        # flip cannot pass on an administrator whose revoke is committing.
+        await lock_tenant_authorization(session, user.tenant_id)
+        check = await _preflight(
+            session, user.tenant_id, caller_scope=scope, realm=_realm(state),
+            caller_role_permissions=token_permissions(user),
+        )
         if not check.ok:
             # 409, and nothing written. A tenant that locked itself out
             # of its own administration would need the platform-plane
             # break-glass to recover, which is exceptional recovery and
-            # must not be the normal path.
+            # must not be the normal path. The attempt is evidence.
+            await AuditRepo(session).append(
+                actor=user.user_id, actor_ref=actor_of(user),
+                action="scope.enforcement_refused",
+                subject=user.tenant_id,
+                tenant_id=user.tenant_id,
+                detail={"mode": body.mode, "reason": "last_admin",
+                        "refused": check.reason},
+            )
+            await session.commit()
             raise HTTPException(status_code=409, detail=check.reason)
 
     settings = await TenantSettingsRepo(session).set_enforcement(

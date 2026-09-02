@@ -2097,3 +2097,120 @@ ledger's own new rows) -- and reports what it cannot resolve as
 `unresolved_legacy_actors` rather than as a different person. Proven on
 real PostgreSQL by rewinding the live database to 0019 and upgrading with
 rows present: all NULL, index present, chain valid, both read forms.
+
+### A23-3 — recovery + delegation integrity (boundary recorded 2026-09-02, before code; landed 2026-09-02)
+
+Implements A23.6, A23.8 and A23.9. Stage C of the ratified sequence:
+enforcement and identity are on `main`; this slice makes the grant
+lifecycle unable to widen authority, whichever way a grant leaves.
+
+**What the inspection found on `main` at `a69fc42`, by tracing the
+real paths rather than the names.** Revoking the last tenant
+`role.manage` grant was unguarded, and so was overwriting it: `POST
+/api/scope-grants/` revives an identical grant through
+`ScopeGrantRepo.grant`, replacing its role, subset and expiry, so
+"set an expiry on the last administrator" was one ordinary create call.
+Only the strict flip had a preflight. `can_delegate` had zero production
+callers; `create_grant` checked REACH (the grantor holds `role.manage`
+over the target) and nothing about PERMISSIONS, and the recorded `role`
+column was never read by the resolver, so a tenant owner narrowed to one
+site could hand out a full `tenant_owner` grant on that site. Self-grant
+was refused nowhere. A grant whose org unit had been deleted was DROPPED
+from the resolved list (`continue`), which under `legacy_open` is
+exactly the empty list synthesis fires on; a site grant whose site was
+gone still answered `covers_site` true. Org-unit deletion checked
+children and sites and never grants. Stale-realm grants counted toward
+the admin preflight. Retiring an Operational Agent left its grant rows
+active while rebinding hard-deleted them, two lifecycles for one table.
+And two administrators revoking each other's tenant grant concurrently
+would both have passed a naive count.
+
+**Decisions inside the ratified boundary.**
+
+1. *Inert, not absent.* A grant whose target no longer exists (org unit,
+   site) stays in `ResolvedScope.grants` as `inert=True` with an
+   `inert_reason`. Every coverage method, `permits`, `may_ever`, the
+   projections and the delegation arithmetic skip it; the list is
+   non-empty, so `legacy_open` synthesis cannot fire (A23.9). Device
+   grants keep exact-match semantics: a vanished device matches no row,
+   which is already zero reach, and marking them would flap with the
+   fleet poll. Revoked and expired grants under `legacy_open` remain
+   A23-4's synthesis correction (A23.10); under strict they fail closed
+   and are pinned here.
+2. *The recorded role is a ceiling.* `resolve()` narrows a row to
+   `token role ∩ ROLE_PERMISSIONS[row.role] ∩ subset`; a row with no
+   recorded role is unchanged, so upgrade behaviour is identical for
+   every grant made without one. A human grant must now name a TENANT
+   role (400 otherwise; `platform_super_admin` is not one). This is the
+   existing "a subset only narrows" rule applied to a column that was
+   already being written, not a second permission model.
+3. *Delegation is reach AND authority, per permission, on the exact
+   target.* The delegated set is `ROLE_PERMISSIONS[role] ∩ subset`; every
+   member must satisfy the grantor's own `permits(p, target)`. A
+   narrowed grantor cannot regain a withheld permission by naming a
+   broader role. Self-grant is refused by identity (subject, or the
+   caller's own email) before any scope question is asked, tenant-wide
+   grantors included (A23.6).
+4. *One counting function.* `count_tenant_admins` counts distinct
+   principals holding an ACTIVE, tenant-scope, this-realm, user grant
+   whose effective permissions carry `role.manage`; the caller's own
+   token counts for their own real tenant row and a synthesized grant
+   never does. Revoke, overwrite-through-create, reassign and the strict
+   flip all ask it. Revoke/overwrite/reassign refuse when the count
+   would go from ≥1 to 0; the flip refuses when it is 0. The count runs
+   under a transaction-scoped PostgreSQL advisory lock keyed on the
+   tenant (`pg_advisory_chain_lock`, the R5-2 helper; no-op on sqlite),
+   held through commit, so two concurrent last-admin mutations serialize
+   and the second re-reads a count of one. Refusals are 409 with the
+   reason, audited as `scope.revoke_refused` / `scope.grant_refused` /
+   `scope.enforcement_refused`. No platform bypass; A12.1 stands.
+5. *Org units are not deleted from under a grant.* Delete refuses (409,
+   audited `org_unit.delete_refused`) while any ACTIVE grant — user or
+   agent — references the unit, naming the grant ids. Expired grants do
+   not block: they are already inert and cannot be revived against a
+   missing target. The safe path is `POST /api/scope-grants/{id}/reassign`
+   (atomic revoke + grant, full delegation and last-admin checks on the
+   NEW target, audited as `scope.revoked` + `scope.granted` with
+   `reassigned_from`) or the existing revoke. Nothing is detached
+   silently and nothing widens.
+6. *One lifecycle for the one table.* Agent scope rows are revoked
+   (timestamp) rather than deleted, revived on rebind exactly as human
+   grants are, and retiring an agent revokes them. A retired agent
+   therefore no longer pins an org unit, and its rows read as history.
+
+**Two refinements found while building, recorded here because the
+boundary above did not anticipate them.** (a) *A future-dated expiry on
+the last administrator is refused too.* A23.8 says "setting an expiry
+on"; the literal count-of-active reading would allow it (the admin is
+still active today) and let a tenant schedule its own lockout by the
+clock. The transition therefore tracks ACTIVE and PERMANENT (unexpiring)
+administrators and refuses a mutation that takes either from ≥1 to 0;
+an unrelated grant leaves both counts unchanged and is never refused.
+(b) *The caller's own administrator status is recomputed from the
+locked row.* The caller's scope is resolved by a dependency BEFORE the
+tenant lock. If another administrator narrows the caller's own subset
+in that window, the stale scope still says the caller holds
+`role.manage`, and two mutations could both pass. Under the lock the
+caller's tenant row is re-read and judged with the resolver's own
+arithmetic (token role ∩ recorded role ∩ subset); the scope is trusted
+for the caller's IDENTITY only. Pinned by a unit test that constructs
+exactly that window.
+
+**Finding for Vinod, found by the compose gate: the first-administrator
+bootstrap is now a two-person act.** The gate had bootstrapped strict
+mode by having the owner grant THEMSELVES tenant scope under
+`legacy_open`; A23.6 refuses that, tenant-wide grantors included, and
+the gate now bootstraps through a second owner-role identity (which
+under `legacy_open` holds synthesized reach and may grant others). The
+implication: a tenant with a single human administrator cannot reach
+strict enforcement on its own, and A23-5's strict-born tenant has NO
+principal able to make the first grant. A23-5 must seed the first
+tenant grant at provisioning (the existing CC→Console internal channel,
+not a self-grant exception and not a platform bypass); recorded here,
+not decided here.
+
+**Not in this slice, by the spec's own assignment:** never-granted vs
+previously-granted synthesis and agent synthesis (A23-4, pinned by two
+strict `xfail` tests that will fail the suite the day it lands), strict
+birth (A23-5), Keycloak-side user lifecycle (A23.8 recorded limit), and
+the scale cache.

@@ -60,6 +60,8 @@ async def load_scope(
     Humans and Operational Agents differ only in `principal_type`. The
     rows, the tree, the enforcement mode and the resolver are identical.
     """
+    from harkeniq_cc.grant_integrity import role_ceiling_for
+
     grants = await ScopeGrantRepo(session).list_for_principal(
         tenant_id, principal_ref, principal_type=principal_type,
         realm=realm,
@@ -76,6 +78,10 @@ async def load_scope(
         org_units=org_units,
         sites=sites,
         enforcement=enforcement,
+        # A23-3: the role a grant RECORDS is a ceiling the grantor
+        # asserted. Supplied here so the resolver stays ignorant of role
+        # names and every caller of this loader narrows identically.
+        role_ceiling_for=role_ceiling_for,
     )
 
 

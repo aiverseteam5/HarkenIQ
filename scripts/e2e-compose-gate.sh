@@ -1046,8 +1046,27 @@ grant() {
     -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",\"role\":\"$4\"}" \
     http://localhost:8090/api/scope-grants/
 }
-[ "$(grant "$OWNER_SUB" tenant "" tenant_owner)" = "201" ] || {
-  echo "tenant grant refused" >&2; exit 1; }
+# A23.6: self-grant is refused outright, tenant-wide grantors included,
+# so the owner cannot hand THEMSELVES the first tenant grant. The first
+# administrator is bootstrapped by a second owner-role identity, which
+# under legacy_open holds synthesized tenant-wide reach (never counted
+# as an administrator) and may grant others. This is the two-person
+# bootstrap the rule implies; A23-5's strict birth must seed the first
+# grant some other way (recorded finding).
+SELF=$(grant "$OWNER_SUB" tenant "" tenant_owner)
+[ "$SELF" = "403" ] || { echo "the owner self-granted tenant scope ($SELF)" >&2; exit 1; }
+tenant_realm_user gate-a23-admin2@demo gate-a23-admin2 tenant_owner
+ADMIN2_TOKEN=$(tenant_token gate-a23-admin2@demo gate-a23-admin2)
+ADMIN2_SUB=$(python3 -c "
+import base64, json
+t = '$ADMIN2_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+BOOT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $ADMIN2_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"tenant_owner\"}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$BOOT" = "201" ] || { echo "tenant grant by the second identity refused ($BOOT)" >&2; exit 1; }
+echo "owner self-grant 403; first administrator bootstrapped by a second identity"
 [ "$(grant "$OP_SUB" site "$E12_SITE" operator)" = "201" ] || {
   echo "site grant refused" >&2; exit 1; }
 
@@ -1313,6 +1332,207 @@ assert 'actor_ref' in d['identity_basis']
 print('census: owner not reported as ungranted;',
       len(d['observed_principals_without_grant']), 'without grant,',
       len(d['unresolved_legacy_actors']), 'unresolved legacy actor(s)')"
+
+step "A23-3: the last tenant administrator cannot be configured away"
+# The owner holds the ONLY tenant-scope grant carrying role.manage. Every
+# path that would remove it is refused at the server, audited, and
+# leaves the row untouched: revoke, an overwrite with a lesser role, an
+# expiry (future or past), and a reassignment off tenant scope.
+OWNER_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/scope-grants/ \
+  | python3 -c "
+import sys, json
+rows = [g for g in json.load(sys.stdin)['grants']
+        if g['principal_ref'] == '$OWNER_SUB' and g['scope_type'] == 'tenant' and not g['revoked_at']]
+assert len(rows) == 1, rows
+print(rows[0]['id'])")
+REV=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+  -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/scope-grants/$OWNER_GID")
+[ "$REV" = "409" ] || { echo "the last administrator was revoked ($REV)" >&2; exit 1; }
+# A second, GRANTLESS owner-role identity: under strict it reaches nothing,
+# but under legacy_open it would have full synthesized reach and STILL not
+# count as an administrator. Here it proves the self-grant rule and, once
+# granted, the two-admin case.
+# admin2 was created at the E1.2 bootstrap; re-mint (tokens expire).
+ADMIN2_TOKEN=$(tenant_token gate-a23-admin2@demo gate-a23-admin2)
+FUTURE=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=30)).isoformat())")
+for BODY in \
+  "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"site_admin\"}" \
+  "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"tenant_owner\",\"expires_at\":\"$FUTURE\"}" \
+  "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"tenant_owner\",\"permission_subset\":[\"fleet.view\"]}"; do
+  # The owner cannot touch their own grant at all (self-grant, 403); the
+  # question is whether ANOTHER administrator could. Grant admin2 tenant
+  # scope so they can act, and they become an admin -- so the honest
+  # proof of the last-admin rule against a non-self actor is below, with
+  # admin2 narrowed. Here: the owner's own attempts are self-grants.
+  SELF=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "$BODY" http://localhost:8090/api/scope-grants/)
+  [ "$SELF" = "403" ] || { echo "an owner modified their own grant ($SELF): $BODY" >&2; exit 1; }
+done
+echo "revoke 409; every self-modification 403 (self-grant)"
+
+step "A23-3: two administrators may lose one, never both -- concurrently"
+[ "$(grant "$ADMIN2_SUB" tenant "" tenant_owner)" = "201" ] || {
+  echo "second admin grant refused" >&2; exit 1; }
+ADMIN2_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/scope-grants/ \
+  | python3 -c "
+import sys, json
+print([g for g in json.load(sys.stdin)['grants']
+       if g['principal_ref'] == '$ADMIN2_SUB' and g['scope_type'] == 'tenant'][0]['id'])")
+# Each administrator revokes the OTHER at the same instant. A naive count
+# lets both pass (each saw two). The per-tenant transaction lock makes the
+# second wait, re-read a committed count of one, and refuse.
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE -H "Authorization: Bearer $ADMIN2_TOKEN" \
+  "http://localhost:8090/api/scope-grants/$OWNER_GID" > /tmp/a23-3-race-a &
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$ADMIN2_GID" > /tmp/a23-3-race-b &
+wait
+RACE=$(cat /tmp/a23-3-race-a /tmp/a23-3-race-b | sort | tr '\n' ' ')
+[ "$RACE" = "200 409 " ] || { echo "concurrent revokes did not serialize: $RACE" >&2; exit 1; }
+ADMINS=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/tenant-settings/scope-enforcement 2>/dev/null \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant_admin_count'])" 2>/dev/null || \
+  curl -sf -H "Authorization: Bearer $ADMIN2_TOKEN" http://localhost:8090/api/tenant-settings/scope-enforcement \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant_admin_count'])")
+[ "$ADMINS" = "1" ] || { echo "expected exactly one administrator after the race, got $ADMINS" >&2; exit 1; }
+# Restore the owner if it was the owner who lost: the rest of the gate
+# runs as the owner.
+if [ "$(cat /tmp/a23-3-race-a)" = "200" ]; then
+  RESTORE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $ADMIN2_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"tenant_owner\"}" \
+    http://localhost:8090/api/scope-grants/)
+  [ "$RESTORE" = "201" ] || { echo "could not restore the owner ($RESTORE)" >&2; exit 1; }
+  echo "race: admin2 won; owner restored by admin2"
+else
+  echo "race: owner won; admin2 revoked"
+fi
+echo "exactly one revoke succeeded ($RACE); one administrator remained; chain of authority intact"
+
+step "A23-3: delegation is reach AND authority, per permission, on the exact target"
+# gate-a23-owner is a tenant_owner narrowed to ONE site (A23-1 step).
+A23_TOKEN=$(tenant_token gate-a23-owner@demo gate-a23-owner)
+X_SUB="a23-3-delegate-$(date +%s)"
+D_IN=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A23_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$X_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",\"role\":\"operator\"}" \
+  http://localhost:8090/api/scope-grants/)
+D_OUT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A23_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$X_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$A23_OTHER\",\"role\":\"operator\"}" \
+  http://localhost:8090/api/scope-grants/)
+D_TEN=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A23_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$X_SUB\",\"scope_type\":\"tenant\",\"role\":\"viewer\"}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$D_IN" = "201" ] || { echo "delegation within the grantor's site refused ($D_IN)" >&2; exit 1; }
+[ "$D_OUT" = "403" ] || { echo "delegation outside the grantor's site accepted ($D_OUT)" >&2; exit 1; }
+[ "$D_TEN" = "403" ] || { echo "a site-scoped grantor delegated tenant scope ($D_TEN)" >&2; exit 1; }
+# A NARROWED grantor: tenant_owner role, but the grant withholds
+# site.manage and action.approve. Delegating site_admin (which carries
+# both) is refused even though the site is theirs; a subset they do
+# hold is allowed; naming a broader role restores nothing.
+tenant_realm_user gate-a23-narrow@demo gate-a23-narrow tenant_owner
+NARROW_TOKEN=$(tenant_token gate-a23-narrow@demo gate-a23-narrow)
+NARROW_SUB=$(python3 -c "
+import base64, json
+t = '$NARROW_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+NG=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$NARROW_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",\"role\":\"tenant_owner\",
+       \"permission_subset\":[\"role.manage\",\"fleet.view\",\"incident.view\",\"site.view\"]}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$NG" = "201" ] || { echo "narrowed grant refused ($NG)" >&2; exit 1; }
+N_ESC=$(curl -s -X POST \
+  -H "Authorization: Bearer $NARROW_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$X_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",\"role\":\"site_admin\"}" \
+  http://localhost:8090/api/scope-grants/ -w '\n%{http_code}')
+echo "$N_ESC" | tail -1 | grep -q "^403$" || { echo "a narrowed grantor delegated site_admin: $N_ESC" >&2; exit 1; }
+echo "$N_ESC" | grep -q "site.manage" || { echo "the refusal did not name the missing permission: $N_ESC" >&2; exit 1; }
+N_OK=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $NARROW_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$X_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",\"role\":\"viewer\"}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$N_OK" = "201" ] || { echo "a held subset was refused ($N_OK)" >&2; exit 1; }
+N_SELF=$(curl -s -X POST \
+  -H "Authorization: Bearer $NARROW_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$NARROW_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$E12_SITE\",\"role\":\"viewer\"}" \
+  http://localhost:8090/api/scope-grants/ -w '\n%{http_code}')
+echo "$N_SELF" | tail -1 | grep -q "^403$" || { echo "self-grant accepted: $N_SELF" >&2; exit 1; }
+echo "$N_SELF" | grep -q "self-grant is forbidden" || { echo "self-grant refused for the wrong reason: $N_SELF" >&2; exit 1; }
+echo "in-scope 201, out-of-scope 403, tenant 403; narrowed grantor: site_admin 403 (site.manage named), viewer 201, self-grant 403"
+
+step "A23-3: an org unit is not deleted from under a grant; reassignment is the safe path"
+DOOMED=$(mkunit "A23-3 Doomed" hall "$ROOT_UNIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ "$(grant "$X_SUB" org_unit "$DOOMED" viewer)" = "201" ] || { echo "unit grant refused" >&2; exit 1; }
+DOOMED_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/scope-grants/ \
+  | python3 -c "
+import sys, json
+print([g for g in json.load(sys.stdin)['grants']
+       if g['principal_ref'] == '$X_SUB' and g['scope_ref'] == '$DOOMED'][0]['id'])")
+DEL=$(curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/org-units/$DOOMED" -w '\n%{http_code}')
+echo "$DEL" | tail -1 | grep -q "^409$" || { echo "a unit under a grant was deleted: $DEL" >&2; exit 1; }
+echo "$DEL" | grep -q "referenced by 1 active scope grant" || { echo "wrong refusal: $DEL" >&2; exit 1; }
+MOVED=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"scope_type\":\"org_unit\",\"scope_ref\":\"$GATE_W\"}" \
+  "http://localhost:8090/api/scope-grants/$DOOMED_GID/reassign")
+[ "$MOVED" = "200" ] || { echo "reassignment refused ($MOVED)" >&2; exit 1; }
+DEL2=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/org-units/$DOOMED")
+[ "$DEL2" = "200" ] || { echo "unit not deletable after reassignment ($DEL2)" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/audit/?action=org_unit.delete_refused&page_size=5" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['total'] >= 1, d
+e = [r for r in d['entries'] if r['subject'] == '$DOOMED'][0]
+assert '$DOOMED_GID' in e['detail']['grant_ids'], e
+print('delete refused and audited with the grant it named; reassigned; deleted')"
+
+step "A23-3: a vanished target never widens -- inert, reach none, reason stated, no synthesis"
+# The API refuses to make a target vanish; a database operator still
+# can. A principal whose ONLY grant points at a deleted unit must not
+# resolve tenant-wide under legacy_open, and must read as inert.
+tenant_realm_user gate-a23-orphan@demo gate-a23-orphan viewer
+ORPHAN_TOKEN=$(tenant_token gate-a23-orphan@demo gate-a23-orphan)
+ORPHAN_SUB=$(python3 -c "
+import base64, json
+t = '$ORPHAN_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+VANISH=$(mkunit "A23-3 Vanish" hall "$ROOT_UNIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ "$(grant "$ORPHAN_SUB" org_unit "$VANISH" viewer)" = "201" ] || { echo "orphan grant refused" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "delete from cc_org_units where id = '$VANISH'" > /dev/null
+for MODE in strict legacy_open; do
+  curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"mode\":\"$MODE\"}" http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+  curl -sf -H "Authorization: Bearer $ORPHAN_TOKEN" http://localhost:8090/api/scope-grants/me | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is False, ('$MODE', d)
+assert d['site_ids'] == [] and d['org_unit_paths'] == [], ('$MODE', d)
+assert d['administered'] is True, d
+assert d['inert_grants'] == [{'scope_type': 'org_unit', 'scope_ref': '$VANISH', 'reason': 'org_unit_missing'}], d
+print('$MODE: tenant_wide False, reach none, inert org_unit_missing')"
+  N=$(curl -sf -H "Authorization: Bearer $ORPHAN_TOKEN" "http://localhost:8090/api/fleet/?page_size=200" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('devices', d.get('items', []))))")
+  [ "$N" = "0" ] || { echo "$MODE: an orphaned principal saw $N device(s)" >&2; exit 1; }
+done
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"strict"}' http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/scope-grants/ | python3 -c "
+import sys, json
+g = [g for g in json.load(sys.stdin)['grants'] if g['principal_ref'] == '$ORPHAN_SUB'][0]
+assert g['target_status'] == 'missing' and g['effective'] is False, g
+print('listed as target missing / not effective; row retained')"
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['valid'], d
+print('chain valid,', d['length'], 'entries, refusals included')"
 
 step "E1.2: returning the tenant to legacy_open leaves the gate reusable"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

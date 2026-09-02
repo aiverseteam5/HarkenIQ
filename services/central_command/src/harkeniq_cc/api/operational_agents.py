@@ -519,8 +519,11 @@ async def _apply_bindings(
     agent,
     scopes: list[ScopeRule],
     capabilities: list[CapabilityBinding],
+    actor: str = "",
 ) -> None:
-    await repo.clear_scopes(agent.id)
+    # A23-3: scope rows are revoked and revived, never deleted -- the one
+    # lifecycle the grant table has for humans, now for agents too.
+    await repo.clear_scopes(agent.id, revoked_by=actor)
     await repo.clear_capabilities(agent.id)
     await session.flush()
     seen_scope: set[tuple[str, str]] = set()
@@ -726,7 +729,9 @@ async def create_agent(
         budget_period=body.budget_period,
         created_by=actor,
     )
-    await _apply_bindings(session, repo, agent, body.scopes, body.capabilities)
+    await _apply_bindings(
+        session, repo, agent, body.scopes, body.capabilities, actor=user.user_id,
+    )
     # Capability Registry: scope rows exist now, so the agent's own
     # reach is resolvable through the one resolver. Nothing is
     # committed yet, so a refusal here leaves no agent behind.
@@ -940,7 +945,9 @@ async def replace_bindings(
     await _validate_scopes(session, user.tenant_id, body.scopes)
     _validate_capabilities(body.capabilities)
     actor = user.email or user.user_id
-    await _apply_bindings(session, repo, agent, body.scopes, body.capabilities)
+    await _apply_bindings(
+        session, repo, agent, body.scopes, body.capabilities, actor=user.user_id,
+    )
     # Capability Registry: scope rows exist now, so the agent's own
     # reach is resolvable through the one resolver. Nothing is
     # committed yet, so a refusal here leaves no agent behind.
@@ -1738,6 +1745,15 @@ async def transition_agent(
     actor = user.email or user.user_id
     await repo.set_status(agent, target, actor)
 
+    # A23-3 (lifecycle consistency): a retired agent holds no scope. Its
+    # rows are revoked by timestamp -- history, not deletion -- so a
+    # retired agent no longer pins an org unit against deletion and no
+    # later reader can mistake it for an administered, reachable
+    # principal. A paused agent keeps its rows: pausing is reversible.
+    scopes_revoked = 0
+    if target == STATUS_RETIRED:
+        scopes_revoked = await repo.clear_scopes(agent.id, revoked_by=user.user_id)
+
     # A20.7: retiring an agent revokes its machine identity. An identity
     # that outlived the agent it names would answer "who is this
     # runtime?" with the name of something that no longer exists.
@@ -1774,6 +1790,8 @@ async def transition_agent(
             "version": agent.version,
             # A19.9: what was actually switched on, in the record itself.
             "activated_version": int(agent.activated_version or 0),
+            # A23-3: a retired agent's scope rows are revoked with it.
+            "scopes_revoked": scopes_revoked,
         },
     )
 
