@@ -392,6 +392,10 @@ def _probe_body(method: str, path: str, estate: A23Estate) -> dict | None:
     if path == "/api/scope-grants/":
         return {"principal_ref": "kc-somebody", "scope_type": "site",
                 "scope_ref": s3, "role": "operator"}
+    if path == "/api/scope-grants/{grant_id}/reassign":
+        # The out-of-scope grant, moved within the out-of-scope region:
+        # the gate on the OLD target must refuse before anything else.
+        return {"scope_type": "org_unit", "scope_ref": b1}
     if path == "/api/tenant-settings/scope-enforcement":
         return {"mode": "strict"}
     if path == "/api/sites/register":

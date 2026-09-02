@@ -875,6 +875,29 @@ class ScopeGrantRepo:
             )
         ).scalar_one_or_none()
 
+    async def find(
+        self, tenant_id: str, principal_type: str, principal_ref: str,
+        scope_type: str, scope_ref: str = "",
+    ) -> Optional[CCScopeGrant]:
+        """The row for one grant identity, revoked or not.
+
+        The identity is the unique constraint; `grant()` revives this
+        row on re-grant, and A23-3's admission judges an overwrite by
+        it -- the stored row leaves the administrator count and the
+        posted shape is what remains.
+        """
+        return (
+            await self.session.execute(
+                select(CCScopeGrant).where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.principal_type == principal_type,
+                    CCScopeGrant.principal_ref == principal_ref,
+                    CCScopeGrant.scope_type == scope_type,
+                    CCScopeGrant.scope_ref == scope_ref,
+                )
+            )
+        ).scalar_one_or_none()
+
     async def grant(
         self,
         *,
@@ -896,17 +919,9 @@ class ScopeGrantRepo:
         re-granting after a revocation reuses the row rather than
         colliding with its own history.
         """
-        existing = (
-            await self.session.execute(
-                select(CCScopeGrant).where(
-                    CCScopeGrant.tenant_id == tenant_id,
-                    CCScopeGrant.principal_type == principal_type,
-                    CCScopeGrant.principal_ref == principal_ref,
-                    CCScopeGrant.scope_type == scope_type,
-                    CCScopeGrant.scope_ref == scope_ref,
-                )
-            )
-        ).scalar_one_or_none()
+        existing = await self.find(
+            tenant_id, principal_type, principal_ref, scope_type, scope_ref,
+        )
         if existing is not None:
             existing.revoked_at = None
             existing.revoked_by = ""
@@ -942,6 +957,28 @@ class ScopeGrantRepo:
         grant.revoked_by = revoked_by
         await self.session.flush()
         return grant
+
+    async def list_referencing(
+        self, tenant_id: str, scope_type: str, scope_ref: str,
+    ) -> Sequence[CCScopeGrant]:
+        """Unrevoked grants -- user and agent -- naming one target (A23.9).
+
+        What an org-unit deletion asks before it proceeds. Expiry is
+        judged by the caller with `is_active`, so the answer is the
+        same one the resolver would give.
+        """
+        return (
+            await self.session.execute(
+                select(CCScopeGrant)
+                .where(
+                    CCScopeGrant.tenant_id == tenant_id,
+                    CCScopeGrant.scope_type == scope_type,
+                    CCScopeGrant.scope_ref == scope_ref,
+                    CCScopeGrant.revoked_at.is_(None),
+                )
+                .order_by(CCScopeGrant.principal_type, CCScopeGrant.principal_ref)
+            )
+        ).scalars().all()
 
     async def realm_census(self, tenant_id: str) -> dict[str, int]:
         """How many active grants exist, and under which realm. E1.4.
@@ -2251,25 +2288,41 @@ class OperationalAgentRepo:
         self, *, agent_id: str, tenant_id: str, scope_type: str, scope_ref: str,
         granted_by: str = "",
     ) -> CCScopeGrant:
-        row = CCScopeGrant(
+        """Grant an agent a scope row, reviving a revoked identical one.
+
+        A23-3: ONE lifecycle for the one table. Agent rows used to be
+        inserted bare and deleted outright while human rows were revoked
+        by timestamp and revived on re-grant; the same repository method
+        now serves both, so an agent's scope history reads like a
+        person's and a rebind cannot collide with its own past.
+
+        An agent's authority is its A0 capability bindings, not a
+        permission set; the grant carries WHERE, the bindings carry
+        WHAT. NULL keeps the resolver from narrowing it away.
+        """
+        return await ScopeGrantRepo(self.session).grant(
             tenant_id=tenant_id,
             principal_type="agent",
             principal_ref=agent_id,
             scope_type=scope_type,
             scope_ref=scope_ref,
-            # An agent's authority is its A0 capability bindings, not a
-            # permission set; the grant carries WHERE, the bindings
-            # carry WHAT. NULL keeps the resolver from narrowing it away.
             permission_subset=None,
             granted_by=granted_by,
         )
-        self.session.add(row)
-        await self.session.flush()
-        return row
 
-    async def clear_scopes(self, agent_id: str) -> None:
-        for row in await self.list_scopes(agent_id):
-            await self.session.delete(row)
+    async def clear_scopes(self, agent_id: str, *, revoked_by: str = "") -> int:
+        """Revoke every active scope row this agent holds. Returns the count.
+
+        A timestamp, never a delete (A23-3): a retired agent's rows are
+        history, and a deleted row is a row the impact census and an
+        approval's scope snapshot can no longer explain.
+        """
+        rows = await self.list_scopes(agent_id)
+        for row in rows:
+            row.revoked_at = utcnow()
+            row.revoked_by = revoked_by
+        await self.session.flush()
+        return len(rows)
 
     # -- capabilities ----------------------------------------------------
     async def list_capabilities(self, agent_id: str) -> Sequence[CCAgentCapability]:

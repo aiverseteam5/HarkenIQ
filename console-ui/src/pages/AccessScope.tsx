@@ -37,6 +37,10 @@ interface Grant {
   expires_at: string | null;
   revoked_at: string | null;
   note: string;
+  // A23-3: whether the target still exists, and whether the row confers
+  // anything right now. Rendered, never recomputed here.
+  target_status?: string;
+  effective?: boolean;
 }
 
 interface GrantsResponse {
@@ -60,6 +64,9 @@ interface MyScope {
   org_unit_paths: string[];
   contextual_unit_ids: { ids: string[]; authority: boolean; note: string };
   grants: { scope_type: string; scope_ref: string; permissions: string[] }[];
+  // A23.9: grants whose target vanished. Retained, reach none, reason stated.
+  inert_grants?: { scope_type: string; scope_ref: string; reason: string }[];
+  administered?: boolean;
 }
 
 interface UnitNode {
@@ -286,6 +293,23 @@ export default function AccessScope() {
   const revoke = (id: string) =>
     run(() => deleteJson(`/api/t/${tenantId}/scope-grants/${id}`), "Grant revoked");
 
+  // A23-3: the safe path off an org unit about to be deleted. Revoke +
+  // grant in one server transaction, gated on both targets there.
+  const [reassign, setReassign] = useState<{
+    id: string;
+    scopeType: string;
+    scopeRef: string;
+  } | null>(null);
+  const submitReassign = () =>
+    reassign &&
+    run(async () => {
+      await postJson(`/api/t/${tenantId}/scope-grants/${reassign.id}/reassign`, {
+        scope_type: reassign.scopeType,
+        scope_ref: reassign.scopeType === "tenant" ? "" : reassign.scopeRef,
+      });
+      setReassign(null);
+    }, "Grant reassigned");
+
   const flip = (mode: string) =>
     run(
       () =>
@@ -375,6 +399,23 @@ export default function AccessScope() {
             >
               {mine.contextual_unit_ids.ids.length} ancestor unit(s) visible for
               navigation. {mine.contextual_unit_ids.note}.
+            </div>
+          ) : null}
+          {mine.inert_grants && mine.inert_grants.length > 0 ? (
+            <div
+              style={{
+                fontSize: "0.75rem",
+                color: "var(--danger, #ef4444)",
+                marginTop: "0.375rem",
+              }}
+            >
+              {mine.inert_grants.length} grant(s) point at a target that no longer
+              exists and confer nothing:{" "}
+              {mine.inert_grants
+                .map((g) => `${g.scope_type} ${g.scope_ref} (${g.reason})`)
+                .join(", ")}
+              . An administrator must reassign or revoke them; a vanished target
+              never widens reach.
             </div>
           ) : null}
         </div>
@@ -510,6 +551,7 @@ export default function AccessScope() {
                   <th style={thStyle}>Scope</th>
                   <th style={thStyle}>Subset</th>
                   <th style={thStyle}>State</th>
+                  <th style={thStyle}>Target</th>
                   {canManage ? <th style={thStyle} /> : null}
                 </tr>
               </thead>
@@ -539,15 +581,42 @@ export default function AccessScope() {
                         <span style={chip("ok")}>active</span>
                       )}
                     </td>
+                    <td style={tdStyle}>
+                      {g.target_status === "missing" ? (
+                        <span style={chip("warn")} title="the target no longer exists; this grant reaches nothing">
+                          missing
+                        </span>
+                      ) : g.target_status === "present" ? (
+                        <span style={chip("ok")}>present</span>
+                      ) : (
+                        <span style={chip("mute")}>—</span>
+                      )}
+                    </td>
                     {canManage ? (
-                      <td style={tdStyle}>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
                         {!g.revoked_at ? (
-                          <button
-                            style={button("danger")}
-                            onClick={() => revoke(g.id)}
-                          >
-                            Revoke
-                          </button>
+                          <>
+                            <button
+                              style={button("danger")}
+                              onClick={() => revoke(g.id)}
+                            >
+                              Revoke
+                            </button>{" "}
+                            {g.principal_type === "user" ? (
+                              <button
+                                style={button("quiet")}
+                                onClick={() =>
+                                  setReassign({
+                                    id: g.id,
+                                    scopeType: g.scope_type === "tenant" ? "org_unit" : g.scope_type,
+                                    scopeRef: "",
+                                  })
+                                }
+                              >
+                                Reassign
+                              </button>
+                            ) : null}
+                          </>
                         ) : null}
                       </td>
                     ) : null}
@@ -555,6 +624,42 @@ export default function AccessScope() {
                 ))}
               </tbody>
             </table>
+            {reassign ? (
+              <div style={{ marginTop: "0.75rem", maxWidth: "28rem" }}>
+                <span style={labelStyle}>
+                  Reassign grant {reassign.id} to a new target (the server checks
+                  your reach and delegated permissions on both ends, and refuses
+                  to move the last administrator)
+                </span>
+                <select
+                  style={inputStyle}
+                  value={reassign.scopeType}
+                  onChange={(e) =>
+                    setReassign({ ...reassign, scopeType: e.target.value, scopeRef: "" })
+                  }
+                >
+                  {["org_unit", "site", "tenant", "device_class", "device"].map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                {reassign.scopeType !== "tenant" ? (
+                  <input
+                    style={inputStyle}
+                    placeholder="target id"
+                    value={reassign.scopeRef}
+                    onChange={(e) => setReassign({ ...reassign, scopeRef: e.target.value })}
+                  />
+                ) : null}
+                <button style={button("primary")} onClick={submitReassign}>
+                  Move grant
+                </button>{" "}
+                <button style={button("quiet")} onClick={() => setReassign(null)}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
       </div>

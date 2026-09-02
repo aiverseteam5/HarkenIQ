@@ -156,8 +156,19 @@ class Grant:
     #: preflight and lock every principal out, which is the exact
     #: failure L1 exists to prevent.
     synthesized: bool = False
+    #: A23.9. True when the grant's TARGET no longer exists (the org unit
+    #: was deleted, the site is gone). The row is retained and it stays
+    #: in the resolved list -- it is evidence that this principal was
+    #: administered -- but it covers nothing and carries nothing. It is
+    #: never dropped, because a dropped grant is an EMPTY list, and an
+    #: empty list is what `legacy_open` synthesizes tenant-wide reach on.
+    inert: bool = False
+    #: Why: "org_unit_missing" | "site_missing".
+    inert_reason: str = ""
 
     def covers_site(self, site_id: str, site_unit_path: str) -> bool:
+        if self.inert:
+            return False
         if self.scope_type == SCOPE_TENANT:
             return True
         if self.scope_type == SCOPE_SITE:
@@ -170,6 +181,8 @@ class Grant:
         return False
 
     def covers_org_unit(self, unit_path: str) -> bool:
+        if self.inert:
+            return False
         if self.scope_type == SCOPE_TENANT:
             return True
         if self.scope_type == SCOPE_ORG_UNIT:
@@ -179,6 +192,8 @@ class Grant:
     def covers_device(
         self, agent_id: str, site_id: str, site_unit_path: str, device_class: str
     ) -> bool:
+        if self.inert:
+            return False
         if self.scope_type == SCOPE_DEVICE:
             return bool(agent_id) and self.scope_ref == agent_id
         if self.scope_type == SCOPE_DEVICE_CLASS:
@@ -187,7 +202,7 @@ class Grant:
 
     def covers_tenant(self) -> bool:
         """Only a tenant grant reaches a tenant-wide object."""
-        return self.scope_type == SCOPE_TENANT
+        return self.scope_type == SCOPE_TENANT and not self.inert
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +281,8 @@ class ResolvedScope:
                 "the principal's own authorization scope for a permission"
             )
         for grant in self.grants:
+            if grant.inert:
+                continue
             if permission not in grant.permissions and "*" not in grant.permissions:
                 continue
             if tenant_object:
@@ -304,7 +321,8 @@ class ResolvedScope:
         `permits` is the only thing that decides.
         """
         return any(
-            permission in g.permissions or "*" in g.permissions for g in self.grants
+            permission in g.permissions or "*" in g.permissions
+            for g in self.grants if not g.inert
         )
 
     # -- coverage, without a permission --------------------------------
@@ -330,7 +348,26 @@ class ResolvedScope:
         return bool(path) and self.covers_org_unit(path)
 
     def is_empty(self) -> bool:
-        return not self.grants
+        """No EFFECTIVE grant. An inert grant reaches nothing, so a scope
+        holding only inert grants is empty for every operational
+        purpose -- and `administered` is how a caller tells the two
+        apart."""
+        return not any(not g.inert for g in self.grants)
+
+    @property
+    def administered(self) -> bool:
+        """Was this principal ever deliberately granted anything that
+        still stands as a row? True for inert grants too. False for a
+        scope that holds only the synthesized `legacy_open` grant."""
+        return any(not g.synthesized for g in self.grants)
+
+    @property
+    def inert_grants(self) -> tuple[Grant, ...]:
+        return tuple(g for g in self.grants if g.inert)
+
+    @property
+    def effective_grants(self) -> tuple[Grant, ...]:
+        return tuple(g for g in self.grants if not g.inert)
 
     def _unit_path_for(self, site_id: str, given: str) -> str:
         return given or self.site_unit_paths.get(site_id, "")
@@ -344,12 +381,18 @@ class ResolvedScope:
         authority", as arithmetic rather than as review.
         """
         for grant in other.grants:
+            if grant.inert:
+                # A grant to a vanished target cannot be delegated: there
+                # is nothing there to hand over.
+                return False
             if not self._covers_grant(grant):
                 return False
         return True
 
     def _covers_grant(self, grant: Grant) -> bool:
         for mine in self.grants:
+            if mine.inert:
+                continue
             if mine.scope_type == SCOPE_TENANT:
                 return True
             if grant.scope_type == SCOPE_TENANT:
@@ -407,6 +450,40 @@ def effective_permissions(
     return frozenset(role & requested)
 
 
+def grant_permissions(
+    row: Any,
+    role_permissions: Iterable[str],
+    role_ceiling: Optional[Iterable[str]] = None,
+) -> frozenset[str]:
+    """What ONE grant row carries: ``token role ∩ recorded role ∩ subset``.
+
+    A23-3. The row records the role the grantor named (`role`), and
+    until now the resolver never read it: the token's role was the only
+    input, so a tenant owner narrowed to one site could hand out a
+    "tenant_owner" grant there and the recipient's own token decided
+    what that meant. The recorded role is now a CEILING the grantor
+    asserted, applied with the same arithmetic as the subset -- it can
+    only narrow. `role_ceiling=None` (no role recorded, or a name this
+    Central Command does not know) leaves the row exactly as it was, so
+    every grant made without a role behaves identically after upgrade.
+
+    The two survival markers pass through: ``"*"`` in the token (a
+    platform identity in the insecure demo) and `SCOPE_ONLY_MARKER` (an
+    agent, whose authority is its bindings, not permissions).
+    """
+    permissions = effective_permissions(
+        role_permissions, getattr(row, "permission_subset", None)
+    )
+    if role_ceiling is None or not permissions:
+        return permissions
+    ceiling = {p for p in role_ceiling if p}
+    if SCOPE_ONLY_MARKER in permissions or "*" in ceiling:
+        return permissions
+    if "*" in permissions:
+        return frozenset(ceiling)
+    return frozenset(permissions & ceiling)
+
+
 def resolve(
     *,
     tenant_id: str,
@@ -418,6 +495,7 @@ def resolve(
     sites: Iterable[Any] = (),
     enforcement: str = ENFORCEMENT_LEGACY_OPEN,
     now: Optional[datetime] = None,
+    role_ceiling_for: Optional[Any] = None,
 ) -> ResolvedScope:
     """Build a :class:`ResolvedScope` from rows. Pure.
 
@@ -425,11 +503,18 @@ def resolve(
     `sites` provide the tree and the site->unit attachment the org_unit
     scope type needs. Nothing here reads a request, a session or a tree
     response.
+
+    `role_ceiling_for(row)` returns the permission list of the role the
+    row RECORDS, or None when it recorded none (A23-3, see
+    :func:`grant_permissions`). The loader supplies it from the role
+    table; the resolver stays ignorant of role names.
     """
     role_permissions = list(role_permissions)
     unit_by_id = {u.id: u for u in org_units}
+    site_list = list(sites)
+    known_site_ids = {s.id for s in site_list}
     site_unit_paths: dict[str, str] = {}
-    for site in sites:
+    for site in site_list:
         unit = unit_by_id.get(getattr(site, "org_unit_id", None) or "")
         site_unit_paths[site.id] = unit.path if unit is not None else ""
 
@@ -442,25 +527,40 @@ def resolve(
             # An unknown scope type grants nothing. Fail closed rather
             # than guess what a future type meant.
             continue
-        permissions = effective_permissions(
-            role_permissions, getattr(row, "permission_subset", None)
+        permissions = grant_permissions(
+            row,
+            role_permissions,
+            role_ceiling_for(row) if role_ceiling_for is not None else None,
         )
         if not permissions:
             continue
         path = ""
+        inert_reason = ""
+        ref = row.scope_ref or ""
         if scope_type == SCOPE_ORG_UNIT:
-            unit = unit_by_id.get(row.scope_ref or "")
+            unit = unit_by_id.get(ref)
             if unit is None:
-                # A grant pointing at a unit that no longer exists
-                # reaches nothing. It is not an error and not a wildcard.
-                continue
-            path = unit.path
+                # A23.9: the unit is gone. The grant is RETAINED as
+                # inert -- reach none, reason stated -- rather than
+                # dropped, because dropping it produces the empty list
+                # `legacy_open` synthesizes tenant-wide reach on. A
+                # vanished target never widens.
+                inert_reason = "org_unit_missing"
+            else:
+                path = unit.path
+        elif scope_type == SCOPE_SITE and ref not in known_site_ids:
+            # Same rule for a site that is no longer in the tenant's
+            # current site set: `covers_site` must not say yes to an id
+            # that names nothing.
+            inert_reason = "site_missing"
         grants.append(
             Grant(
                 scope_type=scope_type,
-                scope_ref=row.scope_ref or "",
+                scope_ref=ref,
                 permissions=permissions,
                 org_unit_path=path,
+                inert=bool(inert_reason),
+                inert_reason=inert_reason,
             )
         )
 
@@ -469,6 +569,13 @@ def resolve(
         # tenant-wide reach they have today. Central Command cannot
         # enumerate a realm's principals to backfill grants, so it must
         # not pretend the absence of a grant is a decision.
+        #
+        # `grants` includes INERT grants, deliberately: a principal whose
+        # only grant points at a vanished target is administered, not
+        # ungranted, and gets nothing here (A23.9). Revoked and expired
+        # rows are filtered above and still reach this branch -- that is
+        # A23-4's never-granted-vs-previously-granted distinction, and
+        # the spec assigns it there.
         grants.append(
             Grant(
                 scope_type=SCOPE_TENANT,
@@ -486,7 +593,7 @@ def resolve(
         enforcement=enforcement,
         grants=grants,
         unit_by_id=unit_by_id,
-        sites=list(sites),
+        sites=site_list,
         site_unit_paths=site_unit_paths,
     )
 
@@ -503,6 +610,11 @@ def _project(
     sites: Sequence[Any],
     site_unit_paths: Mapping[str, str],
 ) -> ResolvedScope:
+    all_grants = list(grants)
+    # Projections are built from EFFECTIVE grants only. An inert grant
+    # stays in `.grants` as evidence and contributes no site, path,
+    # class or device to any read filter.
+    grants = [g for g in all_grants if not g.inert]
     tenant_wide = any(g.scope_type == SCOPE_TENANT for g in grants)
     org_paths = {g.org_unit_path for g in grants if g.scope_type == SCOPE_ORG_UNIT}
     device_classes = {
@@ -533,7 +645,7 @@ def _project(
         principal_type=principal_type,
         principal_ref=principal_ref,
         enforcement=enforcement,
-        grants=tuple(grants),
+        grants=tuple(all_grants),
         tenant_wide=tenant_wide,
         site_ids=frozenset(site_ids),
         org_unit_paths=frozenset(org_paths),
@@ -602,58 +714,163 @@ class PreflightResult:
     admin_count: int = 0
 
 
+def _row_in_realm(row: Any, realm: str) -> bool:
+    """A grant authorizes only under the realm this CC serves (E1.4).
+
+    A stale-realm grant authorizes nobody, so it must not count as an
+    administrator either: counting it would let the real last
+    administrator be revoked because a row that resolves to nobody
+    "still exists".
+    """
+    if not realm:
+        return True
+    return (getattr(row, "realm", "") or "") in (realm, "")
+
+
+def count_tenant_admins(
+    grant_rows: Iterable[Any],
+    role_permissions_for: Any,
+    *,
+    caller_scope: Optional[ResolvedScope] = None,
+    now: Optional[datetime] = None,
+    realm: str = "",
+    exclude_ids: Iterable[str] = (),
+    replacement: Any = None,
+    permanent_only: bool = False,
+    caller_role_permissions: Optional[Iterable[str]] = None,
+    role_ceiling_for: Optional[Any] = None,
+) -> int:
+    """How many distinct principals hold tenant-scope ``role.manage``?
+
+    THE one counting function (A23.8). Revoke, overwrite-through-create,
+    reassign and the strict flip all ask this and nothing else, so the
+    four cannot disagree about who is an administrator.
+
+    Counts a principal when they hold an **active, unexpired,
+    tenant-scope, user** grant **under this realm** whose effective
+    permissions (`role_permissions_for(row)` ∩ subset) carry
+    ``role.manage`` or ``"*"``.
+
+    Two adjustments let a caller ask "and AFTER this mutation?":
+
+    * `exclude_ids` -- grant ids the mutation removes (a revoke, or the
+      row an overwrite replaces).
+    * `replacement` -- the row-shaped object the mutation writes in its
+      place, counted by the same rule.
+    * `permanent_only` -- count only grants with NO expiry. "Setting an
+      expiry on the last administrator" is refused by A23.8, and a
+      lockout scheduled by the clock is still a configured lockout, so
+      the guard also refuses a mutation that leaves no UNEXPIRING
+      administrator where one existed.
+
+    The caller's own resolved scope counts them for their own REAL tenant
+    row (not a synthesized one, and not one in `exclude_ids`): their
+    token is authoritative about their role, which a stored `role` on
+    somebody else's grant can never be -- and without this a tenant whose
+    grants omit `role` could never flip at all.
+
+    When `caller_role_permissions` (the token's role) is supplied, the
+    caller's contribution is recomputed from the ROW in `grant_rows`
+    rather than read off `caller_scope`: the scope was resolved before
+    the tenant lock, and a concurrent administrator may have narrowed
+    the caller's own subset in between. The locked rows are the truth
+    at commit; the scope is only trusted for the caller's identity.
+    """
+    excluded = set(exclude_ids)
+    admins: set[str] = set()
+
+    def _qualifies(row: Any) -> bool:
+        if getattr(row, "principal_type", PRINCIPAL_USER) != PRINCIPAL_USER:
+            return False
+        if getattr(row, "scope_type", "") != SCOPE_TENANT:
+            return False
+        if not is_active(row, now=now) or not _row_in_realm(row, realm):
+            return False
+        if permanent_only and getattr(row, "expires_at", None) is not None:
+            return False
+        permissions = effective_permissions(
+            role_permissions_for(row), getattr(row, "permission_subset", None)
+        )
+        return ADMIN_PERMISSION in permissions or "*" in permissions
+
+    rows = list(grant_rows)
+    for row in rows:
+        if getattr(row, "id", None) in excluded:
+            continue
+        if _qualifies(row):
+            admins.add(getattr(row, "principal_ref", "") or "")
+
+    if replacement is not None and _qualifies(replacement):
+        admins.add(getattr(replacement, "principal_ref", "") or "")
+
+    if caller_scope is not None and caller_scope.principal_ref not in admins:
+        own = [
+            r for r in rows
+            if (getattr(r, "principal_ref", None) == caller_scope.principal_ref
+                and getattr(r, "principal_type", PRINCIPAL_USER) == PRINCIPAL_USER
+                and getattr(r, "scope_type", "") == SCOPE_TENANT)
+        ]
+        standing = [
+            r for r in own
+            if getattr(r, "id", None) not in excluded
+            and is_active(r, now=now) and _row_in_realm(r, realm)
+            and not (permanent_only and getattr(r, "expires_at", None) is not None)
+        ]
+        if own and len(standing) == len(own):
+            if caller_role_permissions is not None:
+                # Truth at commit: the locked row, the token's role, the
+                # recorded ceiling and the subset -- the resolver's own
+                # arithmetic, applied to what is in the database NOW.
+                token = list(caller_role_permissions)
+                holds = any(
+                    ADMIN_PERMISSION in perms or "*" in perms
+                    for perms in (
+                        grant_permissions(
+                            r, token,
+                            role_ceiling_for(r) if role_ceiling_for is not None else None,
+                        )
+                        for r in standing
+                    )
+                )
+            else:
+                holds = any(
+                    not g.synthesized and not g.inert and g.scope_type == SCOPE_TENANT
+                    and (ADMIN_PERMISSION in g.permissions or "*" in g.permissions)
+                    for g in caller_scope.grants
+                )
+            if holds:
+                admins.add(caller_scope.principal_ref)
+
+    return len(admins)
+
+
 def preflight_strict(
     grant_rows: Iterable[Any],
     role_permissions_for: Any,
     *,
     caller_scope: Optional[ResolvedScope] = None,
     now: Optional[datetime] = None,
+    realm: str = "",
+    caller_role_permissions: Optional[Iterable[str]] = None,
+    role_ceiling_for: Optional[Any] = None,
 ) -> PreflightResult:
     """May this tenant be switched to strict without locking itself out?
 
     Ratified L1: the flip is allowed only if at least one **active,
     unexpired** principal holds a **tenant-scope** grant whose effective
-    permissions contain ``role.manage``.
+    permissions contain ``role.manage``. A23.8: answered by the ONE
+    counting function the grant mutations also ask.
 
     Deliberately NOT in the resolver. A resolver that knew about
     administrators would carry a special case into every future caller;
     this is a question the endpoint asks once, at the moment of the flip.
     """
-    admins = 0
-
-    # The caller counts when they hold a REAL tenant grant carrying
-    # role.manage. Their token is authoritative about their role, which
-    # a stored `role` on somebody else's grant can never be -- and
-    # without this a tenant whose grants omit `role` could never flip at
-    # all. A SYNTHESIZED grant never counts: under legacy_open every
-    # principal has one, so counting it would let a grantless tenant
-    # flip to strict and lock itself out completely.
-    counted_caller = False
-    if caller_scope is not None:
-        for grant in caller_scope.grants:
-            if grant.synthesized or grant.scope_type != SCOPE_TENANT:
-                continue
-            if ADMIN_PERMISSION in grant.permissions or "*" in grant.permissions:
-                admins += 1
-                counted_caller = True
-                break
-
-    for row in grant_rows:
-        if row.scope_type != SCOPE_TENANT:
-            continue
-        if counted_caller and (
-            getattr(row, "principal_ref", None) == caller_scope.principal_ref
-        ):
-            # Already counted through the caller's own resolved scope.
-            continue
-        if not is_active(row, now=now):
-            continue
-        permissions = effective_permissions(
-            role_permissions_for(row), getattr(row, "permission_subset", None)
-        )
-        if ADMIN_PERMISSION in permissions or "*" in permissions:
-            admins += 1
-
+    admins = count_tenant_admins(
+        grant_rows, role_permissions_for,
+        caller_scope=caller_scope, now=now, realm=realm,
+        caller_role_permissions=caller_role_permissions,
+        role_ceiling_for=role_ceiling_for,
+    )
     if admins:
         return PreflightResult(ok=True, admin_count=admins)
     return PreflightResult(

@@ -31,6 +31,10 @@ from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, re
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo, OrgUnitRepo
+from harkeniq_cc.grant_integrity import (
+    GrantIntegrityError,
+    refuse_unit_delete_under_grants,
+)
 from harkeniq_cc.org_tree import (
     MAX_DEPTH,
     flatten,
@@ -463,6 +467,23 @@ async def delete_org_unit(
                 "site(s); move them before deleting"
             ),
         )
+
+    # A23.9: a unit is not deleted from under an active grant. The
+    # refusal is a security event -- somebody tried to make a grant's
+    # target vanish -- and is recorded on the chain with the grants it
+    # named, so the operator can reassign or revoke them.
+    try:
+        await refuse_unit_delete_under_grants(session, user.tenant_id, unit)
+    except GrantIntegrityError as exc:
+        await AuditRepo(session).append(
+            actor=user.user_id, actor_ref=actor_of(user),
+            action=exc.audit or "org_unit.delete_refused",
+            subject=unit.id,
+            tenant_id=user.tenant_id,
+            detail={"name": unit.name, "path": unit.path, **exc.detail},
+        )
+        await session.commit()
+        raise HTTPException(status_code=exc.status, detail=exc.reason)
 
     detail = {
         "name": unit.name,

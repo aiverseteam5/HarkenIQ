@@ -121,6 +121,8 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/scope-grants/me"):            ("fleet.view", UNSCOPED, False),
     ("POST", "/api/scope-grants/"):             ("role.manage", OBJECT_GATED, True),
     ("DELETE", "/api/scope-grants/{grant_id}"): ("role.manage", OBJECT_GATED, True),
+    # A23-3: atomic revoke + grant on a new target, gated on BOTH targets.
+    ("POST", "/api/scope-grants/{grant_id}/reassign"): ("role.manage", OBJECT_GATED, True),
     ("GET", "/api/tenant-settings/scope-enforcement"): ("fleet.view", UNSCOPED, False),
     ("PUT", "/api/tenant-settings/scope-enforcement"): ("role.manage", TENANT_GATED, True),
     # A22.10: the report half of report-before-enforce. UNSCOPED because
