@@ -23,6 +23,8 @@ from harkeniq_console.licensing import (
     sign_license,
 )
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "tenant-x"
 
 
@@ -146,6 +148,7 @@ class TestSiteRegistrationUsesLicense:
         from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
         from harkeniq_cc.runtime import AppState
 
+
         config = CCConfig(tenant_id=TENANT, insecure=True)
         configure_auth("", "", "", insecure=True)
         engine = make_engine("sqlite+aiosqlite:///:memory:")
@@ -161,6 +164,11 @@ class TestSiteRegistrationUsesLicense:
             status="verified",
         )
         app = create_app(state)
+        # A23-5: a rowless tenant is STRICT now (A23.11), so this fixture
+        # seeds the founding administrator tenant birth seeds (A23.14 D4)
+        # instead of leaning on the `legacy_open` synthesis a missing row
+        # used to give.
+        await seed_tenant_admin(state.sessionmaker, TENANT, "lab-user")
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://cc") as c:
             yield c, state

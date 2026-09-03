@@ -39,6 +39,8 @@ from harkeniq_sm.db.models import Device, Site
 from harkeniq_sm.grpc_server import SiteManagerServiceServicer
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "tenant-fresh"
 CC_SITE_ID = "cc-site-fresh"
 # Deliberately in the past, so it cannot be confused with any utcnow() the
@@ -139,6 +141,11 @@ async def test_reading_survives_sm_to_proto_to_dict_to_repo_to_http(sm_wire):
     configure_auth("", "", "", insecure=True)
     state = AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     app = create_app(state)
+    # A23-5: a rowless tenant is STRICT now (A23.11), so this
+    # fixture seeds the founding administrator that tenant
+    # birth seeds (A23.14 D4) instead of leaning on the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sessionmaker, TENANT, "lab-user")
 
     async with sessionmaker() as session:
         site = await SiteRepo(session).upsert(TENANT, "site-1", "sm:50051")

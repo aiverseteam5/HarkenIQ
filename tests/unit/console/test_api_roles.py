@@ -32,6 +32,9 @@ async def tenant_id(client):
             "name": "Acme Corp",
             "slug": "acme",
             "billing_country": "US",
+            # A23-5: a tenant is born strict, so it is born with an
+            # administrator or not at all (A23.14 D3).
+            "admin_email": "owner@acme.com",
         },
     )
     return resp.json()["id"]

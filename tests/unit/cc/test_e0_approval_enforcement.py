@@ -20,6 +20,8 @@ from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.models import CCApprovalRoute, CCFleetCache, CCSite
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_people
+
 TENANT = "t1"
 
 
@@ -74,6 +76,16 @@ async def _stack() -> Stack:
     state = AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     app = create_app(state)
     stack = Stack(app, sessionmaker)
+
+    # A23-5: a rowless tenant is STRICT now (A23.11). The default
+    # persona is the tenant's founding administrator, granted the
+    # way tenant birth grants one (A23.14 D4) rather than being
+    # tenant-wide by the synthesis a missing row used to give.
+    await seed_tenant_people(sessionmaker, TENANT, [
+        ("kc-owner", "tenant_owner"),
+        ("kc-a", "operator"), ("kc-b", "operator"), ("kc-z", "operator"),
+        ("kc-op", "operator"), ("kc-au", "auditor"), ("kc-v", "viewer"),
+    ])
 
     async def _fake():
         sub, email, role = stack.persona

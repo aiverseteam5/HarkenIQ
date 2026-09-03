@@ -37,6 +37,7 @@ from harkeniq_cc.db.repos import (
 )
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.scope import (
+    ENFORCEMENT_LEGACY_OPEN,
     ENFORCEMENT_STRICT,
     SCOPE_ORG_UNIT,
     SCOPE_SITE,
@@ -137,6 +138,19 @@ async def _strict(sessionmaker):
     async with sessionmaker() as session:
         await TenantSettingsRepo(session).set_enforcement(
             TENANT, ENFORCEMENT_STRICT, "test"
+        )
+        await session.commit()
+
+
+async def _legacy(sessionmaker):
+    """Pin `legacy_open`, as migration 0021 pins a pre-A23-5 tenant.
+
+    A23-5 made a rowless tenant STRICT (A23.11), so a fixture that wants
+    the legacy posture has to say so.
+    """
+    async with sessionmaker() as session:
+        await TenantSettingsRepo(session).set_enforcement(
+            TENANT, ENFORCEMENT_LEGACY_OPEN, "migration:0021"
         )
         await session.commit()
 

@@ -190,31 +190,58 @@ class TenantService:
             await self.session.rollback()
             raise
 
-        # Create owner user
-        owner = None
-        if req.admin_email:
-            keycloak_user_id = None
-            try:
-                keycloak_user_id = await self.keycloak.create_user(
-                    realm_name, req.admin_email,
-                )
-                await self.keycloak.assign_realm_role(
-                    realm_name, keycloak_user_id, "tenant_owner",
-                )
-            except Exception as exc:
-                # The realm exists and the tenant is usable; an owner that
-                # could not be minted is recoverable by inviting one, so
-                # this warns rather than discarding the realm.
-                logger.warning("Keycloak user creation failed: %s", exc)
-
-            owner = await self.users.create(
-                tenant_id=tenant.id,
-                email=req.admin_email,
-                role="tenant_owner",
-                keycloak_user_id=keycloak_user_id,
-                status="invited",
-                invited_by=created_by,
+        # A23-5: a tenant without an administrator is not a tenant either.
+        #
+        # `admin_email` used to be optional and owner minting used to warn
+        # and continue, so two ordinary paths produced an ACTIVE tenant
+        # with no authoritative owner subject. That was survivable while
+        # `legacy_open` synthesized tenant-wide reach for a never-granted
+        # human. Under strict birth (A23.11) it is a tenant nobody can
+        # ever administer: A23.6 made the first grant a two-person act and
+        # A23-4 removed the synthesis that used to supply the second
+        # person, so there is no principal left who could recover it.
+        #
+        # No new lifecycle state (A23.14 D3) -- `tenants.status` keeps its
+        # two values. This extends the fail-closed path the realm already
+        # uses, one clause above.
+        if not req.admin_email:
+            await self.session.rollback()
+            raise TenantError(
+                "cannot create a tenant without an owner: a tenant is born "
+                "in strict enforcement, and strict enforcement with no "
+                "administrator is a tenant nobody can ever administer. "
+                "Supply admin_email.",
+                "owner_required",
             )
+
+        try:
+            keycloak_user_id = await self.keycloak.create_user(
+                realm_name, req.admin_email,
+            )
+            await self.keycloak.assign_realm_role(
+                realm_name, keycloak_user_id, "tenant_owner",
+            )
+        except Exception as exc:  # noqa: BLE001 -- any failure is fail-closed
+            # Fail CLOSED, like the realm above. An owner row carrying no
+            # Keycloak subject cannot be granted to -- Central Command
+            # seeds the first grant on a SUBJECT, and an email is not an
+            # identity -- so a tenant with one is unadministrable.
+            logger.warning("Keycloak owner creation failed: %s", exc)
+            await self.session.rollback()
+            raise TenantError(
+                f"could not create the tenant owner in realm "
+                f"'{realm_name}': {type(exc).__name__}: {exc}",
+                "owner_provision_failed",
+            )
+
+        owner = await self.users.create(
+            tenant_id=tenant.id,
+            email=req.admin_email,
+            role="tenant_owner",
+            keycloak_user_id=keycloak_user_id,
+            status="invited",
+            invited_by=created_by,
+        )
 
         # Audit
         await self.audit.append(

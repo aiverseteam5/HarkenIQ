@@ -55,6 +55,33 @@ async def _post(state, path: str, body: dict) -> tuple[Optional[dict], str]:
     return response.json(), ""
 
 
+async def get(state, path: str) -> tuple[Optional[dict], str]:
+    """A read on the same internal channel, with the same reason shape.
+
+    A23-5 needs the Console-recorded owner subject to seed a tenant's
+    first administrator; every other call here is a write, so this is
+    the read half of the channel that already exists.
+    """
+    console_url = getattr(state.config, "console_url", "") or ""
+    if not console_url:
+        return None, "no Console URL is configured, so the owner cannot be resolved"
+    url, headers = _endpoint(state, path)
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            response = await client.get(url, headers=headers)
+    except Exception as exc:  # noqa: BLE001 -- transport failure is a reason
+        logger.warning("identity read %s failed: %s", path, exc)
+        return None, f"the Console could not be reached: {type(exc).__name__}: {exc}"
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            detail = str(response.json().get("detail", ""))
+        except Exception:  # noqa: BLE001
+            detail = response.text[:200]
+        return None, f"the Console answered {response.status_code}: {detail}"
+    return response.json(), ""
+
+
 async def provision(
     state, *, realm: str, client_id: str
 ) -> tuple[Optional[dict], str]:

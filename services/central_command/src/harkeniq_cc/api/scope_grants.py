@@ -721,10 +721,15 @@ async def enforcement_impact(
 
     The report half of report-before-enforce. The final invariant is
     unconditional -- no grant means no operational scope, for humans and
-    agents alike -- but `legacy_open` is the DEFAULT posture and an
-    existing tenant may hold no grant rows at all, so enforcing it in
-    the same slice that decides it would lock real customers out of a
-    running system.
+    agents alike -- but an EXISTING tenant may be pinned `legacy_open`
+    and hold no grant rows at all, so enforcing it in the same slice
+    that decides it would lock real customers out of a running system.
+
+    A23-5 changed who this report is for. `legacy_open` is no longer a
+    default anything falls into: a tenant born after A23.11 is strict
+    with a real administrator, and only a tenant migration 0021 pinned
+    (or an operator chose) is legacy. This report is what that tenant's
+    administrator reads before flipping.
 
     Central Command cannot enumerate a realm's principals (that is
     Keycloak's, and E1.4's), so this reports the two populations it CAN

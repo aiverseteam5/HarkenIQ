@@ -132,8 +132,29 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
 
         await identity_summary_loop(state)
 
+    async def tenant_birth_task() -> None:
+        """A23-5: the tenant's first administrator, once, at startup.
+
+        Not a polling loop -- the primary trigger is provisioning, and
+        this is where a Central Command deployment first serves its
+        tenant. Every call after the first returns `already_born` and
+        writes nothing; the retry cadence exists only as a recovery net
+        for a Console that was unreachable at boot, which is the one
+        failure that would otherwise leave a real tenant with no
+        administrator.
+        """
+        from harkeniq_cc.tenant_birth import tenant_birth_once
+
+        for delay in (0, 30, 120, 600):
+            if delay:
+                await asyncio.sleep(delay)
+            outcome = await tenant_birth_once(state)
+            if outcome.status in ("seeded", "already_born", "skipped"):
+                return
+
     try:
         async with asyncio.TaskGroup() as tg:
+            tg.create_task(tenant_birth_task(), name="tenant_birth")
             tg.create_task(serve_http(), name="http")
             tg.create_task(announce_started(), name="announce")
             tg.create_task(fleet_poller_task(), name="fleet_poller")

@@ -25,6 +25,8 @@ from harkeniq_cc.policy_push import (
 )
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "test-tenant"
 
 
@@ -37,6 +39,11 @@ async def env():
     sessionmaker = make_sessionmaker(engine)
     state = AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     app = create_app(state)
+    # A23-5: a rowless tenant is STRICT now (A23.11), so this
+    # fixture seeds the founding administrator that tenant
+    # birth seeds (A23.14 D4) instead of leaning on the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sessionmaker, TENANT, "lab-user")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield {"client": c, "state": state, "sessionmaker": sessionmaker,

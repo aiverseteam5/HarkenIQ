@@ -48,6 +48,8 @@ from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.models import CCFleetCache, CCSite
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "t1"
 SERVER = declare("redfish", ["IDENTIFY_LED", "COLLECT_DIAGNOSTICS"], "server")
 NARROW = declare("redfish", ["COLLECT_DIAGNOSTICS"], "server")   # LED not permitted
@@ -258,6 +260,12 @@ async def _stack(role="tenant_owner"):
         config=CCConfig(tenant_id=TENANT, insecure=True),
         engine=engine, sessionmaker=sm,
     ))
+
+    # A23-5: a rowless tenant is STRICT now (A23.11). The acting
+    # principal holds a real founding grant, the way tenant birth
+    # seeds one (A23.14 D4), instead of being tenant-wide by the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sm, TENANT, f"kc-{role}", role=role)
 
     async def _fake():
         return UserContext(

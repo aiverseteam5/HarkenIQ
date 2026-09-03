@@ -36,6 +36,9 @@ async def tenant_id(client):
             "name": "Acme Corp",
             "slug": "acme",
             "billing_country": "US",
+            # A23-5: a tenant is born strict, so it is born with an
+            # administrator or not at all (A23.14 D3).
+            "admin_email": "owner@acme.com",
         },
     )
     assert resp.status_code == 200
@@ -280,7 +283,11 @@ class TestValidateLicense:
         # download the token, revoke, then validate.
         t = await client.post(
             "/api/admin/tenants/",
-            json={"name": "Rev Corp", "slug": "rev", "billing_country": "US"},
+            json={
+                "name": "Rev Corp", "slug": "rev", "billing_country": "US",
+                # A23-5: creation fails closed without an owner (A23.14 D3).
+                "admin_email": "owner@rev.com",
+            },
         )
         tenant_id = t.json()["id"]
         issued = await client.post(

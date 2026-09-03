@@ -332,6 +332,16 @@ class TestStrictModePreflight:
         """
         app, sessionmaker = await _stack()
         estate = await _estate(sessionmaker)
+        # A23-5: this scenario is an EXISTING legacy tenant flipping to
+        # strict, so the posture is pinned the way migration 0021 pins
+        # one. Left rowless the tenant would already be strict (A23.11)
+        # and the caller would be refused by the route guard at 403,
+        # never reaching the preflight this test is about.
+        async with sessionmaker() as session:
+            await TenantSettingsRepo(session).set_enforcement(
+                TENANT, ENFORCEMENT_LEGACY_OPEN, "migration:0021",
+            )
+            await session.commit()
         client = _client(app, "tenant_owner", "kc-owner")
         async with client:
             resp = await client.put(
@@ -341,7 +351,10 @@ class TestStrictModePreflight:
             assert "role.manage" in resp.json()["detail"]
             assert "Nothing has been changed" in resp.json()["detail"]
 
-        # And nothing was applied: the mode is unchanged.
+        # And nothing was applied. A23-5 changed what "unchanged" reads
+        # as -- a rowless tenant answers STRICT now (A23.11), not
+        # `legacy_open` -- so the refusal is asserted where it actually
+        # lives: the refused flip wrote no row at all.
         async with sessionmaker() as session:
             assert await TenantSettingsRepo(session).enforcement(TENANT) == (
                 ENFORCEMENT_LEGACY_OPEN

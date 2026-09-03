@@ -29,6 +29,8 @@ from harkeniq_cc.warranty.base import (
 from harkeniq_cc.warranty.dell_techdirect import DellTechDirectProvider
 from harkeniq_cc.warranty.refresh import make_provider, refresh_once
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 # A fixed, deliberately-not-now reading so a test can tell a real
 # last_seen_at apart from snapshot_at (which is written at upsert).
 SEEN_AT = datetime(2026, 8, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -224,6 +226,11 @@ async def client():
     sessionmaker = make_sessionmaker(engine)
     state = AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     app = create_app(state)
+    # A23-5: a rowless tenant is STRICT now (A23.11), so this
+    # fixture seeds the founding administrator that tenant
+    # birth seeds (A23.14 D4) instead of leaning on the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sessionmaker, TENANT, "lab-user")
 
     async with sessionmaker() as session:
         site = await SiteRepo(session).upsert(TENANT, "dc-blr-1", "sm:50051")

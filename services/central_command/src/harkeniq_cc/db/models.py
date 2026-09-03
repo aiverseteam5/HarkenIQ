@@ -122,13 +122,19 @@ class CCTenantSettings(Base):
     enumerate a realm's principals to backfill grants, and pretending
     the absence of a grant were a decision would lock every one of them
     out on upgrade. New tenants are born `strict`.
+
+    A23-5 made that last sentence true. It was written at E1.2 and the
+    column default said otherwise for four slices; migration 0021 pins
+    the existing tenant explicitly, and both this default and
+    `TenantSettingsRepo.enforcement` now answer `strict` for anything
+    unpinned. A model-invariant test asserts the two agree.
     """
 
     __tablename__ = "cc_tenant_settings"
 
     tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     scope_enforcement: Mapped[str] = mapped_column(
-        String(16), default="legacy_open"
+        String(16), default="strict"
     )
     updated_by: Mapped[str] = mapped_column(String(255), default="")
     updated_at: Mapped[datetime] = mapped_column(
