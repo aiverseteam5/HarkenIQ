@@ -90,9 +90,15 @@ if [ -n "$_UID" ]; then
     -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
     -d "{\"type\":\"password\",\"value\":\"$DEMO_OWNER_PASS\",
          \"temporary\":false}" -o /dev/null
+  # firstName/lastName matter: Keycloak's VERIFY_PROFILE required action
+  # refuses login with "Account is not fully set up" without them, and
+  # reports an EMPTY requiredActions while doing it. The Console fills
+  # them in at creation now; this also repairs an owner minted by a
+  # build that predates that.
   curl -s -X PUT "$KEYCLOAK/admin/realms/$TENANT_REALM/users/$_UID" \
     -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
-    -d '{"requiredActions":[],"emailVerified":true,"enabled":true}' -o /dev/null
+    -d '{"requiredActions":[],"emailVerified":true,"enabled":true,
+         "firstName":"Demo","lastName":"Owner"}' -o /dev/null
   _ROLE=$(curl -s "$KEYCLOAK/admin/realms/$TENANT_REALM/roles/tenant_owner" \
     -H "Authorization: Bearer $KC_ADMIN")
   curl -s -X POST \
@@ -109,6 +115,33 @@ TENANT_TOKEN=$(curl -sf -X POST \
   -d "grant_type=password&client_id=harkeniq-console&username=$DEMO_OWNER&password=$DEMO_OWNER_PASS" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null || echo "")
 TENANT_AUTH="Authorization: Bearer $TENANT_TOKEN"
+
+# A23-5: the tenant is born STRICT, and its first administrative grant is
+# seeded by Central Command once it can read the owner subject back from
+# the Console (A23.14 D4). CC and the Console boot independently, so that
+# can land a moment after this script creates the tenant -- and until it
+# does, the owner holds no grant and every authorized call below is
+# refused, correctly. Wait for the tenant to be born before acting as its
+# administrator.
+echo "==> Waiting for the tenant's first administrator (A23-5 strict birth)"
+_BORN=""
+for _ in $(seq 1 60); do
+  if curl -sf -H "$TENANT_AUTH" "$CC/api/scope-grants/me" 2>/dev/null \
+     | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+raise SystemExit(0 if d.get('tenant_wide') and d.get('synthesis') == 'granted'
+                 else 1)" 2>/dev/null; then
+    _BORN=yes
+    break
+  fi
+  sleep 5
+done
+if [ -n "$_BORN" ]; then
+  echo "  the tenant holds its founding administrator"
+else
+  echo "  !! the tenant has no administrator yet; authorized calls will 403" >&2
+fi
 
 echo "==> Registering site-1's Site Manager with Central Command"
 curl -s -X POST "$CC/api/sites/register" -H "$TENANT_AUTH" \

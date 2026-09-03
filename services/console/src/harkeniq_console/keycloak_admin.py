@@ -284,11 +284,31 @@ class KeycloakAdminClient:
         email: str,
         temporary_password: str = "",
     ) -> str:
-        """Create a user in a realm. Returns the Keycloak user UUID."""
+        """Create a user in a realm. Returns the Keycloak user UUID.
+
+        Integration defect discovered during A23-5 strict-birth live
+        validation. `firstName`/`lastName` are NOT decoration. Keycloak's
+        VERIFY_PROFILE required action is on by default and demands
+        them, so a user minted without them is refused at login with
+        "Account is not fully set up" -- no error at creation, and no
+        way to tell from the user record, which reports an empty
+        `requiredActions`.
+
+        That was survivable while nobody signed in as the tenant owner
+        the Console mints. A23.14 D4 makes that owner the tenant's
+        FOUNDING ADMINISTRATOR -- the one principal Central Command
+        seeds the first grant on -- and an administrator who cannot log
+        in is not an administrator. The email's local part is a
+        placeholder the owner renames; what matters is that the profile
+        is complete enough to authenticate.
+        """
         password = temporary_password or "changeme"
+        local_part = email.split("@", 1)[0]
         body = {
             "username": email,
             "email": email,
+            "firstName": local_part[:64] or "Tenant",
+            "lastName": "Owner",
             "enabled": True,
             "emailVerified": True,
             "credentials": [
@@ -566,10 +586,19 @@ class MockKeycloakAdminClient:
                     f"user '{email}' already exists", status_code=409,
                 )
         user_id = uuid.uuid4().hex
+        # A23-5: the mock records the SAME representation the real
+        # client sends, profile included. It did not, which is why an
+        # owner Keycloak would refuse at login ("Account is not fully
+        # set up", VERIFY_PROFILE) looked perfectly healthy in every
+        # test -- the defect was found on the live stack instead.
+        local_part = email.split("@", 1)[0]
         self._users[realm][user_id] = {
             "id": user_id,
             "username": email,
             "email": email,
+            "firstName": local_part[:64] or "Tenant",
+            "lastName": "Owner",
+            "emailVerified": True,
             "enabled": True,
         }
         self._role_mappings[(realm, user_id)] = []

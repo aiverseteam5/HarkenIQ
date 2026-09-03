@@ -145,12 +145,22 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
         """
         from harkeniq_cc.tenant_birth import tenant_birth_once
 
-        for delay in (0, 30, 120, 600):
+        # Central Command and the Console boot independently, so the
+        # first attempt usually finds no Console at all. Retry on a
+        # short backoff and then steadily -- each attempt is one read
+        # and one conditional write, and the whole task STOPS for good
+        # the moment the tenant is born or is found already born.
+        for delay in (0, 5, 15, 30) + (60,) * 30:
             if delay:
                 await asyncio.sleep(delay)
             outcome = await tenant_birth_once(state)
             if outcome.status in ("seeded", "already_born", "skipped"):
                 return
+        logger.warning(
+            "tenant birth never resolved an owner: the tenant is strict and "
+            "unadministered, which /api/tenant-settings/scope-enforcement "
+            "reports as locked_out"
+        )
 
     try:
         async with asyncio.TaskGroup() as tg:

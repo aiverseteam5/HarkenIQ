@@ -195,14 +195,17 @@ TOKEN=$(tenant_token gate-owner@demo gate-owner)
 # gate-owner, which is the ordinary two-person act A23.6 requires.
 BIRTH_OWNER=${DEMO_OWNER:-demo-admin@harkeniq.com}
 BIRTH_PASS=${DEMO_OWNER_PASS:-demo-admin}
-wait_for "the tenant is born with its administrator" 180 bash -c "
-  T=\$(curl -sf -X POST \
-    'http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token' \
-    -d 'grant_type=password&client_id=harkeniq-console&username=$BIRTH_OWNER&password=$BIRTH_PASS' \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"access_token\"])') || exit 1
-  curl -sf -H \"Authorization: Bearer \$T\" \
-    http://localhost:8090/api/scope-grants/me \
-    | python3 -c 'import sys,json; d=json.load(sys.stdin); raise SystemExit(0 if d[\"tenant_wide\"] and d[\"synthesis\"]==\"granted\" else 1)'"
+birth_granted() {
+  local t
+  t=$(tenant_token "$BIRTH_OWNER" "$BIRTH_PASS") || return 1
+  [ -n "$t" ] || return 1
+  curl -sf -H "Authorization: Bearer $t" \
+    http://localhost:8090/api/scope-grants/me | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+raise SystemExit(0 if d['tenant_wide'] and d['synthesis'] == 'granted' else 1)"
+}
+wait_for "the tenant is born with its administrator" 300 birth_granted
 BIRTH_TOKEN=$(tenant_token "$BIRTH_OWNER" "$BIRTH_PASS")
 curl -sf -H "Authorization: Bearer $BIRTH_TOKEN" \
   http://localhost:8090/api/scope-grants/me | python3 -c "
@@ -225,6 +228,26 @@ BOOT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   echo "the founding administrator could not grant gate-owner ($BOOT)" >&2
   exit 1; }
 echo "the birth-seeded administrator granted the gate's operator identity"
+
+# The operator identity needs authority from the start too -- under
+# strict birth it is not tenant-wide by synthesis any more, and every
+# early step below reads approvals, incidents and attention as it. A
+# real tenant's administrator grants its operators; the E1.2 step
+# further down NARROWS this one to a single site, which is what makes
+# its `site_ids == [E12_SITE]` assertion a real narrowing rather than an
+# accident of never having been granted.
+OP_BOOT_SUB=$(python3 -c "
+import base64, json
+t = '$(tenant_token gate-op@demo gate-op)'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+OPBOOT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $BIRTH_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$OP_BOOT_SUB\",\"scope_type\":\"tenant\",\"role\":\"operator\"}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$OPBOOT" = "201" ] || {
+  echo "the founding administrator could not grant the operator ($OPBOOT)" >&2
+  exit 1; }
+echo "and the operator identity"
 
 wait_for "CC fleet has the device" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:8090/api/fleet/ | grep -q agent_id"
@@ -1127,6 +1150,26 @@ ADMIN2_SUB=$(python3 -c "
 import base64, json
 t = '$ADMIN2_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
 print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+# A23-5: the operator was granted TENANT scope at the bootstrap so the
+# early steps could run under strict birth. E1.2 is about narrowing, so
+# withdraw that first -- otherwise the site grant below would ADD to a
+# tenant-wide reach and the `site_ids == [E12_SITE]` assertion would be
+# asserting nothing.
+OP_TENANT_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/scope-grants/ | python3 -c "
+import sys, json
+rows = [g for g in json.load(sys.stdin)['grants']
+        if g['principal_ref'] == '$OP_SUB' and g['scope_type'] == 'tenant']
+print(rows[0]['id'] if rows else '')")
+if [ -n "$OP_TENANT_GID" ]; then
+  NARROW=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+    -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/scope-grants/$OP_TENANT_GID")
+  [ "$NARROW" = "200" ] || {
+    echo "the operator's tenant grant could not be withdrawn ($NARROW)" >&2
+    exit 1; }
+  echo "operator narrowed: tenant grant withdrawn before the site grant"
+fi
 [ "$(grant "$OP_SUB" site "$E12_SITE" operator)" = "201" ] || {
   echo "site grant refused" >&2; exit 1; }
 
@@ -1325,11 +1368,19 @@ print(len(rows), 'rows;', len(with_ref), 'with actor_ref;', len(owner), 'by the 
       len(emails), 'recorded by email but identified by subject')
 "
 
-step "A23-2: a real 0019 -> 0020 upgrade on PostgreSQL with existing rows"
+step "A23-2: a real 0019 -> head upgrade on PostgreSQL with existing rows"
 # Take the live database back to 0019 (drop the column and its index,
 # rewind the version), then let Central Command's own alembic bring it
 # forward. Existing rows come back with actor_ref NULL -- no backfill --
 # and the chain, which never hashed the column, still verifies.
+#
+# The expected head is READ FROM THE CHAIN, not hardcoded. This asserted
+# '0020' literally and A23-5's 0021 broke it -- a true statement about
+# the migration that ran, failing because a later slice added one. The
+# subject of this step is "the upgrade ran and backfilled nothing", not
+# which revision happens to be last today.
+CC_HEAD=$(ls "$_REPO_ROOT"/services/central_command/src/harkeniq_cc/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
 BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "select count(*) from cc_audit_log")
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
@@ -1347,10 +1398,11 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
 import sys
 lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
 version, nulls, total, index = lines[0], int(lines[1]), int(lines[2]), lines[3]
-assert version == '0020', version
+assert version == '$CC_HEAD', (version, 'expected head $CC_HEAD')
 assert total == int('$BEFORE') and nulls == total, (nulls, total, '$BEFORE')
 assert index == 'ix_cc_audit_log_tenant_actor_ref', index
-print('0020 applied on PostgreSQL:', total, 'existing rows, all actor_ref NULL, index present')
+print('chain applied to head $CC_HEAD on PostgreSQL:', total,
+      'existing rows, all actor_ref NULL, index present')
 "
 curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
   | python3 -c "
@@ -1365,12 +1417,12 @@ step "A23-5: a pinned legacy tenant keeps its posture across the 0020 -> 0021 up
 # what every existing installation looks like. It must come back
 # `legacy_open` -- the posture the old default was giving it -- and not
 # strict, which would lock a working deployment out on upgrade.
+# The deployment's history is REAL -- this tenant has been acting since
+# the first step, so `cc_audit_log` is populated and 0021 sees a database
+# that has served somebody. Deliberately NOT faked with a synthetic audit
+# row: one with a fabricated hash sorts into the chain and would break
+# every later `/api/audit/verify`.
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
-  insert into cc_audit_log (id, ts, actor, action, subject, tenant_id, seq,
-                            prev_hash, entry_hash)
-  values ('a235hist', now(), 'ops@example.com', 'seed', 's', 'tenant-demo',
-          -1, '', 'a235')
-  on conflict do nothing;
   delete from cc_tenant_settings where tenant_id = 'tenant-demo';
   update alembic_version set version_num='0020';" > /dev/null
 docker compose exec -T central-command sh -c \
@@ -1383,7 +1435,7 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
 import sys
 lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
 version, pinned = lines[0], lines[1]
-assert version == '0021', version
+assert version == '$CC_HEAD', (version, 'expected head $CC_HEAD')
 mode, by = pinned.split('|')
 assert mode == 'legacy_open', ('an existing tenant must keep the posture it '
                                'already had, not be flipped: %r' % pinned)
@@ -1431,8 +1483,6 @@ assert d['tenant_wide'] is False, d
 assert d['synthesis'] == 'strict', d
 print('an ungranted tenant_owner on an unpinned tenant reaches nothing:',
       d['synthesis'])"
-[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A235_TOKEN" \
-   http://localhost:8090/api/fleet/)" = "200" ] || true
 curl -sf -H "Authorization: Bearer $A235_TOKEN" http://localhost:8090/api/fleet/ \
   | python3 -c "
 import sys, json
@@ -1445,8 +1495,7 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
   insert into cc_tenant_settings (tenant_id, scope_enforcement, updated_by,
                                   updated_at)
   values ('tenant-demo', 'strict', 'gate', now())
-  on conflict (tenant_id) do update set scope_enforcement='strict';
-  delete from cc_audit_log where id = 'a235hist';" > /dev/null
+  on conflict (tenant_id) do update set scope_enforcement='strict';" > /dev/null
 
 step "A23-5: a tenant cannot be created without an administrator"
 # A23.14 D3: strict birth means an owner subject is a precondition of

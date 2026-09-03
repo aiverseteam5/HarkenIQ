@@ -355,3 +355,53 @@ class TestStrictBirthRequiresAnOwner:
         assert users[0].keycloak_user_id, (
             "the owner SUBJECT is the only thing a grant can be keyed on"
         )
+
+
+class TestTheOwnerCanActuallyLogIn:
+    """A23-5: an administrator who cannot authenticate is not one.
+
+    Keycloak's VERIFY_PROFILE required action is on by default and
+    demands `firstName`/`lastName`. A user minted without them is
+    refused at login with "Account is not fully set up" -- and the user
+    record reports an EMPTY `requiredActions` while doing it, so nothing
+    in the Console's own data shows the account is unusable.
+
+    This never mattered while nobody signed in as the owner the Console
+    mints. A23.14 D4 makes that owner the tenant's founding
+    administrator, so it does now. Found on the live stack, not in a
+    unit test.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_minted_owner_has_a_complete_profile(self, svc, keycloak):
+        result = await svc.create_tenant(_req())
+        realm = result["keycloak_realm"]
+        users = list(keycloak._users[realm].values())
+        assert len(users) == 1, users
+        owner = users[0]
+        assert owner["firstName"], owner
+        assert owner["lastName"], owner
+        assert owner["emailVerified"] is True, owner
+        assert owner["enabled"] is True, owner
+
+    def test_the_real_client_sends_the_same_profile_fields_as_the_mock(self):
+        """The mock is only useful while it matches.
+
+        It recorded four fields where the real client sends eight, so a
+        profile Keycloak would reject looked complete in every test.
+        """
+        import inspect
+
+        from harkeniq_console.keycloak_admin import (
+            KeycloakAdminClient,
+            MockKeycloakAdminClient,
+        )
+
+        real = inspect.getsource(KeycloakAdminClient.create_user)
+        mock = inspect.getsource(MockKeycloakAdminClient.create_user)
+        for field in ("firstName", "lastName", "emailVerified", "enabled"):
+            assert field in real, field
+            assert field in mock, (
+                f"the mock omits {field!r}, so a user the real Keycloak "
+                f"would refuse looks healthy in tests"
+            )
