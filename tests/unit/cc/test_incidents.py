@@ -29,6 +29,8 @@ from harkeniq_cc.db.repos import IncidentRepo
 from harkeniq_cc.fleet_poller import _ingest_incidents
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "t1"
 OTHER = "t2"
 
@@ -70,6 +72,11 @@ async def _stack(role: str = "operator", tenant: str = TENANT):
     sessionmaker = make_sessionmaker(engine)
     state = AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     app = create_app(state)
+    # A23-5: a rowless tenant is STRICT now (A23.11), so this
+    # fixture seeds the founding administrator that tenant
+    # birth seeds (A23.14 D4) instead of leaning on the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sessionmaker, tenant, "kc-1", role=role)
 
     async def _fake():
         return UserContext(

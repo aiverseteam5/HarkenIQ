@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_console.api.deps import get_session
 from harkeniq_console.billing.metering import MeteringService
+from harkeniq_console.db.repos import TenantRepo, UserRepo
 
 
 async def require_internal_key(request: Request) -> None:
@@ -304,3 +305,50 @@ async def ingest_agent_identity_summary(
     payload["received_at"] = datetime.now(timezone.utc).isoformat()
     store[body.tenant_id] = payload
     return {"accepted": True, "tenant_id": body.tenant_id}
+
+
+@router.get("/tenants/by-realm/{realm}/owners")
+async def tenant_owners_by_realm(
+    realm: str, session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A23-5: who administers the tenant that owns this realm (A23.14 D4).
+
+    Central Command seeds its tenant's FIRST administrative grant and
+    needs the owner's Keycloak SUBJECT to do it. The subject exists only
+    here -- `users.keycloak_user_id`, written when the Console minted the
+    owner -- so CC asks over the channel it already uses for marketplace
+    pulls and agent identities. No new trust direction, and no Keycloak
+    admin credential leaves the identity plane.
+
+    Resolution is by REALM, not by slug and not by the Console's tenant
+    id: E1.4 made `tenants.keycloak_realm` the authoritative unique
+    binding, and it is the one identifier CC and the Console agree on
+    (CC's `tenant_id` is the realm name, never the Console row id).
+
+    Owners are returned with a subject or not at all. An owner row whose
+    `keycloak_user_id` is NULL cannot be granted to -- a grant keyed on
+    an email is not an authorization, it is a guess -- so it is omitted
+    and CC reports the tenant unadministered rather than seeding
+    something it cannot authenticate.
+    """
+    tenant = await TenantRepo(session).get_by_realm(realm)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="unknown realm")
+    users, _ = await UserRepo(session).list_by_tenant(
+        tenant.id, role="tenant_owner", page_size=200,
+    )
+    return {
+        "tenant_id": tenant.id,
+        "slug": tenant.slug,
+        "keycloak_realm": tenant.keycloak_realm,
+        "status": tenant.status,
+        "owners": [
+            {
+                "keycloak_user_id": u.keycloak_user_id,
+                "email": u.email,
+                "status": u.status,
+            }
+            for u in users
+            if u.keycloak_user_id
+        ],
+    }

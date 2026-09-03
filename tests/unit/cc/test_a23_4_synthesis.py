@@ -37,6 +37,7 @@ from harkeniq_cc.db.models import CCApprovalGroup, CCApprovalGroupMember
 from harkeniq_cc.db.repos import (
     OperationalAgentRepo,
     ScopeGrantRepo,
+    TenantSettingsRepo,
 )
 from harkeniq_cc.governance import load_agent_scope, load_scope
 from harkeniq_cc.scope import (
@@ -412,6 +413,15 @@ class TestOverTheApp:
         # And this tenant's revoked grant is not evidence over there.
         gid = await _grant(sm, "kc-y", SCOPE_SITE, estate["site-1"], role="viewer")
         await _revoke(sm, gid)
+        async with sm() as session:
+            # A23-5: the other tenant needs its own explicit posture --
+            # a missing row is STRICT now, and the point of this
+            # assertion is the `never_granted` LABEL, which only a
+            # legacy tenant can produce.
+            await TenantSettingsRepo(session).set_enforcement(
+                OTHER_TENANT, ENFORCEMENT_LEGACY_OPEN, "migration:0021",
+            )
+            await session.commit()
         async with sm() as session:
             other = await load_scope(
                 session, tenant_id=OTHER_TENANT, principal_ref="kc-y",

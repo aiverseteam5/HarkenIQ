@@ -32,7 +32,9 @@ def _create_body(**kwargs) -> dict:
         "currency": "USD",
         "plan": "approve",
         "node_commit": 100,
-        "admin_email": "",
+        # A23-5: creation fails closed without an owner subject
+        # (A23.14 D3), so the default body carries one.
+        "admin_email": "owner@acme.com",
     }
     defaults.update(kwargs)
     return defaults

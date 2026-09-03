@@ -32,8 +32,12 @@ async def tenant_id(client):
             "name": "Acme Corp",
             "slug": "acme",
             "billing_country": "US",
+            # A23-5: a tenant is born strict, so it is born with an
+            # administrator or not at all (A23.14 D3).
+            "admin_email": "owner@acme.com",
         },
     )
+    assert resp.status_code == 200, resp.text
     return resp.json()["id"]
 
 
@@ -86,14 +90,24 @@ class TestListUsers:
         resp = await client.get(f"/api/tenants/{tenant_id}/users/")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total"] == 1
-        assert data["items"][0]["email"] == "alice@acme.com"
+        # A23-5: the tenant is born with its owner (A23.14 D3), so the
+        # invited user is the SECOND user, not the only one.
+        assert data["total"] == 2
+        emails = {u["email"] for u in data["items"]}
+        assert emails == {"owner@acme.com", "alice@acme.com"}
 
-    async def test_list_users_empty(self, client, tenant_id):
+    async def test_list_users_only_the_founding_owner(self, client, tenant_id):
+        """A23-5: a tenant is never userless -- it is born with an owner.
+
+        This asserted `total == 0`, which after A23.14 D3 is a state no
+        tenant can be in: creation fails closed without an owner
+        subject. The founding owner is what "empty" now means.
+        """
         resp = await client.get(f"/api/tenants/{tenant_id}/users/")
         data = resp.json()
-        assert data["total"] == 0
-        assert data["items"] == []
+        assert data["total"] == 1
+        assert [u["email"] for u in data["items"]] == ["owner@acme.com"]
+        assert data["items"][0]["role"] == "tenant_owner"
 
     async def test_list_users_search(self, client, tenant_id):
         await client.post(
@@ -138,7 +152,8 @@ class TestListUsers:
         )
         data = resp.json()
         assert len(data["items"]) == 2
-        assert data["total"] == 5
+        # A23-5: five invited, plus the founding owner.
+        assert data["total"] == 6
 
 
 class TestGetUser:

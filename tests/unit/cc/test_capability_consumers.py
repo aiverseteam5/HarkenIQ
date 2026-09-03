@@ -71,6 +71,12 @@ async def _stack(role: str = "tenant_owner"):
         AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     )
 
+    # A23-5: a rowless tenant is STRICT now (A23.11). The acting
+    # principal holds a real founding grant, the way tenant birth
+    # seeds one (A23.14 D4), instead of being tenant-wide by the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sessionmaker, TENANT, f"kc-{role}", role=role)
+
     async def _fake():
         return UserContext(
             user_id=f"kc-{role}", email=f"{role}@example.com",
@@ -397,6 +403,8 @@ from types import SimpleNamespace  # noqa: E402
 
 from harkeniq_cc.autonomy import build_autonomy  # noqa: E402
 from harkeniq_cc.operational_agent import agent_view, evaluate  # noqa: E402
+
+from tests.unit.cc.conftest import seed_tenant_admin
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 

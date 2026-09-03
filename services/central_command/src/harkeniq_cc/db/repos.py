@@ -952,6 +952,75 @@ class ScopeGrantRepo:
         await self.session.flush()
         return row
 
+    async def any_grant_exists(self, tenant_id: str) -> bool:
+        """Has this tenant EVER carried a grant row, in any state?
+
+        Unfiltered on purpose -- revoked and expired rows count. A23.10
+        says a principal who was administered and then removed never
+        regains authority through an absence, so "has never been
+        administered" is the only precondition under which the platform
+        may author a grant itself (A23.14 D4).
+        """
+        return (
+            await self.session.execute(
+                select(func.count())
+                .select_from(CCScopeGrant)
+                .where(CCScopeGrant.tenant_id == tenant_id)
+            )
+        ).scalar_one() > 0
+
+    async def seed_first_grant(
+        self,
+        *,
+        tenant_id: str,
+        principal_ref: str,
+        role: str,
+        realm: str,
+        granted_by: str,
+        note: str = "",
+    ) -> Optional[CCScopeGrant]:
+        """The tenant's FIRST administrator, authored by provisioning (A23.14 D4).
+
+        Deliberately NOT `grant()`. That method revives a matching
+        revoked row, which is correct for a human re-granting somebody
+        but catastrophic here: it would let a deliberately revoked
+        administrator return through a provisioning path, outside the
+        grant lifecycle and against A23.10.
+
+        This writes only into a tenant that has NEVER held a grant row,
+        and returns None otherwise. That precondition -- not the
+        identity of the caller -- is what stops it becoming a general
+        authorization path: there is no tenant state in which calling it
+        twice produces a second grant, and no state in which it can
+        overwrite, revive or widen anything.
+
+        The row it writes is an ORDINARY grant. `count_tenant_admins`
+        counts it, A23.8 refuses its removal as the last administrator,
+        and its holder still cannot self-grant. It confers nothing a
+        human-made first grant would not have conferred.
+
+        Callers hold the tenant authorization lock, so the precondition
+        they evaluated is still true at commit.
+        """
+        if await self.any_grant_exists(tenant_id):
+            return None
+        row = CCScopeGrant(
+            tenant_id=tenant_id,
+            principal_type="user",
+            principal_ref=principal_ref,
+            scope_type="tenant",
+            scope_ref="",
+            permission_subset=None,
+            role=role,
+            realm=realm,
+            granted_by=granted_by,
+            expires_at=None,
+            note=note,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
     async def revoke(self, grant: CCScopeGrant, revoked_by: str) -> CCScopeGrant:
         grant.revoked_at = utcnow()
         grant.revoked_by = revoked_by
@@ -1070,14 +1139,26 @@ class TenantSettingsRepo:
         return await self.session.get(CCTenantSettings, tenant_id)
 
     async def enforcement(self, tenant_id: str) -> str:
-        """The posture, defaulting to legacy_open for an unseen tenant.
+        """The posture, defaulting to STRICT for an unseen tenant (A23.11).
 
-        An unseen tenant is one that predates E1.2 or has never been
-        configured; treating that as strict would lock out a working
-        deployment on upgrade.
+        This answered `legacy_open` from E1.2 until A23-5. The reasoning
+        was sound at the time -- CC cannot enumerate a realm's principals
+        to backfill grants, so treating an absence as a decision would
+        have locked out every working deployment on upgrade -- but it
+        left the platform's most permissive posture reachable by a
+        MISSING ROW, which is not a decision anybody made.
+
+        Migration 0021 removes the reason: it pins the deployment's
+        tenant explicitly to `legacy_open` before this default changes,
+        so an existing tenant keeps exactly the posture it had and a
+        tenant born afterwards is strict. A missing row can no longer
+        synthesize the permissive posture.
+
+        This is the ONE seam every caller goes through, so the flip
+        happens once, here.
         """
         row = await self.get(tenant_id)
-        return row.scope_enforcement if row else "legacy_open"
+        return row.scope_enforcement if row else "strict"
 
     async def set_enforcement(
         self, tenant_id: str, mode: str, updated_by: str

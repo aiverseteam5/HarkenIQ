@@ -59,7 +59,7 @@ class TestProvisioningIsRealAndRequired:
         client, sm, _ = await _stack()
         async with client:
             await client.post("/api/admin/tenants/", json={
-                "name": "Acme", "slug": "acme",
+                "name": "Acme", "slug": "acme", "admin_email": "owner@acme",
                 "billing_country": "US", "currency": "USD",
             })
         async with sm() as session:
@@ -109,7 +109,7 @@ class TestRealmResolution:
         client, sm, _ = await _stack()
         async with client:
             await client.post("/api/admin/tenants/", json={
-                "name": "Acme", "slug": "acme",
+                "name": "Acme", "slug": "acme", "admin_email": "owner@acme",
                 "billing_country": "US", "currency": "USD",
             })
         async with sm() as session:
@@ -234,7 +234,7 @@ class TestCustomBundlesIntersect:
         client, sm, _ = await _stack()
         async with client:
             resp = await client.post("/api/admin/tenants/", json={
-                "name": "Acme", "slug": "acme",
+                "name": "Acme", "slug": "acme", "admin_email": "owner@acme",
                 "billing_country": "US", "currency": "USD",
             })
             tenant_id = resp.json()["id"]
@@ -279,7 +279,7 @@ class TestCustomBundlesIntersect:
         client, sm, _ = await _stack()
         async with client:
             resp = await client.post("/api/admin/tenants/", json={
-                "name": "Acme", "slug": "acme",
+                "name": "Acme", "slug": "acme", "admin_email": "owner@acme",
                 "billing_country": "US", "currency": "USD",
             })
             tenant_id = resp.json()["id"]
@@ -318,7 +318,7 @@ class TestCustomBundlesIntersect:
         client, sm, _ = await _stack()
         async with client:
             resp = await client.post("/api/admin/tenants/", json={
-                "name": "Acme", "slug": "acme",
+                "name": "Acme", "slug": "acme", "admin_email": "owner@acme",
                 "billing_country": "US", "currency": "USD",
             })
             tenant_id = resp.json()["id"]

@@ -41,7 +41,11 @@ def _req(**kwargs) -> TenantCreateRequest:
         currency="USD",
         plan="approve",
         node_commit=100,
-        admin_email="",
+        # A23-5: a tenant is born strict and therefore born with an
+        # administrator, so creation fails closed without an owner
+        # subject (A23.14 D3). The default body carries one; the tests
+        # that assert the refusal pass admin_email="" explicitly.
+        admin_email="owner@acme.com",
     )
     defaults.update(kwargs)
     return TenantCreateRequest(**defaults)
@@ -296,3 +300,108 @@ class TestProductionWiring:
             "the real admin client is still never instantiated outside "
             "its own module"
         )
+
+
+class TestStrictBirthRequiresAnOwner:
+    """A23-5 (spec A23.14 D3): a tenant is born with an administrator.
+
+    A tenant is born STRICT after A23.11, and strict enforcement with
+    nobody granted is a tenant nobody can administer: A23.6 made the
+    first grant a two-person act and A23-4 removed the synthesis that
+    used to supply the second person. Two ordinary paths used to produce
+    exactly that tenant, and both now fail closed the way E1.4's missing
+    realm already did.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_owner_email_is_refused(self, svc, session):
+        with pytest.raises(TenantError) as exc:
+            await svc.create_tenant(_req(admin_email=""))
+        assert exc.value.code == "owner_required"
+
+    @pytest.mark.asyncio
+    async def test_the_refused_tenant_leaves_no_row_behind(self, svc, session):
+        with pytest.raises(TenantError):
+            await svc.create_tenant(_req(admin_email=""))
+        assert await TenantRepo(session).get_by_slug("acme") is None
+
+    @pytest.mark.asyncio
+    async def test_an_owner_that_cannot_be_minted_fails_closed(
+        self, svc, keycloak, session,
+    ):
+        """This used to log a warning and continue.
+
+        The resulting `users` row carried `keycloak_user_id=None`, and a
+        grant keyed on an email is a guess rather than an authorization,
+        so Central Command could never seed that tenant's first grant.
+        """
+        async def _boom(*a, **k):
+            raise RuntimeError("keycloak said no")
+
+        keycloak.create_user = _boom
+        with pytest.raises(TenantError) as exc:
+            await svc.create_tenant(_req())
+        assert exc.value.code == "owner_provision_failed"
+        assert await TenantRepo(session).get_by_slug("acme") is None
+
+    @pytest.mark.asyncio
+    async def test_a_born_tenant_records_an_owner_subject(self, svc, session):
+        """What Central Command needs to seed the first grant."""
+        result = await svc.create_tenant(_req())
+        users, _ = await UserRepo(session).list_by_tenant(
+            result["id"], role="tenant_owner",
+        )
+        assert len(users) == 1
+        assert users[0].keycloak_user_id, (
+            "the owner SUBJECT is the only thing a grant can be keyed on"
+        )
+
+
+class TestTheOwnerCanActuallyLogIn:
+    """A23-5: an administrator who cannot authenticate is not one.
+
+    Keycloak's VERIFY_PROFILE required action is on by default and
+    demands `firstName`/`lastName`. A user minted without them is
+    refused at login with "Account is not fully set up" -- and the user
+    record reports an EMPTY `requiredActions` while doing it, so nothing
+    in the Console's own data shows the account is unusable.
+
+    This never mattered while nobody signed in as the owner the Console
+    mints. A23.14 D4 makes that owner the tenant's founding
+    administrator, so it does now. Found on the live stack, not in a
+    unit test.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_minted_owner_has_a_complete_profile(self, svc, keycloak):
+        result = await svc.create_tenant(_req())
+        realm = result["keycloak_realm"]
+        users = list(keycloak._users[realm].values())
+        assert len(users) == 1, users
+        owner = users[0]
+        assert owner["firstName"], owner
+        assert owner["lastName"], owner
+        assert owner["emailVerified"] is True, owner
+        assert owner["enabled"] is True, owner
+
+    def test_the_real_client_sends_the_same_profile_fields_as_the_mock(self):
+        """The mock is only useful while it matches.
+
+        It recorded four fields where the real client sends eight, so a
+        profile Keycloak would reject looked complete in every test.
+        """
+        import inspect
+
+        from harkeniq_console.keycloak_admin import (
+            KeycloakAdminClient,
+            MockKeycloakAdminClient,
+        )
+
+        real = inspect.getsource(KeycloakAdminClient.create_user)
+        mock = inspect.getsource(MockKeycloakAdminClient.create_user)
+        for field in ("firstName", "lastName", "emailVerified", "enabled"):
+            assert field in real, field
+            assert field in mock, (
+                f"the mock omits {field!r}, so a user the real Keycloak "
+                f"would refuse looks healthy in tests"
+            )

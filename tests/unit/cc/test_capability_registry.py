@@ -42,6 +42,8 @@ from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "test-tenant"
 
 SWITCH_DECL = declare("gnmi", ["INTERFACE_DISABLE", "INTERFACE_ENABLE"], "switch")
@@ -306,6 +308,11 @@ async def client():
     app = create_app(
         AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     )
+    # A23-5: a rowless tenant is STRICT now (A23.11), so this fixture
+    # seeds the founding administrator tenant birth seeds (A23.14 D4)
+    # instead of leaning on the `legacy_open` synthesis a missing row
+    # used to give.
+    await seed_tenant_admin(sessionmaker, TENANT, "lab-user")
     async with sessionmaker() as session:
         site = await SiteRepo(session).upsert(
             TENANT, "dc-blr-1", "https://sm1.lab:50051"

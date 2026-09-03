@@ -23,6 +23,8 @@ from harkeniq_cc.predictive import (
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.warranty.base import WarrantyRecord
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "test-tenant"
 NOW = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -135,6 +137,11 @@ async def client():
     sessionmaker = make_sessionmaker(engine)
     state = AppState(config=config, engine=engine, sessionmaker=sessionmaker)
     app = create_app(state)
+    # A23-5: a rowless tenant is STRICT now (A23.11), so this
+    # fixture seeds the founding administrator that tenant
+    # birth seeds (A23.14 D4) instead of leaning on the
+    # `legacy_open` synthesis a missing row used to give.
+    await seed_tenant_admin(sessionmaker, TENANT, "lab-user")
 
     async with sessionmaker() as session:
         site = await SiteRepo(session).upsert(TENANT, "dc-blr-1", "sm:50051")

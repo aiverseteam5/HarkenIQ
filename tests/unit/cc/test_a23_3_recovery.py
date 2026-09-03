@@ -84,6 +84,12 @@ async def _seed(strict: bool = True):
     estate = await _estate(sessionmaker)
     if strict:
         await _strict(sessionmaker)
+    else:
+        # A23-5: `legacy_open` is now an EXPLICIT posture, never the
+        # answer to a missing row (A23.11). A test about legacy
+        # behaviour pins it the way migration 0021 pins a real
+        # pre-A23-5 tenant.
+        await _legacy(sessionmaker)
     return app, sessionmaker, estate
 
 

@@ -2305,3 +2305,110 @@ tenant whose only administrator was ever revoked has NO principal who
 synthesizes their way back. Seed the first grant through the existing
 CC→Console internal channel; never a self-grant exception, never a
 platform bypass. Not implemented here.
+
+---
+
+## §27 · A23-5 — strict birth (Amendment A23.14)
+
+**Status:** ratified 2026-09-03 (decided: Vinod), recorded before the
+code. This section ratifies two implementation decisions A23.11 left
+open. It is not new architecture.
+
+### The two questions A23.11 did not answer
+
+A23.11 said "pin every existing tenant's current posture explicitly by
+migration, then change the default". Implementation found that neither
+half was executable as written.
+
+**Which tenants can a CC migration enumerate?** None, authoritatively.
+Central Command has 39 tables and not one of them is a tenant registry;
+`cc_tenant_settings` is a settings table keyed BY tenant, not a list OF
+tenants. The authoritative registry is the Console's `tenants` (E1.4 made
+`keycloak_realm` its unique authoritative binding), which lives in
+another service and another database with no code path from CC — the two
+communicate only over the internal HTTP channel, and a migration running
+`alembic upgrade head` inside the CC container has no such channel.
+
+Enumerating tenants from operational tables (the 0011 precedent:
+`cc_sites` ∪ `cc_org_units`) is inference, not authority: it misses a
+tenant whose only evidence lives elsewhere, and it misses entirely a
+tenant with no operational rows at all.
+
+The resolution follows from what CC already is. Per doc 01 §7, L1–L3 are
+single-tenant software; every CC request resolves
+`request.app.state.cc.config.tenant_id` from `HARKEN_CC_TENANT_ID`. A CC
+deployment IS one tenant. So the migration speaks for exactly that
+tenant, plus any tenant already holding a settings row, and infers
+nothing. `HARKEN_CC_TENANT_ID` is used as an identity, never as an
+inventory.
+
+**What does a tenant born without an administrator do?** Today: becomes
+usable anyway. `create_tenant` treats `admin_email` as optional, and when
+it IS supplied but Keycloak user creation raises, the code logs a warning
+and continues, writing a `users` row with `keycloak_user_id=None`. Either
+route produces an `active` tenant with no authoritative owner subject.
+That was survivable while `legacy_open` synthesized tenant-wide reach for
+a never-granted human. Under strict birth it is a tenant nobody can ever
+administer, because A23.6 made the first grant a two-person act and
+A23-4 removed the synthesis that used to supply the second person.
+
+`tenants.status` has exactly two values in the codebase, `active` and
+`suspended`. There is no provisioning or incomplete state, and inventing
+one would touch billing, `/api/me` and admin listing, all of which filter
+on `status == "active"`. So A23-5 introduces no state and instead extends
+the fail-closed precedent E1.4 already established for the realm.
+
+### Decisions
+
+**D1 — Tenant identity at migration.** Migration 0021 pins the
+deployment's configured tenant (`HARKEN_CC_TENANT_ID`) and every tenant
+already carrying a `cc_tenant_settings` row. It enumerates no operational
+table, builds no CC-side tenant registry, and does not read the Console
+database. Deterministic and idempotent.
+
+**D2 — The pinned value is `legacy_open`.** An existing tenant's current
+posture is `legacy_open`, because that is what the missing-row default
+has answered since E1.2. Pinning states what was implied and changes
+nothing. An explicit row of either posture is preserved untouched. A
+historically legacy tenant is never silently converted to strict.
+
+**D3 — An owner subject is a precondition of tenant creation.** Under
+strict birth a tenant without an administrator is unusable, so Console
+tenant creation fails closed when no authoritative owner subject can be
+established: `admin_email` is required, and a Keycloak owner that cannot
+be minted rolls the tenant back through the path the realm failure
+already uses. No new lifecycle state.
+
+**D4 — The first grant is a provisioning act.** CC seeds ONE tenant-scope
+`tenant_owner` grant for the Console-recorded owner subject, pulled over
+the existing CC→Console internal channel. Written by a dedicated seam
+that refuses when the tenant carries ANY grant row of any lifecycle
+state, so it can never revive a revoked administrator (A23.10) and can
+never become a general authorization path. Attributed
+`system:tenant_birth`, audited once, inert thereafter.
+
+**D5 — Migrated ≠ newly born.** Strict birth governs tenants created
+after A23-5. A historical tenant found without a usable administrator
+keeps its pinned posture and is reported through the existing
+`locked_out` reading. No synthetic administrator is invented for it.
+
+### Why the seed is not a bypass
+
+It is not a principal's act, so the rules it does not call are rules that
+do not apply to it: A23.6's `refuse_self_grant` and `check_delegation`
+are functions of a grantor PRINCIPAL, invoked only from the HTTP
+admission sequence, and a provisioning routine has no principal. The
+platform already authors grant rows this way — migration 0011 writes
+`granted_by='migration:0011'` rows with no admission check.
+
+What bounds it is the precondition, not the caller: the seam writes only
+into a tenant that has never had a grant row of any kind. A tenant with
+one revoked administrator is not born; it is a recovery case, and A23.10
+governs it. The seeded row is an ordinary grant the moment it exists —
+`count_tenant_admins` counts it, A23.8 refuses its removal as the last
+administrator, and its holder still cannot self-grant.
+
+### Out of scope
+
+No new permission, no new lifecycle state, no second RBAC, no second
+grant path, no Console→CC trust direction, no A24 work.

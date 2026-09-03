@@ -186,6 +186,69 @@ step "CC fleet poll picked up the agent (token bootstrap worked)"
 # E1.4: a TENANT-realm identity. A platform token is refused by Central
 # Command at validation now, which is the boundary this proves.
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
+
+# A23-5: the tenant is born STRICT (A23.11), so gate-owner reaches
+# NOTHING until somebody grants it -- there is no `legacy_open`
+# synthesis to stand in any more. The tenant's founding administrator
+# was seeded at birth by provisioning (A23.14 D4) on the owner subject
+# the Console recorded, and it is that administrator who grants
+# gate-owner, which is the ordinary two-person act A23.6 requires.
+BIRTH_OWNER=${DEMO_OWNER:-demo-admin@harkeniq.com}
+BIRTH_PASS=${DEMO_OWNER_PASS:-demo-admin}
+birth_granted() {
+  local t
+  t=$(tenant_token "$BIRTH_OWNER" "$BIRTH_PASS") || return 1
+  [ -n "$t" ] || return 1
+  curl -sf -H "Authorization: Bearer $t" \
+    http://localhost:8090/api/scope-grants/me | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+raise SystemExit(0 if d['tenant_wide'] and d['synthesis'] == 'granted' else 1)"
+}
+wait_for "the tenant is born with its administrator" 300 birth_granted
+BIRTH_TOKEN=$(tenant_token "$BIRTH_OWNER" "$BIRTH_PASS")
+curl -sf -H "Authorization: Bearer $BIRTH_TOKEN" \
+  http://localhost:8090/api/scope-grants/me | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is True, d
+assert d['synthesis'] == 'granted', ('the founding grant must be REAL, never '
+                                     'synthesized: %r' % d)
+print('A23-5: tenant born strict, administrator seeded:', d['synthesis'])"
+
+OWNER_SUB=$(python3 -c "
+import base64, json
+t = '$TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+BOOT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $BIRTH_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"tenant_owner\"}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$BOOT" = "201" ] || {
+  echo "the founding administrator could not grant gate-owner ($BOOT)" >&2
+  exit 1; }
+echo "the birth-seeded administrator granted the gate's operator identity"
+
+# The operator identity needs authority from the start too -- under
+# strict birth it is not tenant-wide by synthesis any more, and every
+# early step below reads approvals, incidents and attention as it. A
+# real tenant's administrator grants its operators; the E1.2 step
+# further down NARROWS this one to a single site, which is what makes
+# its `site_ids == [E12_SITE]` assertion a real narrowing rather than an
+# accident of never having been granted.
+OP_BOOT_SUB=$(python3 -c "
+import base64, json
+t = '$(tenant_token gate-op@demo gate-op)'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+OPBOOT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $BIRTH_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$OP_BOOT_SUB\",\"scope_type\":\"tenant\",\"role\":\"operator\"}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$OPBOOT" = "201" ] || {
+  echo "the founding administrator could not grant the operator ($OPBOOT)" >&2
+  exit 1; }
+echo "and the operator identity"
+
 wait_for "CC fleet has the device" 120 bash -c \
   "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:8090/api/fleet/ | grep -q agent_id"
 
@@ -1047,26 +1110,66 @@ grant() {
     http://localhost:8090/api/scope-grants/
 }
 # A23.6: self-grant is refused outright, tenant-wide grantors included,
-# so the owner cannot hand THEMSELVES the first tenant grant. The first
-# administrator is bootstrapped by a second owner-role identity, which
-# under legacy_open holds synthesized tenant-wide reach (never counted
-# as an administrator) and may grant others. This is the two-person
-# bootstrap the rule implies; A23-5's strict birth must seed the first
-# grant some other way (recorded finding).
+# so the owner cannot hand THEMSELVES the first tenant grant.
 SELF=$(grant "$OWNER_SUB" tenant "" tenant_owner)
 [ "$SELF" = "403" ] || { echo "the owner self-granted tenant scope ($SELF)" >&2; exit 1; }
+
+# The gate's own identity was granted at the E1.4 bootstrap above, by the
+# administrator the tenant was BORN with (A23.14 D4) -- there is no
+# `legacy_open` synthesis left to bootstrap from.
+#
+# The seeded grant is an ORDINARY grant (A23.14 D4): it confers nothing
+# special and is subject to the normal lifecycle, so a real
+# administrator can retire the provisioning one now that the tenant has
+# its own. This also restores the single-administrator precondition the
+# A23-3 last-admin steps below depend on.
+BIRTH_SUB=$(python3 -c "
+import base64, json
+t = '$BIRTH_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+BIRTH_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/scope-grants/ | python3 -c "
+import sys, json
+rows = [g for g in json.load(sys.stdin)['grants']
+        if g['principal_ref'] == '$BIRTH_SUB' and g['scope_type'] == 'tenant']
+assert rows, 'the birth-seeded grant is not in the ledger'
+assert rows[0]['granted_by'] == 'system:tenant_birth', rows[0]
+print(rows[0]['id'])")
+RETIRE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$BIRTH_GID")
+[ "$RETIRE" = "200" ] || {
+  echo "the seeded grant did not behave like an ordinary one ($RETIRE)" >&2
+  exit 1; }
+echo "owner self-grant 403; the birth-seeded grant is ordinary, and retired"
+
+# admin2 is used by the A23-3 last-admin steps further down.
 tenant_realm_user gate-a23-admin2@demo gate-a23-admin2 tenant_owner
 ADMIN2_TOKEN=$(tenant_token gate-a23-admin2@demo gate-a23-admin2)
 ADMIN2_SUB=$(python3 -c "
 import base64, json
 t = '$ADMIN2_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
 print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
-BOOT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-  -H "Authorization: Bearer $ADMIN2_TOKEN" -H "Content-Type: application/json" \
-  -d "{\"principal_ref\":\"$OWNER_SUB\",\"scope_type\":\"tenant\",\"role\":\"tenant_owner\"}" \
-  http://localhost:8090/api/scope-grants/)
-[ "$BOOT" = "201" ] || { echo "tenant grant by the second identity refused ($BOOT)" >&2; exit 1; }
-echo "owner self-grant 403; first administrator bootstrapped by a second identity"
+# A23-5: the operator was granted TENANT scope at the bootstrap so the
+# early steps could run under strict birth. E1.2 is about narrowing, so
+# withdraw that first -- otherwise the site grant below would ADD to a
+# tenant-wide reach and the `site_ids == [E12_SITE]` assertion would be
+# asserting nothing.
+OP_TENANT_GID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/scope-grants/ | python3 -c "
+import sys, json
+rows = [g for g in json.load(sys.stdin)['grants']
+        if g['principal_ref'] == '$OP_SUB' and g['scope_type'] == 'tenant']
+print(rows[0]['id'] if rows else '')")
+if [ -n "$OP_TENANT_GID" ]; then
+  NARROW=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+    -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/scope-grants/$OP_TENANT_GID")
+  [ "$NARROW" = "200" ] || {
+    echo "the operator's tenant grant could not be withdrawn ($NARROW)" >&2
+    exit 1; }
+  echo "operator narrowed: tenant grant withdrawn before the site grant"
+fi
 [ "$(grant "$OP_SUB" site "$E12_SITE" operator)" = "201" ] || {
   echo "site grant refused" >&2; exit 1; }
 
@@ -1265,11 +1368,19 @@ print(len(rows), 'rows;', len(with_ref), 'with actor_ref;', len(owner), 'by the 
       len(emails), 'recorded by email but identified by subject')
 "
 
-step "A23-2: a real 0019 -> 0020 upgrade on PostgreSQL with existing rows"
+step "A23-2: a real 0019 -> head upgrade on PostgreSQL with existing rows"
 # Take the live database back to 0019 (drop the column and its index,
 # rewind the version), then let Central Command's own alembic bring it
 # forward. Existing rows come back with actor_ref NULL -- no backfill --
 # and the chain, which never hashed the column, still verifies.
+#
+# The expected head is READ FROM THE CHAIN, not hardcoded. This asserted
+# '0020' literally and A23-5's 0021 broke it -- a true statement about
+# the migration that ran, failing because a later slice added one. The
+# subject of this step is "the upgrade ran and backfilled nothing", not
+# which revision happens to be last today.
+CC_HEAD=$(ls "$_REPO_ROOT"/services/central_command/src/harkeniq_cc/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
 BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "select count(*) from cc_audit_log")
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
@@ -1287,10 +1398,11 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
 import sys
 lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
 version, nulls, total, index = lines[0], int(lines[1]), int(lines[2]), lines[3]
-assert version == '0020', version
+assert version == '$CC_HEAD', (version, 'expected head $CC_HEAD')
 assert total == int('$BEFORE') and nulls == total, (nulls, total, '$BEFORE')
 assert index == 'ix_cc_audit_log_tenant_actor_ref', index
-print('0020 applied on PostgreSQL:', total, 'existing rows, all actor_ref NULL, index present')
+print('chain applied to head $CC_HEAD on PostgreSQL:', total,
+      'existing rows, all actor_ref NULL, index present')
 "
 curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
   | python3 -c "
@@ -1298,6 +1410,112 @@ import sys, json
 d = json.load(sys.stdin)
 assert d['valid'], d
 print('chain still valid after the upgrade:', d['length'], 'entries')"
+
+step "A23-5: a pinned legacy tenant keeps its posture across the 0020 -> 0021 upgrade"
+# The migration's whole job. Simulate a pre-A23-5 deployment on the LIVE
+# PostgreSQL: a tenant with history and no settings row, which is exactly
+# what every existing installation looks like. It must come back
+# `legacy_open` -- the posture the old default was giving it -- and not
+# strict, which would lock a working deployment out on upgrade.
+# The deployment's history is REAL -- this tenant has been acting since
+# the first step, so `cc_audit_log` is populated and 0021 sees a database
+# that has served somebody. Deliberately NOT faked with a synthetic audit
+# row: one with a fabricated hash sorts into the chain and would break
+# every later `/api/audit/verify`.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  delete from cc_tenant_settings where tenant_id = 'tenant-demo';
+  update alembic_version set version_num='0020';" > /dev/null
+docker compose exec -T central-command sh -c \
+  "cd /app/services/central_command && alembic upgrade head" 2>&1 | tail -1
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  select version_num from alembic_version;
+  select scope_enforcement || '|' || updated_by from cc_tenant_settings
+   where tenant_id = 'tenant-demo';" \
+  | python3 -c "
+import sys
+lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+version, pinned = lines[0], lines[1]
+assert version == '$CC_HEAD', (version, 'expected head $CC_HEAD')
+mode, by = pinned.split('|')
+assert mode == 'legacy_open', ('an existing tenant must keep the posture it '
+                               'already had, not be flipped: %r' % pinned)
+assert by == 'migration:0021', pinned
+print('0021 on PostgreSQL: existing tenant pinned', mode, 'by', by)"
+
+step "A23-5: the pin is idempotent and never overwrites an explicit posture"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  update cc_tenant_settings set scope_enforcement='strict',
+         updated_by='an-operator@demo' where tenant_id='tenant-demo';
+  update alembic_version set version_num='0020';" > /dev/null
+docker compose exec -T central-command sh -c \
+  "cd /app/services/central_command && alembic upgrade head" 2>&1 | tail -1
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  select scope_enforcement || '|' || updated_by from cc_tenant_settings
+   where tenant_id = 'tenant-demo';" \
+  | python3 -c "
+import sys
+mode, by = sys.stdin.read().strip().split('|')
+assert (mode, by) == ('strict', 'an-operator@demo'), (mode, by)
+print('a decision somebody made survives the migration:', mode, 'by', by)"
+
+step "A23-5: legacy_open cannot be reached by a missing row"
+# The invariant A23.11 retires. Remove the tenant's settings row entirely
+# and ask the running service what its posture is: before A23-5 an
+# absence answered `legacy_open` -- the platform's most permissive
+# posture, reachable by a decision nobody made.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "delete from cc_tenant_settings where tenant_id = 'tenant-demo';" > /dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/tenant-settings/scope-enforcement | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['scope_enforcement'] == 'strict', (
+    'a missing row must never answer legacy_open again: %r' % d)
+print('an unpinned tenant reads:', d['scope_enforcement'])"
+# And a never-granted principal gets no synthesis from it.
+tenant_realm_user gate-a235-nobody@demo gate-a235-nobody tenant_owner || true
+A235_TOKEN=$(tenant_token gate-a235-nobody@demo gate-a235-nobody)
+curl -sf -H "Authorization: Bearer $A235_TOKEN" \
+  http://localhost:8090/api/scope-grants/me | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['tenant_wide'] is False, d
+assert d['synthesis'] == 'strict', d
+print('an ungranted tenant_owner on an unpinned tenant reaches nothing:',
+      d['synthesis'])"
+curl -sf -H "Authorization: Bearer $A235_TOKEN" http://localhost:8090/api/fleet/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['total'] == 0, ('a principal with no grant must see no devices: %r'
+                         % d['total'])
+print('and sees', d['total'], 'devices')"
+# Restore the tenant's explicit strict posture for the steps that follow.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  insert into cc_tenant_settings (tenant_id, scope_enforcement, updated_by,
+                                  updated_at)
+  values ('tenant-demo', 'strict', 'gate', now())
+  on conflict (tenant_id) do update set scope_enforcement='strict';" > /dev/null
+
+step "A23-5: a tenant cannot be created without an administrator"
+# A23.14 D3: strict birth means an owner subject is a precondition of
+# creation, not an optional extra. Both routes that used to produce an
+# active tenant with nobody able to administer it now fail closed.
+NOOWNER=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"No Owner Co","slug":"a235-noowner","billing_country":"US",
+       "currency":"USD","plan":"approve","node_commit":1,"admin_email":""}' \
+  http://localhost:8100/api/admin/tenants/)
+[ "$NOOWNER" = "400" ] || {
+  echo "a tenant was created with no administrator ($NOOWNER)" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  "http://localhost:8100/api/admin/tenants/?search=a235-noowner" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+rows = [t for t in d.get('items', d if isinstance(d, list) else [])
+        if t.get('slug') == 'a235-noowner']
+assert not rows, ('the refused tenant left a row behind: %r' % rows)
+print('ownerless tenant creation: 400, and no tenant row survives')"
 
 step "A23-2: readers are dual-form -- legacy rows by display string, new rows by subject"
 # A new write after the upgrade carries the subject again; the historical

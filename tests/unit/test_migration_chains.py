@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0020"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0021"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -34,7 +34,7 @@ SERVICES = {
 }
 
 
-def _alembic(service: str, db_path: Path, *args: str) -> None:
+def _alembic(service: str, db_path: Path, *args: str, extra_env: dict | None = None) -> None:
     cwd, env_var, _ = SERVICES[service]
     result = subprocess.run(
         [sys.executable, "-m", "alembic", *args],
@@ -42,6 +42,10 @@ def _alembic(service: str, db_path: Path, *args: str) -> None:
         env={
             **_clean_env(),
             env_var: f"sqlite+aiosqlite:///{db_path}",
+            # A23-5: migration 0021 reads the deployment's own tenant
+            # identity (the 0012 precedent), so a test has to be able to
+            # say which tenant the database belongs to.
+            **(extra_env or {}),
         },
         capture_output=True,
         text=True,
@@ -763,3 +767,149 @@ class TestCC0020AuditActorRef:
         assert "actor_ref" not in _columns(db, "cc_audit_log")
         _alembic("cc", db, "upgrade", "head")
         assert "actor_ref" in _columns(db, "cc_audit_log")
+
+
+class TestCC0021StrictBirthPin:
+    """A23-5 (spec A23.11/A23.14): pin the existing tenant, then flip.
+
+    The migration's whole job is to make an existing deployment's
+    posture EXPLICIT before `TenantSettingsRepo.enforcement` stops
+    answering `legacy_open` for a missing row. Get it wrong in either
+    direction and the slice is a defect: pin nothing and every upgraded
+    tenant silently becomes strict; pin everything and every fresh
+    deployment is born permissive.
+    """
+
+    TAG = "migration:0021"
+
+    def _settings(self, db):
+        con = sqlite3.connect(db)
+        rows = con.execute(
+            "select tenant_id, scope_enforcement, updated_by "
+            "from cc_tenant_settings"
+        ).fetchall()
+        con.close()
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+    def _with_history(self, db, tenant="tenant-demo"):
+        """An audit row: this database has served somebody."""
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_audit_log (id, ts, actor, action, subject, "
+            " tenant_id, detail, seq, prev_hash, entry_hash) "
+            "values ('h1', datetime('now'), 'ops@example.com', 'seed', 's', "
+            f"'{tenant}', null, 1, '', 'abc')"
+        )
+        con.commit()
+        con.close()
+
+    def _rewind(self, db):
+        con = sqlite3.connect(db)
+        con.execute("delete from cc_tenant_settings where updated_by = ?", (self.TAG,))
+        con.execute("update alembic_version set version_num='0020'")
+        con.commit()
+        con.close()
+
+    def test_a_fresh_deployment_is_not_pinned_and_is_therefore_born_strict(
+        self, tmp_path,
+    ):
+        """The trap this migration has to avoid.
+
+        On a new deployment alembic runs 0001..0021 in ONE invocation,
+        so an unconditional pin would hand EVERY fresh install
+        `legacy_open` and strict birth would never once happen.
+        """
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        assert self._settings(db) == {}
+
+    def test_an_existing_deployment_is_pinned_to_the_posture_it_already_had(
+        self, tmp_path,
+    ):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        self._with_history(db)
+        self._rewind(db)
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        assert self._settings(db) == {
+            "tenant-demo": ("legacy_open", self.TAG)
+        }, "an existing tenant must keep the posture the default gave it"
+
+    def test_an_explicit_posture_of_either_kind_is_never_overwritten(
+        self, tmp_path,
+    ):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        self._with_history(db)
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_tenant_settings "
+            "(tenant_id, scope_enforcement, updated_by, updated_at) "
+            "values ('tenant-demo', 'strict', 'someone@example.com', "
+            " datetime('now'))"
+        )
+        con.execute("update alembic_version set version_num='0020'")
+        con.commit()
+        con.close()
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        assert self._settings(db) == {
+            "tenant-demo": ("strict", "someone@example.com")
+        }, "a decision somebody made is not this migration's to change"
+
+    def test_it_is_idempotent(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        self._with_history(db)
+        self._rewind(db)
+        for _ in range(2):
+            _alembic("cc", db, "upgrade", "head",
+                     extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+            self._rewind_version_only(db)
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        assert len(self._settings(db)) == 1
+
+    def _rewind_version_only(self, db):
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0020'")
+        con.commit()
+        con.close()
+
+    def test_without_a_configured_tenant_it_pins_nothing(self, tmp_path):
+        """A deployment with no tenant identity has no tenant to lock out."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        self._with_history(db)
+        self._rewind(db)
+        _alembic("cc", db, "upgrade", "head")
+        assert self._settings(db) == {}
+
+    def test_the_downgrade_removes_only_its_own_rows(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        self._with_history(db)
+        self._rewind(db)
+        _alembic("cc", db, "upgrade", "head",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_tenant_settings "
+            "(tenant_id, scope_enforcement, updated_by, updated_at) "
+            "values ('other', 'strict', 'someone@example.com', datetime('now'))"
+        )
+        con.commit()
+        con.close()
+        _alembic("cc", db, "downgrade", "0020",
+                 extra_env={"HARKEN_CC_TENANT_ID": "tenant-demo"})
+        remaining = self._settings(db)
+        assert "tenant-demo" not in remaining
+        assert remaining["other"] == ("strict", "someone@example.com"), (
+            "a row a human set is theirs, not the migration's to delete"
+        )

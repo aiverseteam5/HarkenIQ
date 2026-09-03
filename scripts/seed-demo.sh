@@ -11,6 +11,15 @@ CONSOLE=${CONSOLE:-http://localhost:8100}
 CC=${CC:-http://localhost:8090}
 ADMIN_USER=${ADMIN_USER:-admin@harkeniq.com}
 ADMIN_PASS=${ADMIN_PASS:-admin}
+# A23-5: the tenant's owner is now its founding administrator -- Central
+# Command seeds the first `role.manage` grant on the subject the Console
+# recorded (A23.14 D4). The demo used to create the Console owner as
+# `owner@demo.example` and then mint a SEPARATE Keycloak user for every
+# CC call, which after strict birth would leave the identity the demo
+# actually uses holding no grant at all. They are one identity now.
+TENANT_REALM=${TENANT_REALM:-tenant-demo}
+DEMO_OWNER=${DEMO_OWNER:-demo-admin@harkeniq.com}
+DEMO_OWNER_PASS=${DEMO_OWNER_PASS:-demo-admin}
 
 echo "==> Minting a platform-admin token from Keycloak"
 TOKEN=$(curl -sf -X POST \
@@ -24,7 +33,7 @@ curl -s -X POST "$CONSOLE/api/admin/tenants/" -H "$AUTH" \
   -H "Content-Type: application/json" \
   -d '{"name": "Demo Datacenter Co", "slug": "tenant-demo",
        "billing_country": "US", "currency": "USD", "plan": "approve",
-       "node_commit": 10, "admin_email": "owner@demo.example"}' \
+       "node_commit": 10, "admin_email": "'"$DEMO_OWNER"'"}' \
   | python3 -m json.tool | head -6 || true
 
 echo "==> Registering the tenant's Central Command placement"
@@ -58,10 +67,7 @@ fi
 # Tenant creation mints an owner in the tenant realm with no credential,
 # which is right for a real install (the owner is invited). The demo has
 # nobody to invite, so it sets one here.
-echo "==> Minting a tenant-realm identity for Central Command"
-TENANT_REALM=${TENANT_REALM:-tenant-demo}
-DEMO_OWNER=${DEMO_OWNER:-demo-admin@harkeniq.com}
-DEMO_OWNER_PASS=${DEMO_OWNER_PASS:-demo-admin}
+echo "==> Giving the tenant owner a usable credential"
 KC_ADMIN=$(curl -sf -X POST \
   "$KEYCLOAK/realms/master/protocol/openid-connect/token" \
   -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
@@ -76,6 +82,23 @@ _UID=$(curl -s "$KEYCLOAK/admin/realms/$TENANT_REALM/users?username=$DEMO_OWNER&
   -H "Authorization: Bearer $KC_ADMIN" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
 if [ -n "$_UID" ]; then
+  # Tenant creation already assigned tenant_owner in the realm; what the
+  # demo adds is a password it can actually log in with. The owner is
+  # minted with a temporary credential, which is right for a real
+  # install (the owner is invited) and unusable for a script.
+  curl -s -X PUT "$KEYCLOAK/admin/realms/$TENANT_REALM/users/$_UID/reset-password" \
+    -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+    -d "{\"type\":\"password\",\"value\":\"$DEMO_OWNER_PASS\",
+         \"temporary\":false}" -o /dev/null
+  # firstName/lastName matter: Keycloak's VERIFY_PROFILE required action
+  # refuses login with "Account is not fully set up" without them, and
+  # reports an EMPTY requiredActions while doing it. The Console fills
+  # them in at creation now; this also repairs an owner minted by a
+  # build that predates that.
+  curl -s -X PUT "$KEYCLOAK/admin/realms/$TENANT_REALM/users/$_UID" \
+    -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+    -d '{"requiredActions":[],"emailVerified":true,"enabled":true,
+         "firstName":"Demo","lastName":"Owner"}' -o /dev/null
   _ROLE=$(curl -s "$KEYCLOAK/admin/realms/$TENANT_REALM/roles/tenant_owner" \
     -H "Authorization: Bearer $KC_ADMIN")
   curl -s -X POST \
@@ -92,6 +115,33 @@ TENANT_TOKEN=$(curl -sf -X POST \
   -d "grant_type=password&client_id=harkeniq-console&username=$DEMO_OWNER&password=$DEMO_OWNER_PASS" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null || echo "")
 TENANT_AUTH="Authorization: Bearer $TENANT_TOKEN"
+
+# A23-5: the tenant is born STRICT, and its first administrative grant is
+# seeded by Central Command once it can read the owner subject back from
+# the Console (A23.14 D4). CC and the Console boot independently, so that
+# can land a moment after this script creates the tenant -- and until it
+# does, the owner holds no grant and every authorized call below is
+# refused, correctly. Wait for the tenant to be born before acting as its
+# administrator.
+echo "==> Waiting for the tenant's first administrator (A23-5 strict birth)"
+_BORN=""
+for _ in $(seq 1 60); do
+  if curl -sf -H "$TENANT_AUTH" "$CC/api/scope-grants/me" 2>/dev/null \
+     | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+raise SystemExit(0 if d.get('tenant_wide') and d.get('synthesis') == 'granted'
+                 else 1)" 2>/dev/null; then
+    _BORN=yes
+    break
+  fi
+  sleep 5
+done
+if [ -n "$_BORN" ]; then
+  echo "  the tenant holds its founding administrator"
+else
+  echo "  !! the tenant has no administrator yet; authorized calls will 403" >&2
+fi
 
 echo "==> Registering site-1's Site Manager with Central Command"
 curl -s -X POST "$CC/api/sites/register" -H "$TENANT_AUTH" \

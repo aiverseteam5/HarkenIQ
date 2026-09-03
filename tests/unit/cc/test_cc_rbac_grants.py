@@ -23,6 +23,8 @@ from harkeniq_cc.config import CCConfig
 from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.runtime import AppState
 
+from tests.unit.cc.conftest import seed_tenant_admin
+
 TENANT = "test-tenant"
 
 
@@ -47,6 +49,12 @@ async def _client_as(role: str):
         config=config, engine=engine, sessionmaker=make_sessionmaker(engine),
     )
     app = create_app(state)
+    # A23-5: a rowless tenant is STRICT now (A23.11). This suite is about
+    # what a ROLE may do, so the acting principal holds a real tenant
+    # grant carrying that role -- previously they were tenant-wide by
+    # the `legacy_open` synthesis a missing row used to give, which
+    # meant the role questions were being asked of an ungoverned tenant.
+    await seed_tenant_admin(state.sessionmaker, TENANT, f"kc-{role}", role=role)
 
     async def _fake():
         return _user_for_role(role)

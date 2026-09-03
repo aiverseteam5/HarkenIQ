@@ -57,6 +57,8 @@ from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.scope import SCOPE_ONLY_MARKER, ScopeError
 
+from tests.unit.cc.conftest import seed_legacy, seed_tenant_admin
+
 TENANT = "t1"
 
 
@@ -121,6 +123,12 @@ async def _stack() -> Stack:
     )
     app = create_app(state)
     stack = Stack(app, state)
+
+    # A23-5: a rowless tenant is STRICT now (A23.11). The default
+    # persona is the tenant's founding administrator, granted the
+    # way tenant birth grants one (A23.14 D4) rather than being
+    # tenant-wide by the synthesis a missing row used to give.
+    await seed_tenant_admin(state.sessionmaker, TENANT, "kc-owner")
 
     async def _fake():
         if stack.machine is not None:
@@ -694,6 +702,12 @@ class TestD2EnforcementIsReportedBeforeItIsEnforced:
         """
         stack = await _stack()
         (site_id,) = await _seed(stack)
+        # A23-5: this report exists for an admin deciding whether to
+        # FLIP, so the tenant it describes is a legacy one -- pinned the
+        # way migration 0021 pins a pre-A23-5 tenant (A23.11). Left
+        # rowless the tenant is already strict and there is nothing to
+        # report in advance of.
+        await seed_legacy(stack.sessionmaker, TENANT)
         async with stack.client() as c:
             scoped = await _agent(c, site_id)
             scopeless = await _agent(c, site_id, name="Loose", scopes=[])

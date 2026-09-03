@@ -1886,6 +1886,61 @@ retired as a platform security invariant, and the compose gate proves a
 new tenant is strict, a pinned legacy tenant stays pinned, and
 `legacy_open` cannot be synthesized by a missing row. (A23-5.)
 
+**A23.14 — Strict birth: the two ratified implementation decisions**
+(dated 2026-09-03, decided: Vinod). A23.11 recorded the dependency; it
+did not say which tenant a Central Command migration is entitled to
+speak for, nor what happens when a tenant is born without an
+administrator. Both are settled here, and neither widens A23.
+
+*Tenant identity at migration.* Central Command is single-tenant
+software (doc 01 §7): every request resolves `config.tenant_id`, and CC
+holds no tenant table — the authoritative tenant registry is the
+Console's `tenants`, in another service and another database, which a CC
+migration cannot and must not read. `HARKEN_CC_TENANT_ID` is therefore
+NOT a tenant inventory; it is the authoritative tenant IDENTITY of the
+deployment being migrated. Migration 0021 pins that one tenant, plus any
+tenant already carrying a `cc_tenant_settings` row, and enumerates no
+operational table to infer that a tenant exists. A quiet tenant with no
+operational data is covered because the deployment's configured identity
+is itself authoritative.
+
+*The pinned value is `legacy_open`.* That is the posture an existing
+tenant already has — the missing-row default has answered `legacy_open`
+since E1.2 — so pinning it changes nothing and states what was
+previously implied. Pinning an existing tenant STRICT would be a silent
+posture change that could lock out a working deployment, which is the
+exact harm E1.2 seeded `legacy_open` to avoid. An explicit row of either
+posture is preserved untouched.
+
+*An active tenant has an administrator.* A new tenant is born STRICT, and
+strict enforcement with no administrator is an unusable tenant, so an
+authoritative owner SUBJECT becomes a precondition of tenant creation.
+The Console's existing fail-closed creation path (E1.4) carries it: no
+`admin_email`, or a Keycloak owner that cannot be minted, now rolls the
+tenant back instead of returning an active tenant nobody administers. No
+new tenant lifecycle state is introduced — `tenants.status` keeps its two
+values, and billing, `/api/me` and admin listing keep filtering on
+`active` unchanged.
+
+*The first grant is a provisioning act, not a principal's act.* Central
+Command seeds ONE tenant-scope `tenant_owner` grant for the Console-
+recorded owner subject, pulled over the existing CC→Console internal
+channel. It is written by a dedicated repository seam that refuses if the
+tenant carries ANY grant row of any lifecycle state — never
+`ScopeGrantRepo.grant()`, which revives a revoked row and would let a
+deliberately removed administrator return outside the grant lifecycle,
+contradicting A23.10. It never routes through the human admission
+sequence, adds no self-grant exception, creates no hidden administrator
+and confers nothing beyond one ordinary grant that A23.8 then protects
+like any other. Attribution is `system:tenant_birth`; the act is audited
+once and is inert forever after.
+
+*Migrated tenants are not newly born tenants.* Strict birth applies to
+tenants created after A23-5. A historical tenant discovered without a
+usable administrator keeps its pinned posture and is REPORTED through the
+existing `locked_out` reading; no synthetic administrator is invented for
+it. (A23-5.)
+
 **A23.12 — Invariants A23 must leave standing.** No grant never means
 tenant-wide authority. Revoked, expired or orphaned grants never mean
 tenant-wide authority. A vanished target never widens. Caller scope never

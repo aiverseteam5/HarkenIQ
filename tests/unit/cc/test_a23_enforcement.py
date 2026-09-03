@@ -56,6 +56,7 @@ from tests.unit.cc.test_e1_persona_matrix import (
     TENANT,
     _client,
     _grant,
+    _legacy,
     _stack,
     _strict,
 )
@@ -214,6 +215,15 @@ async def _seed_a23(app, sessionmaker, base) -> A23Estate:
 
 async def _a23_stack():
     app, sessionmaker, base = await _stack()
+    # A23-5: the estate below is built through the real API by a
+    # tenant-wide owner who holds no grant, which was tenant-wide by
+    # `legacy_open` synthesis until A23.11 made a rowless tenant STRICT.
+    # Pin the legacy posture for the SEEDING, exactly as migration 0021
+    # pins a pre-A23-5 tenant; `_strict` then flips it and every
+    # assertion below still runs under strict enforcement. Without this
+    # the seed itself is refused and the narrowing tests would pass
+    # while testing nothing.
+    await _legacy(sessionmaker)
     estate = await _seed_a23(app, sessionmaker, base)
     await _strict(sessionmaker)
     return app, sessionmaker, estate
