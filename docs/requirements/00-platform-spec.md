@@ -2062,3 +2062,67 @@ agent reasoning. A future governed slice may extend A6 toward capability
 intent or evidence ingestion — which would need its own evidence-trust
 model — while preserving A24.1: HarkenIQ remains the sole authority that
 derives an executable proposal.
+
+### A24 addendum — 2026-09-05 — pre-merge red-team findings (decided: Vinod)
+
+An independent read-only review of PR #34 found one blocker and four high
+findings at the new external machine-write trust boundary. Every claim was
+independently reproduced against the code before any was implemented; all
+five were correct, and a sixth was found while reproducing them. The A6
+architecture is unchanged — propose-by-reference, server-derived identity,
+binding ∩ ceiling, `candidate_ref` as a lookup, one `govern_proposal()`,
+one `admit_proposal()`, unchanged CC→SM→Node authority.
+
+**A24.11 — Idempotency must be serialized, not merely constrained.** The
+unique constraint makes a duplicate impossible; it does not make a
+concurrent duplicate *handled*. Reproduced on PostgreSQL: when two
+requests carrying one key both complete the replay lookup before either
+inserts, the loser raises an unhandled integrity error. Ingress therefore
+takes a transaction-scoped advisory lock covering the whole
+lookup→process→persist→commit sequence for that principal, in the
+established `pg_advisory_chain_lock` pattern. Exception handling is a
+backstop, never the concurrency architecture.
+
+**A24.12 — Attribution identity is not operational identity.** The
+proposal dedupe key begins with the proposing agent, so two agents could
+hold two simultaneously active proposals for the SAME mutually exclusive
+physical operation. Agent identity remains provenance. Operational
+collision identity is server-owned and independent of the proposer, and is
+DERIVED from the canonical action-parameter contract rather than
+hard-coded: an operation is identified by its device, its action class,
+and those parameters the contract marks as addressing the affected
+component (`source == component`). Parameters the contract states no
+executor reads are excluded by that same rule. Two DIFFERENT operations on
+one target remain legitimately concurrent. Enforced for OPEN proposals
+only — a settled proposal must not fence a device forever.
+
+**A24.13 — Ingress rate is an ATTEMPT rate, enforced atomically.** Count,
+compare and admit must be one atomic decision for the deployed
+multi-replica runtime; a non-atomic count is advisory. Every external
+attempt counts — first submission, replay, idempotency conflict, rejected
+candidate, and authenticated authorization refusal — because a replay that
+skipped the counter is an unmetered channel. A replay stays functionally
+idempotent; it is not free. Attempt accounting is bounded by its own
+limit: once over, a request is refused without adding to the record it
+would otherwise grow.
+
+**A24.14 — A body must be bounded before it is parsed.** Schema field
+limits reject a payload the server has already read and allocated.
+Ingress therefore enforces a byte ceiling at the transport layer, counting
+bytes actually received, correct for both declared and chunked bodies, and
+never trusting a declared length.
+
+**A24.15 — Current authority is revalidated at execution time.**
+Proposal-time authorization is not permanent execution authority. Before
+dispatch, in addition to the existing agent status, pause, retirement and
+credential checks, the platform revalidates that the agent's CURRENT scope
+still reaches the target and its CURRENT capability binding still permits
+the class. Withdrawn authority fails closed. Historical provenance on the
+proposal is unchanged, and the node remains the final authority.
+
+**A24.16 — Attempt telemetry is not the audit chain.** The audit chain is
+authoritative governance history and is hash-chained per entry; appending
+to it on every hostile or malformed request is an amplification channel
+against the platform's own integrity store. Governed outcomes — a
+submission that produced a proposal, an authenticated identity refused —
+remain audited. High-volume attempt outcomes are counted, not chained.

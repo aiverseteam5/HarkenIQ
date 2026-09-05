@@ -2540,3 +2540,67 @@ asymmetry this slice records rather than silently inherits.
 MCP, events, streaming, webhooks, agent-supplied evidence, autonomy
 changes, SM/node authority changes, Console UI (A6-3), adaptive shaping
 (A6-4), `/api/v1`, and any change to `dedupe_key`'s existing semantics.
+
+### A6-1 addendum — pre-merge red-team fixes (A24.11–A24.16)
+
+Every claim was reproduced against the code before being implemented.
+What the reproductions showed, and what each fix therefore is:
+
+**A24.11 — idempotency serialization.** Reproduced on real PostgreSQL by
+forcing the route's actual window (both callers complete the replay lookup
+before either inserts): the loser raised `UniqueViolationError`, i.e. a
+500 on a retry — the exact case the key exists to make safe. Note the
+first naive reproduction did NOT fail, because scheduling happened to
+serialize the two; the window has to be forced to see it, which is why
+this needed a lock rather than a hope.
+
+One advisory lock per `(tenant, agent)` covers rate accounting and the
+whole lookup→process→persist sequence. Per agent rather than per key: an
+agent is one logical runtime, serializing its own ingress is what an abuse
+control wants anyway, and one lock instead of two removes a lock-ordering
+question entirely. Ordering with the existing tenant admission lock is
+always agent→tenant, so no cycle exists.
+
+**A24.12 — operational collision identity.** `base_key` begins with
+`agent.id`, so two agents proposing one physical operation produced two
+proposals. The fix does not hard-code a key. `ACTION_PARAMETERS` already
+states which parameters address the affected component
+(`source == SRC_COMPONENT`, documented as "the affected component IS the
+parameter") and which carry no executor meaning (`SRC_ANNOTATION` —
+"no executor reads it"). `operation_identity()` reads that contract, so
+the identity is the smallest server-owned description of the same
+mutually exclusive physical operation and follows the contract if it
+changes. Stored as `operation_key` and enforced across agents for OPEN
+proposals only.
+
+**A24.13 — attempt rate.** The old check was COUNT→compare→INSERT with no
+serialization, and the replay branch returned before it, so a replay was
+an unmetered channel. Now: under the agent lock, prune the window, count,
+refuse over-limit WITHOUT writing (so the record cannot be grown by the
+traffic it is meant to bound), otherwise record the attempt and proceed.
+`cc_agent_ingress_attempts` is deliberately separate from the submission
+ledger, which is keyed by idempotency key and structurally cannot hold
+repeats.
+
+**A24.14 — pre-parse byte ceiling.** Confirmed: a 5MB body returned 422,
+meaning it was fully read and parsed first. An ASGI middleware wraps
+`receive` for the ingress path and counts bytes actually delivered, so it
+is correct for chunked bodies and does not trust `Content-Length`.
+
+**A24.15 — execution-time revalidation.** `_dispatch_permitted` checked
+existence, retirement, active status, pause and credential revocation, and
+nothing about reach. It now also asks the ONE scope resolver whether the
+agent still reaches the proposal's site, and the agent's current bindings
+whether the class is still bound. Both fail closed.
+
+**A24.16 — telemetry.** The first implementation audited every refused
+submission, including a malformed or hostile one, on the hash chain.
+Governed outcomes stay audited; attempt outcomes became counters.
+
+**A sixth finding, found while reproducing the first.**
+`CapabilityCatalogueRepo.list_for_tenant` seeds lazily with
+read→if-empty→seed and no serialization, so two concurrent requests on a
+tenant whose catalogue is unseeded both seed and one 500s. It is
+pre-existing and reachable by any two concurrent CC requests, but A6 is
+what makes it reachable by an external caller, so it is fixed here rather
+than recorded for later.
