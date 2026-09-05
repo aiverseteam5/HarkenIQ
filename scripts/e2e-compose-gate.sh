@@ -3460,6 +3460,93 @@ A6_OTHER=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   echo "a machine token submitted for another agent ($A6_OTHER)" >&2; exit 1; }
 echo "cross-agent submission -> 403"
 
+step "A6/M: an oversized body is refused BEFORE it is parsed (A24.14)"
+# Schema limits reject a payload the server already read and parsed. A
+# 5MB body used to return 422, meaning every byte was received first.
+python3 -c "
+import json,sys
+sys.stdout.write(json.dumps({'candidate_ref':'cand_x','idempotency_key':'k',
+                             'note':'x'*200000}))" > /tmp/a6_big.json
+BIG=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/a6_big.json \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+[ "$BIG" = "413" ] || {
+  echo "an oversized body was not refused pre-parse ($BIG; 422 means it was" >&2
+  echo "read and parsed first)" >&2; exit 1; }
+echo "200KB body -> 413 before parsing"
+
+step "A6/N: every attempt is metered, replays included (A24.13)"
+# A replay stays idempotent; it is not free. The first implementation
+# returned replays BEFORE the counter, which made replay unmetered.
+A6_ATTEMPTS=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$A6_ATTEMPTS" -ge 4 ] || {
+  echo "only $A6_ATTEMPTS attempts recorded; submission, replay, duplicate" >&2
+  echo "and conflict should each have counted" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts
+    WHERE agent_id='$A6_AGENT' AND outcome='replayed'" \
+  | grep -qv '^ *0 *$' \
+  || { echo "the replay was not metered" >&2; exit 1; }
+echo "$A6_ATTEMPTS ingress attempts metered, replay among them"
+
+step "A6/O: a second agent cannot open the SAME operation (A24.12)"
+# Attribution is not operational identity. The dedupe key begins with the
+# agent id, so this agent's key differs and the per-agent rule cannot see
+# the collision -- only the operation key can.
+A6_B=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a6-second $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"},
+         {\"kind\":\"read\",\"capability_ref\":\"fleet\"},
+         {\"kind\":\"read\",\"capability_ref\":\"incidents\"},
+         {\"kind\":\"ingress\",\"capability_ref\":\"proposals\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+B_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+B_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$A6_B&client_secret=$B_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+B_REF=$(curl -sf -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/dry-run" \
+  | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+led = [p for p in r['would_propose'] if p['action_type'] == 'IDENTIFY_LED']
+assert led, ('the second agent saw no candidate', r['withheld'])
+print(led[0]['candidate_ref'])
+")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/preflight" > /dev/null
+B_ACK=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/preflight" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('requires_acknowledgement'))")
+if [ "$B_ACK" = "True" ]; then
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A6_B/acknowledge" > /dev/null
+fi
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/activate" > /dev/null
+B_CODE=$(curl -s -o /tmp/a6_b.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $B_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"candidate_ref\":\"$B_REF\",\"idempotency_key\":\"gate-a6b-0001\"}" \
+  "http://localhost:8090/api/operational-agents/$A6_B/proposals")
+[ "$B_CODE" = "409" ] || {
+  echo "a second agent opened a second proposal for one operation ($B_CODE)" >&2
+  cat /tmp/a6_b.json >&2; exit 1; }
+python3 -c "
+import json; d=json.load(open('/tmp/a6_b.json'))
+assert d['code'] == 'operation_in_flight', d
+print('second agent refused:', d['reason'])
+"
+
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \

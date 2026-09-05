@@ -536,7 +536,14 @@ class TestD4DispatchRechecksLifecycle:
                 tenant_id=TENANT, agent_id=agent_id,
                 actor=f"op-agent:{agent_id}@v1", agent_version=1,
                 site_id=site_id, device_agent_id="node-1",
-                action_type="SEL_CLEAR", params={}, rationale="r",
+                # A24.15: dispatch now revalidates CURRENT reach, so this
+                # must name a class the agent is actually bound to. It
+                # said SEL_CLEAR while `_agent` binds IDENTIFY_LED -- a
+                # proposal no configuration could have produced. Fixed
+                # here rather than by weakening the gate, the way A2
+                # fixed the stale E0.1 fixture.
+                action_type="IDENTIFY_LED", params={"target": "Disk.Bay.1"},
+                rationale="r",
                 evidence={}, disposition="requires_approval",
                 authorization_basis="human_approval", status="approved",
                 decided_by="owner@example.com", dedupe_key="k1",

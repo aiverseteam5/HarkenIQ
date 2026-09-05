@@ -27,6 +27,7 @@ from harkeniq_cc.db.models import (
     CCCampaignWave,
     CCOrgUnit,
     CCAgentCapability,
+    CCAgentIngressAttempt,
     CCAgentProposal,
     CCAgentSubmission,
     CCScopeGrant,
@@ -2552,6 +2553,30 @@ class AgentProposalRepo:
             )
         ).scalars().first()
 
+    async def find_open_operation(
+        self, tenant_id: str, operation_key: str
+    ) -> Optional[CCAgentProposal]:
+        """An OPEN proposal for this physical operation, from ANY agent.
+
+        A24.12. NULL `operation_key` rows are skipped rather than matched:
+        a proposal made before the concept existed is not comparable, and
+        treating "unknown" as "equal" would fence devices on evidence
+        nobody ever recorded.
+        """
+        if not operation_key:
+            return None
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.operation_key == operation_key,
+                    CCAgentProposal.status.in_(self.OPEN_STATUSES),
+                )
+                .order_by(CCAgentProposal.created_at.desc())
+            )
+        ).scalars().first()
+
     async def list_for_agent(
         self, tenant_id: str, agent_id: str, limit: int = 100
     ) -> Sequence[CCAgentProposal]:
@@ -2816,6 +2841,53 @@ class AgentSubmissionRepo:
                 )
             ).scalar()
             or 0
+        )
+
+
+class AgentIngressAttemptRepo:
+    """A24.13: the append-only record a rate control can actually meter."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(
+        self, *, tenant_id: str, agent_id: str, outcome: str
+    ) -> CCAgentIngressAttempt:
+        row = CCAgentIngressAttempt(
+            tenant_id=tenant_id, agent_id=agent_id, outcome=outcome,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def count_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> int:
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CCAgentIngressAttempt)
+                    .where(
+                        CCAgentIngressAttempt.tenant_id == tenant_id,
+                        CCAgentIngressAttempt.agent_id == agent_id,
+                        CCAgentIngressAttempt.created_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+    async def prune(
+        self, tenant_id: str, agent_id: str, before: datetime
+    ) -> None:
+        """Drop rows outside the window. They have no other reader."""
+        await self.session.execute(
+            sa_delete(CCAgentIngressAttempt).where(
+                CCAgentIngressAttempt.tenant_id == tenant_id,
+                CCAgentIngressAttempt.agent_id == agent_id,
+                CCAgentIngressAttempt.created_at < before,
+            )
         )
 
 
@@ -3482,6 +3554,27 @@ class CapabilityCatalogueRepo:
             )
         ).scalars().all()
         if rows or not seed_if_empty:
+            return rows
+        # A24 addendum (the sixth finding): read -> if-empty -> seed is a
+        # race. Two concurrent requests on a tenant whose catalogue is
+        # unseeded both see nothing, both seed, and one raises a unique
+        # violation -- a 500 reproduced by two concurrent A6 submissions.
+        # Pre-existing, but A6 is what lets an external caller reach it.
+        #
+        # Serialized on the tenant, then RE-READ under the lock: the
+        # loser must find the winner's rows rather than seed again.
+        from harkeniq.audit.chain import pg_advisory_chain_lock
+
+        await pg_advisory_chain_lock(
+            self.session, f"cc.capability_catalogue.{tenant_id}"
+        )
+        rows = (
+            await self.session.execute(
+                select(CCCapabilityCatalogue)
+                .where(CCCapabilityCatalogue.tenant_id == tenant_id)
+            )
+        ).scalars().all()
+        if rows:
             return rows
         await self.seed(tenant_id, actor="platform-default")
         return (

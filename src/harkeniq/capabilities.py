@@ -352,6 +352,66 @@ def validate_action_params(action_type: str, params: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def operation_identity(action_type: str, params: Optional[dict] = None) -> str:
+    """The smallest stable description of ONE mutually exclusive operation.
+
+    A24.12. Attribution answers *who proposed this*; this answers *is this
+    the same physical thing*. They must not be the same key: the proposal
+    dedupe key begins with the proposing agent, so two agents could hold
+    two simultaneously active proposals to do one thing to one device.
+
+    DERIVED FROM THE CONTRACT, never hard-coded. `ACTION_PARAMETERS`
+    already says which parameters address the affected component --
+    `SRC_COMPONENT`, whose section is titled "the affected component IS
+    the parameter" -- and which carry no executor meaning at all
+    (`SRC_ANNOTATION`: "no executor reads it"). Reading that declaration
+    means this identity follows the contract if the contract changes,
+    instead of becoming a second, quietly diverging opinion about what a
+    target is.
+
+    A class with no component parameter identifies the device as a whole,
+    which is correct: two SEL_CLEARs on one device ARE one operation.
+    Two DIFFERENT classes, or one class against two components, stay
+    legitimately concurrent.
+
+    Returns a canonical string; callers scope it with tenant and device.
+    """
+    try:
+        action = ActionType(action_type)
+    except ValueError:
+        # Unknown to the platform: identify it by name alone rather than
+        # raise. A caller asking about a class we do not govern gets a
+        # stable answer, and governance refuses it elsewhere.
+        return f"{action_type}"
+    values = params or {}
+    addressing = [
+        spec.name for spec in ACTION_PARAMETERS[action]
+        if spec.source == SRC_COMPONENT
+    ]
+    parts = [action.value]
+    for name in sorted(addressing):
+        parts.append(f"{name}={values.get(name, '')}")
+    return "|".join(parts)
+
+
+def operation_key(
+    tenant_id: str, device_agent_id: str, action_type: str,
+    params: Optional[dict] = None,
+) -> str:
+    """`operation_identity` scoped to the device it acts on.
+
+    Digested so it fits an indexed column and carries no readable
+    structure; equality is the only property anything needs from it.
+    """
+    import hashlib
+
+    payload = "|".join((
+        "op.v1", tenant_id, device_agent_id,
+        operation_identity(action_type, params),
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:48]
+
+
 def resolve_action_params(
     action_type: str, *, component: str = "", reason: str = "",
 ) -> tuple[Optional[dict], str]:

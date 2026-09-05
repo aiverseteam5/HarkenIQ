@@ -1,10 +1,15 @@
 """A6-1 (A24): the external ingress ledger.
 
-  cc_agent_submissions  <- one row per external submission, accepted or
-                           refused, with the replay key that makes a
-                           retry safe
+  cc_agent_submissions       <- one row per external submission, accepted
+                                or refused, with the replay key that makes
+                                a retry safe
+  cc_agent_ingress_attempts  <- one row per external ATTEMPT, which is what
+                                a rate control can actually meter
+  cc_agent_proposals.operation_key
+                             <- the same physical operation, independent of
+                                which agent proposed it (A24.12)
 
-PURELY ADDITIVE. One new table, no column added to and no semantics
+PURELY ADDITIVE. Two new tables and one nullable column; no semantics
 changed on any existing governance table. In particular `dedupe_key` on
 `cc_agent_proposals` is left exactly as it is: A24.6's logical-duplicate
 guarantee is an admission lock, not a retroactive constraint, and design
@@ -12,9 +17,11 @@ section 28 records why (the column defaults to "", its key shape changed
 at A5, and a migration that fails on historical rows to surface a
 historical bug is the wrong trade against a customer's upgrade).
 
-NO BACKFILL. There is no historical submission to invent. An absent row
-means this agent has never submitted, which is the truth on every
-database that upgrades into A6.
+NO BACKFILL, anywhere. There is no historical submission or attempt to
+invent, and `operation_key` stays NULL on every existing proposal: a
+historical proposal predates the concept, and computing one now would
+assert an equivalence between old rows that nobody ever checked. NULL
+means "not comparable", and the collision rule below skips it.
 
 THE UNIQUE CONSTRAINT IS THE PRODUCT. Idempotency is not a convention
 maintained by the route; it is the constraint below. Two concurrent
@@ -40,6 +47,7 @@ branch_labels = None
 depends_on = None
 
 _TABLE = "cc_agent_submissions"
+_ATTEMPTS = "cc_agent_ingress_attempts"
 
 
 def _has_table(bind) -> bool:
@@ -48,6 +56,8 @@ def _has_table(bind) -> bool:
 
 def upgrade() -> None:
     bind = op.get_bind()
+    _upgrade_attempts(bind)
+    _upgrade_operation_key(bind)
     if _has_table(bind):
         return
 
@@ -95,10 +105,62 @@ def upgrade() -> None:
     )
 
 
+def _upgrade_attempts(bind) -> None:
+    if sa.inspect(bind).has_table(_ATTEMPTS):
+        return
+    op.create_table(
+        _ATTEMPTS,
+        sa.Column("id", sa.String(32), primary_key=True),
+        sa.Column("tenant_id", sa.String(64), nullable=False),
+        sa.Column("agent_id", sa.String(32), nullable=False),
+        sa.Column("outcome", sa.String(24), nullable=False, server_default=""),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_index(
+        "ix_cc_agent_ingress_attempts_tenant_id", _ATTEMPTS, ["tenant_id"]
+    )
+    op.create_index(
+        "ix_cc_agent_ingress_attempts_agent_id", _ATTEMPTS, ["agent_id"]
+    )
+    op.create_index(
+        "ix_cc_agent_ingress_attempts_created_at", _ATTEMPTS, ["created_at"]
+    )
+    op.create_index(
+        "ix_ingress_attempts_window", _ATTEMPTS,
+        ["tenant_id", "agent_id", "created_at"],
+    )
+
+
+def _upgrade_operation_key(bind) -> None:
+    cols = {c["name"] for c in sa.inspect(bind).get_columns("cc_agent_proposals")}
+    if "operation_key" in cols:
+        return
+    op.add_column(
+        "cc_agent_proposals",
+        sa.Column("operation_key", sa.String(64), nullable=True),
+    )
+    op.create_index(
+        "ix_cc_agent_proposals_operation_key",
+        "cc_agent_proposals", ["operation_key"],
+    )
+
+
 def downgrade() -> None:
     bind = op.get_bind()
-    if not _has_table(bind):
-        return
-    # Drops only what this revision created. No other table is touched,
-    # so a downgrade cannot lose a proposal, an approval or an audit row.
-    op.drop_table(_TABLE)
+    inspector = sa.inspect(bind)
+    # Drops only what this revision created. No other table is touched, so
+    # a downgrade cannot lose a proposal, an approval or an audit row --
+    # though it DOES discard the external submission and attempt ledgers,
+    # which are this revision's own records and exist nowhere else.
+    if "operation_key" in {
+        c["name"] for c in inspector.get_columns("cc_agent_proposals")
+    }:
+        op.drop_index(
+            "ix_cc_agent_proposals_operation_key",
+            table_name="cc_agent_proposals",
+        )
+        op.drop_column("cc_agent_proposals", "operation_key")
+    if inspector.has_table(_ATTEMPTS):
+        op.drop_table(_ATTEMPTS)
+    if inspector.has_table(_TABLE):
+        op.drop_table(_TABLE)

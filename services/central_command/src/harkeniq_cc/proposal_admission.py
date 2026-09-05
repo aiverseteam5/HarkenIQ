@@ -72,6 +72,16 @@ ORIGIN_INGRESS = "ingress"
 CODE_DUPLICATE = "duplicate"
 REASON_DUPLICATE = "an equivalent proposal is already open"
 
+#: A24.12. Distinct from `duplicate` on purpose: "you already asked for
+#: this" and "somebody else is already doing this" are different facts,
+#: and an operator debugging why an agent went quiet needs to tell them
+#: apart.
+CODE_OPERATION_IN_FLIGHT = "operation_in_flight"
+REASON_OPERATION_IN_FLIGHT = (
+    "another agent already has an open proposal for this exact operation "
+    "on this device"
+)
+
 
 async def lock_proposal_admission(session: Any, tenant_id: str) -> bool:
     """Serialize this tenant's proposal admission for the rest of this
@@ -117,6 +127,7 @@ async def admit_proposal(
 
     Returns ``(row_or_None, code, reason)``.
     """
+    from harkeniq.capabilities import operation_key
     from harkeniq_cc.db.repos import AgentProposalRepo, AuditRepo
 
     await lock_proposal_admission(session, tenant_id)
@@ -125,6 +136,24 @@ async def admit_proposal(
     dedupe_key = payload.get("dedupe_key") or ""
     if dedupe_key and dedupe_key in await repo.all_dedupe_keys(tenant_id):
         return None, CODE_DUPLICATE, REASON_DUPLICATE
+
+    # A24.12: the SAME physical operation, whoever proposed it. The dedupe
+    # key above begins with the agent id, so it answers only "has THIS
+    # agent already asked" -- two agents could otherwise hold two
+    # simultaneously active proposals to do one thing to one device.
+    #
+    # OPEN proposals only. A settled one must not fence a device forever,
+    # and re-running an action that already completed is legitimate work.
+    payload = dict(payload)
+    payload["operation_key"] = operation_key(
+        tenant_id,
+        payload.get("device_agent_id", "") or "",
+        payload.get("action_type", "") or "",
+        payload.get("params") or {},
+    )
+    conflict = await repo.find_open_operation(tenant_id, payload["operation_key"])
+    if conflict is not None:
+        return None, CODE_OPERATION_IN_FLIGHT, REASON_OPERATION_IN_FLIGHT
 
     row = await repo.create(**payload)
 

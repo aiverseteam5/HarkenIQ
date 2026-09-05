@@ -1061,6 +1061,45 @@ class CCAgentSubmission(Base):
     )
 
 
+class CCAgentIngressAttempt(Base):
+    """A24.13: one external ingress ATTEMPT, whatever became of it.
+
+    Deliberately not the submission ledger. That table is keyed by
+    idempotency key and structurally cannot hold repeats -- which is
+    exactly why it cannot meter a caller who retries. Every attempt lands
+    here: first submission, replay, idempotency conflict, rejected
+    candidate, and an authenticated authorization refusal. A replay stays
+    functionally idempotent; it is not free.
+
+    WRITES ARE BOUNDED BY THE LIMIT THEY ENFORCE. Once an agent is over
+    its window the request is refused WITHOUT adding a row, so the record
+    cannot be grown by the traffic it exists to bound. Rows older than the
+    window are pruned as they are counted.
+
+    Not the audit chain (A24.16): that store is hash-chained governance
+    history, and appending to it on every malformed or hostile request
+    would be an amplification channel against the platform's own
+    integrity record.
+    """
+
+    __tablename__ = "cc_agent_ingress_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    #: accepted | replayed | conflict | rejected | refused
+    outcome: Mapped[str] = mapped_column(String(24), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_ingress_attempts_window", "tenant_id", "agent_id", "created_at"
+        ),
+    )
+
+
 class CCAgentProposal(Base):
     """A labelled, evidence-carrying proposal from an Operational Agent (A1).
 
@@ -1114,6 +1153,18 @@ class CCAgentProposal(Base):
     )
     #: Idempotency key: one open proposal per (agent, device, action).
     dedupe_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    #: A24.12: the same mutually exclusive PHYSICAL operation, independent
+    #: of who proposed it. `dedupe_key` begins with the agent id, so it
+    #: answers "has THIS agent already asked" -- two agents could hold two
+    #: simultaneously active proposals to do one thing to one device.
+    #: Derived from the canonical action-parameter contract by
+    #: `harkeniq.capabilities.operation_key`, never composed here.
+    #: Nullable with no backfill: a historical proposal predates the
+    #: concept, and inventing one would assert an equivalence nobody
+    #: checked.
+    operation_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     directive_id: Mapped[str] = mapped_column(String(64), default="")
     dispatch_reason: Mapped[str] = mapped_column(String(512), default="")
     dispatched_at: Mapped[datetime | None] = mapped_column(

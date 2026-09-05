@@ -173,6 +173,30 @@ async def _first_ref(stack, agent_id) -> str:
         return would[0]["candidate_ref"]
 
 
+async def _revoke_agent_scope(stack, agent_id: str) -> None:
+    """Withdraw an agent's reach the way an operator does.
+
+    E1.2 migrated `cc_agent_scopes` into `cc_scope_grants` as
+    `principal_type="agent"`, and A23-3 made withdrawal a revocation
+    rather than a delete, so a grant that once existed stays visible as
+    evidence.
+    """
+    import sqlalchemy as sa
+
+    from harkeniq_cc.db.models import CCScopeGrant
+
+    async with stack.sessionmaker() as session:
+        await session.execute(
+            sa.update(CCScopeGrant)
+            .where(
+                CCScopeGrant.principal_type == "agent",
+                CCScopeGrant.principal_ref == agent_id,
+            )
+            .values(revoked_at=datetime.now(timezone.utc))
+        )
+        await session.commit()
+
+
 def _body(ref, key="idem-0001-aaaa", **kw):
     out = {"candidate_ref": ref, "idempotency_key": key}
     out.update(kw)
@@ -796,3 +820,413 @@ class TestWhatAcceptanceMeans:
             res = await c.get("/api/operational-agents/catalogue")
         refs = [r["ref"] for r in res.json()["ingress_capabilities"]]
         assert "proposals" in refs
+
+
+# ---------------------------------------------------------------------------
+# 9. Pre-merge red-team fixes (A24.11-A24.16)
+# ---------------------------------------------------------------------------
+
+
+class TestOperationalCollisionIdentity:
+    """A24.12: attribution is not operational identity."""
+
+    def test_the_identity_comes_from_the_contract_not_a_constant(self):
+        """Component-addressing params identify; annotations do not."""
+        from harkeniq.autonomy.preconditions import (
+            ACTION_PARAMETERS, SRC_COMPONENT,
+        )
+        from harkeniq.capabilities import operation_identity
+        from harkeniq.models import ActionType
+
+        for action, specs in ACTION_PARAMETERS.items():
+            addressing = [s.name for s in specs if s.source == SRC_COMPONENT]
+            identity = operation_identity(action.value, {n: "X" for n in addressing})
+            for name in addressing:
+                assert f"{name}=X" in identity, (action, name)
+
+    def test_the_reason_never_changes_the_operation(self):
+        from harkeniq.capabilities import operation_key
+
+        a = operation_key("t", "node-1", "SEL_CLEAR", {"reason": "one"})
+        b = operation_key("t", "node-1", "SEL_CLEAR", {"reason": "two"})
+        assert a == b
+
+    def test_two_agents_naming_one_operation_agree(self):
+        from harkeniq.capabilities import operation_key
+
+        assert operation_key(
+            "t", "node-1", "IDENTIFY_LED", {"target": "Disk.Bay.1"}
+        ) == operation_key(
+            "t", "node-1", "IDENTIFY_LED",
+            {"target": "Disk.Bay.1", "reason": "a different agent"},
+        )
+
+    def test_different_operations_stay_distinct(self):
+        from harkeniq.capabilities import operation_key
+
+        base = operation_key("t", "node-1", "IDENTIFY_LED", {"target": "Bay.1"})
+        assert base != operation_key(
+            "t", "node-1", "IDENTIFY_LED", {"target": "Bay.2"})
+        assert base != operation_key(
+            "t", "node-2", "IDENTIFY_LED", {"target": "Bay.1"})
+        assert base != operation_key("t", "node-1", "SEL_CLEAR", {})
+
+    async def test_a_second_agent_cannot_open_the_same_operation(self):
+        """THE invariant: one physical operation, one open proposal."""
+        from harkeniq_cc.proposal_admission import (
+            CODE_OPERATION_IN_FLIGHT, admit_proposal,
+        )
+
+        stack = await _stack()
+        agent_a, site_id = await _ready(stack)
+        async with stack.client() as c:
+            agent_b = await _agent(c, site_id, name="Second Shift")
+
+        def payload(agent_id):
+            return {
+                "tenant_id": TENANT, "agent_id": agent_id,
+                "actor": f"op-agent:{agent_id}@v1", "agent_version": 1,
+                "site_id": site_id, "device_agent_id": "node-1",
+                "action_type": "IDENTIFY_LED",
+                "params": {"target": "Disk.Bay.1"},
+                "rationale": "r", "evidence": {},
+                "disposition": "requires_approval", "disposition_reason": "",
+                "blocking_conditions": [],
+                "authorization_basis": "human_approval",
+                "status": "awaiting_approval", "decided_by": "",
+                "decided_at": None,
+                # Different agents => DIFFERENT dedupe keys. Nothing the
+                # per-agent rule can see.
+                "dedupe_key": f"{agent_id}:node-1:IDENTIFY_LED:inc-1:Disk.Bay.1",
+            }
+
+        async with stack.sessionmaker() as session:
+            row, code, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload(agent_a),
+                origin="ingress",
+            )
+            assert row is not None and code == ""
+            await session.commit()
+        async with stack.sessionmaker() as session:
+            row2, code2, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload(agent_b),
+                origin="ingress",
+            )
+        assert row2 is None
+        assert code2 == CODE_OPERATION_IN_FLIGHT
+
+    async def test_a_settled_operation_does_not_fence_the_device_forever(self):
+        from harkeniq_cc.db.models import CCAgentProposal
+        from harkeniq_cc.proposal_admission import admit_proposal
+
+        stack = await _stack()
+        agent_a, site_id = await _ready(stack)
+
+        def payload(key):
+            return {
+                "tenant_id": TENANT, "agent_id": agent_a,
+                "actor": f"op-agent:{agent_a}@v1", "agent_version": 1,
+                "site_id": site_id, "device_agent_id": "node-1",
+                "action_type": "IDENTIFY_LED",
+                "params": {"target": "Disk.Bay.1"}, "rationale": "r",
+                "evidence": {}, "disposition": "requires_approval",
+                "disposition_reason": "", "blocking_conditions": [],
+                "authorization_basis": "human_approval",
+                "status": "awaiting_approval", "decided_by": "",
+                "decided_at": None, "dedupe_key": key,
+            }
+
+        async with stack.sessionmaker() as session:
+            row, _, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload("k-1"),
+                origin="ingress")
+            await session.commit()
+            first_id = row.id
+        async with stack.sessionmaker() as session:
+            settled = await session.get(CCAgentProposal, first_id)
+            settled.status = "completed"
+            await session.commit()
+        async with stack.sessionmaker() as session:
+            row2, code2, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload("k-2"),
+                origin="ingress")
+        assert row2 is not None, f"a completed operation still fenced: {code2}"
+
+    async def test_a_historical_proposal_without_a_key_fences_nothing(self):
+        """NULL means 'not comparable', never 'equal'."""
+        from harkeniq_cc.db.models import CCAgentProposal
+        from harkeniq_cc.proposal_admission import admit_proposal
+
+        stack = await _stack()
+        agent_a, site_id = await _ready(stack)
+        async with stack.sessionmaker() as session:
+            session.add(CCAgentProposal(
+                tenant_id=TENANT, agent_id=agent_a, actor="legacy",
+                site_id=site_id, device_agent_id="node-1",
+                action_type="IDENTIFY_LED", params={"target": "Disk.Bay.1"},
+                status="awaiting_approval", dedupe_key="legacy-1",
+                operation_key=None,
+            ))
+            await session.commit()
+        async with stack.sessionmaker() as session:
+            row, code, _ = await admit_proposal(
+                session, tenant_id=TENANT,
+                payload={
+                    "tenant_id": TENANT, "agent_id": agent_a,
+                    "actor": f"op-agent:{agent_a}@v1", "agent_version": 1,
+                    "site_id": site_id, "device_agent_id": "node-1",
+                    "action_type": "IDENTIFY_LED",
+                    "params": {"target": "Disk.Bay.1"}, "rationale": "r",
+                    "evidence": {}, "disposition": "requires_approval",
+                    "disposition_reason": "", "blocking_conditions": [],
+                    "authorization_basis": "human_approval",
+                    "status": "awaiting_approval", "decided_by": "",
+                    "decided_at": None, "dedupe_key": "new-1",
+                },
+                origin="ingress")
+        assert row is not None, f"a NULL operation_key fenced a new proposal: {code}"
+
+
+class TestAttemptRate:
+    """A24.13: every attempt counts, and the count is atomic."""
+
+    async def test_a_replay_is_metered(self):
+        """The first implementation returned replays before the counter."""
+        from harkeniq_cc.db.repos import AgentIngressAttemptRepo
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        ref = await _first_ref(stack, agent_id)
+        async with stack.as_machine(agent_id).client() as c:
+            await c.post(f"/api/operational-agents/{agent_id}/proposals",
+                         json=_body(ref))
+            await c.post(f"/api/operational-agents/{agent_id}/proposals",
+                         json=_body(ref))
+        async with stack.sessionmaker() as session:
+            since = datetime.now(timezone.utc) - timedelta(hours=1)
+            assert await AgentIngressAttemptRepo(session).count_since(
+                TENANT, agent_id, since
+            ) == 2, "a replay did not count toward the attempt rate"
+
+    async def test_a_rejected_candidate_is_metered(self):
+        from harkeniq_cc.db.repos import AgentIngressAttemptRepo
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.as_machine(agent_id).client() as c:
+            await c.post(f"/api/operational-agents/{agent_id}/proposals",
+                         json=_body("cand_" + "9" * 32))
+        async with stack.sessionmaker() as session:
+            since = datetime.now(timezone.utc) - timedelta(hours=1)
+            assert await AgentIngressAttemptRepo(session).count_since(
+                TENANT, agent_id, since
+            ) == 1
+
+    async def test_over_the_limit_is_refused_without_growing_the_record(self):
+        """The record must not be grown by the traffic it bounds."""
+        from harkeniq_cc.db.repos import AgentIngressAttemptRepo
+        from harkeniq_cc.ingress_limits import ATTEMPT_MAX
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        ref = await _first_ref(stack, agent_id)
+        async with stack.sessionmaker() as session:
+            repo = AgentIngressAttemptRepo(session)
+            for _ in range(ATTEMPT_MAX):
+                await repo.record(
+                    tenant_id=TENANT, agent_id=agent_id, outcome="accepted")
+            await session.commit()
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(f"/api/operational-agents/{agent_id}/proposals",
+                               json=_body(ref))
+        assert res.status_code == 429
+        async with stack.sessionmaker() as session:
+            since = datetime.now(timezone.utc) - timedelta(hours=1)
+            assert await AgentIngressAttemptRepo(session).count_since(
+                TENANT, agent_id, since
+            ) == ATTEMPT_MAX, "a refused request added to the record"
+
+    async def test_another_agent_is_not_metered_by_this_one(self):
+        from harkeniq_cc.db.repos import AgentIngressAttemptRepo
+        from harkeniq_cc.ingress_limits import ATTEMPT_MAX
+
+        stack = await _stack()
+        agent_a, site_id = await _ready(stack)
+        async with stack.client() as c:
+            agent_b = await _agent(c, site_id, name="Other Shift")
+        async with stack.sessionmaker() as session:
+            repo = AgentIngressAttemptRepo(session)
+            for _ in range(ATTEMPT_MAX):
+                await repo.record(
+                    tenant_id=TENANT, agent_id=agent_a, outcome="accepted")
+            await session.commit()
+            since = datetime.now(timezone.utc) - timedelta(hours=1)
+            assert await repo.count_since(TENANT, agent_b, since) == 0
+
+
+class TestBodyCeiling:
+    """A24.14: bounded before parsing, not after."""
+
+    async def test_an_oversized_body_is_refused_before_it_is_parsed(self):
+        from harkeniq_cc.ingress_body import MAX_INGRESS_BODY_BYTES
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=b'{"candidate_ref":"cand_x","idempotency_key":"k",'
+                        b'"note":"' + b"x" * (MAX_INGRESS_BODY_BYTES * 2) + b'"}',
+                headers={"content-type": "application/json"},
+            )
+        assert res.status_code == 413, (
+            "an oversized body reached the parser (422 would mean it was "
+            "read and parsed before being refused)"
+        )
+
+    async def test_an_honest_body_is_unaffected(self):
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        ref = await _first_ref(stack, agent_id)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(f"/api/operational-agents/{agent_id}/proposals",
+                               json=_body(ref, note="a normal note"))
+        assert res.status_code == 201
+
+    async def test_other_routes_keep_their_own_limits(self):
+        """A ceiling sized for a four-field body must not govern the API."""
+        from harkeniq_cc.ingress_body import _is_guarded
+
+        assert _is_guarded({
+            "type": "http", "method": "POST",
+            "path": "/api/operational-agents/abc/proposals"}) is True
+        assert _is_guarded({
+            "type": "http", "method": "POST",
+            "path": "/api/firmware/cve-feed"}) is False
+        assert _is_guarded({
+            "type": "http", "method": "GET",
+            "path": "/api/operational-agents/abc/proposals"}) is False
+
+
+class TestExecutionTimeAuthority:
+    """A24.15: current authority, not proposal-time authority."""
+
+    async def _approved(self, stack, site_id, agent_id):
+        from harkeniq_cc.db.models import CCAgentProposal
+
+        async with stack.sessionmaker() as session:
+            row = CCAgentProposal(
+                tenant_id=TENANT, agent_id=agent_id,
+                actor=f"op-agent:{agent_id}@v1", agent_version=1,
+                site_id=site_id, device_agent_id="node-1",
+                action_type="IDENTIFY_LED", params={"target": "Disk.Bay.1"},
+                rationale="r", evidence={}, disposition="requires_approval",
+                authorization_basis="human_approval", status="approved",
+                decided_by="owner@example.com", dedupe_key="k-auth",
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def test_a_withdrawn_scope_stops_an_approved_proposal(self):
+        from harkeniq_cc.agent_runtime import _dispatch_permitted
+        from harkeniq_cc.db.models import CCAgentProposal, CCScopeGrant
+
+        stack = await _stack()
+        agent_id, site_id = await _ready(stack)
+        pid = await self._approved(stack, site_id, agent_id)
+
+        async with stack.sessionmaker() as session:
+            proposal = await session.get(CCAgentProposal, pid)
+            ok, _ = await _dispatch_permitted(session, TENANT, proposal)
+            assert ok is True, "the fixture could not dispatch to begin with"
+
+        # The operator withdraws the agent's reach. E1.2 moved agent scope
+        # into the ONE grant table, and A23-3 made withdrawal a revocation
+        # rather than a delete, so this is how it really happens.
+        await _revoke_agent_scope(stack, agent_id)
+
+        async with stack.sessionmaker() as session:
+            proposal = await session.get(CCAgentProposal, pid)
+            ok, why = await _dispatch_permitted(session, TENANT, proposal)
+        assert ok is False, "a proposal dispatched after its scope was withdrawn"
+        assert "no longer reaches" in why
+
+    async def test_a_withdrawn_capability_stops_an_approved_proposal(self):
+        from harkeniq_cc.agent_runtime import _dispatch_permitted
+        from harkeniq_cc.db.models import CCAgentCapability, CCAgentProposal
+
+        stack = await _stack()
+        agent_id, site_id = await _ready(stack)
+        pid = await self._approved(stack, site_id, agent_id)
+
+        async with stack.sessionmaker() as session:
+            import sqlalchemy as sa
+            await session.execute(sa.delete(CCAgentCapability).where(
+                CCAgentCapability.agent_id == agent_id,
+                CCAgentCapability.capability_ref == "IDENTIFY_LED"))
+            await session.commit()
+
+        async with stack.sessionmaker() as session:
+            proposal = await session.get(CCAgentProposal, pid)
+            ok, why = await _dispatch_permitted(session, TENANT, proposal)
+        assert ok is False, "a proposal dispatched for an unbound class"
+        assert "no longer bound" in why
+
+    async def test_nothing_was_dispatched_in_either_case(self):
+        """The refusal must precede delivery, not follow it."""
+        from harkeniq_cc import agent_runtime
+        from harkeniq_cc.db.models import CCAgentProposal
+
+        stack = await _stack()
+        agent_id, site_id = await _ready(stack)
+        await self._approved(stack, site_id, agent_id)
+        await _revoke_agent_scope(stack, agent_id)
+
+        dispatched = await agent_runtime.dispatch_decided(stack.state, TENANT)
+        assert dispatched == []
+        async with stack.sessionmaker() as session:
+            import sqlalchemy as sa
+            rows = (await session.execute(sa.select(CCAgentProposal))).scalars().all()
+        assert all(not r.directive_id for r in rows), "a directive was queued"
+
+
+class TestTelemetryIsNotTheChain:
+    """A24.16: attempt outcomes are counted, not hash-chained."""
+
+    async def test_a_rejected_candidate_does_not_append_to_the_chain(self):
+        from harkeniq_cc.db.models import CCAuditLog
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.sessionmaker() as session:
+            import sqlalchemy as sa
+            before = len((await session.execute(sa.select(CCAuditLog))).scalars().all())
+        async with stack.as_machine(agent_id).client() as c:
+            for n in range(5):
+                await c.post(
+                    f"/api/operational-agents/{agent_id}/proposals",
+                    json=_body("cand_" + "3" * 32, key=f"junk-key-{n:04d}"))
+        async with stack.sessionmaker() as session:
+            import sqlalchemy as sa
+            after = len((await session.execute(sa.select(CCAuditLog))).scalars().all())
+        assert after == before, (
+            "five rejected submissions appended to the hash chain -- an "
+            "amplification channel against the platform's integrity store"
+        )
+
+    async def test_a_governed_acceptance_is_still_chained(self):
+        from harkeniq_cc.db.models import CCAuditLog
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        ref = await _first_ref(stack, agent_id)
+        async with stack.as_machine(agent_id).client() as c:
+            await c.post(f"/api/operational-agents/{agent_id}/proposals",
+                         json=_body(ref))
+        async with stack.sessionmaker() as session:
+            import sqlalchemy as sa
+            rows = (await session.execute(sa.select(CCAuditLog).where(
+                CCAuditLog.action == "agent_submission.accepted"
+            ))).scalars().all()
+        assert len(rows) == 1

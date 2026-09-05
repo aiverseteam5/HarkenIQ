@@ -1742,15 +1742,6 @@ class SubmitProposal(BaseModel):
     note: str = Field(default="", max_length=512)
 
 
-#: A24.8: the durable per-identity rate window. Deliberately generous --
-#: this is an abuse control, not a product limit, and the honest per-agent
-#: work cap is `max_proposals_per_day`, which governs CREATION. A refused
-#: submission is counted too: a refusal that cost nothing would be free to
-#: repeat.
-SUBMISSION_RATE_WINDOW_S = 3600
-SUBMISSION_RATE_MAX = 240
-
-
 @router.post(
     "/{agent_id}/proposals",
     status_code=201,
@@ -1781,8 +1772,12 @@ async def submit_proposal(
     from harkeniq_cc.agent_runtime import AGENT_PERMISSIONS, _incidents_by_device
     from harkeniq_cc.capability_catalogue import candidates_for
     from harkeniq_cc.db.repos import (
-        AgentProposalRepo, AgentSubmissionRepo, AuditRepo,
-        CapabilityCatalogueRepo, FleetCacheRepo,
+        AgentIngressAttemptRepo, AgentProposalRepo, AgentSubmissionRepo,
+        AuditRepo, CapabilityCatalogueRepo, FleetCacheRepo,
+    )
+    from harkeniq_cc.ingress_limits import (
+        ATTEMPT_WINDOW_S, OUTCOME_ACCEPTED, OUTCOME_CONFLICT,
+        OUTCOME_REJECTED, OUTCOME_REPLAYED, admit_attempt, lock_agent_ingress,
     )
     from harkeniq_cc.governance import (
         load_agent_scope, load_attention, load_autonomy_contract,
@@ -1838,16 +1833,55 @@ async def submit_proposal(
         )
 
     submissions = AgentSubmissionRepo(session)
+    attempts = AgentIngressAttemptRepo(session)
+
+    # -- serialize this agent's ingress (A24.11) -----------------------
+    # Held for the rest of this transaction, covering the rate decision
+    # AND the replay lookup->insert below. Without it, two callers with
+    # one key both miss the lookup and the loser raises an integrity
+    # error -- a 500 on precisely the retry the key exists to make safe,
+    # reproduced on PostgreSQL by forcing that window.
+    #
+    # The only other lock in this path is the tenant admission lock taken
+    # inside `admit_proposal`. The order is always agent then tenant, so
+    # no cycle can form.
+    await lock_agent_ingress(session, tenant_id, agent_id)
+
+    # -- attempt rate (A24.13) -----------------------------------------
+    # BEFORE the replay branch, deliberately: the first implementation
+    # returned a replay first, which made replay an unmetered channel. A
+    # replay stays functionally idempotent; it is not free.
+    permitted, used = await admit_attempt(
+        session, tenant_id=tenant_id, agent_id=agent_id,
+    )
+    if not permitted:
+        # Refused without writing: a record that grew on every refusal
+        # would amplify the traffic it exists to bound.
+        await session.commit()
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"this agent has made {used} ingress attempts in the last "
+                f"{ATTEMPT_WINDOW_S // 60} minutes"
+            ),
+        )
+
+    async def _settle(outcome: str):
+        await attempts.record(
+            tenant_id=tenant_id, agent_id=agent_id, outcome=outcome,
+        )
 
     # -- replay (A24.2) -----------------------------------------------
-    # Before any work: a retry must be cheap and must return the ORIGINAL
-    # answer. `request_digest` is what separates a retry from a client
-    # bug -- same key, different work is 409, never silently answered
-    # with a result that describes something else.
+    # A retry must be cheap and must return the ORIGINAL answer.
+    # `request_digest` is what separates a retry from a client bug --
+    # same key, different work is 409, never silently answered with a
+    # result that describes something else.
     digest = _submission_digest(body)
     prior = await submissions.find(tenant_id, agent_id, body.idempotency_key)
     if prior is not None:
         if prior.request_digest != digest:
+            await _settle(OUTCOME_CONFLICT)
+            await session.commit()
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -1855,23 +1889,10 @@ async def submit_proposal(
                     "submission; use a new key for new work"
                 ),
             )
+        await _settle(OUTCOME_REPLAYED)
+        await session.commit()
         response.status_code = 200
         return _submission_result(prior, replayed=True)
-
-    # -- rate (A24.8) --------------------------------------------------
-    window_start = datetime.now(timezone.utc) - timedelta(
-        seconds=SUBMISSION_RATE_WINDOW_S
-    )
-    if await submissions.count_since(
-        tenant_id, agent_id, window_start
-    ) >= SUBMISSION_RATE_MAX:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"this agent has made {SUBMISSION_RATE_MAX} submissions in "
-                f"the last {SUBMISSION_RATE_WINDOW_S // 60} minutes"
-            ),
-        )
 
     # -- re-derivation (A24.3) ----------------------------------------
     # The ref is resolved by RE-RUNNING the same evaluation the dry-run
@@ -1949,15 +1970,12 @@ async def submit_proposal(
                 "current candidate"
             ),
         )
-        await AuditRepo(session).append(
-            actor=attribution_key(agent_id, agent_version),
-            actor_ref=agent_id,
-            action="agent_submission.refused",
-            subject=row.id,
-            tenant_id=tenant_id,
-            detail={"agent_id": agent_id, "code": row.code,
-                    "candidate_ref": body.candidate_ref[:128]},
-        )
+        # A24.16: counted, not chained. A rejected candidate is an
+        # ATTEMPT outcome, and appending every one of them to a
+        # hash-chained governance store would be an amplification channel
+        # against the platform's own integrity record. The submission row
+        # above is the durable evidence an operator reads.
+        await _settle(OUTCOME_REJECTED)
         await session.commit()
         response.status_code = 409
         return _submission_result(row, replayed=False)
@@ -1982,6 +2000,11 @@ async def submit_proposal(
         proposal_id=proposal.id if proposal is not None else None,
         code=code, reason=reason,
     )
+    await _settle(OUTCOME_ACCEPTED if proposal is not None else OUTCOME_REJECTED)
+    # A24.16: a submission that produced a proposal is a GOVERNED outcome
+    # and stays on the chain. So does a governed refusal reached after
+    # authorization -- there are at most a handful per agent per window,
+    # bounded by the attempt limit above.
     await AuditRepo(session).append(
         actor=attribution_key(agent_id, agent_version),
         actor_ref=agent_id,

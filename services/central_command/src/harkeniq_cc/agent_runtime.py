@@ -248,6 +248,43 @@ async def _dispatch_permitted(session, tenant_id: str, proposal) -> tuple[bool, 
     identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent_id)
     if identity is not None and identity.status == STATUS_REVOKED:
         return False, "this agent's machine identity has been revoked"
+
+    # A24.15: proposal-time authorization is not permanent execution
+    # authority. Status, pause, retirement and the credential were already
+    # re-asked above; REACH was not. An operator who withdraws a scope
+    # grant or unbinds a class expects that to stop work that has not run
+    # yet, and until now it did not -- the proposal carried its own
+    # historical authority all the way to the node.
+    #
+    # Both questions are asked of the CURRENT configuration through the
+    # same objects the rest of the platform uses: the ONE scope resolver,
+    # and the agent's own capability bindings. Neither grants anything;
+    # they can only withhold. The node remains the final authority.
+    from harkeniq_cc.governance import load_agent_scope
+    from harkeniq_cc.operational_agent import bound_action_classes
+
+    site_id = getattr(proposal, "site_id", "") or ""
+    if site_id:
+        agent_scope = await load_agent_scope(
+            session, tenant_id=tenant_id, agent_id=agent_id
+        )
+        if not (
+            getattr(agent_scope, "tenant_wide", False)
+            or site_id in set(getattr(agent_scope, "site_ids", ()) or ())
+        ):
+            return False, (
+                "this agent's scope no longer reaches the site this "
+                "proposal targets"
+            )
+
+    action_type = getattr(proposal, "action_type", "") or ""
+    bound = bound_action_classes(
+        await OperationalAgentRepo(session).list_capabilities(agent_id)
+    )
+    if action_type and action_type not in bound:
+        return False, (
+            f"{action_type} is no longer bound to the agent that proposed it"
+        )
     return True, ""
 
 
