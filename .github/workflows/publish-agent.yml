@@ -19,6 +19,9 @@ permissions:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    # Generous: the tag path builds arm64 under QEMU emulation, which is
+    # legitimately slow. This is a stall cap, not a performance budget.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

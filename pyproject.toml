@@ -26,6 +26,7 @@ dev = [
     "pytest-cov>=4.0",
     "httpx>=0.27",
     "aiosqlite>=0.20",
+    "pytest-timeout>=2.3",
 ]
 
 [project.scripts]
@@ -37,6 +38,30 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hung test must name itself, not burn the runner's six-hour ceiling.
+#
+# CI has twice stalled dead inside tests/unit/sm/test_directives.py and run to
+# GitHub's job limit -- py3.12 at the PR #28 merge, py3.11 at the PR #32 merge --
+# reporting nothing but "cancelled" and the last file that finished. It does not
+# reproduce locally, so CI is the only instrument that can see it; without a
+# timeout it tells us nothing.
+#
+# 300s is a hang detector, not a performance budget. The slowest phase in the
+# suite is 6.5s and the longest *intentional* wait anywhere is 30s (the r2a exit
+# gate's wait_until), so a test reaching 300s is stuck, not slow -- deliberately
+# far enough out that a loaded runner cannot clip a working test.
+#
+# method=thread, not the default signal. Measured: signal does interrupt a
+# pure-Python block and reports it more neatly, naming the test in the summary
+# and letting the rest of the run continue. What it cannot promise is firing
+# when the main thread is inside a non-interruptible C call -- and the observed
+# hang sits in the SM's gRPC tests, where the C core is exactly that risk. A
+# detector that might not fire puts us back at a silent six-hour cancel, so the
+# guarantee is worth more here than the tidier report: thread always fires,
+# dumping every thread's stack, and trades the remaining tests for a traceback
+# naming the stuck frame. The run it ends was being cancelled anyway.
+timeout = 300
+timeout_method = "thread"
 filterwarnings = ["ignore::DeprecationWarning"]
 markers = [
     "postgres: requires a real TimescaleDB/Postgres (set HARKEN_TEST_PG_DSN)",
