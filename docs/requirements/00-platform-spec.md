@@ -2137,3 +2137,93 @@ to it on every hostile or malformed request is an amplification channel
 against the platform's own integrity store. Governed outcomes — a
 submission that produced a proposal, an authenticated identity refused —
 remain audited. High-volume attempt outcomes are counted, not chained.
+
+### A25 — 2026-09-05 — A6-2 machine status and outcome correlation (decided: Vinod)
+
+A6-1 answered how an external Operational Agent submits governed intent.
+A6-2 answers how that same agent reliably follows what HarkenIQ did with
+it. It builds the machine feedback loop into the existing governed
+capability plane; it does not reduce it. External agents are first-class
+actors, not reduced UI automation clients.
+
+**A25.1 — Exact correlation, and the defect it closes.** Central Command
+holds an exact execution key and discards it before settlement. The Site
+Manager records every directed execution as
+`action_id = "directive:<directive_id>"`, `FleetOutcome.action_id` carries
+it, and `cc_outcome_history.action_id` stores it — but the projection the
+settlement loop consumes omits the field, so proposals are settled by a
+heuristic on device, action class, actor and a time window. Two dispatched
+proposals for one device and one action class can therefore be settled by
+each other's outcome. Settlement now joins on the exact key. The heuristic
+survives ONLY for outcomes that can carry no key — a proposal dispatched
+without a directive id — and that fallback is explicit, counted and
+tested, so its eventual retirement is a measurement rather than a guess.
+A proposal that holds a directive id waits for its own outcome and is
+never settled by another's: unsettled and visible beats settled and wrong.
+
+**A25.2 — Historical receipt, bounded (D1).** Operational reads stay
+current-authority. No grant, revoked, expired or vanished scope never
+restores estate visibility. One exception, and only one: the SAME logical
+Operational Agent that submitted a governed request retains access to the
+lifecycle RECEIPT for that exact submission after its scope narrows or is
+revoked. This is historical transaction attribution, not operational
+authority.
+
+Where current authority is absent the receipt may carry only:
+submission id, accepted/refused state, proposal id where one exists,
+proposal lifecycle state, approval required/state/counts, execution and
+terminal state, outcome classification, lifecycle timestamps, and a
+bounded refusal or failure reason. It may NOT carry device or site
+details, fleet state, raw evidence, executable parameters, authorization
+basis internals, human approver identity, group membership, other agents,
+or any current estate information.
+
+**A submission id is not a bearer credential.** Receipt access requires
+authentication as the same logical agent that created the submission.
+Cross-agent and cross-tenant access fail closed. The exception covers an
+agent's own submission and proposal lineage and generalizes to nothing
+else; it is not an A23 scope bypass.
+
+**A25.3 — Approver identity is never machine-visible (D2).** A machine
+projection may report that governance occurred — required, state, granted
+and required counts, and justified timestamps. It may not report who: no
+`decided_by`, no approver email, no Keycloak subject, no group membership.
+The canonical approval ledger is unchanged; safety is achieved by
+projection, never by weakening the record.
+
+**A25.4 — The layers stay separate.** No synthetic lifecycle status is
+invented. The machine projection preserves submission, proposal, approval,
+execution, outcome and terminality as distinct facts. Proposal status is
+not approval state is not execution state is not outcome. `approved` does
+not mean executed and is NOT terminal. `PARTIAL` and `ROLLBACK` never
+silently become a generic external failure without the canonical outcome
+classification beside them. The legal `approved → awaiting_approval`
+transition, which the per-agent budget produces, stays representable.
+
+**A25.5 — Machine-self is normalized (closes G5, per A24.5).** An
+Operational Agent must not inspect another Operational Agent merely
+because both occupy overlapping estate scope. The self-restriction that
+`dry-run` and submission already carry is extended to the remaining
+agent-addressed machine routes. Human administration continues under the
+ordinary scoped RBAC model and is not converted into a machine-self route.
+
+**A25.6 — Reads are metered separately from governed attempts.** Status
+polling and proposal submission are different traffic with different
+meaning, and must not share an accounting bucket. The A24.13 ledger
+continues to count governed submission attempts; read traffic is counted
+in its own bucket so that abuse detection, tenant and per-agent quotas,
+capacity management and entitlements can later distinguish them. Normal
+polling reads are never appended to the governance audit chain.
+
+**A25.7 — Caching may not conceal a transition.** Strong caching is
+permitted only where the underlying state can no longer change. `approved`
+is not terminal, and no caching semantics may hide `approved →
+awaiting_approval` or any later dispatch or outcome transition.
+
+**A25.8 — What A6-2 does not build.** No MCP, webhooks, event streaming or
+SDKs. No Console UI. No new autonomy policy, approval model, RBAC, scope
+resolver, execution state machine or outcome store. No `/api/v1`. No new
+permission and no machine-ceiling change: `fleet.view` already suffices.
+No change to what an external caller may supply — A24.2's unrepresentable
+set is permanent. These remain on the roadmap; they are simply not this
+slice.
