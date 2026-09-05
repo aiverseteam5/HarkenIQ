@@ -30,7 +30,10 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.api.deps import (
+    forbid_out_of_scope, get_current_user, get_scope, get_session,
+    require_permission,
+)
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq.capabilities import action_facts
@@ -1745,13 +1748,18 @@ class SubmitProposal(BaseModel):
 @router.post(
     "/{agent_id}/proposals",
     status_code=201,
-    dependencies=[Depends(require_permission("proposal.submit"))],
 )
 async def submit_proposal(
     agent_id: str,
     body: SubmitProposal,
     response: Response,
-    user: UserContext = Depends(require_permission("proposal.submit")),
+    # A24.13: `proposal.submit` is enforced INSIDE the handler, not as a
+    # route dependency. Not a weakening -- the same permission, refused
+    # with the same 403 -- but a dependency answers before the durable
+    # attempt meter is reached, so a valid credential lacking the
+    # permission could generate unlimited unmetered refusals. Order of
+    # metering changed; authorization did not.
+    user: UserContext = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
@@ -1777,7 +1785,8 @@ async def submit_proposal(
     )
     from harkeniq_cc.ingress_limits import (
         ATTEMPT_WINDOW_S, OUTCOME_ACCEPTED, OUTCOME_CONFLICT,
-        OUTCOME_REJECTED, OUTCOME_REPLAYED, admit_attempt, lock_agent_ingress,
+        OUTCOME_REFUSED, OUTCOME_REJECTED, OUTCOME_REPLAYED, admit_attempt,
+        lock_agent_ingress,
     )
     from harkeniq_cc.governance import (
         load_agent_scope, load_attention, load_autonomy_contract,
@@ -1790,21 +1799,12 @@ async def submit_proposal(
 
     tenant_id = user.tenant_id
 
-    # A24.5, asked FIRST and before anything is loaded: a machine agent
-    # acts as itself. The token already decided which agent this is
-    # (`user_id` is the agent id for a machine principal), so this is one
-    # comparison rather than a second identity model -- and there is no
-    # body field that could have said otherwise.
-    if is_machine(user):
-        if user.user_id != agent_id:
-            raise HTTPException(
-                status_code=403,
-                detail="a machine identity may submit for its own agent and no other",
-            )
-    else:
-        # A human holding the permission (a platform wildcard) still has
-        # no agent to act as. Refused explicitly rather than falling
-        # through to a check that happens not to match.
+    # A machine principal, or nothing. Asked before the meter because a
+    # non-machine caller HAS no agent identity to meter against -- there
+    # is no per-agent bucket to charge, so there is nothing to place this
+    # request in. Every principal past this line is an authenticated
+    # agent with a bucket of its own.
+    if not is_machine(user):
         raise HTTPException(
             status_code=403,
             detail=(
@@ -1813,24 +1813,11 @@ async def submit_proposal(
             ),
         )
 
-    # OBJECT_GATED, and not decoratively. For a machine principal the
-    # caller IS the agent, so this asks whether the agent still reaches
-    # its own scope rows -- which is exactly the question A23-3's inert
-    # grants make load-bearing: an agent whose grant was revoked, expired
-    # or points at a deleted org unit reaches nothing and must not be
-    # able to submit. Out of scope is 404, never 403, so the answer never
-    # confirms the agent exists.
-    agent = await _require_visible_agent(session, tenant_id, agent_id, scope)
-    if agent.status != STATUS_ACTIVE:
-        raise HTTPException(
-            status_code=409,
-            detail=f"this agent is {agent.status or 'inactive'} and may not submit",
-        )
-    if getattr(agent, "paused_reason", ""):
-        raise HTTPException(
-            status_code=409,
-            detail=f"this agent is paused: {agent.paused_reason}",
-        )
+    # A24.5: the agent the TOKEN names, never the one the path names. The
+    # meter is charged to the authenticated principal, so naming another
+    # agent in the path cannot move the cost onto that agent's bucket --
+    # the impersonation refusal below is itself metered here.
+    self_agent = user.user_id
 
     submissions = AgentSubmissionRepo(session)
     attempts = AgentIngressAttemptRepo(session)
@@ -1845,14 +1832,14 @@ async def submit_proposal(
     # The only other lock in this path is the tenant admission lock taken
     # inside `admit_proposal`. The order is always agent then tenant, so
     # no cycle can form.
-    await lock_agent_ingress(session, tenant_id, agent_id)
+    await lock_agent_ingress(session, tenant_id, self_agent)
 
     # -- attempt rate (A24.13) -----------------------------------------
     # BEFORE the replay branch, deliberately: the first implementation
     # returned a replay first, which made replay an unmetered channel. A
     # replay stays functionally idempotent; it is not free.
     permitted, used = await admit_attempt(
-        session, tenant_id=tenant_id, agent_id=agent_id,
+        session, tenant_id=tenant_id, agent_id=self_agent,
     )
     if not permitted:
         # Refused without writing: a record that grew on every refusal
@@ -1868,8 +1855,50 @@ async def submit_proposal(
 
     async def _settle(outcome: str):
         await attempts.record(
-            tenant_id=tenant_id, agent_id=agent_id, outcome=outcome,
+            tenant_id=tenant_id, agent_id=self_agent, outcome=outcome,
         )
+
+    # -- authorization, now INSIDE the meter (A24.13) -------------------
+    # Every refusal below is an authenticated request from a principal
+    # with its own bucket, so each one costs that bucket exactly what an
+    # accepted submission costs. The checks and their status codes are
+    # unchanged; only where they sit relative to the meter has moved.
+    #
+    # Caught as a class rather than enumerated: a check added here later
+    # is metered by construction instead of by whoever remembers.
+    try:
+        if not (
+            "proposal.submit" in user.permissions or "*" in user.permissions
+        ):
+            raise HTTPException(
+                status_code=403, detail="missing permission: proposal.submit",
+            )
+        if self_agent != agent_id:
+            raise HTTPException(
+                status_code=403,
+                detail="a machine identity may submit for its own agent and no other",
+            )
+        # OBJECT_GATED, and not decoratively. For a machine principal the
+        # caller IS the agent, so this asks whether the agent still
+        # reaches its own scope rows -- the question A23-3's inert grants
+        # make load-bearing: an agent whose grant was revoked, expired or
+        # points at a deleted org unit reaches nothing and must not be
+        # able to submit. Out of scope is 404, never 403.
+        agent = await _require_visible_agent(session, tenant_id, agent_id, scope)
+        if agent.status != STATUS_ACTIVE:
+            raise HTTPException(
+                status_code=409,
+                detail=f"this agent is {agent.status or 'inactive'} and may not submit",
+            )
+        if getattr(agent, "paused_reason", ""):
+            raise HTTPException(
+                status_code=409,
+                detail=f"this agent is paused: {agent.paused_reason}",
+            )
+    except HTTPException:
+        await _settle(OUTCOME_REFUSED)
+        await session.commit()
+        raise
 
     # -- replay (A24.2) -----------------------------------------------
     # A retry must be cheap and must return the ORIGINAL answer.

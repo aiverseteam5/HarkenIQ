@@ -439,6 +439,16 @@ def _probe_body(method: str, path: str, estate: A23Estate) -> dict | None:
         return {"entries": []}
     if path == "/api/warranty/import":
         return {"records": []}
+    if path == "/api/operational-agents/{agent_id}/proposals":
+        # A24.13 moved `proposal.submit` out of the route dependency and
+        # into the handler, so a bodyless probe now stops at schema
+        # validation (422) instead of the permission guard, and 422
+        # proves nothing about scope. A well-formed body carries the
+        # probe past validation to the gate this test exists to check.
+        return {
+            "candidate_ref": "cand_" + "0" * 32,
+            "idempotency_key": "a23-probe-0001",
+        }
     return None
 
 

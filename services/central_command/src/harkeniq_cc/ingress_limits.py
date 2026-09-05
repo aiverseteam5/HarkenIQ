@@ -87,9 +87,11 @@ async def admit_attempt(
     the write have to be one decision, or two replicas each permit the
     whole allowance and the limit is a comment.
 
-    Returns ``(permitted, used)``. When permitted, an attempt has been
-    RESERVED -- the row exists and the caller records its outcome later.
-    When not, nothing was written.
+    Returns ``(permitted, used)``. It DECIDES; it does not write. The
+    caller records the outcome once it knows what happened, which is what
+    makes one row per attempt carry a truthful outcome rather than a
+    placeholder corrected later. Nothing is written on refusal either --
+    that is the bound described above.
     """
     from harkeniq_cc.db.repos import AgentIngressAttemptRepo
 

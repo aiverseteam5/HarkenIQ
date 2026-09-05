@@ -2553,10 +2553,41 @@ class AgentProposalRepo:
             )
         ).scalars().first()
 
+    #: A24.12: statuses at which work may still REACH a device, and so
+    #: the only ones that may fence an equivalent physical operation.
+    #: Deliberately NOT `OPEN_STATUSES`, which answers a different
+    #: question and rightly includes `denied`.
+    #:
+    #: Walked against the documented lifecycle rather than assumed:
+    #:
+    #:   proposed          in flight -- governance has not finished
+    #:   awaiting_approval in flight -- a human may still approve it
+    #:   approved          in flight -- dispatch is pending
+    #:   dispatched        in flight -- the node may be running it now
+    #:   denied            NOT: final (D16). It will never reach a device,
+    #:                     and fencing on it would let one refusal block
+    #:                     that operation for every agent forever.
+    #:   blocked           NOT: "never dispatch and exist to be read".
+    #:   completed         NOT: settled. Re-running an action that already
+    #:                     succeeded is legitimate work.
+    #:   failed            NOT: settled, and re-trying is the normal
+    #:                     response to a failure.
+    #:
+    #: `denied` still blocks the PER-AGENT dedupe rule, which is a
+    #: different guarantee with a different reason: that agent must not
+    #: relitigate a refusal. Another agent proposing the same operation
+    #: later is not relitigation.
+    IN_FLIGHT_STATUSES = (
+        "proposed",
+        "awaiting_approval",
+        "approved",
+        "dispatched",
+    )
+
     async def find_open_operation(
         self, tenant_id: str, operation_key: str
     ) -> Optional[CCAgentProposal]:
-        """An OPEN proposal for this physical operation, from ANY agent.
+        """An IN-FLIGHT proposal for this physical operation, from ANY agent.
 
         A24.12. NULL `operation_key` rows are skipped rather than matched:
         a proposal made before the concept existed is not comparable, and
@@ -2571,7 +2602,7 @@ class AgentProposalRepo:
                 .where(
                     CCAgentProposal.tenant_id == tenant_id,
                     CCAgentProposal.operation_key == operation_key,
-                    CCAgentProposal.status.in_(self.OPEN_STATUSES),
+                    CCAgentProposal.status.in_(self.IN_FLIGHT_STATUSES),
                 )
                 .order_by(CCAgentProposal.created_at.desc())
             )

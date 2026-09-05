@@ -62,9 +62,29 @@ def _too_large(limit: int):
 class IngressBodyLimit:
     """Pure-ASGI middleware: refuse an oversized body before it is parsed.
 
-    Deliberately pure ASGI rather than a `BaseHTTPMiddleware`, because the
-    Starlette base class reads the request in order to hand it on -- which
-    is the very thing being prevented.
+    BUFFER, DECIDE, THEN REPLAY. The first implementation wrapped
+    `receive` and returned `http.disconnect` once the running total went
+    over. That worked only when `Content-Length` declared the size
+    honestly; measured, the other cases came back 400, not 413:
+
+        honest Content-Length ......... 413
+        chunked / no length ........... 400  <- the app saw a truncated body
+        understated Content-Length .... 400  <- and answered before we could
+
+    A disconnect mid-stream is indistinguishable, to Starlette, from a
+    client that hung up, so FastAPI produced its own parse failure and
+    responded first -- and once the app has sent a response, the 413 can
+    no longer be sent. The limit was being enforced by whoever answered
+    first, which is not enforcement.
+
+    So this never hands the application a body it might refuse to parse.
+    It reads at most `limit + 1` bytes; over the limit it answers 413
+    itself, having never invoked the app; within the limit it replays the
+    buffered messages verbatim, so the application sees exactly the
+    request the client sent.
+
+    Buffering is bounded by the limit itself -- 16 KiB -- which is the
+    property that makes reading-before-deciding safe here.
     """
 
     def __init__(self, app, limit: int = MAX_INGRESS_BODY_BYTES) -> None:
@@ -77,40 +97,55 @@ class IngressBodyLimit:
             return
 
         # A declared length already over the ceiling is refused without
-        # reading a byte. The declaration is a shortcut, never the
-        # authority: an understated one is caught by the running total.
-        declared = 0
-        for name, value in scope.get("headers", []) or []:
-            if name.lower() == b"content-length":
-                try:
-                    declared = int(value)
-                except (TypeError, ValueError):
-                    declared = 0
-                break
-        if declared > self.limit:
+        # reading a byte. A shortcut only: an understated or absent
+        # declaration is caught by the running total below, which is why
+        # the loop cannot be skipped when this passes.
+        if _declared_length(scope) > self.limit:
             await _refuse(send, self.limit)
             return
 
-        state = {"received": 0, "exceeded": False, "responded": False}
-
-        async def counting_receive():
+        buffered: list[dict] = []
+        total = 0
+        while True:
             message = await receive()
-            if message.get("type") == "http.request":
-                state["received"] += len(message.get("body", b"") or b"")
-                if state["received"] > self.limit:
-                    state["exceeded"] = True
-                    # Stop feeding the parser. The refusal below is what
-                    # the client actually receives.
-                    return {"type": "http.disconnect"}
-            return message
+            if message.get("type") == "http.disconnect":
+                buffered.append(message)
+                break
+            body = message.get("body", b"") or b""
+            total += len(body)
+            if total > self.limit:
+                # Answered here, with the application never invoked, so
+                # nothing else can respond first and no parser ever sees
+                # these bytes.
+                await _refuse(send, self.limit)
+                return
+            buffered.append(message)
+            if not message.get("more_body", False):
+                break
 
-        async def guarded_send(message):
-            state["responded"] = True
-            await send(message)
+        pending = iter(buffered)
 
-        await self.app(scope, counting_receive, guarded_send)
-        if state["exceeded"] and not state["responded"]:
-            await _refuse(send, self.limit)
+        async def replay():
+            try:
+                return next(pending)
+            except StopIteration:
+                # The stream is exhausted. An empty terminal chunk rather
+                # than a disconnect: the body was complete and well
+                # formed, and a disconnect here would make the app think
+                # the client hung up.
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
+def _declared_length(scope) -> int:
+    for name, value in scope.get("headers", []) or []:
+        if name.lower() == b"content-length":
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 async def _refuse(send, limit: int) -> None:

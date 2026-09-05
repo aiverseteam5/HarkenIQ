@@ -2093,8 +2093,19 @@ hard-coded: an operation is identified by its device, its action class,
 and those parameters the contract marks as addressing the affected
 component (`source == component`). Parameters the contract states no
 executor reads are excluded by that same rule. Two DIFFERENT operations on
-one target remain legitimately concurrent. Enforced for OPEN proposals
-only — a settled proposal must not fence a device forever.
+one target remain legitimately concurrent.
+
+*Corrected 2026-09-05, before the implementing code.* This clause first
+read "enforced for OPEN proposals only". `OPEN_STATUSES` is a different
+question's answer and rightly contains `denied`, because a denial is
+final (D16) and the agent that was refused must not relitigate it.
+Fencing a PHYSICAL operation on that status would let one human's refusal
+block that operation for every agent forever. The rule is therefore
+IN-FLIGHT proposals only — work that can still reach a device:
+`proposed`, `awaiting_approval`, `approved`, `dispatched`. Not `denied`
+(final), not `blocked` (never dispatches), and not `completed` or
+`failed` (settled; re-running or retrying is legitimate work). The
+per-agent dedupe rule is unchanged and still treats a denial as final.
 
 **A24.13 — Ingress rate is an ATTEMPT rate, enforced atomically.** Count,
 compare and admit must be one atomic decision for the deployed

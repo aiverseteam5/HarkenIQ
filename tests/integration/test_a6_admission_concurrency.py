@@ -440,3 +440,96 @@ class TestEvaluatorAndIngressConverge:
                     CCAgentProposal.tenant_id == tenant))
                 await session.commit()
             await engine.dispose()
+
+
+class TestTheCatalogueSeedsExactlyOnce:
+    """The sixth finding: a lazy first-seed that raced.
+
+    `CapabilityCatalogueRepo.list_for_tenant` seeded with
+    read -> if-empty -> seed and no serialization, so two concurrent
+    requests on a tenant whose catalogue was unseeded both saw nothing,
+    both seeded, and one raised a unique violation. That is the 500 the
+    very first A6 concurrency probe actually hit, before any of the
+    findings were fixed.
+
+    Proved by ORDER, not by racing two callers and hoping: a caller that
+    finds the catalogue empty cannot finish its read until the seeding
+    transaction commits, and must then see the committed rows rather than
+    seed again.
+    """
+
+    async def test_a_second_reader_waits_and_then_sees_the_committed_seed(self):
+        from harkeniq.audit.chain import pg_advisory_chain_lock
+        from harkeniq_cc.capability_catalogue import SEED
+        from harkeniq_cc.db.models import CCCapabilityCatalogue
+        from harkeniq_cc.db.repos import CapabilityCatalogueRepo
+
+        engine, sessionmaker = await _engine()
+        tenant = f"t-{uuid.uuid4().hex[:8]}"
+        seeding = asyncio.Event()
+        order: list[str] = []
+        failures: list[str] = []
+
+        async def seeder():
+            """The first request: holds the lock across its seed."""
+            async with sessionmaker() as session:
+                await pg_advisory_chain_lock(
+                    session, f"cc.capability_catalogue.{tenant}")
+                await CapabilityCatalogueRepo(session).seed(
+                    tenant, actor="test-seeder")
+                seeding.set()
+                # Long enough that an UNSERIALIZED reader would certainly
+                # have finished its own seed by now.
+                await asyncio.sleep(0.5)
+                order.append("seeder-committed")
+                await session.commit()
+
+        async def reader():
+            """The second request, arriving mid-seed."""
+            await seeding.wait()
+            async with sessionmaker() as session:
+                try:
+                    rows = await CapabilityCatalogueRepo(
+                        session).list_for_tenant(tenant)
+                except Exception as exc:  # noqa: BLE001 - reported, not raised
+                    failures.append(f"{type(exc).__name__}: {exc}")
+                    return []
+                order.append("reader-read")
+                await session.commit()
+                return rows
+
+        try:
+            _, rows = await asyncio.wait_for(
+                asyncio.gather(seeder(), reader()), timeout=30)
+
+            assert not failures, (
+                f"the second reader raised instead of waiting: {failures}"
+            )
+            assert order == ["seeder-committed", "reader-read"], (
+                "the second reader completed its read before the seeding "
+                "transaction committed: it saw an empty catalogue and would "
+                "seed a second copy"
+            )
+
+            async with sessionmaker() as session:
+                stored = (await session.execute(
+                    sa.select(CCCapabilityCatalogue).where(
+                        CCCapabilityCatalogue.tenant_id == tenant)
+                )).scalars().all()
+
+            # Exactly one seed: not doubled, not partial.
+            assert len(stored) == len(SEED), (
+                f"{len(stored)} catalogue rows for a {len(SEED)}-row seed -- "
+                "the catalogue was seeded more than once or incompletely"
+            )
+            pairs = {(r.subsystem, r.action_type) for r in stored}
+            assert len(pairs) == len(stored), "duplicate catalogue entries"
+            # And the waiting reader saw the whole thing, not a fragment.
+            assert len(rows) == len(SEED)
+        finally:
+            async with sessionmaker() as session:
+                await session.execute(
+                    sa.delete(CCCapabilityCatalogue).where(
+                        CCCapabilityCatalogue.tenant_id == tenant))
+                await session.commit()
+            await engine.dispose()

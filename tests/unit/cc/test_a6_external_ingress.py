@@ -1230,3 +1230,399 @@ class TestTelemetryIsNotTheChain:
                 CCAuditLog.action == "agent_submission.accepted"
             ))).scalars().all()
         assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. Final pre-merge remediation (A24.11-A24.16, round two)
+# ---------------------------------------------------------------------------
+
+
+class TestTheBodyCeilingHoldsForEveryShape:
+    """The first implementation held for ONE shape and 400'd for two.
+
+    Measured before the fix: an honest `Content-Length` gave 413, while a
+    chunked body and an understated length both gave 400 -- the app saw a
+    truncated stream and answered with its own parse failure before the
+    413 could be sent. A limit enforced by whoever responds first is not
+    enforced.
+    """
+
+    @staticmethod
+    def _oversized() -> bytes:
+        from harkeniq_cc.ingress_body import MAX_INGRESS_BODY_BYTES as LIM
+
+        return (
+            b'{"candidate_ref":"cand_x","idempotency_key":"kkkkkkkk","note":"'
+            + b"x" * (LIM * 2) + b'"}'
+        )
+
+    async def test_an_honest_content_length_is_refused(self):
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=self._oversized(),
+                headers={"content-type": "application/json"},
+            )
+        assert res.status_code == 413
+
+    async def test_a_chunked_body_with_no_declared_length_is_refused(self):
+        """The case the first implementation lost: 400, not 413."""
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        payload = self._oversized()
+
+        async def chunks():
+            for i in range(0, len(payload), 4096):
+                yield payload[i:i + 4096]
+
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=chunks(),
+                headers={"content-type": "application/json"},
+            )
+        assert res.status_code == 413, (
+            "a chunked oversized body reached the parser"
+        )
+
+    async def test_an_understated_content_length_is_refused(self):
+        """The declaration is a hint; the running total is the authority."""
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=self._oversized(),
+                headers={
+                    "content-type": "application/json",
+                    "content-length": "50",
+                },
+            )
+        assert res.status_code == 413
+
+    async def test_a_whitespace_heavy_body_is_refused(self):
+        from harkeniq_cc.ingress_body import MAX_INGRESS_BODY_BYTES as LIM
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        payload = (
+            b'{"candidate_ref":"cand_x"' + b" " * (LIM * 2)
+            + b',"idempotency_key":"kkkkkkkk"}'
+        )
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=payload,
+                headers={"content-type": "application/json"},
+            )
+        assert res.status_code == 413
+
+    async def test_a_malformed_oversized_body_is_refused_by_size_first(self):
+        from harkeniq_cc.ingress_body import MAX_INGRESS_BODY_BYTES as LIM
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=b"{" * (LIM * 2),
+                headers={"content-type": "application/json"},
+            )
+        assert res.status_code == 413
+
+    async def test_a_chunked_body_within_the_limit_is_replayed_intact(self):
+        """Buffering must not change what the application receives."""
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        ref = await _first_ref(stack, agent_id)
+        payload = (
+            '{"candidate_ref":"%s","idempotency_key":"chunk-key-01"}' % ref
+        ).encode()
+
+        async def chunks():
+            for i in range(0, len(payload), 8):
+                yield payload[i:i + 8]
+
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=chunks(),
+                headers={"content-type": "application/json"},
+            )
+        assert res.status_code == 201, res.text
+
+    async def test_the_ceiling_does_not_shadow_schema_validation(self):
+        """A legal-sized body with an illegal field is still a 422."""
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        ref = await _first_ref(stack, agent_id)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                json=_body(ref, note="y" * 4000),
+            )
+        assert res.status_code == 422
+
+    async def test_nothing_reached_the_application_for_an_oversized_body(self):
+        """413 must cost nothing: no attempt, no submission, no proposal."""
+        import sqlalchemy as sa
+
+        from harkeniq_cc.db.models import CCAgentIngressAttempt
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.as_machine(agent_id).client() as c:
+            await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                content=self._oversized(),
+                headers={"content-type": "application/json"},
+            )
+        async with stack.sessionmaker() as session:
+            assert (await session.execute(
+                sa.select(CCAgentIngressAttempt))).scalars().all() == []
+            assert (await session.execute(
+                sa.select(CCAgentSubmission))).scalars().all() == []
+
+
+class TestAuthenticatedRefusalsAreMetered:
+    """A24.13: a valid credential must not buy unlimited free refusals."""
+
+    @staticmethod
+    async def _attempts(stack, agent_id) -> list:
+        import sqlalchemy as sa
+
+        from harkeniq_cc.db.models import CCAgentIngressAttempt
+
+        async with stack.sessionmaker() as session:
+            return (await session.execute(
+                sa.select(CCAgentIngressAttempt).where(
+                    CCAgentIngressAttempt.agent_id == agent_id)
+            )).scalars().all()
+
+    async def test_a_permission_refusal_is_metered(self):
+        """403 for a missing permission still costs the caller."""
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        # Authenticated, but without proposal.submit.
+        stack.as_machine(agent_id, permissions=("fleet.view",))
+        async with stack.client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                json=_body("cand_" + "0" * 32),
+            )
+        assert res.status_code == 403
+        assert "proposal.submit" in res.json()["detail"]
+        rows = await self._attempts(stack, agent_id)
+        assert len(rows) == 1 and rows[0].outcome == "refused"
+
+    async def test_an_impersonation_refusal_is_metered_to_the_caller(self):
+        """And charged to the TOKEN's agent, not the one it named."""
+        stack = await _stack()
+        agent_id, site_id = await _ready(stack)
+        async with stack.client() as c:
+            other = await _agent(c, site_id, name="Third Shift")
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{other}/proposals",
+                json=_body("cand_" + "0" * 32),
+            )
+        assert res.status_code == 403
+        assert len(await self._attempts(stack, agent_id)) == 1, (
+            "the caller was not charged for its own impersonation attempt"
+        )
+        assert await self._attempts(stack, other) == [], (
+            "the impersonated agent was charged for someone else's attempt"
+        )
+
+    async def test_a_scope_refusal_is_metered(self):
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        await _revoke_agent_scope(stack, agent_id)
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                json=_body("cand_" + "0" * 32),
+            )
+        assert res.status_code == 404
+        rows = await self._attempts(stack, agent_id)
+        assert len(rows) == 1 and rows[0].outcome == "refused"
+
+    @pytest.mark.parametrize("status", ["draft", "paused", "retired"])
+    async def test_a_lifecycle_refusal_is_metered(self, status):
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.sessionmaker() as session:
+            agent = await session.get(CCOperationalAgent, agent_id)
+            agent.status = status
+            await session.commit()
+        async with stack.as_machine(agent_id).client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                json=_body("cand_" + "0" * 32),
+            )
+        assert res.status_code == 409
+        rows = await self._attempts(stack, agent_id)
+        assert len(rows) == 1 and rows[0].outcome == "refused"
+
+    async def test_repeated_refusals_exhaust_the_window(self):
+        """The point of metering them: refusals are finite."""
+        from harkeniq_cc.db.repos import AgentIngressAttemptRepo
+        from harkeniq_cc.ingress_limits import ATTEMPT_MAX
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        async with stack.sessionmaker() as session:
+            repo = AgentIngressAttemptRepo(session)
+            for _ in range(ATTEMPT_MAX):
+                await repo.record(
+                    tenant_id=TENANT, agent_id=agent_id, outcome="refused")
+            await session.commit()
+        # Even a permission refusal now costs nothing MORE -- it is 429.
+        stack.as_machine(agent_id, permissions=("fleet.view",))
+        async with stack.client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                json=_body("cand_" + "0" * 32),
+            )
+        assert res.status_code == 429
+
+    async def test_a_human_is_refused_without_a_meter_to_charge(self):
+        """A non-machine principal has no per-agent bucket to bill."""
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+        stack.as_person(role="platform_super_admin")
+        async with stack.client() as c:
+            res = await c.post(
+                f"/api/operational-agents/{agent_id}/proposals",
+                json=_body("cand_" + "0" * 32),
+            )
+        assert res.status_code == 403
+        assert "machine-principal surface" in res.json()["detail"]
+        assert await self._attempts(stack, agent_id) == []
+
+
+class TestOnlyInFlightWorkFences:
+    """A24.12: a settled operation must not fence a device forever."""
+
+    def test_the_in_flight_set_is_not_the_open_set(self):
+        from harkeniq_cc.db.repos import AgentProposalRepo as R
+
+        assert "denied" in R.OPEN_STATUSES, (
+            "denial must still block the PER-AGENT dedupe rule (D16)"
+        )
+        assert "denied" not in R.IN_FLIGHT_STATUSES, (
+            "a denied proposal can never reach a device; fencing on it "
+            "would let one refusal block that operation for every agent"
+        )
+
+    def test_every_in_flight_status_can_still_reach_a_device(self):
+        from harkeniq_cc.db.repos import AgentProposalRepo as R
+
+        assert set(R.IN_FLIGHT_STATUSES) == {
+            "proposed", "awaiting_approval", "approved", "dispatched",
+        }
+
+    @pytest.mark.parametrize("status,fences", [
+        ("proposed", True),
+        ("awaiting_approval", True),
+        ("approved", True),
+        ("dispatched", True),
+        ("denied", False),
+        ("completed", False),
+        ("failed", False),
+        ("blocked", False),
+    ])
+    async def test_the_lifecycle_decides_what_fences(self, status, fences):
+        from harkeniq_cc.db.models import CCAgentProposal
+        from harkeniq_cc.proposal_admission import (
+            CODE_OPERATION_IN_FLIGHT, admit_proposal,
+        )
+
+        stack = await _stack()
+        agent_a, site_id = await _ready(stack)
+        async with stack.client() as c:
+            agent_b = await _agent(c, site_id, name=f"Shift {status}")
+
+        def payload(agent_id, key):
+            return {
+                "tenant_id": TENANT, "agent_id": agent_id,
+                "actor": f"op-agent:{agent_id}@v1", "agent_version": 1,
+                "site_id": site_id, "device_agent_id": "node-1",
+                "action_type": "IDENTIFY_LED",
+                "params": {"target": "Disk.Bay.1"}, "rationale": "r",
+                "evidence": {}, "disposition": "requires_approval",
+                "disposition_reason": "", "blocking_conditions": [],
+                "authorization_basis": "human_approval",
+                "status": "awaiting_approval", "decided_by": "",
+                "decided_at": None, "dedupe_key": key,
+            }
+
+        async with stack.sessionmaker() as session:
+            first, _, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload(agent_a, "k-a"),
+                origin="ingress")
+            await session.commit()
+            first_id = first.id
+        async with stack.sessionmaker() as session:
+            row = await session.get(CCAgentProposal, first_id)
+            row.status = status
+            await session.commit()
+
+        async with stack.sessionmaker() as session:
+            second, code, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload(agent_b, "k-b"),
+                origin="ingress")
+
+        if fences:
+            assert second is None and code == CODE_OPERATION_IN_FLIGHT, (
+                f"status {status!r} should fence an equivalent operation"
+            )
+        else:
+            assert second is not None, (
+                f"status {status!r} fenced an equivalent operation, but work "
+                f"in that state can never reach a device"
+            )
+
+    async def test_a_denied_operation_does_not_block_another_agent(self):
+        """The headline of MEDIUM 1, stated as the product rule."""
+        from harkeniq_cc.db.models import CCAgentProposal
+        from harkeniq_cc.proposal_admission import admit_proposal
+
+        stack = await _stack()
+        agent_a, site_id = await _ready(stack)
+        async with stack.client() as c:
+            agent_b = await _agent(c, site_id, name="Later Shift")
+
+        def payload(agent_id, key):
+            return {
+                "tenant_id": TENANT, "agent_id": agent_id,
+                "actor": f"op-agent:{agent_id}@v1", "agent_version": 1,
+                "site_id": site_id, "device_agent_id": "node-1",
+                "action_type": "IDENTIFY_LED",
+                "params": {"target": "Disk.Bay.1"}, "rationale": "r",
+                "evidence": {}, "disposition": "requires_approval",
+                "disposition_reason": "", "blocking_conditions": [],
+                "authorization_basis": "human_approval",
+                "status": "awaiting_approval", "decided_by": "",
+                "decided_at": None, "dedupe_key": key,
+            }
+
+        async with stack.sessionmaker() as session:
+            row, _, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload(agent_a, "d-a"),
+                origin="ingress")
+            await session.commit()
+            pid = row.id
+        async with stack.sessionmaker() as session:
+            denied = await session.get(CCAgentProposal, pid)
+            denied.status = "denied"
+            await session.commit()
+        async with stack.sessionmaker() as session:
+            second, code, _ = await admit_proposal(
+                session, tenant_id=TENANT, payload=payload(agent_b, "d-b"),
+                origin="ingress")
+        assert second is not None, (
+            f"one human's denial fenced every other agent forever ({code})"
+        )
