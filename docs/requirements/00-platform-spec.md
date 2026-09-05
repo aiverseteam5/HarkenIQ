@@ -1962,3 +1962,103 @@ Dell identity, no machine-ceiling change, no node-authority change, no
 platform break-glass, no scope-resolution cache (recorded as a scale
 follow-up), no Keycloak-side user lifecycle, and no change to the Site
 Manager's own site-token approve route (recorded by A22).
+
+### A24 — 2026-09-05 — A6 external agent ingress (decided: Vinod)
+
+**Context.** An external Operational Agent runtime has held a credential
+since A3 and has been able to reason about itself since A5's dry-run, but
+it has never been able to submit work. The pre-implementation
+investigation on `main` at `d11840c` found that three of the four pieces a
+first ingress slice would need already exist — the credential, the
+token→identity→agent→tenant→scope binding, and dry-run, which is already
+reachable by a machine principal at `fleet.view` with an object-level
+self-gate. The single real gap is **submission**, and the machine
+permission ceiling is read-only by construction.
+
+It also found that a `POST /proposals` carrying an action cannot be built
+without breaking four ratified properties: `govern_proposal()` is
+condition-driven rather than action-driven, `resolve_action_params()`
+derives parameters and never accepts them, `open_dedupe_keys` is
+structurally unavailable to an HTTP caller (A22.1), and a body able to
+carry `authorization_basis` would be a self-signed execution order
+(A22.15).
+
+**A24.1 — Propose-by-reference, not propose-by-construction.** The
+external agent does not construct a proposal. It selects a candidate
+Central Command has already governed and shown it through the existing
+dry-run, and asks for it to be recorded. Authorship stays server-side;
+the agent contributes which and when. HarkenIQ remains the sole authority
+that derives an executable proposal.
+
+**A24.2 — The transport contract is closed.** The body carries exactly
+`candidate_ref`, `idempotency_key`, optional `observed_at` and an optional
+bounded `note`. `agent_id`, `action_type`, `device`, `params`,
+`disposition`, `authorization_basis`, `status`, `decided_by`, autonomy
+level, approval and site are **unrepresentable** — rejected by the schema,
+never merely ignored. The prohibition on caller-supplied `disposition`,
+`authorization_basis` and `status` is PERMANENT and survives any future
+extension of A6.
+
+**A24.3 — `candidate_ref` is not an authority token.** It is opaque and
+server-minted. On receipt Central Command re-loads current state and
+re-runs the existing `govern_proposal()` before anything is persisted. A
+candidate that no longer governs the same way is refused with the CURRENT
+reason — never narrowed, never coerced, never honoured because it was
+valid when issued.
+
+**A24.4 — Effective machine authority is a binding INTERSECTED with the
+ceiling.** `proposal.submit` enters the permission vocabulary and
+`MACHINE_PRINCIPAL_CEILING`. The ceiling does not grant it. An agent
+submits only where an explicit capability binding names that authority
+AND the ceiling admits it:
+
+    effective = explicit agent bindings  ∩  MACHINE_PRINCIPAL_CEILING
+
+An Operational Agent without an explicit ingress binding cannot submit
+merely because the ceiling permits the class. This preserves A20.3's
+shape exactly: the binding table and the ceiling stay separate objects,
+so adding a binding can never raise the ceiling.
+
+**A24.5 — A machine agent acts as itself.** For external machine
+submission the token-derived agent id MUST equal the route's agent id. No
+body field can select another agent. Human access to the same surfaces
+remains governed by ordinary scope rules. A6-2 normalizes the same self
+semantics across the remaining machine-facing proposal, runtime and
+preflight reads, which today are asymmetric: `dry-run` restricts an
+identity to its own agent and the adjacent reads do not.
+
+**A24.6 — One proposal-admission path.** Ingress and the CC-resident
+evaluator admit proposals through the SAME function. Two concurrent
+submissions for the same governed logical candidate must not create two
+open proposals, and must not be able to do so by presenting different
+idempotency keys — logical duplication is governed by the dedupe key the
+verdict function already computes, not by the transport's replay key.
+Idempotency and logical duplication are two different guarantees and both
+are required.
+
+**A24.7 — Submission does not consume execution budget.** `execution_budget`
+counts actions actually executed (A19 D2) and is asked at dispatch. A
+submission or a retry consumes neither it nor any autonomy grant. The
+existing per-agent daily proposal cap remains the back-pressure on
+creation.
+
+**A24.8 — Ingress abuse controls are part of the first slice.** A6 admits
+the platform's first programmatic, retrying, external writer. A bounded
+body, a closed schema and a durable per-identity rate control ship with
+it. The rate mechanism must be correct under the deployed runtime model —
+Central Command runs multi-replica, so a per-process counter would be
+decorative — and must not introduce new infrastructure.
+
+**A24.9 — What A6-1 does not build.** No MCP. No streaming, webhooks or
+event fan-out. No agent-supplied evidence or telemetry. No autonomy
+change: no action class enters the ladder. No Site Manager or node
+authority change. No `/api/v1`. No second RBAC, scope resolver,
+capability registry, agent identity, approval system, execution engine,
+audit universe or proposal governance function.
+
+**A24.10 — A6-1 is a floor, not a ceiling.** Propose-by-reference is the
+first SAFE external ingress contract, not the final limit of external
+agent reasoning. A future governed slice may extend A6 toward capability
+intent or evidence ingestion — which would need its own evidence-trust
+model — while preserving A24.1: HarkenIQ remains the sole authority that
+derives an executable proposal.

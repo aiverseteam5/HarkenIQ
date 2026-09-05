@@ -2412,3 +2412,131 @@ administrator, and its holder still cannot self-grant.
 
 No new permission, no new lifecycle state, no second RBAC, no second
 grant path, no Console→CC trust direction, no A24 work.
+
+---
+
+## 28. A6-1 — governed external submission by reference (A24)
+
+Written before the code, per change control.
+
+### What the investigation found
+
+Traced on `main` at `d11840c`. Three of the four things a first ingress
+slice would build already exist and already work for an external machine
+principal: the Keycloak client-credentials identity (A3), the
+token→identity→agent→tenant→scope binding (`auth.py:_machine_principal`),
+and dry-run (`GET /api/operational-agents/{id}/dry-run`), which is
+guarded at `fleet.view` — already inside `MACHINE_PRINCIPAL_CEILING` —
+with an object-level self-gate. The one real gap is submission.
+
+The reason a naive `POST /proposals` is not implementable is structural,
+not stylistic:
+
+| Property | Where | Consequence for ingress |
+|---|---|---|
+| `govern_proposal()` is condition-driven | `operational_agent.py:542` | A caller cannot author an action; it must reference an observed condition |
+| Parameters are derived | `capabilities.py:resolve_action_params` | Accepting `params` reopens the defect A5 closed |
+| `open_dedupe_keys` is tenant-wide | `repos.py:all_dedupe_keys` | A22.1: an external decider would re-propose refused work forever |
+| `authorization_basis` waives the node's lease gate | proposal payload | A22.15: a body carrying it is a self-signed execution order |
+
+### The shape
+
+Two calls, one of which already exists:
+
+```
+GET  /api/operational-agents/{id}/dry-run     (exists, unchanged)
+       -> candidates, each with a server-minted candidate_ref
+POST /api/operational-agents/{id}/proposals   (new)
+       -> { candidate_ref, idempotency_key, observed_at?, note? }
+```
+
+On receipt CC re-derives everything and re-runs `govern_proposal()`. The
+ref is a lookup, never a licence.
+
+### D1 — the ceiling gains a permission it does not grant
+
+`proposal.submit` enters the vocabulary and the ceiling. Effective
+authority stays an INTERSECTION:
+
+```
+effective = bound_reads ∪ bound_ingress   ∩   MACHINE_PRINCIPAL_CEILING
+```
+
+A new binding kind `ingress` carries `capability_ref="proposals"`, mapped
+to `proposal.submit` by `INGRESS_BINDING_PERMISSIONS` — a table kept
+deliberately separate from the ceiling, exactly as `READ_BINDING_PERMISSIONS`
+is, so that adding a binding can never raise the ceiling. An agent with no
+ingress binding gets 403 even though the ceiling admits the class.
+
+`proposal.submit` is deliberately absent from every human role.
+`ROLE_PERMISSIONS` mirrors the Console's and a test pins that parity, so
+adding a machine permission to a role would break parity to no purpose —
+a human has no token-derived agent and would fail A24.5 regardless. The
+route-contract vocabulary test therefore derives the fixed vocabulary
+from role permissions **∪ the machine ceiling**, which is what the
+platform's vocabulary has actually been since A3.
+
+### D3 — two guarantees, not one
+
+Idempotency and logical duplication are different failures and need
+different mechanisms:
+
+* **Transport replay** — same work submitted twice with the same key.
+  Answered by `unique(tenant_id, agent_id, idempotency_key)` on
+  `cc_agent_submissions`: a DB guarantee, the E0.1 shape.
+* **Logical duplication** — the same governed candidate submitted twice
+  with *different* keys, concurrently. The replay key cannot see this.
+
+The status lifecycle decides the second mechanism, and inspecting it
+settled the question the report left open. `all_dedupe_keys()` returns
+**every** key, not only open ones, deliberately — its docstring records
+that a permanently-refused `SEL_CLEAR` was re-proposed on every pass until
+that was fixed. So admission semantics are already "one proposal ever per
+dedupe key", and a partial unique index over open statuses would encode a
+rule the platform does not actually use.
+
+A retroactive `unique(tenant_id, dedupe_key)` was considered and rejected:
+`dedupe_key` defaults to `""`, the key shape changed at A5 (the component
+was appended), and a migration that fails on historical rows to surface a
+historical bug is the wrong trade against a customer upgrade.
+
+The mechanism is therefore a **transaction-scoped advisory lock around
+admission**, keyed on the tenant's proposal admission namespace, reusing
+R5-2's `pg_advisory_chain_lock` exactly as A23-3's
+`lock_tenant_authorization` does. Held from the dedupe read through the
+insert and the caller's commit, so the second submitter waits, re-reads a
+committed key set, and is refused `duplicate` by the SAME verdict function.
+No-op on sqlite, which is single-writer; proven concurrently on real
+PostgreSQL in the gate, the way A23-3 proved concurrent last-admin revokes.
+
+`admit_proposal()` is the one admission path. The evaluator's inline
+create-and-audit body moves into it, so ingress adds no second way for a
+proposal to come into existence.
+
+### D4 — a rate control that is true under the deployed model
+
+Central Command runs multi-replica (R5-2 added advisory locking for
+exactly that reason), so an in-process counter would be decorative: two
+replicas would each permit the full allowance. The durable mechanism is
+already being added — `cc_agent_submissions` is a per-agent, timestamped,
+committed ledger, so the rate question is a `COUNT` over a window on a
+table the slice creates anyway. Correct across replicas, no Redis, no
+Kafka, no new infrastructure.
+
+Body size is bounded by a closed Pydantic schema with `extra="forbid"`
+and length-bounded fields; the four-field body has no legitimate large
+form.
+
+### A24.5 — the self rule
+
+`token-derived agent_id == route agent_id`, checked before anything else
+is loaded. The existing dry-run gate says this in the same words. A6-2
+extends it to `list_proposals`, `get_agent`, `runtime` and `preflight`,
+which today accept a machine principal and apply only scope — an
+asymmetry this slice records rather than silently inherits.
+
+### Out of scope
+
+MCP, events, streaming, webhooks, agent-supplied evidence, autonomy
+changes, SM/node authority changes, Console UI (A6-3), adaptive shaping
+(A6-4), `/api/v1`, and any change to `dedupe_key`'s existing semantics.
