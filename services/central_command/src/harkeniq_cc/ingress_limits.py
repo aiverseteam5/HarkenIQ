@@ -107,3 +107,49 @@ async def admit_attempt(
         # would be an amplifier on the exact traffic it bounds.
         return False, used
     return True, used
+
+
+# ---------------------------------------------------------------------------
+# A25.6: reads are metered in their own bucket, and in their own SHAPE
+# ---------------------------------------------------------------------------
+#
+# Submissions are counted row-per-attempt because they are rare, governed
+# and individually meaningful. Polling is none of those: a row per GET
+# would make the meter the largest writer in the system, and mixing the
+# two would make "attempts" mean two different things in one column --
+# which A25.6 forbids precisely because abuse detection, quotas and
+# entitlements will later need to tell them apart.
+#
+# So reads are counted as a windowed COUNTER: one row per
+# (tenant, agent, window), incremented atomically. Distinct bucket,
+# distinct shape, and the governed submission ledger is untouched.
+
+READ_WINDOW_S = 60
+READ_MAX_PER_WINDOW = 120
+
+
+def read_window_start(now=None) -> datetime:
+    """The window a moment falls in. Fixed-size and aligned, so two
+    replicas counting the same second agree on which bucket it is."""
+    now = now or datetime.now(timezone.utc)
+    epoch = int(now.timestamp()) // READ_WINDOW_S * READ_WINDOW_S
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+async def admit_read(
+    session: Any, *, tenant_id: str, agent_id: str, now=None
+) -> tuple[bool, int]:
+    """May this agent make one more status read in the current window?
+
+    Atomic by construction: the increment is a single UPDATE, and the
+    first read of a window inserts under the unique constraint, so two
+    replicas cannot both believe they created it. Returns
+    ``(permitted, used_after)``.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+
+    window = read_window_start(now)
+    used = await AgentReadWindowRepo(session).increment(
+        tenant_id=tenant_id, agent_id=agent_id, window_start=window,
+    )
+    return used <= READ_MAX_PER_WINDOW, used

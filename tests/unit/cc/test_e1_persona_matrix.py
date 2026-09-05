@@ -27,6 +27,7 @@ from harkeniq_cc.api.deps import get_current_user
 from harkeniq_cc.app import create_app
 from harkeniq_cc.auth import ROLE_PERMISSIONS, UserContext, configure_auth
 from harkeniq_cc.config import CCConfig
+from harkeniq_cc.route_contract import MACHINE_ONLY_ROUTES
 from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.models import CCFleetCache, CCIncident, CCSite
 from harkeniq_cc.db.repos import (
@@ -257,6 +258,18 @@ class TestGeneratedReadSweep:
                 # /api/approvals/* also admits audit.view (E0.3, A13).
                 if path.startswith("/api/approvals") and "audit.view" in held:
                     allowed = True
+                if (method, path) in MACHINE_ONLY_ROUTES:
+                    # A25: a machine-facing route. It carries an ordinary
+                    # permission, but no human may use it whatever they
+                    # hold -- so "holds it, therefore not 403" is simply
+                    # not the question here. That it DOES refuse this
+                    # human is asserted instead, and the set itself is
+                    # checked in both directions below.
+                    assert resp.status_code == 403, (
+                        f"{method} {path} is declared machine-only but "
+                        f"admitted {persona}"
+                    )
+                    continue
                 if allowed:
                     assert resp.status_code != 403, (
                         f"{persona} holds {permission} but got 403 on "

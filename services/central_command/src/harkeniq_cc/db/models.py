@@ -1100,6 +1100,41 @@ class CCAgentIngressAttempt(Base):
     )
 
 
+class CCAgentReadWindow(Base):
+    """A25.6: status-read pressure, counted in its own bucket and shape.
+
+    Deliberately NOT `cc_agent_ingress_attempts`. That ledger counts
+    governed submission attempts one row at a time, which is right for
+    traffic that is rare and individually meaningful. Polling is neither:
+    a row per GET would make the meter the largest writer in the system,
+    and folding both into one column would make "attempt" mean two things
+    at once -- exactly what A25.6 forbids, because quotas, abuse
+    detection and entitlements will need to tell reads from governed
+    actions.
+
+    One row per (tenant, agent, window), incremented in place. The unique
+    constraint is what lets two replicas race to create the same window
+    and have exactly one of them win.
+    """
+
+    __tablename__ = "cc_agent_read_windows"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    #: Start of the fixed-size window this count belongs to.
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    reads: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "agent_id", "window_start", name="uq_agent_read_window"
+        ),
+    )
+
+
 class CCAgentProposal(Base):
     """A labelled, evidence-carrying proposal from an Operational Agent (A1).
 

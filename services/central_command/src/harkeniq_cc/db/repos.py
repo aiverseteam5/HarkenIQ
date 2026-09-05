@@ -10,7 +10,8 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Iterable, Any, Optional, Sequence
 
-from sqlalchemy import delete as sa_delete, false as sa_false, func, select
+from sqlalchemy import delete as sa_delete, false as sa_false, func, select, update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.db.models import (
@@ -28,6 +29,7 @@ from harkeniq_cc.db.models import (
     CCOrgUnit,
     CCAgentCapability,
     CCAgentIngressAttempt,
+    CCAgentReadWindow,
     CCAgentProposal,
     CCAgentSubmission,
     CCScopeGrant,
@@ -1647,6 +1649,29 @@ class OutcomeHistoryRepo:
         )
         return result.scalar() or 0
 
+    async def find_by_action_id(
+        self, tenant_id: str, action_id: str
+    ) -> Optional[CCOutcomeHistory]:
+        """The outcome an execution key names (A25.1).
+
+        The same exact join settlement uses, exposed for the machine
+        receipt so a caller sees the canonical classification rather than
+        the two-value collapse `settle` writes onto the proposal.
+        """
+        if not action_id:
+            return None
+        return (
+            await self.session.execute(
+                select(CCOutcomeHistory)
+                .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
+                .where(
+                    CCSite.tenant_id == tenant_id,
+                    CCOutcomeHistory.action_id == action_id,
+                )
+                .order_by(CCOutcomeHistory.ingested_at.desc())
+            )
+        ).scalars().first()
+
     async def list_device_outcome_dicts(
         self, tenant_id: str, limit: int = 50000
     ) -> list[dict]:
@@ -2928,6 +2953,81 @@ class AgentIngressAttemptRepo:
                 CCAgentIngressAttempt.tenant_id == tenant_id,
                 CCAgentIngressAttempt.agent_id == agent_id,
                 CCAgentIngressAttempt.created_at < before,
+            )
+        )
+
+
+class AgentReadWindowRepo:
+    """A25.6: the read counter. One row per agent per window."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def increment(
+        self, *, tenant_id: str, agent_id: str, window_start: datetime
+    ) -> int:
+        """Add one read and return the running total for this window.
+
+        Atomic by construction rather than by lock: the UPDATE is a single
+        statement, and the INSERT that opens a window is guarded by the
+        unique constraint, so two replicas racing to open the same window
+        cannot both succeed -- the loser re-reads and updates instead.
+        """
+        updated = await self.session.execute(
+            sa_update(CCAgentReadWindow)
+            .where(
+                CCAgentReadWindow.tenant_id == tenant_id,
+                CCAgentReadWindow.agent_id == agent_id,
+                CCAgentReadWindow.window_start == window_start,
+            )
+            .values(reads=CCAgentReadWindow.reads + 1)
+        )
+        if updated.rowcount:
+            return await self._current(tenant_id, agent_id, window_start)
+        row = CCAgentReadWindow(
+            tenant_id=tenant_id, agent_id=agent_id,
+            window_start=window_start, reads=1,
+        )
+        self.session.add(row)
+        try:
+            await self.session.flush()
+            return 1
+        except IntegrityError:
+            # Another replica opened this window first. Roll back only
+            # this statement's failure, then take the ordinary path.
+            await self.session.rollback()
+            await self.session.execute(
+                sa_update(CCAgentReadWindow)
+                .where(
+                    CCAgentReadWindow.tenant_id == tenant_id,
+                    CCAgentReadWindow.agent_id == agent_id,
+                    CCAgentReadWindow.window_start == window_start,
+                )
+                .values(reads=CCAgentReadWindow.reads + 1)
+            )
+            return await self._current(tenant_id, agent_id, window_start)
+
+    async def _current(
+        self, tenant_id: str, agent_id: str, window_start: datetime
+    ) -> int:
+        return int(
+            (
+                await self.session.execute(
+                    select(CCAgentReadWindow.reads).where(
+                        CCAgentReadWindow.tenant_id == tenant_id,
+                        CCAgentReadWindow.agent_id == agent_id,
+                        CCAgentReadWindow.window_start == window_start,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+    async def prune(self, before: datetime) -> None:
+        """Windows outside the retention horizon have no reader."""
+        await self.session.execute(
+            sa_delete(CCAgentReadWindow).where(
+                CCAgentReadWindow.window_start < before
             )
         )
 

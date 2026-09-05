@@ -126,6 +126,63 @@ class TestEveryRouteIsDeclared:
             )
 
 
+class TestMachineOnlyRoutesAreChecked:
+    """A25: an exclusion that only a test could see would be a hole.
+
+    `MACHINE_ONLY_ROUTES` lets the persona sweep stop asking "holds the
+    permission, therefore not 403" about a route no human may use. That
+    is a legitimate exemption and a dangerous shape, so the set is
+    checked in BOTH directions: every listed route must genuinely refuse
+    a human, and nothing may be listed that is not declared.
+    """
+
+    def test_every_machine_only_route_is_in_the_contract(self):
+        from harkeniq_cc.route_contract import (
+            MACHINE_ONLY_ROUTES, ROUTE_CONTRACT,
+        )
+
+        for route in MACHINE_ONLY_ROUTES:
+            assert route in ROUTE_CONTRACT, (
+                f"{route} is exempted from the persona sweep but is not "
+                "declared in the route contract at all"
+            )
+
+    def test_the_set_is_small_and_deliberate(self):
+        """A growing exemption list is how a matrix stops meaning anything."""
+        from harkeniq_cc.route_contract import MACHINE_ONLY_ROUTES
+
+        assert len(MACHINE_ONLY_ROUTES) <= 4, (
+            "the machine-only exemption is growing; each entry removes a "
+            "route from the human persona matrix and needs a reason"
+        )
+
+    def test_every_machine_only_route_actually_refuses_a_human(self):
+        """Source-level: the handler must reach the machine gate.
+
+        Behaviour is asserted by the persona sweep against real personas;
+        this catches the case where a route is LISTED here but its
+        handler never refuses anyone -- which would silently exempt it
+        from the matrix while admitting everybody.
+        """
+        import inspect
+
+        from harkeniq_cc.api import operational_agents as oa
+        from harkeniq_cc.route_contract import MACHINE_ONLY_ROUTES
+
+        handlers = {
+            "/api/operational-agents/{agent_id}/submissions/{submission_id}":
+                oa.get_submission_receipt,
+            "/api/operational-agents/{agent_id}/proposals/{proposal_id}":
+                oa.get_proposal_receipt,
+        }
+        for _method, path in MACHINE_ONLY_ROUTES:
+            handler = handlers.get(path)
+            assert handler is not None, f"no handler mapped for {path}"
+            assert "_machine_read_gate" in inspect.getsource(handler), (
+                f"{path} is declared machine-only but never asks the gate"
+            )
+
+
 class TestTheShapeOfTheContract:
     def test_every_mutation_is_gated_and_audited(self):
         for (method, path), (_, treatment, audited) in ROUTE_CONTRACT.items():
