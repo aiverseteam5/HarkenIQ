@@ -1621,10 +1621,20 @@ class OutcomeHistoryRepo:
                 "fault_resolved": bool(r.fault_resolved),
                 "site_id": r.site_id,
                 "ingested_at": r.ingested_at,
+                "recorded_at": r.recorded_at,
                 # A1: evidence that cannot name its actor cannot answer
                 # "what did MY agent do", which is half of trusting one.
                 "actor": r.actor or "",
                 "device_agent_id": r.device_agent_id,
+                # A25.1: the EXACT execution key. The Site Manager writes
+                # `directive:<directive_id>` for every directed execution
+                # and it has been stored here since A1 -- but this
+                # projection dropped it, so settlement fell back to
+                # matching on device, action class, actor and a time
+                # window. Two dispatched proposals for one device and one
+                # action class could settle each other's outcome, and
+                # nothing downstream could tell.
+                "action_id": r.action_id or "",
             }
             for r in rows
         ]
