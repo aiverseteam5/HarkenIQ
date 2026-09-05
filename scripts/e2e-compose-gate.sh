@@ -3305,33 +3305,21 @@ step "A6/B: adding the binding grants it, on the SAME credential"
 # Permissions are resolved from the agent's own rows on EVERY request, so
 # a binding takes effect without re-issuing anything. That is also what
 # makes revocation immediate.
+# `bindings` is a full REPLACEMENT, not a patch: an operator reasoning
+# about an agent's reach sees the complete set in one request. So the
+# scope rows travel with it, unchanged.
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"capabilities":[
-        {"kind":"action_class","capability_ref":"IDENTIFY_LED"},
-        {"kind":"read","capability_ref":"fleet"},
-        {"kind":"read","capability_ref":"incidents"},
-        {"kind":"ingress","capability_ref":"proposals"}]}' \
+  -d "{\"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}],
+       \"capabilities\":[
+        {\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"},
+        {\"kind\":\"read\",\"capability_ref\":\"fleet\"},
+        {\"kind\":\"read\",\"capability_ref\":\"incidents\"},
+        {\"kind\":\"ingress\",\"capability_ref\":\"proposals\"}]}" \
   "http://localhost:8090/api/operational-agents/$A6_AGENT/bindings" > /dev/null
 
-# Governed activation, the same sequence a human follows.
-curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8090/api/operational-agents/$A6_AGENT/preflight" > /dev/null
-A6_ACK=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8090/api/operational-agents/$A6_AGENT/preflight" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('requires_acknowledgement'))")
-if [ "$A6_ACK" = "True" ]; then
-  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
-    "http://localhost:8090/api/operational-agents/$A6_AGENT/acknowledge" > /dev/null
-fi
-curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8090/api/operational-agents/$A6_AGENT/activate" \
-  | python3 -c "
-import sys, json
-a = json.load(sys.stdin)
-assert a['status'] == 'active', a
-print('A6 agent activated at v%d' % a['activated_version'])
-"
+echo "ingress binding added; permissions resolve per request, so the same"
+echo "credential now carries proposal.submit with nothing re-issued"
 
 step "A6/C: the agent reads its OWN dry-run and takes a candidate reference"
 A6_TOKEN=$(a6_token)
@@ -3364,8 +3352,29 @@ done
 echo "every governance field refused at the schema (422), not silently dropped"
 
 step "A6/E: a real submission creates a real, human-gated proposal"
-A6_BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
-  "SELECT count(*) FROM cc_agent_proposals" | tr -d ' \r')
+# ORDERING IS LOAD-BEARING, do not tidy it. `active` is exactly
+# EVALUATING_STATUSES, so the moment this agent is switched on the
+# CC-resident evaluator may propose the SAME candidate on its next pass
+# (20s in this stack) and the submission below would correctly return
+# `duplicate`. Everything that does not need an active agent -- the
+# bindings, the dry-run, the schema refusals -- has therefore already
+# happened, leaving one round trip between activation and submission.
+A6_PRE=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/preflight")
+A6_ACK=$(echo "$A6_PRE" | python3 -c \
+  "import sys,json; print(json.load(sys.stdin)['requires_acknowledgement'])")
+if [ "$A6_ACK" = "True" ]; then
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT/acknowledge" > /dev/null
+fi
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/activate" \
+  | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active', a
+print('A6 agent activated at v%d' % a['activated_version'])
+"
 A6_PROP=$(curl -sf -X POST -H "Authorization: Bearer $A6_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a6-0001\",
@@ -3427,13 +3436,20 @@ A6_MIX=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
 [ "$A6_MIX" = "409" ] || { echo "a reused key answered for other work ($A6_MIX)" >&2; exit 1; }
 echo "same key + different work -> 409"
 
-step "A6/I: exactly ONE proposal exists for all of that"
-A6_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
-  "SELECT count(*) FROM cc_agent_proposals" | tr -d ' \r')
-[ "$A6_AFTER" = "$((A6_BEFORE + 1))" ] || {
-  echo "expected exactly one new proposal ($A6_BEFORE -> $A6_AFTER)" >&2
-  exit 1; }
-echo "cc_agent_proposals: $A6_BEFORE -> $A6_AFTER"
+step "A6/I: exactly ONE proposal exists for that governed candidate"
+# Asserted on the CANDIDATE, not on a global count. The agent is active
+# now, so the evaluator may legitimately propose for other devices in its
+# scope while these steps run -- a table-wide delta would call that a
+# failure. What A24.6 actually promises is narrower and stronger: no
+# second proposal shares this one's dedupe key, whatever else happens.
+A6_SAME=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_proposals WHERE dedupe_key =
+     (SELECT dedupe_key FROM cc_agent_proposals WHERE id='$A6_PROP')" \
+  | tr -d ' \r')
+[ "$A6_SAME" = "1" ] || {
+  echo "$A6_SAME proposals share one dedupe key -- the same governed work" >&2
+  echo "was admitted more than once" >&2; exit 1; }
+echo "one governed candidate -> exactly one proposal, across two keys and a replay"
 
 step "A6/J: an agent may not submit for ANOTHER agent (A24.5)"
 A6_OTHER=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
