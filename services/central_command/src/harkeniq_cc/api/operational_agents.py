@@ -466,6 +466,38 @@ def _enforce_delegation_ceiling(creator_scope, scopes) -> None:
             )
 
 
+def _enforce_machine_self(user: UserContext, agent_id: str) -> None:
+    """An agent inspects itself and no other (A25.5, closing G5).
+
+    `dry_run_agent` has said this since A5 and `submit_proposal` since
+    A6-1; `get_agent`, `runtime`, `preflight` and the proposal list said
+    nothing, so an authenticated agent holding `fleet.view` could read
+    ANOTHER agent's work whenever that agent's scope rules fell inside its
+    own reach. One route asserted the rule while four adjacent ones
+    quietly disagreed.
+
+    403 rather than 404, matching the two routes that already carry this
+    check: the caller named an agent in the path it is not, and telling it
+    so confirms nothing it did not already supply. (The by-id receipt
+    reads answer 404 instead, because there the identifier is the thing
+    being guessed.)
+
+    A HUMAN is untouched. This is a machine-self rule, not a conversion of
+    administration routes into machine-only ones -- an operator continues
+    under the ordinary scoped RBAC model.
+    """
+    from harkeniq_cc.machine_identity import is_machine
+
+    if is_machine(user) and user.user_id != agent_id:
+        from harkeniq_cc.metrics import record_read_refusal
+
+        record_read_refusal("cross_agent")
+        raise HTTPException(
+            status_code=403,
+            detail="a machine identity may inspect its own agent and no other",
+        )
+
+
 def _agent_visible(scope, rules) -> bool:
     """May this caller READ this agent? (A23, READ_SCOPED made true.)
 
@@ -824,6 +856,7 @@ async def get_agent(
     answer composes from the same governed contracts the Console and a
     future MCP caller read.
     """
+    _enforce_machine_self(user, agent_id)
     agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     repo = OperationalAgentRepo(session)
     scopes = await repo.list_scopes(agent.id)
@@ -1097,6 +1130,7 @@ async def get_agent_preflight(
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
+    _enforce_machine_self(user, agent_id)
     from harkeniq_cc.db.repos import AgentPreflightRepo
 
     agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
@@ -1161,6 +1195,7 @@ async def agent_runtime(
     """
     from harkeniq_cc.agent_lifecycle import runtime_state
 
+    _enforce_machine_self(user, agent_id)
     agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     return await runtime_state(session, tenant_id=user.tenant_id, agent=agent)
 
@@ -1212,6 +1247,7 @@ async def list_proposals(
     refused is exactly what an operator needs to see before raising a
     level, and hiding them would make the governance invisible.
     """
+    _enforce_machine_self(user, agent_id)
     await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     proposals = _narrow_proposals(
         scope, await AgentProposalRepo(session).list_for_agent(
@@ -2108,6 +2144,201 @@ def _submission_result(row, *, replayed: bool, proposal=None) -> dict:
             "requires_approval": proposal.status == PROPOSAL_AWAITING,
         }
     return out
+
+
+# ---------------------------------------------------------------------------
+# A6-2: the machine lifecycle receipt (A25)
+# ---------------------------------------------------------------------------
+#
+# Two pure reads. They mutate nothing, invent no lifecycle, and carry no
+# authority: the caller supplies two path identifiers and gets back a
+# projection over state that already existed.
+
+
+async def _machine_read_gate(
+    request: Request, session: AsyncSession, user: UserContext, agent_id: str,
+) -> None:
+    """Everything true before a receipt may be built.
+
+    Order matters. Identity first, because a non-machine caller has no
+    per-agent bucket to meter against; then the self rule, so an agent
+    naming another in the path is refused and CHARGED for it rather than
+    shifting the cost; then the read meter.
+    """
+    from harkeniq_cc.ingress_limits import READ_WINDOW_S, admit_read
+    from harkeniq_cc.machine_identity import is_machine
+    from harkeniq_cc.metrics import (
+        record_read_rate_limited, record_read_refusal,
+    )
+
+    if not is_machine(user):
+        record_read_refusal("not_machine")
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "the lifecycle receipt is a machine-principal surface; a "
+                "person reads this through the Console"
+            ),
+        )
+    _enforce_machine_self(user, agent_id)
+
+    permitted, used = await admit_read(
+        session, tenant_id=user.tenant_id, agent_id=user.user_id,
+    )
+    if not permitted:
+        record_read_rate_limited()
+        record_read_refusal("rate_limited")
+        await session.commit()
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"this agent has made {used} status reads in the last "
+                f"{READ_WINDOW_S} seconds"
+            ),
+        )
+
+
+async def _authority_over(session, user, scope, proposal) -> bool:
+    """Does the caller CURRENTLY reach the work this receipt describes?
+
+    A25.2: this decides how much estate detail the receipt may carry --
+    never whether it exists, which identity already settled. A proposal
+    with no site (a refusal that never reached one) is not estate
+    information, so it does not narrow anything.
+    """
+    if proposal is None or not getattr(proposal, "site_id", ""):
+        return True
+    if getattr(scope, "tenant_wide", False):
+        return True
+    return proposal.site_id in set(getattr(scope, "site_ids", ()) or ())
+
+
+def _receipt_response(request: Request, payload: dict) -> Response:
+    """Serve a receipt, with an ETag only where nothing can change again.
+
+    A25.7: `approved` is not terminal -- the per-agent budget can return
+    it to `awaiting_approval` -- so only a receipt whose proposal has
+    genuinely ended is cacheable. Everything else is served fresh, with
+    `no-store`, so a cache cannot conceal a transition.
+    """
+    import hashlib
+    import json
+
+    from fastapi.responses import JSONResponse
+
+    if not payload.get("terminal", {}).get("terminal"):
+        response = JSONResponse(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    body = json.dumps(payload, sort_keys=True, default=str)
+    etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest()[:32] + '"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    response = JSONResponse(payload)
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, max-age=300"
+    return response
+
+
+@router.get(
+    "/{agent_id}/submissions/{submission_id}",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def get_submission_receipt(
+    agent_id: str,
+    submission_id: str,
+    request: Request,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> Response:
+    """The lifecycle receipt for one submission this agent made. A25.
+
+    THE PRIMARY CORRELATION CONTRACT. `submission_id` is the only
+    identifier that exists for every outcome of every submit call -- a
+    refusal has no proposal id, and A6-1's replay returns an id with no
+    state -- so this is what a runtime holds on to.
+
+    It is NOT a bearer credential. Possession proves nothing: the caller
+    must authenticate as the same logical agent that created the
+    submission, and a submission belonging to another agent or another
+    tenant is 404, never 403, because here the identifier is the thing
+    being guessed.
+    """
+    from harkeniq_cc.db.repos import AgentProposalRepo, AgentSubmissionRepo
+    from harkeniq_cc.metrics import record_read_refusal, record_status_read
+    from harkeniq_cc.receipts import build_receipt
+
+    await _machine_read_gate(request, session, user, agent_id)
+
+    submission = await AgentSubmissionRepo(session).get(
+        user.tenant_id, submission_id,
+    )
+    # Tenant is already implied by the repository read; the agent check is
+    # what stops one agent resolving another's receipt inside one tenant.
+    if submission is None or submission.agent_id != user.user_id:
+        record_read_refusal(
+            "not_found" if submission is None else "cross_agent"
+        )
+        await session.commit()
+        raise HTTPException(404, "submission not found")
+
+    proposal = None
+    if submission.proposal_id:
+        proposal = await AgentProposalRepo(session).get(
+            user.tenant_id, submission.proposal_id,
+        )
+    authority = await _authority_over(session, user, scope, proposal)
+    payload = await build_receipt(
+        session, tenant_id=user.tenant_id, submission=submission,
+        proposal=proposal, authority=authority,
+    )
+    record_status_read(narrowed=not authority)
+    await session.commit()
+    return _receipt_response(request, payload)
+
+
+@router.get(
+    "/{agent_id}/proposals/{proposal_id}",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def get_proposal_receipt(
+    agent_id: str,
+    proposal_id: str,
+    request: Request,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> Response:
+    """The same receipt, for a caller that already holds the proposal id.
+
+    Bound to the agent that MADE the proposal, not to whoever can reach
+    its site: a machine principal reads its own lineage and nothing else
+    (A25.5). Another agent's proposal is 404.
+    """
+    from harkeniq_cc.db.repos import AgentProposalRepo
+    from harkeniq_cc.metrics import record_read_refusal, record_status_read
+    from harkeniq_cc.receipts import build_receipt
+
+    await _machine_read_gate(request, session, user, agent_id)
+
+    proposal = await AgentProposalRepo(session).get(user.tenant_id, proposal_id)
+    if proposal is None or proposal.agent_id != user.user_id:
+        record_read_refusal(
+            "not_found" if proposal is None else "cross_agent"
+        )
+        await session.commit()
+        raise HTTPException(404, "proposal not found")
+
+    authority = await _authority_over(session, user, scope, proposal)
+    payload = await build_receipt(
+        session, tenant_id=user.tenant_id, submission=None,
+        proposal=proposal, authority=authority,
+    )
+    record_status_read(narrowed=not authority)
+    await session.commit()
+    return _receipt_response(request, payload)
 
 
 # ---------------------------------------------------------------------------

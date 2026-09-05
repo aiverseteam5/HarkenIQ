@@ -205,6 +205,58 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
     return created
 
 
+#: A25.1: the shape the Site Manager writes for every directed
+#: execution (`harkeniq_sm/outcomes.py`). Declared here rather than
+#: spelled inline so the producer and the consumer name one string.
+OUTCOME_ACTION_PREFIX = "directive:"
+
+#: How a settlement was correlated. Reported on the audit entry and
+#: counted, because A25.1 retires the legacy path by measurement.
+CORRELATION_EXACT = "exact"
+CORRELATION_LEGACY = "legacy"
+
+
+def _legacy_outcome_match(proposal, by_device_action) -> Optional[dict]:
+    """The pre-A25 heuristic, for a proposal that can carry no exact key.
+
+    Reached only when `directive_id` is empty, which is a fact about the
+    row rather than a guess about its age -- so the fallback is decidable,
+    and countable, instead of approximate.
+
+    Unchanged from what it always did: attribution wins when present,
+    otherwise an outcome ingested before the dispatch cannot belong to it.
+    """
+    candidates = by_device_action.get(
+        (proposal.device_agent_id, proposal.action_type), []
+    )
+    for oc in candidates:
+        if oc.get("actor") and oc["actor"] != proposal.actor:
+            continue
+        ingested = oc.get("ingested_at")
+        if (
+            proposal.dispatched_at
+            and ingested
+            and ingested < proposal.dispatched_at
+        ):
+            continue
+        return oc
+    return None
+
+
+def _record_correlation(correlation: str) -> None:
+    """Count how settlements are being joined (A25.1, telemetry).
+
+    Deliberately best-effort: a metrics registry that is absent must
+    never stop a proposal from settling.
+    """
+    try:
+        from harkeniq_cc.metrics import record_correlation
+
+        record_correlation(correlation)
+    except Exception:  # noqa: BLE001 - telemetry must not break settlement
+        pass
+
+
 async def _dispatch_permitted(session, tenant_id: str, proposal) -> tuple[bool, str]:
     """May this proposal be dispatched AT ALL, right now? (A22.12.)
 
@@ -480,35 +532,42 @@ async def settle_outcomes(state, tenant_id: str) -> int:
             return 0
         outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
         audit = AuditRepo(session)
-        # Newest first: an outcome that arrived after the dispatch is the
-        # one that settles it.
-        by_key: dict[tuple[str, str], list[dict]] = {}
+
+        # A25.1: the EXACT key first. The Site Manager writes
+        # `directive:<directive_id>` for every directed execution, so a
+        # dispatched proposal that holds a directive id has exactly one
+        # outcome that belongs to it -- and settling by proximity instead
+        # let two proposals for one device and one action class settle
+        # each other.
+        by_action_id: dict[str, dict] = {}
+        # The legacy join, kept ONLY for proposals that can carry no key.
+        by_device_action: dict[tuple[str, str], list[dict]] = {}
         for oc in outcomes:
+            action_id = oc.get("action_id", "")
+            if action_id:
+                by_action_id.setdefault(action_id, oc)
             key = (oc.get("device_agent_id", ""), oc.get("action_type", ""))
-            by_key.setdefault(key, []).append(oc)
+            by_device_action.setdefault(key, []).append(oc)
 
         for proposal in open_rows:
-            candidates = by_key.get(
-                (proposal.device_agent_id, proposal.action_type), []
-            )
-            match = None
-            for oc in candidates:
-                # Attribution wins when it is present; otherwise fall back
-                # to the time window, since outcomes reported before this
-                # slice carried no actor at all.
-                if oc.get("actor") and oc["actor"] != proposal.actor:
-                    continue
-                ingested = oc.get("ingested_at")
-                if (
-                    proposal.dispatched_at
-                    and ingested
-                    and ingested < proposal.dispatched_at
-                ):
-                    continue
-                match = oc
-                break
+            directive_id = getattr(proposal, "directive_id", "") or ""
+            if directive_id:
+                # Exact, or nothing. A proposal whose outcome has not
+                # arrived stays `dispatched` rather than borrowing
+                # somebody else's: unsettled and visible beats settled and
+                # wrong, and `terminal correlation failure` is what
+                # surfaces one that never arrives.
+                match = by_action_id.get(f"{OUTCOME_ACTION_PREFIX}{directive_id}")
+                correlation = CORRELATION_EXACT
+            else:
+                # No directive id means no key could ever exist for this
+                # row, which is the one case the heuristic still serves.
+                # Counted, so retiring it later is a measurement.
+                match = _legacy_outcome_match(proposal, by_device_action)
+                correlation = CORRELATION_LEGACY
             if match is None:
                 continue
+            _record_correlation(correlation)
             await prop_repo.settle(proposal, match.get("outcome", "UNKNOWN"))
             settled += 1
             await audit.append(
@@ -520,6 +579,10 @@ async def settle_outcomes(state, tenant_id: str) -> int:
                     "outcome": proposal.outcome,
                     "action_type": proposal.action_type,
                     "device_agent_id": proposal.device_agent_id,
+                    # A25.1: which join settled it. An operator auditing a
+                    # disputed execution needs to know whether the link
+                    # was exact or inferred.
+                    "correlation": correlation,
                 },
             )
         await session.commit()

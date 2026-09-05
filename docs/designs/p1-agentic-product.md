@@ -2664,3 +2664,105 @@ made a bodyless mutation probe stop at 422 instead of 403, and the probe
 correctly reported that it could no longer prove the scope gate. The
 probe now sends a well-formed body — the harness was right, and it was
 the probe that needed fixing, not the route.
+
+---
+
+## 29. A6-2 — machine status and outcome correlation (A25)
+
+Written before the code, per change control.
+
+### The defect the slice leads with
+
+Traced on `ab6853b`. The chain is intact in storage and broken in a
+projection:
+
+```
+proposal.directive_id
+  -> SM record_action_outcome(action_id="directive:<directive_id>")
+  -> FleetOutcome.action_id                     (proto field 1)
+  -> cc_outcome_history.action_id               (stored by fleet_poller)
+  -> OutcomeHistoryRepo.list_outcome_dicts()    <- action_id DROPPED HERE
+  -> agent_runtime settle: device + action_type + actor + time window
+```
+
+So settlement is a heuristic over a key the same row already holds. Two
+dispatched proposals for one device and one action class under one actor
+can be settled by each other's outcome, and nothing downstream can tell.
+For a human reading a dashboard that is a wrong row; for a machine
+consumer closing a transaction it is an undetectable lie.
+
+**The rule.** A dispatched proposal that holds a `directive_id` is settled
+only by the outcome whose `action_id` names that directive. It is never
+settled by proximity. If the outcome has not arrived, the proposal stays
+`dispatched` and the terminal-correlation-failure counter is what surfaces
+it — unsettled and visible beats settled and wrong.
+
+**The fallback, bounded.** Only a proposal with an EMPTY `directive_id`
+can have no exact key, and only those fall back to the legacy heuristic.
+That is a property of the row, not a date guess, so the fallback is
+decidable rather than approximate. It is counted, so retiring it later is
+a measurement.
+
+### Why `submission_id` is the primary handle
+
+`proposal_id` does not exist for a refused submission, and A6-1's replay
+path returns an id with no state. `submission_id` is the only identifier
+that exists for every outcome of every call, so it is the durable external
+correlation contract, resolving to the governed proposal where one exists.
+
+It is **not a bearer credential**. The reader must authenticate as the
+same logical agent that created the submission; possession proves nothing.
+
+### The two reads, and what they deliberately omit
+
+```
+GET /api/operational-agents/{id}/submissions/{submission_id}
+GET /api/operational-agents/{id}/proposals/{proposal_id}
+```
+
+Six blocks, each from its canonical source, none synthesised into a single
+status: `submission`, `proposal`, `approval`, `execution`, `outcome`,
+`terminal`.
+
+Absent by design: approver identity, raw evidence, group membership, other
+agents' work, and — where the D1 historical rule applies — every estate
+detail. The caller supplies two path identifiers and nothing else.
+
+### D1 in implementation terms
+
+Authority is asked once, per read, through the ONE resolver:
+
+* **Current authority present** — the full machine projection, still
+  without approver identity or raw evidence.
+* **Current authority absent** — the bounded receipt of A25.2, and the
+  response says so, so a runtime can tell a narrowed answer from a
+  complete one rather than inferring it from missing fields.
+
+The gate before either is identity: same tenant, same logical agent. A
+cross-agent or cross-tenant identifier is 404 — never 403, which would
+confirm the row exists.
+
+### Read metering has its own shape, not just its own name
+
+Submissions are counted row-per-attempt because they are rare, governed
+and individually meaningful. Polling is neither: a row per GET would make
+the meter the largest writer in the system. Reads are therefore counted in
+a windowed counter — one row per (tenant, agent, window) incremented
+atomically — which is a distinct bucket in the sense A25.6 requires and a
+sane shape for the traffic it meters. Governed submission accounting is
+untouched.
+
+### Caching
+
+An ETag is emitted only for a receipt that can no longer change. `approved`
+is excluded explicitly: the per-agent budget can return it to
+`awaiting_approval`, and a cache that treated it as final would conceal
+exactly the transition an operator most needs a runtime to notice.
+
+### Out of scope
+
+MCP, webhooks, streaming, SDKs, Console UI, autonomy or approval changes,
+new RBAC/scope/execution/outcome systems, `/api/v1`. Cursor pagination is
+included only if it drops cleanly into the existing list projection; if it
+would require redesigning the history model it is deferred and recorded,
+because the priority contract is direct correlation by id.

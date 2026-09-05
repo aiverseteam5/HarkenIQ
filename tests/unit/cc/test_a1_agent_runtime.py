@@ -208,8 +208,16 @@ class TestTheGovernedJourney:
             proposal = (await AgentProposalRepo(session).list_for_agent(
                 TENANT, agent_id
             ))[0]
+            # A25.1: a real directed execution reports
+            # `directive:<directive_id>`, which is the EXACT key
+            # settlement now joins on. This fixture said "act-1" -- an
+            # action id no directive path ever produces -- so it was
+            # exercising the heuristic rather than the production join.
+            assert proposal.directive_id, "the proposal was never dispatched"
             session.add(CCOutcomeHistory(
-                site_id=site_id, action_id="act-1", action_type="SEL_CLEAR",
+                site_id=site_id,
+                action_id=f"directive:{proposal.directive_id}",
+                action_type="SEL_CLEAR",
                 device_agent_id="node-1", outcome="SUCCESS",
                 fault_resolved=True, actor=proposal.actor,
                 ingested_at=datetime.now(timezone.utc) + timedelta(seconds=1),

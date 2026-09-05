@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0022"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0023"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -719,6 +719,85 @@ class TestExistingDatabase:
         con.close()
         assert agents == 1, "the pre-A3 agent must survive the upgrade"
         assert rows == 0, "no identity may be invented for an existing agent"
+
+
+class TestCC0023AgentReadWindows:
+    """A6-2 (A25.6): the read bucket lands beside the submission ledger."""
+
+    def test_cc_0023_adds_the_counter_without_touching_the_ledger(self, tmp_path):
+        """Additive. A25.6 requires reads to be accounted SEPARATELY, so
+        `cc_agent_ingress_attempts` must be exactly as 0022 left it."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_agent_ingress_attempts "
+            "(id, tenant_id, agent_id, outcome, created_at) "
+            "values ('a1','t1','ag1','accepted',datetime('now'))"
+        )
+        con.commit()
+        con.close()
+
+        cols = _columns(db, "cc_agent_read_windows")
+        for expected in ("id", "tenant_id", "agent_id", "window_start", "reads"):
+            assert expected in cols, expected
+
+        con = sqlite3.connect(db)
+        # The submission-attempt ledger is untouched and still counts.
+        assert con.execute(
+            "select count(*) from cc_agent_ingress_attempts"
+        ).fetchone()[0] == 1
+        assert con.execute(
+            "select count(*) from cc_agent_read_windows"
+        ).fetchone()[0] == 0, "a read window was invented for nobody"
+        con.close()
+
+    def test_one_window_per_agent_is_a_db_guarantee(self, tmp_path):
+        """The constraint is the mechanism two replicas race through."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_agent_read_windows "
+            "(id, tenant_id, agent_id, window_start, reads) "
+            "values ('w1','t1','ag1','2026-09-05 12:00:00',1)"
+        )
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "insert into cc_agent_read_windows "
+                "(id, tenant_id, agent_id, window_start, reads) "
+                "values ('w2','t1','ag1','2026-09-05 12:00:00',1)"
+            )
+            con.commit()
+        con.close()
+
+    def test_cc_0023_downgrades_and_keeps_everything_else(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_agent_ingress_attempts "
+            "(id, tenant_id, agent_id, outcome, created_at) "
+            "values ('a1','t1','ag1','accepted',datetime('now'))"
+        )
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "downgrade", "0022")
+        assert _version(db) == "0022"
+        con = sqlite3.connect(db)
+        tables = {
+            r[0] for r in con.execute(
+                "select name from sqlite_master where type='table'"
+            )
+        }
+        assert "cc_agent_read_windows" not in tables
+        assert "cc_agent_ingress_attempts" in tables
+        assert con.execute(
+            "select count(*) from cc_agent_ingress_attempts"
+        ).fetchone()[0] == 1
+        con.close()
 
 
 class TestCC0022AgentSubmissions:
