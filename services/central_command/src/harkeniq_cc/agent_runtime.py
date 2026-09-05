@@ -48,6 +48,7 @@ from harkeniq_cc.governance import (
     load_attention,
     load_autonomy_contract,
 )
+from harkeniq_cc.proposal_admission import ORIGIN_EVALUATOR, admit_proposal
 from harkeniq_cc.operational_agent import (
     BASIS_AUTONOMOUS,
     EVALUATING_STATUSES,
@@ -120,7 +121,6 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
         # whole tenant let devices the agent can never touch reorder the
         # list that decides which devices consume its proposal budget.
         prop_repo = AgentProposalRepo(session)
-        audit = AuditRepo(session)
 
         # A4 (A21.1): the condition -> capability mapping is the tenant's
         # catalogue now, not a module constant. Loaded ONCE per pass and
@@ -181,27 +181,25 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 ),
             )
             for payload in proposals:
-                row = await prop_repo.create(**payload)
-                created.append(row)
-                await audit.append(
-                    actor=row.actor,
-                    action="agent_proposal.created",
-                    subject=row.id,
+                # A24.6: the ONE admission path, shared with external
+                # ingress. It takes the tenant's admission lock and
+                # re-checks the committed dedupe keys, so a candidate
+                # admitted by an external submission while this pass was
+                # deciding is refused here rather than duplicated.
+                row, code, _reason = await admit_proposal(
+                    session,
                     tenant_id=tenant_id,
-                    detail={
-                        "agent_id": agent.id,
-                        "action_type": row.action_type,
-                        "device_agent_id": row.device_agent_id,
-                        "disposition": row.disposition,
-                        "status": row.status,
-                        "reason": row.disposition_reason[:200],
-                    },
+                    payload=payload,
+                    origin=ORIGIN_EVALUATOR,
+                    actor_ref=agent.id,
                 )
-                logger.info(
-                    "Proposal %s: %s %s on %s -> %s (%s)",
-                    row.id, row.actor, row.action_type,
-                    row.device_agent_id, row.status, row.disposition,
-                )
+                if row is None:
+                    logger.info(
+                        "Proposal not admitted for %s on %s: %s",
+                        agent.id, payload.get("device_agent_id", ""), code,
+                    )
+                    continue
+                created.append(row)
             await repo.mark_evaluated(agent)
         await session.commit()
     return created

@@ -99,8 +99,26 @@ class TestEveryRouteIsDeclared:
             assert treatment in TREATMENTS, f"{route} has treatment {treatment!r}"
 
     def test_every_declared_permission_is_in_the_fixed_vocabulary(self):
-        """E1.2 introduces NO new permission. The vocabulary is fixed."""
-        known = set().union(*(set(p) for p in ROLE_PERMISSIONS.values())) - {"*"}
+        """The vocabulary is fixed, and changing it is an amendment.
+
+        E1.2 introduced no permission. A24 introduces exactly one --
+        `proposal.submit` -- and deliberately gives it to NO human role:
+        `ROLE_PERMISSIONS` mirrors the Console's and a test pins that
+        parity, so adding a machine permission to a role would break
+        parity to no purpose. A person has no token-derived agent and is
+        refused by A24.5 regardless.
+
+        So the vocabulary is role permissions UNION the machine ceiling,
+        which is what the platform's vocabulary has actually been since
+        A3. The invariant is unchanged: no route may demand a permission
+        outside it.
+        """
+        from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+
+        known = (
+            set().union(*(set(p) for p in ROLE_PERMISSIONS.values()))
+            | set(MACHINE_PRINCIPAL_CEILING)
+        ) - {"*"}
         for route, (permission, _, _) in ROUTE_CONTRACT.items():
             assert permission in known, (
                 f"{route} demands {permission!r}, which is not in the fixed "

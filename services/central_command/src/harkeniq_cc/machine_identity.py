@@ -50,7 +50,28 @@ from typing import Any, Iterable
 MACHINE_PRINCIPAL_CEILING: frozenset[str] = frozenset({
     "fleet.view",
     "incident.view",
+    # A24.4 (A6): external submission. THE CEILING DOES NOT GRANT THIS.
+    # It says only that a machine principal may ever hold it; an agent
+    # submits only where an explicit `ingress` binding also names the
+    # authority. `machine_permissions` is the intersection that makes
+    # those two facts one answer, and an agent with no ingress binding
+    # is refused even though this set admits the class.
+    "proposal.submit",
 })
+
+#: Which permission each A0 INGRESS binding would imply, before the
+#: ceiling. A24.4: kept apart from both the ceiling and the read table
+#: for the reason the read table records -- if the binding table and the
+#: ceiling were one object, adding a binding here would silently raise
+#: the ceiling, which is the failure the intersection exists to prevent.
+#:
+#: This is the only binding kind that implies a WRITE, and it implies
+#: exactly one: the authority to hand Central Command a reference to a
+#: candidate it already governed. It carries no authority to decide,
+#: approve, dispatch or execute anything.
+INGRESS_BINDING_PERMISSIONS: dict[str, frozenset[str]] = {
+    "proposals": frozenset({"proposal.submit"}),
+}
 
 #: Which permission each A0 read binding would imply, before the ceiling.
 #: Kept separate from the ceiling ON PURPOSE: if this table and the
@@ -103,25 +124,34 @@ def is_machine_client_id(client_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def machine_permissions(read_bindings: Iterable[str]) -> list[str]:
+def machine_permissions(
+    read_bindings: Iterable[str],
+    ingress_bindings: Iterable[str] = (),
+) -> list[str]:
     """What an authenticated agent may do over HTTP.
 
-        effective = A0 read bindings  ∩  MACHINE_PRINCIPAL_CEILING
+        effective = (read bindings ∪ ingress bindings)  ∩  CEILING
 
-    Two properties this function exists to guarantee:
+    Three properties this function exists to guarantee:
 
     * It can never return `"*"`. A machine principal that held the
       wildcard would satisfy every route guard in the platform.
-    * It can never return a permission outside the ceiling, whatever
-      `READ_BINDING_PERMISSIONS` grows to contain.
+    * It can never return a permission outside the ceiling, whatever the
+      binding tables grow to contain.
+    * A24.4: the ceiling alone never suffices. `proposal.submit` is in
+      the ceiling, so a machine principal MAY hold it -- but it appears
+      here only when an explicit `ingress` binding names it. Widening
+      the ceiling can therefore never, by itself, let any agent write.
 
     An unknown binding contributes nothing rather than raising: bindings
-    are customer configuration and a name this table does not know is a
-    read the agent simply does not get, not a failed request.
+    are customer configuration and a name these tables do not know is a
+    capability the agent simply does not get, not a failed request.
     """
     implied: set[str] = set()
     for binding in read_bindings:
         implied |= READ_BINDING_PERMISSIONS.get(str(binding), frozenset())
+    for binding in ingress_bindings:
+        implied |= INGRESS_BINDING_PERMISSIONS.get(str(binding), frozenset())
     return sorted(implied & MACHINE_PRINCIPAL_CEILING)
 
 

@@ -205,7 +205,9 @@ async def _machine_principal(request: Request, validated) -> UserContext:
         authenticate,
         machine_permissions,
     )
-    from harkeniq_cc.operational_agent import attribution_key, bound_reads
+    from harkeniq_cc.operational_agent import (
+        attribution_key, bound_ingress, bound_reads,
+    )
 
     state = request.app.state.cc
     tenant_id = state.config.tenant_id
@@ -244,8 +246,12 @@ async def _machine_principal(request: Request, validated) -> UserContext:
             raise HTTPException(status_code=401, detail="invalid token")
 
         caps = await OperationalAgentRepo(session).list_capabilities(agent.id)
-        # A20.3: the INTERSECTION. Never a role, never ["*"].
-        permissions = machine_permissions(bound_reads(caps))
+        # A20.3 / A24.4: the INTERSECTION. Never a role, never ["*"].
+        # Ingress bindings are passed SEPARATELY from read bindings so
+        # that the one write in the ceiling cannot be reached by a read
+        # binding -- the ceiling admits `proposal.submit`, and only an
+        # explicit `ingress` binding puts it in this list.
+        permissions = machine_permissions(bound_reads(caps), bound_ingress(caps))
         await identities.touch(
             identity, request.headers.get("user-agent", "")[:255],
         )

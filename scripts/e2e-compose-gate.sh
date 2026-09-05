@@ -3253,6 +3253,223 @@ assert lvl == 0, lvl
 print('tenant autonomy level restored to', lvl)
 "
 
+# ===========================================================================
+# A6-1 external governed ingress (spec A24), live: a real machine token
+# submitting real governed work.
+#
+# The headline is NOT that submission works. It is the three refusals:
+# the ceiling admits `proposal.submit` and an agent without an explicit
+# ingress binding still cannot submit; a body carrying a governance field
+# is REJECTED rather than ignored; and a second idempotency key for the
+# same governed candidate does not create a second proposal.
+#
+# Built on A5/C's conditions, which have already proven a real disk fault
+# resolves a real IDENTIFY_LED parameter on $A5_SITE.
+# ===========================================================================
+
+step "A6/A: an agent with NO ingress binding cannot submit (ceiling != grant)"
+A6_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a6-ingress $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"},
+         {\"kind\":\"read\",\"capability_ref\":\"fleet\"},
+         {\"kind\":\"read\",\"capability_ref\":\"incidents\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+A6_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+[ -n "$A6_SECRET" ] || { echo "no A6 client secret issued" >&2; exit 1; }
+a6_token() {
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=client_credentials&client_id=op-agent-$A6_AGENT&client_secret=$A6_SECRET" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+A6_TOKEN=$(a6_token)
+[ -n "$A6_TOKEN" ] || { echo "A6 client_credentials grant failed" >&2; exit 1; }
+
+NOBIND=$(curl -s -o /tmp/a6_nobind.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"candidate_ref":"cand_00000000000000000000000000000000",
+       "idempotency_key":"gate-nobinding-0001"}' \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+[ "$NOBIND" = "403" ] || {
+  echo "an agent with no ingress binding submitted ($NOBIND)" >&2
+  cat /tmp/a6_nobind.json >&2; exit 1; }
+echo "no ingress binding -> 403, though the ceiling admits proposal.submit"
+
+step "A6/B: adding the binding grants it, on the SAME credential"
+# Permissions are resolved from the agent's own rows on EVERY request, so
+# a binding takes effect without re-issuing anything. That is also what
+# makes revocation immediate.
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"capabilities":[
+        {"kind":"action_class","capability_ref":"IDENTIFY_LED"},
+        {"kind":"read","capability_ref":"fleet"},
+        {"kind":"read","capability_ref":"incidents"},
+        {"kind":"ingress","capability_ref":"proposals"}]}' \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/bindings" > /dev/null
+
+# Governed activation, the same sequence a human follows.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/preflight" > /dev/null
+A6_ACK=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/preflight" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('requires_acknowledgement'))")
+if [ "$A6_ACK" = "True" ]; then
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT/acknowledge" > /dev/null
+fi
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/activate" \
+  | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active', a
+print('A6 agent activated at v%d' % a['activated_version'])
+"
+
+step "A6/C: the agent reads its OWN dry-run and takes a candidate reference"
+A6_TOKEN=$(a6_token)
+A6_REF=$(curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/dry-run" \
+  | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+led = [p for p in r['would_propose'] if p['action_type'] == 'IDENTIFY_LED']
+assert led, ('no candidate to submit', r['would_propose'], r['withheld'])
+ref = led[0]['candidate_ref']
+assert ref.startswith('cand_'), ref
+print(ref)
+")
+[ -n "$A6_REF" ] || { echo "no candidate_ref from dry-run" >&2; exit 1; }
+echo "candidate reference issued by dry-run: $A6_REF"
+
+step "A6/D: a body carrying a governance field is REJECTED, not ignored"
+for FIELD in '"authorization_basis":"autonomous_grant"' '"status":"approved"' \
+             '"disposition":"autonomous"' '"params":{"target":"anything"}' \
+             '"action_type":"POWER_CYCLE"' '"agent_id":"someone-else"'; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-evil-0001\",$FIELD}" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+  [ "$CODE" = "422" ] || {
+    echo "the transport accepted a governance field ($FIELD -> $CODE)" >&2
+    exit 1; }
+done
+echo "every governance field refused at the schema (422), not silently dropped"
+
+step "A6/E: a real submission creates a real, human-gated proposal"
+A6_BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_proposals" | tr -d ' \r')
+A6_PROP=$(curl -sf -X POST -H "Authorization: Bearer $A6_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a6-0001\",
+       \"note\":\"submitted by the gate\"}" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals" \
+  | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+assert r['accepted'] is True, r
+p = r['proposal']
+# A24: acceptance means a proposal EXISTS. It never means anything runs.
+assert p['status'] == 'awaiting_approval', p['status']
+assert p['requires_approval'] is True, p
+assert p['action_type'] == 'IDENTIFY_LED', p
+# A22.3 still holds: the parameter came from the reported component, not
+# from the body -- which cannot express one.
+assert p['params'].get('target'), p['params']
+assert 'confers nothing' in r['governs']
+print(r['proposal_id'])
+")
+[ -n "$A6_PROP" ] || { echo "submission created no proposal" >&2; exit 1; }
+echo "external submission accepted -> proposal $A6_PROP (awaiting a human)"
+
+step "A6/F: a replay returns the SAME proposal and creates nothing"
+A6_REPLAY=$(curl -s -o /tmp/a6_replay.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a6-0001\",
+       \"note\":\"submitted by the gate\"}" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+[ "$A6_REPLAY" = "200" ] || {
+  echo "a replay was not a replay ($A6_REPLAY)" >&2; cat /tmp/a6_replay.json >&2
+  exit 1; }
+A6_PROP2=$(python3 -c "
+import json; d=json.load(open('/tmp/a6_replay.json'))
+assert d['replayed'] is True, d
+print(d['proposal_id'])")
+[ "$A6_PROP" = "$A6_PROP2" ] || {
+  echo "replay returned a different proposal ($A6_PROP vs $A6_PROP2)" >&2
+  exit 1; }
+echo "replay -> 200, same proposal $A6_PROP2"
+
+step "A6/G: a DIFFERENT key for the same candidate does not duplicate (A24.6)"
+# The guarantee idempotency keys structurally cannot give: the keys differ,
+# so nothing collides on the unique constraint. The admission path refuses.
+A6_DUP=$(curl -s -o /tmp/a6_dup.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a6-0002\"}" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+[ "$A6_DUP" = "409" ] || {
+  echo "a second key created a second proposal ($A6_DUP)" >&2
+  cat /tmp/a6_dup.json >&2; exit 1; }
+
+step "A6/H: a reused key for DIFFERENT work is a conflict, never a silent replay"
+A6_MIX=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"candidate_ref":"cand_11111111111111111111111111111111",
+       "idempotency_key":"gate-a6-0001"}' \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+[ "$A6_MIX" = "409" ] || { echo "a reused key answered for other work ($A6_MIX)" >&2; exit 1; }
+echo "same key + different work -> 409"
+
+step "A6/I: exactly ONE proposal exists for all of that"
+A6_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_proposals" | tr -d ' \r')
+[ "$A6_AFTER" = "$((A6_BEFORE + 1))" ] || {
+  echo "expected exactly one new proposal ($A6_BEFORE -> $A6_AFTER)" >&2
+  exit 1; }
+echo "cc_agent_proposals: $A6_BEFORE -> $A6_AFTER"
+
+step "A6/J: an agent may not submit for ANOTHER agent (A24.5)"
+A6_OTHER=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a6-0003\"}" \
+  "http://localhost:8090/api/operational-agents/$A5_AGENT/proposals")
+[ "$A6_OTHER" = "403" ] || {
+  echo "a machine token submitted for another agent ($A6_OTHER)" >&2; exit 1; }
+echo "cross-agent submission -> 403"
+
+step "A6/K: a revoked identity cannot submit, immediately"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/identity/revoke" > /dev/null
+A6_REVOKED=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a6-0004\"}" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+[ "$A6_REVOKED" = "401" ] || {
+  echo "a revoked identity still submitted ($A6_REVOKED) -- the token had not expired" >&2
+  exit 1; }
+echo "revoked identity -> 401 on an unexpired token"
+
+step "A6/L: the submission is audited with a stable machine actor_ref"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_audit_log
+    WHERE action='agent_submission.accepted' AND actor_ref='$A6_AGENT'" \
+  | grep -qv '^ *0 *$' \
+  || { echo "no audited submission with a machine actor_ref" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT detail->>'origin' FROM cc_audit_log
+    WHERE action='agent_proposal.created' AND subject='$A6_PROP'" \
+  | tr -d ' \r' | grep -q '^ingress$' \
+  || { echo "the proposal's origin was not recorded as ingress" >&2; exit 1; }
+echo "submission audited; proposal provenance recorded as ingress"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

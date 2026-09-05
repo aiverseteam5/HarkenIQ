@@ -28,6 +28,7 @@ from harkeniq_cc.db.models import (
     CCOrgUnit,
     CCAgentCapability,
     CCAgentProposal,
+    CCAgentSubmission,
     CCScopeGrant,
     CCTenantSettings,
     CCApprovalGroup,
@@ -2722,6 +2723,100 @@ class AgentProposalRepo:
         proposal.status = "completed" if outcome == "SUCCESS" else "failed"
         proposal.outcome = outcome
         proposal.outcome_at = utcnow()
+
+
+class AgentSubmissionRepo:
+    """A24: the external ingress ledger -- replay safety and rate truth.
+
+    Two jobs, and they are the same rows because a refused submission
+    must cost the same as an accepted one. A refusal that left no row
+    would be free to repeat, which turns the cheapest possible request
+    into the cheapest possible flood.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def find(
+        self, tenant_id: str, agent_id: str, idempotency_key: str
+    ) -> Optional[CCAgentSubmission]:
+        """The prior submission under this key, if there is one."""
+        return (
+            await self.session.execute(
+                select(CCAgentSubmission).where(
+                    CCAgentSubmission.tenant_id == tenant_id,
+                    CCAgentSubmission.agent_id == agent_id,
+                    CCAgentSubmission.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get(
+        self, tenant_id: str, submission_id: str
+    ) -> Optional[CCAgentSubmission]:
+        return (
+            await self.session.execute(
+                select(CCAgentSubmission).where(
+                    CCAgentSubmission.id == submission_id,
+                    CCAgentSubmission.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def record(
+        self,
+        *,
+        tenant_id: str,
+        agent_id: str,
+        agent_version: int,
+        idempotency_key: str,
+        request_digest: str,
+        candidate_ref: str,
+        proposal_id: Optional[str],
+        code: str = "",
+        reason: str = "",
+    ) -> CCAgentSubmission:
+        row = CCAgentSubmission(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            agent_version=agent_version,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            candidate_ref=candidate_ref,
+            proposal_id=proposal_id,
+            code=code,
+            reason=reason,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def count_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> int:
+        """Submissions by this agent since `since` -- the rate window.
+
+        A COUNT over committed rows, deliberately. Central Command runs
+        multi-replica (R5-2 added advisory locking for exactly that
+        reason), so an in-process counter would be decorative: two
+        replicas would each permit the whole allowance and the limit
+        would be a comment. This is correct across replicas and needs no
+        Redis, no Kafka and no new infrastructure.
+        """
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CCAgentSubmission)
+                    .where(
+                        CCAgentSubmission.tenant_id == tenant_id,
+                        CCAgentSubmission.agent_id == agent_id,
+                        CCAgentSubmission.created_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
 
 
 class ApprovalRecordRepo:

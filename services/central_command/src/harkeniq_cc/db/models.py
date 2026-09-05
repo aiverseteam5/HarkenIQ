@@ -984,6 +984,83 @@ class CCAgentCapability(Base):
     )
 
 
+class CCAgentSubmission(Base):
+    """A24: one external ingress submission, accepted or refused.
+
+    The ingress ledger, and the platform's answer to transport replay.
+    An external runtime retries -- that is what makes it a runtime and
+    not a script -- so a submission has to be safe to send twice.
+
+    IDEMPOTENCY IS A DB GUARANTEE, NOT A CONVENTION. The unique
+    constraint is the whole mechanism: two concurrent identical
+    submissions race to insert, exactly one wins, and the loser reads the
+    winner's row and returns its result. This is E0.1's shape, where
+    `unique(subject_type, subject_ref, approver_ref)` made duplicate
+    approval impossible rather than merely unlikely.
+
+    Scoped to (tenant, agent, key) deliberately. Not global: two agents
+    choosing the same key are doing two different pieces of work and must
+    not collide. Not per-agent-only: nothing may cross a tenant.
+
+    What this row does NOT guarantee is logical duplication -- the same
+    governed candidate submitted twice under DIFFERENT keys. The keys
+    differ, so nothing here collides. That is a separate guarantee, held
+    by the admission lock in `proposal_admission.py`, and the two are not
+    interchangeable.
+
+    A refused submission is recorded too. An agent that submitted and was
+    refused is exactly what an operator debugging a quiet runtime needs
+    to see, and it is also what makes the durable rate control possible:
+    a refusal that left no row would be free to repeat.
+    """
+
+    __tablename__ = "cc_agent_submissions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The agent that submitted, derived from its machine token (A24.5).
+    #: Never read from a request body.
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent_version: Mapped[int] = mapped_column(Integer, default=1)
+    #: Caller-generated replay key. 128, per the identity-width invariant
+    #: for a principal-bearing column: sqlite ignores VARCHAR length, so a
+    #: too-narrow column passes every unit test and raises
+    #: StringDataRightTruncation on PostgreSQL. That has cost this
+    #: codebase three times.
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    #: sha256 over the canonical request. A retry presenting the same key
+    #: with DIFFERENT work is a client bug and must be loud (409), not
+    #: silently answered with the first result.
+    request_digest: Mapped[str] = mapped_column(String(64), default="")
+    #: The opaque server-minted candidate reference this submission named.
+    #: Recorded as evidence of what was asked for; never re-used as
+    #: authority (A24.3).
+    candidate_ref: Mapped[str] = mapped_column(String(128), default="")
+    #: Set when the submission produced a proposal. NULL when it was
+    #: refused -- absent means no proposal exists, not an unknown one.
+    proposal_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: "" when accepted; otherwise the govern_proposal refusal code.
+    code: Mapped[str] = mapped_column(String(64), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "agent_id", "idempotency_key",
+            name="uq_agent_submission_key",
+        ),
+        # The durable rate window (A24.8). CC runs multi-replica, so an
+        # in-process counter would be decorative -- two replicas would
+        # each permit the full allowance. Counting committed rows is
+        # correct across replicas and needs no new infrastructure.
+        Index(
+            "ix_agent_submissions_rate", "tenant_id", "agent_id", "created_at"
+        ),
+    )
+
+
 class CCAgentProposal(Base):
     """A labelled, evidence-carrying proposal from an Operational Agent (A1).
 
