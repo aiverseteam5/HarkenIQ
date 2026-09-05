@@ -2412,3 +2412,255 @@ administrator, and its holder still cannot self-grant.
 
 No new permission, no new lifecycle state, no second RBAC, no second
 grant path, no Console→CC trust direction, no A24 work.
+
+---
+
+## 28. A6-1 — governed external submission by reference (A24)
+
+Written before the code, per change control.
+
+### What the investigation found
+
+Traced on `main` at `d11840c`. Three of the four things a first ingress
+slice would build already exist and already work for an external machine
+principal: the Keycloak client-credentials identity (A3), the
+token→identity→agent→tenant→scope binding (`auth.py:_machine_principal`),
+and dry-run (`GET /api/operational-agents/{id}/dry-run`), which is
+guarded at `fleet.view` — already inside `MACHINE_PRINCIPAL_CEILING` —
+with an object-level self-gate. The one real gap is submission.
+
+The reason a naive `POST /proposals` is not implementable is structural,
+not stylistic:
+
+| Property | Where | Consequence for ingress |
+|---|---|---|
+| `govern_proposal()` is condition-driven | `operational_agent.py:542` | A caller cannot author an action; it must reference an observed condition |
+| Parameters are derived | `capabilities.py:resolve_action_params` | Accepting `params` reopens the defect A5 closed |
+| `open_dedupe_keys` is tenant-wide | `repos.py:all_dedupe_keys` | A22.1: an external decider would re-propose refused work forever |
+| `authorization_basis` waives the node's lease gate | proposal payload | A22.15: a body carrying it is a self-signed execution order |
+
+### The shape
+
+Two calls, one of which already exists:
+
+```
+GET  /api/operational-agents/{id}/dry-run     (exists, unchanged)
+       -> candidates, each with a server-minted candidate_ref
+POST /api/operational-agents/{id}/proposals   (new)
+       -> { candidate_ref, idempotency_key, observed_at?, note? }
+```
+
+On receipt CC re-derives everything and re-runs `govern_proposal()`. The
+ref is a lookup, never a licence.
+
+### D1 — the ceiling gains a permission it does not grant
+
+`proposal.submit` enters the vocabulary and the ceiling. Effective
+authority stays an INTERSECTION:
+
+```
+effective = bound_reads ∪ bound_ingress   ∩   MACHINE_PRINCIPAL_CEILING
+```
+
+A new binding kind `ingress` carries `capability_ref="proposals"`, mapped
+to `proposal.submit` by `INGRESS_BINDING_PERMISSIONS` — a table kept
+deliberately separate from the ceiling, exactly as `READ_BINDING_PERMISSIONS`
+is, so that adding a binding can never raise the ceiling. An agent with no
+ingress binding gets 403 even though the ceiling admits the class.
+
+`proposal.submit` is deliberately absent from every human role.
+`ROLE_PERMISSIONS` mirrors the Console's and a test pins that parity, so
+adding a machine permission to a role would break parity to no purpose —
+a human has no token-derived agent and would fail A24.5 regardless. The
+route-contract vocabulary test therefore derives the fixed vocabulary
+from role permissions **∪ the machine ceiling**, which is what the
+platform's vocabulary has actually been since A3.
+
+### D3 — two guarantees, not one
+
+Idempotency and logical duplication are different failures and need
+different mechanisms:
+
+* **Transport replay** — same work submitted twice with the same key.
+  Answered by `unique(tenant_id, agent_id, idempotency_key)` on
+  `cc_agent_submissions`: a DB guarantee, the E0.1 shape.
+* **Logical duplication** — the same governed candidate submitted twice
+  with *different* keys, concurrently. The replay key cannot see this.
+
+The status lifecycle decides the second mechanism, and inspecting it
+settled the question the report left open. `all_dedupe_keys()` returns
+**every** key, not only open ones, deliberately — its docstring records
+that a permanently-refused `SEL_CLEAR` was re-proposed on every pass until
+that was fixed. So admission semantics are already "one proposal ever per
+dedupe key", and a partial unique index over open statuses would encode a
+rule the platform does not actually use.
+
+A retroactive `unique(tenant_id, dedupe_key)` was considered and rejected:
+`dedupe_key` defaults to `""`, the key shape changed at A5 (the component
+was appended), and a migration that fails on historical rows to surface a
+historical bug is the wrong trade against a customer upgrade.
+
+The mechanism is therefore a **transaction-scoped advisory lock around
+admission**, keyed on the tenant's proposal admission namespace, reusing
+R5-2's `pg_advisory_chain_lock` exactly as A23-3's
+`lock_tenant_authorization` does. Held from the dedupe read through the
+insert and the caller's commit, so the second submitter waits, re-reads a
+committed key set, and is refused `duplicate` by the SAME verdict function.
+No-op on sqlite, which is single-writer; proven concurrently on real
+PostgreSQL in the gate, the way A23-3 proved concurrent last-admin revokes.
+
+`admit_proposal()` is the one admission path. The evaluator's inline
+create-and-audit body moves into it, so ingress adds no second way for a
+proposal to come into existence.
+
+### D4 — a rate control that is true under the deployed model
+
+Central Command runs multi-replica (R5-2 added advisory locking for
+exactly that reason), so an in-process counter would be decorative: two
+replicas would each permit the full allowance. The durable mechanism is
+already being added — `cc_agent_submissions` is a per-agent, timestamped,
+committed ledger, so the rate question is a `COUNT` over a window on a
+table the slice creates anyway. Correct across replicas, no Redis, no
+Kafka, no new infrastructure.
+
+Body size is bounded by a closed Pydantic schema with `extra="forbid"`
+and length-bounded fields; the four-field body has no legitimate large
+form.
+
+### A24.5 — the self rule
+
+`token-derived agent_id == route agent_id`, checked before anything else
+is loaded. The existing dry-run gate says this in the same words. A6-2
+extends it to `list_proposals`, `get_agent`, `runtime` and `preflight`,
+which today accept a machine principal and apply only scope — an
+asymmetry this slice records rather than silently inherits.
+
+### Out of scope
+
+MCP, events, streaming, webhooks, agent-supplied evidence, autonomy
+changes, SM/node authority changes, Console UI (A6-3), adaptive shaping
+(A6-4), `/api/v1`, and any change to `dedupe_key`'s existing semantics.
+
+### A6-1 addendum — pre-merge red-team fixes (A24.11–A24.16)
+
+Every claim was reproduced against the code before being implemented.
+What the reproductions showed, and what each fix therefore is:
+
+**A24.11 — idempotency serialization.** Reproduced on real PostgreSQL by
+forcing the route's actual window (both callers complete the replay lookup
+before either inserts): the loser raised `UniqueViolationError`, i.e. a
+500 on a retry — the exact case the key exists to make safe. Note the
+first naive reproduction did NOT fail, because scheduling happened to
+serialize the two; the window has to be forced to see it, which is why
+this needed a lock rather than a hope.
+
+One advisory lock per `(tenant, agent)` covers rate accounting and the
+whole lookup→process→persist sequence. Per agent rather than per key: an
+agent is one logical runtime, serializing its own ingress is what an abuse
+control wants anyway, and one lock instead of two removes a lock-ordering
+question entirely. Ordering with the existing tenant admission lock is
+always agent→tenant, so no cycle exists.
+
+**A24.12 — operational collision identity.** `base_key` begins with
+`agent.id`, so two agents proposing one physical operation produced two
+proposals. The fix does not hard-code a key. `ACTION_PARAMETERS` already
+states which parameters address the affected component
+(`source == SRC_COMPONENT`, documented as "the affected component IS the
+parameter") and which carry no executor meaning (`SRC_ANNOTATION` —
+"no executor reads it"). `operation_identity()` reads that contract, so
+the identity is the smallest server-owned description of the same
+mutually exclusive physical operation and follows the contract if it
+changes. Stored as `operation_key` and enforced across agents for OPEN
+proposals only.
+
+**A24.13 — attempt rate.** The old check was COUNT→compare→INSERT with no
+serialization, and the replay branch returned before it, so a replay was
+an unmetered channel. Now: under the agent lock, prune the window, count,
+refuse over-limit WITHOUT writing (so the record cannot be grown by the
+traffic it is meant to bound), otherwise record the attempt and proceed.
+`cc_agent_ingress_attempts` is deliberately separate from the submission
+ledger, which is keyed by idempotency key and structurally cannot hold
+repeats.
+
+**A24.14 — pre-parse byte ceiling.** Confirmed: a 5MB body returned 422,
+meaning it was fully read and parsed first. An ASGI middleware wraps
+`receive` for the ingress path and counts bytes actually delivered, so it
+is correct for chunked bodies and does not trust `Content-Length`.
+
+**A24.15 — execution-time revalidation.** `_dispatch_permitted` checked
+existence, retirement, active status, pause and credential revocation, and
+nothing about reach. It now also asks the ONE scope resolver whether the
+agent still reaches the proposal's site, and the agent's current bindings
+whether the class is still bound. Both fail closed.
+
+**A24.16 — telemetry.** The first implementation audited every refused
+submission, including a malformed or hostile one, on the hash chain.
+Governed outcomes stay audited; attempt outcomes became counters.
+
+**A sixth finding, found while reproducing the first.**
+`CapabilityCatalogueRepo.list_for_tenant` seeds lazily with
+read→if-empty→seed and no serialization, so two concurrent requests on a
+tenant whose catalogue is unseeded both seed and one 500s. It is
+pre-existing and reachable by any two concurrent CC requests, but A6 is
+what makes it reachable by an external caller, so it is fixed here rather
+than recorded for later.
+
+### A6-1 addendum, round two — final pre-merge remediation
+
+Two HIGH and two MEDIUM findings on head `6ee8975`. Each was reproduced
+before it was implemented.
+
+**HIGH — the byte ceiling held for one shape out of three.** Measured on
+that head: an honest `Content-Length` gave 413, while a chunked body and
+an *understated* length both gave **400**. The wrapper returned
+`http.disconnect` once the running total went over, and a mid-stream
+disconnect is indistinguishable to Starlette from a client hanging up —
+so FastAPI produced its own parse failure and answered first, and once
+the application has responded the 413 can no longer be sent. The limit
+was being enforced by whoever replied first, which is not enforcement.
+
+Now: buffer, decide, then replay. At most `limit + 1` bytes are read;
+over the limit it answers 413 having never invoked the application;
+within the limit the buffered ASGI messages are replayed verbatim, so the
+app sees exactly the request the client sent. Buffering is bounded by the
+limit itself, which is what makes reading-before-deciding safe. All five
+oversized shapes now return 413, a chunked body within the limit still
+reaches the handler, and the ceiling does not shadow schema validation.
+
+**HIGH — authenticated refusals were free.** `proposal.submit` was a
+route dependency, and the self, scope and lifecycle checks ran before the
+lock, so a valid credential could generate unlimited refusals outside the
+durable meter. The permission is now enforced inside the handler — same
+permission, same 403 — after the per-agent lock and attempt decision, and
+the whole authorization block is wrapped so that a check added later is
+metered by construction rather than by whoever remembers. The meter is
+charged to the agent the TOKEN names, never the one the path names, so
+naming another agent cannot move the cost onto that agent's bucket.
+
+A non-machine principal is still refused before the meter, deliberately:
+it has no per-agent bucket to charge, so there is nowhere to put the
+request.
+
+*Known and bounded:* a malformed body still returns 422 from schema
+validation before the handler, and is not metered. That cost is bounded
+by the 16 KiB ceiling above, and moving it inside the meter would mean
+parsing the body by hand and losing the closed-schema guarantee that
+lives in the signature. Recorded rather than hidden.
+
+**MEDIUM — a denial fenced forever.** `find_open_operation` reused
+`OPEN_STATUSES`, which contains `denied`. Spec text corrected first, then
+`IN_FLIGHT_STATUSES` added beside it, walked against the documented
+lifecycle rather than assumed. `OPEN_STATUSES` is untouched: the
+per-agent dedupe rule still treats a denial as final.
+
+**MEDIUM — the catalogue lock had no proof.** Now proved by ORDER on real
+PostgreSQL rather than by racing and hoping: a reader that finds the
+catalogue empty cannot complete until the seeding transaction commits,
+and then sees the committed rows instead of seeding again — asserting no
+exception, exactly one seed, no duplicates and no partial catalogue.
+
+**What the A23 harness caught.** Moving the permission into the handler
+made a bodyless mutation probe stop at 422 instead of 403, and the probe
+correctly reported that it could no longer prove the scope gate. The
+probe now sends a well-formed body — the harness was right, and it was
+the probe that needed fixing, not the route.

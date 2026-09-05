@@ -27,7 +27,9 @@ from harkeniq_cc.db.models import (
     CCCampaignWave,
     CCOrgUnit,
     CCAgentCapability,
+    CCAgentIngressAttempt,
     CCAgentProposal,
+    CCAgentSubmission,
     CCScopeGrant,
     CCTenantSettings,
     CCApprovalGroup,
@@ -2551,6 +2553,61 @@ class AgentProposalRepo:
             )
         ).scalars().first()
 
+    #: A24.12: statuses at which work may still REACH a device, and so
+    #: the only ones that may fence an equivalent physical operation.
+    #: Deliberately NOT `OPEN_STATUSES`, which answers a different
+    #: question and rightly includes `denied`.
+    #:
+    #: Walked against the documented lifecycle rather than assumed:
+    #:
+    #:   proposed          in flight -- governance has not finished
+    #:   awaiting_approval in flight -- a human may still approve it
+    #:   approved          in flight -- dispatch is pending
+    #:   dispatched        in flight -- the node may be running it now
+    #:   denied            NOT: final (D16). It will never reach a device,
+    #:                     and fencing on it would let one refusal block
+    #:                     that operation for every agent forever.
+    #:   blocked           NOT: "never dispatch and exist to be read".
+    #:   completed         NOT: settled. Re-running an action that already
+    #:                     succeeded is legitimate work.
+    #:   failed            NOT: settled, and re-trying is the normal
+    #:                     response to a failure.
+    #:
+    #: `denied` still blocks the PER-AGENT dedupe rule, which is a
+    #: different guarantee with a different reason: that agent must not
+    #: relitigate a refusal. Another agent proposing the same operation
+    #: later is not relitigation.
+    IN_FLIGHT_STATUSES = (
+        "proposed",
+        "awaiting_approval",
+        "approved",
+        "dispatched",
+    )
+
+    async def find_open_operation(
+        self, tenant_id: str, operation_key: str
+    ) -> Optional[CCAgentProposal]:
+        """An IN-FLIGHT proposal for this physical operation, from ANY agent.
+
+        A24.12. NULL `operation_key` rows are skipped rather than matched:
+        a proposal made before the concept existed is not comparable, and
+        treating "unknown" as "equal" would fence devices on evidence
+        nobody ever recorded.
+        """
+        if not operation_key:
+            return None
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.tenant_id == tenant_id,
+                    CCAgentProposal.operation_key == operation_key,
+                    CCAgentProposal.status.in_(self.IN_FLIGHT_STATUSES),
+                )
+                .order_by(CCAgentProposal.created_at.desc())
+            )
+        ).scalars().first()
+
     async def list_for_agent(
         self, tenant_id: str, agent_id: str, limit: int = 100
     ) -> Sequence[CCAgentProposal]:
@@ -2722,6 +2779,147 @@ class AgentProposalRepo:
         proposal.status = "completed" if outcome == "SUCCESS" else "failed"
         proposal.outcome = outcome
         proposal.outcome_at = utcnow()
+
+
+class AgentSubmissionRepo:
+    """A24: the external ingress ledger -- replay safety and rate truth.
+
+    Two jobs, and they are the same rows because a refused submission
+    must cost the same as an accepted one. A refusal that left no row
+    would be free to repeat, which turns the cheapest possible request
+    into the cheapest possible flood.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def find(
+        self, tenant_id: str, agent_id: str, idempotency_key: str
+    ) -> Optional[CCAgentSubmission]:
+        """The prior submission under this key, if there is one."""
+        return (
+            await self.session.execute(
+                select(CCAgentSubmission).where(
+                    CCAgentSubmission.tenant_id == tenant_id,
+                    CCAgentSubmission.agent_id == agent_id,
+                    CCAgentSubmission.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get(
+        self, tenant_id: str, submission_id: str
+    ) -> Optional[CCAgentSubmission]:
+        return (
+            await self.session.execute(
+                select(CCAgentSubmission).where(
+                    CCAgentSubmission.id == submission_id,
+                    CCAgentSubmission.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def record(
+        self,
+        *,
+        tenant_id: str,
+        agent_id: str,
+        agent_version: int,
+        idempotency_key: str,
+        request_digest: str,
+        candidate_ref: str,
+        proposal_id: Optional[str],
+        code: str = "",
+        reason: str = "",
+    ) -> CCAgentSubmission:
+        row = CCAgentSubmission(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            agent_version=agent_version,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            candidate_ref=candidate_ref,
+            proposal_id=proposal_id,
+            code=code,
+            reason=reason,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def count_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> int:
+        """Submissions by this agent since `since` -- the rate window.
+
+        A COUNT over committed rows, deliberately. Central Command runs
+        multi-replica (R5-2 added advisory locking for exactly that
+        reason), so an in-process counter would be decorative: two
+        replicas would each permit the whole allowance and the limit
+        would be a comment. This is correct across replicas and needs no
+        Redis, no Kafka and no new infrastructure.
+        """
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CCAgentSubmission)
+                    .where(
+                        CCAgentSubmission.tenant_id == tenant_id,
+                        CCAgentSubmission.agent_id == agent_id,
+                        CCAgentSubmission.created_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+
+class AgentIngressAttemptRepo:
+    """A24.13: the append-only record a rate control can actually meter."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(
+        self, *, tenant_id: str, agent_id: str, outcome: str
+    ) -> CCAgentIngressAttempt:
+        row = CCAgentIngressAttempt(
+            tenant_id=tenant_id, agent_id=agent_id, outcome=outcome,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def count_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> int:
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(CCAgentIngressAttempt)
+                    .where(
+                        CCAgentIngressAttempt.tenant_id == tenant_id,
+                        CCAgentIngressAttempt.agent_id == agent_id,
+                        CCAgentIngressAttempt.created_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+    async def prune(
+        self, tenant_id: str, agent_id: str, before: datetime
+    ) -> None:
+        """Drop rows outside the window. They have no other reader."""
+        await self.session.execute(
+            sa_delete(CCAgentIngressAttempt).where(
+                CCAgentIngressAttempt.tenant_id == tenant_id,
+                CCAgentIngressAttempt.agent_id == agent_id,
+                CCAgentIngressAttempt.created_at < before,
+            )
+        )
 
 
 class ApprovalRecordRepo:
@@ -3387,6 +3585,27 @@ class CapabilityCatalogueRepo:
             )
         ).scalars().all()
         if rows or not seed_if_empty:
+            return rows
+        # A24 addendum (the sixth finding): read -> if-empty -> seed is a
+        # race. Two concurrent requests on a tenant whose catalogue is
+        # unseeded both see nothing, both seed, and one raises a unique
+        # violation -- a 500 reproduced by two concurrent A6 submissions.
+        # Pre-existing, but A6 is what lets an external caller reach it.
+        #
+        # Serialized on the tenant, then RE-READ under the lock: the
+        # loser must find the winner's rows rather than seed again.
+        from harkeniq.audit.chain import pg_advisory_chain_lock
+
+        await pg_advisory_chain_lock(
+            self.session, f"cc.capability_catalogue.{tenant_id}"
+        )
+        rows = (
+            await self.session.execute(
+                select(CCCapabilityCatalogue)
+                .where(CCCapabilityCatalogue.tenant_id == tenant_id)
+            )
+        ).scalars().all()
+        if rows:
             return rows
         await self.seed(tenant_id, actor="platform-default")
         return (

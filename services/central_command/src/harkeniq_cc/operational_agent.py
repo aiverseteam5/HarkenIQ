@@ -128,8 +128,30 @@ KIND_ACTION_CLASS = "action_class"
 #: RPC (it fans out to every device on the site), and an
 #: install-on-activation trigger. Deferred, not discarded.
 KIND_SKILL = "skill"
+#: A24.4 (A6): the authority to hand Central Command a reference to a
+#: candidate it already governed, over the external ingress. The ONLY
+#: binding kind that implies a write, and it implies exactly one
+#: permission -- `proposal.submit`, via
+#: `machine_identity.INGRESS_BINDING_PERMISSIONS`, intersected with the
+#: machine ceiling.
+#:
+#: It confers no authority to decide, approve, dispatch or execute. A
+#: submission is re-derived and re-governed by `govern_proposal()` on
+#: receipt, so this binding buys an agent the right to ASK, nothing more.
+KIND_INGRESS = "ingress"
 
-CAPABILITY_KINDS = (KIND_READ, KIND_ACTION_CLASS, KIND_SKILL)
+CAPABILITY_KINDS = (KIND_READ, KIND_ACTION_CLASS, KIND_SKILL, KIND_INGRESS)
+
+#: Ingress capabilities an agent may be bound to, and what each means.
+#: Shaped like READ_CAPABILITIES so the catalogue can render both the
+#: same way -- a binding nobody can discover is a binding nobody can
+#: create.
+INGRESS_CAPABILITIES: dict[str, str] = {
+    "proposals": (
+        "Submit governed proposals by reference over the external "
+        "ingress (POST /api/operational-agents/{id}/proposals)"
+    ),
+}
 
 #: Read capabilities an agent may be bound to. Each is an existing
 #: governed CC surface with its own permission guard; binding one grants
@@ -284,6 +306,20 @@ def bound_reads(capabilities: Iterable[Any]) -> set[str]:
         (c.capability_ref or "").lower()
         for c in capabilities
         if c.kind == KIND_READ
+    }
+
+
+def bound_ingress(capabilities: Iterable[Any]) -> set[str]:
+    """Ingress capabilities bound to this agent (A24.4).
+
+    Beside `bound_reads` rather than folded into it: a read binding and a
+    write binding are different grants, and a function that returned both
+    would make the one write in the ceiling reachable by a read binding.
+    """
+    return {
+        (c.capability_ref or "").lower()
+        for c in capabilities
+        if c.kind == KIND_INGRESS
     }
 
 
@@ -729,6 +765,42 @@ def govern_proposal(
             "dedupe_key": dedupe_key,
         },
     }
+
+
+#: Scheme tag inside the candidate digest. Bumping it invalidates every
+#: outstanding reference at once, which is the only safe way to change
+#: what a reference means.
+_CANDIDATE_SCHEME = "a6.v1"
+
+
+def candidate_ref(tenant_id: str, dedupe_key: str) -> str:
+    """The opaque reference an external agent submits (A24.3).
+
+    NOT AN AUTHORITY TOKEN, and the naming matters because the mistake it
+    invites is real: a reference that were trusted would be a bearer
+    grant to execute a governed action, minted by a preview and honoured
+    later without re-asking anything.
+
+    It is a LOOKUP. On receipt Central Command re-derives current state,
+    re-runs `govern_proposal()` and re-computes this value for every
+    candidate that still governs; a submission matches only if the same
+    candidate is still there, on the same condition, for the same
+    component. A reference for work that has since been done, cleared,
+    unbound or stopped matches nothing and is refused with the CURRENT
+    reason.
+
+    Derived from the dedupe key because that IS the identity of a
+    governed candidate -- agent, device, action class, condition and
+    component -- so two references are equal exactly when they name the
+    same piece of work. Digested rather than passed through so that a
+    reference carries no readable internal structure and cannot be
+    pattern-edited into naming different work; that is hygiene, not the
+    security boundary, which is the re-derivation above.
+    """
+    import hashlib
+
+    payload = f"{_CANDIDATE_SCHEME}|{tenant_id}|{dedupe_key}"
+    return "cand_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
 def _refused(code: str, reason: str) -> dict:

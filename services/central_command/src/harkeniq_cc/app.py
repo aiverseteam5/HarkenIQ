@@ -46,6 +46,13 @@ def create_app(state) -> FastAPI:
 
     app.add_middleware(request_id_middleware(app))
 
+    # A24.14: bound the external ingress body BEFORE anything parses it.
+    # Pure ASGI, because a BaseHTTPMiddleware reads the request in order
+    # to pass it on -- which is the thing being prevented.
+    from harkeniq_cc.ingress_body import IngressBodyLimit
+
+    app.add_middleware(IngressBodyLimit)
+
     # QA-005: configure_auth existed since R2b and was called by nothing —
     # secure mode could only ever answer "auth not configured".
     from harkeniq_cc.auth import configure_auth

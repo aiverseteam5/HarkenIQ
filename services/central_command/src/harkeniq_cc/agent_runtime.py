@@ -48,6 +48,7 @@ from harkeniq_cc.governance import (
     load_attention,
     load_autonomy_contract,
 )
+from harkeniq_cc.proposal_admission import ORIGIN_EVALUATOR, admit_proposal
 from harkeniq_cc.operational_agent import (
     BASIS_AUTONOMOUS,
     EVALUATING_STATUSES,
@@ -120,7 +121,6 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
         # whole tenant let devices the agent can never touch reorder the
         # list that decides which devices consume its proposal budget.
         prop_repo = AgentProposalRepo(session)
-        audit = AuditRepo(session)
 
         # A4 (A21.1): the condition -> capability mapping is the tenant's
         # catalogue now, not a module constant. Loaded ONCE per pass and
@@ -181,27 +181,25 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 ),
             )
             for payload in proposals:
-                row = await prop_repo.create(**payload)
-                created.append(row)
-                await audit.append(
-                    actor=row.actor,
-                    action="agent_proposal.created",
-                    subject=row.id,
+                # A24.6: the ONE admission path, shared with external
+                # ingress. It takes the tenant's admission lock and
+                # re-checks the committed dedupe keys, so a candidate
+                # admitted by an external submission while this pass was
+                # deciding is refused here rather than duplicated.
+                row, code, _reason = await admit_proposal(
+                    session,
                     tenant_id=tenant_id,
-                    detail={
-                        "agent_id": agent.id,
-                        "action_type": row.action_type,
-                        "device_agent_id": row.device_agent_id,
-                        "disposition": row.disposition,
-                        "status": row.status,
-                        "reason": row.disposition_reason[:200],
-                    },
+                    payload=payload,
+                    origin=ORIGIN_EVALUATOR,
+                    actor_ref=agent.id,
                 )
-                logger.info(
-                    "Proposal %s: %s %s on %s -> %s (%s)",
-                    row.id, row.actor, row.action_type,
-                    row.device_agent_id, row.status, row.disposition,
-                )
+                if row is None:
+                    logger.info(
+                        "Proposal not admitted for %s on %s: %s",
+                        agent.id, payload.get("device_agent_id", ""), code,
+                    )
+                    continue
+                created.append(row)
             await repo.mark_evaluated(agent)
         await session.commit()
     return created
@@ -250,6 +248,43 @@ async def _dispatch_permitted(session, tenant_id: str, proposal) -> tuple[bool, 
     identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent_id)
     if identity is not None and identity.status == STATUS_REVOKED:
         return False, "this agent's machine identity has been revoked"
+
+    # A24.15: proposal-time authorization is not permanent execution
+    # authority. Status, pause, retirement and the credential were already
+    # re-asked above; REACH was not. An operator who withdraws a scope
+    # grant or unbinds a class expects that to stop work that has not run
+    # yet, and until now it did not -- the proposal carried its own
+    # historical authority all the way to the node.
+    #
+    # Both questions are asked of the CURRENT configuration through the
+    # same objects the rest of the platform uses: the ONE scope resolver,
+    # and the agent's own capability bindings. Neither grants anything;
+    # they can only withhold. The node remains the final authority.
+    from harkeniq_cc.governance import load_agent_scope
+    from harkeniq_cc.operational_agent import bound_action_classes
+
+    site_id = getattr(proposal, "site_id", "") or ""
+    if site_id:
+        agent_scope = await load_agent_scope(
+            session, tenant_id=tenant_id, agent_id=agent_id
+        )
+        if not (
+            getattr(agent_scope, "tenant_wide", False)
+            or site_id in set(getattr(agent_scope, "site_ids", ()) or ())
+        ):
+            return False, (
+                "this agent's scope no longer reaches the site this "
+                "proposal targets"
+            )
+
+    action_type = getattr(proposal, "action_type", "") or ""
+    bound = bound_action_classes(
+        await OperationalAgentRepo(session).list_capabilities(agent_id)
+    )
+    if action_type and action_type not in bound:
+        return False, (
+            f"{action_type} is no longer bound to the agent that proposed it"
+        )
     return True, ""
 
 

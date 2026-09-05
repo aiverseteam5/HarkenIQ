@@ -22,13 +22,18 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from fastapi import (
+    APIRouter, Body, Depends, HTTPException, Query, Request, Response,
+)
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.api.deps import (
+    forbid_out_of_scope, get_current_user, get_scope, get_session,
+    require_permission,
+)
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq.capabilities import action_facts
@@ -50,9 +55,12 @@ from harkeniq_cc.operational_agent import (
     AGENT_STATUSES,
     SCOPE_ORG_UNIT as AGENT_SCOPE_ORG_UNIT,
     CAPABILITY_KINDS,
+    INGRESS_CAPABILITIES,
     KIND_ACTION_CLASS,
+    KIND_INGRESS,
     KIND_READ,
     KIND_SKILL,
+    PROPOSAL_AWAITING,
     READ_CAPABILITIES,
     REQUIRED_READS,
     SCOPE_DEVICE,
@@ -331,6 +339,18 @@ def _validate_capabilities(capabilities: list[CapabilityBinding]) -> None:
                     400,
                     f"{binding.capability_ref!r} is not a governed read "
                     f"capability ({', '.join(sorted(READ_CAPABILITIES))})",
+                )
+        elif binding.kind == KIND_INGRESS:
+            # A24.4. Validated like a read, and for a sharper reason: an
+            # unrecognised ingress ref would map to no permission, so the
+            # binding would be accepted, rendered, and grant NOTHING --
+            # an agent configured to submit that silently cannot. That is
+            # the accepted-and-inert shape E0.3 refused for skills.
+            if binding.capability_ref.lower() not in INGRESS_CAPABILITIES:
+                raise HTTPException(
+                    400,
+                    f"{binding.capability_ref!r} is not a governed ingress "
+                    f"capability ({', '.join(sorted(INGRESS_CAPABILITIES))})",
                 )
 
 
@@ -637,6 +657,26 @@ async def catalogue(
                 "required": ref in REQUIRED_READS,
             }
             for ref, desc in sorted(READ_CAPABILITIES.items())
+        ],
+        # A24.4: the one binding kind that implies a write. Listed here
+        # because a binding nobody can discover is a binding nobody can
+        # create -- and reported SEPARATELY from reads, never merged into
+        # them, because granting an agent the ability to ask for work is
+        # a different decision from letting it read.
+        "ingress_capabilities": [
+            {
+                "ref": ref,
+                "description": desc,
+                "required": False,
+                "grants_permission": "proposal.submit",
+                "note": (
+                    "Lets this agent submit candidates it was already "
+                    "shown. It confers no authority to decide, approve, "
+                    "dispatch or execute: every submission is re-derived "
+                    "and re-governed on receipt."
+                ),
+            }
+            for ref, desc in sorted(INGRESS_CAPABILITIES.items())
         ],
         "scope_options": {
             "sites": [{"id": s.id, "name": s.site_name} for s in sites],
@@ -1503,7 +1543,8 @@ async def dry_run_agent(
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
-        BASIS_AUTONOMOUS, attribution_key, evaluate, resolve_scope,
+        BASIS_AUTONOMOUS, attribution_key, candidate_ref, evaluate,
+        resolve_scope,
     )
 
     tenant_id = user.tenant_id
@@ -1626,6 +1667,10 @@ async def dry_run_agent(
         "devices_in_scope": len(in_scope),
         "would_propose": [
             {
+                # A24.3: the handle an external agent submits. Opaque,
+                # server-minted, and re-derived on receipt -- it names a
+                # candidate, it does not authorize one.
+                "candidate_ref": candidate_ref(tenant_id, p["dedupe_key"]),
                 "device_agent_id": p["device_agent_id"],
                 "site_id": p["site_id"],
                 "action_type": p["action_type"],
@@ -1661,6 +1706,408 @@ async def dry_run_agent(
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# A6-1: external governed submission by reference (A24)
+# ---------------------------------------------------------------------------
+
+
+class SubmitProposal(BaseModel):
+    """The closed transport contract (A24.2).
+
+    `extra="forbid"` is the load-bearing line. Every field an external
+    party must never author -- `agent_id`, `action_type`, `device`,
+    `params`, `disposition`, `authorization_basis`, `status`,
+    `decided_by`, autonomy level, approval, site -- is absent, and
+    absence here means REJECTED, not ignored.
+
+    That distinction is the whole point. A22.15 recorded, before the
+    route existed, that a body able to carry `authorization_basis` would
+    be a remote party writing a self-signed, already-approved execution
+    order carrying the flag that waives the node's last refusal. A schema
+    that silently dropped such a field would still accept the request
+    that tried, and nobody would ever learn a client was attempting it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Opaque, server-minted, from this agent's own dry-run. A24.3: a
+    #: lookup, never a licence.
+    candidate_ref: str = Field(min_length=8, max_length=128)
+    #: Caller-generated replay key. Bounded because it is stored.
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    #: When the runtime observed what prompted this. Reported only --
+    #: never an authorization input, and never trusted as a clock.
+    observed_at: Optional[datetime] = None
+    #: Free text for the human who will approve. Bounded and recorded on
+    #: the audit entry; it cannot influence any decision.
+    note: str = Field(default="", max_length=512)
+
+
+@router.post(
+    "/{agent_id}/proposals",
+    status_code=201,
+)
+async def submit_proposal(
+    agent_id: str,
+    body: SubmitProposal,
+    response: Response,
+    # A24.13: `proposal.submit` is enforced INSIDE the handler, not as a
+    # route dependency. Not a weakening -- the same permission, refused
+    # with the same 403 -- but a dependency answers before the durable
+    # attempt meter is reached, so a valid credential lacking the
+    # permission could generate unlimited unmetered refusals. Order of
+    # metering changed; authorization did not.
+    user: UserContext = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """Submit a candidate this agent was already shown. A24.
+
+    PROPOSE-BY-REFERENCE. The caller does not construct a proposal: it
+    names one Central Command already governed and offered through
+    `GET .../dry-run`, and Central Command re-derives everything before
+    anything is written. Authorship stays server-side; what the external
+    runtime contributes is judgement about WHICH candidate and WHEN,
+    which is the whole product value of an external agent.
+
+    A 201 means a proposal now exists. It does NOT mean anything will
+    run: the proposal still faces the approval ledger, the dispatch
+    gates, the Site Manager's live safety state and the node's own allow
+    list, exactly as an internally derived one does.
+    """
+    from harkeniq_cc.agent_runtime import AGENT_PERMISSIONS, _incidents_by_device
+    from harkeniq_cc.capability_catalogue import candidates_for
+    from harkeniq_cc.db.repos import (
+        AgentIngressAttemptRepo, AgentProposalRepo, AgentSubmissionRepo,
+        AuditRepo, CapabilityCatalogueRepo, FleetCacheRepo,
+    )
+    from harkeniq_cc.ingress_limits import (
+        ATTEMPT_WINDOW_S, OUTCOME_ACCEPTED, OUTCOME_CONFLICT,
+        OUTCOME_REFUSED, OUTCOME_REJECTED, OUTCOME_REPLAYED, admit_attempt,
+        lock_agent_ingress,
+    )
+    from harkeniq_cc.governance import (
+        load_agent_scope, load_attention, load_autonomy_contract,
+    )
+    from harkeniq_cc.machine_identity import is_machine
+    from harkeniq_cc.operational_agent import (
+        STATUS_ACTIVE, attribution_key, candidate_ref, evaluate,
+    )
+    from harkeniq_cc.proposal_admission import ORIGIN_INGRESS, admit_proposal
+
+    tenant_id = user.tenant_id
+
+    # A machine principal, or nothing. Asked before the meter because a
+    # non-machine caller HAS no agent identity to meter against -- there
+    # is no per-agent bucket to charge, so there is nothing to place this
+    # request in. Every principal past this line is an authenticated
+    # agent with a bucket of its own.
+    if not is_machine(user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "external submission is a machine-principal surface; a "
+                "person proposes through the Console, not through ingress"
+            ),
+        )
+
+    # A24.5: the agent the TOKEN names, never the one the path names. The
+    # meter is charged to the authenticated principal, so naming another
+    # agent in the path cannot move the cost onto that agent's bucket --
+    # the impersonation refusal below is itself metered here.
+    self_agent = user.user_id
+
+    submissions = AgentSubmissionRepo(session)
+    attempts = AgentIngressAttemptRepo(session)
+
+    # -- serialize this agent's ingress (A24.11) -----------------------
+    # Held for the rest of this transaction, covering the rate decision
+    # AND the replay lookup->insert below. Without it, two callers with
+    # one key both miss the lookup and the loser raises an integrity
+    # error -- a 500 on precisely the retry the key exists to make safe,
+    # reproduced on PostgreSQL by forcing that window.
+    #
+    # The only other lock in this path is the tenant admission lock taken
+    # inside `admit_proposal`. The order is always agent then tenant, so
+    # no cycle can form.
+    await lock_agent_ingress(session, tenant_id, self_agent)
+
+    # -- attempt rate (A24.13) -----------------------------------------
+    # BEFORE the replay branch, deliberately: the first implementation
+    # returned a replay first, which made replay an unmetered channel. A
+    # replay stays functionally idempotent; it is not free.
+    permitted, used = await admit_attempt(
+        session, tenant_id=tenant_id, agent_id=self_agent,
+    )
+    if not permitted:
+        # Refused without writing: a record that grew on every refusal
+        # would amplify the traffic it exists to bound.
+        await session.commit()
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"this agent has made {used} ingress attempts in the last "
+                f"{ATTEMPT_WINDOW_S // 60} minutes"
+            ),
+        )
+
+    async def _settle(outcome: str):
+        await attempts.record(
+            tenant_id=tenant_id, agent_id=self_agent, outcome=outcome,
+        )
+
+    # -- authorization, now INSIDE the meter (A24.13) -------------------
+    # Every refusal below is an authenticated request from a principal
+    # with its own bucket, so each one costs that bucket exactly what an
+    # accepted submission costs. The checks and their status codes are
+    # unchanged; only where they sit relative to the meter has moved.
+    #
+    # Caught as a class rather than enumerated: a check added here later
+    # is metered by construction instead of by whoever remembers.
+    try:
+        if not (
+            "proposal.submit" in user.permissions or "*" in user.permissions
+        ):
+            raise HTTPException(
+                status_code=403, detail="missing permission: proposal.submit",
+            )
+        if self_agent != agent_id:
+            raise HTTPException(
+                status_code=403,
+                detail="a machine identity may submit for its own agent and no other",
+            )
+        # OBJECT_GATED, and not decoratively. For a machine principal the
+        # caller IS the agent, so this asks whether the agent still
+        # reaches its own scope rows -- the question A23-3's inert grants
+        # make load-bearing: an agent whose grant was revoked, expired or
+        # points at a deleted org unit reaches nothing and must not be
+        # able to submit. Out of scope is 404, never 403.
+        agent = await _require_visible_agent(session, tenant_id, agent_id, scope)
+        if agent.status != STATUS_ACTIVE:
+            raise HTTPException(
+                status_code=409,
+                detail=f"this agent is {agent.status or 'inactive'} and may not submit",
+            )
+        if getattr(agent, "paused_reason", ""):
+            raise HTTPException(
+                status_code=409,
+                detail=f"this agent is paused: {agent.paused_reason}",
+            )
+    except HTTPException:
+        await _settle(OUTCOME_REFUSED)
+        await session.commit()
+        raise
+
+    # -- replay (A24.2) -----------------------------------------------
+    # A retry must be cheap and must return the ORIGINAL answer.
+    # `request_digest` is what separates a retry from a client bug --
+    # same key, different work is 409, never silently answered with a
+    # result that describes something else.
+    digest = _submission_digest(body)
+    prior = await submissions.find(tenant_id, agent_id, body.idempotency_key)
+    if prior is not None:
+        if prior.request_digest != digest:
+            await _settle(OUTCOME_CONFLICT)
+            await session.commit()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "this idempotency key was already used for a different "
+                    "submission; use a new key for new work"
+                ),
+            )
+        await _settle(OUTCOME_REPLAYED)
+        await session.commit()
+        response.status_code = 200
+        return _submission_result(prior, replayed=True)
+
+    # -- re-derivation (A24.3) ----------------------------------------
+    # The ref is resolved by RE-RUNNING the same evaluation the dry-run
+    # ran, not by looking anything up in a table. That is what makes a
+    # stale reference structurally unable to succeed: the candidate has
+    # to still be there, on the same condition, for the same component,
+    # under the current contract, catalogue, capabilities and safety
+    # state. No second reasoning path exists to disagree with.
+    agent_scope = await load_agent_scope(
+        session, tenant_id=tenant_id, agent_id=agent_id
+    )
+    devices = await FleetCacheRepo(session).list_all(tenant_id)
+    catalogue_rows = await CapabilityCatalogueRepo(session).list_for_tenant(
+        tenant_id
+    )
+    catalogue = {
+        sub: candidates_for(catalogue_rows, sub)
+        for sub in {r.subsystem for r in catalogue_rows}
+    }
+    prop_repo = AgentProposalRepo(session)
+    midnight = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    repo = OperationalAgentRepo(session)
+    would_propose = evaluate(
+        catalogue=catalogue,
+        agent=agent,
+        scopes=await repo.list_scopes(agent_id),
+        resolved_site_ids=agent_scope.site_ids,
+        capabilities=await repo.list_capabilities(agent_id),
+        devices=devices,
+        incidents_by_device=await _incidents_by_device(session, tenant_id),
+        autonomy_contract=await load_autonomy_contract(
+            session,
+            tenant_id=tenant_id,
+            actor_id=attribution_key(agent_id, agent.version),
+            actor_species="agent",
+            permissions=AGENT_PERMISSIONS,
+        ),
+        attention_by_device={
+            item["agent_id"]: item
+            for item in (await load_attention(
+                session, tenant_id=tenant_id, scope=agent_scope,
+            ))["items"]
+        },
+        open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
+        proposals_today=await prop_repo.count_since(
+            tenant_id, agent_id, midnight,
+        ),
+    )
+
+    match = next(
+        (
+            p for p in would_propose
+            if candidate_ref(tenant_id, p["dedupe_key"]) == body.candidate_ref
+        ),
+        None,
+    )
+
+    agent_version = agent.version
+
+    if match is None:
+        # Refused, and RECORDED. An agent whose submissions keep missing
+        # is the signal an operator needs, and an unrecorded refusal
+        # would also be a free request.
+        row = await submissions.record(
+            tenant_id=tenant_id, agent_id=agent_id,
+            agent_version=agent_version,
+            idempotency_key=body.idempotency_key, request_digest=digest,
+            candidate_ref=body.candidate_ref, proposal_id=None,
+            code="candidate_not_current",
+            reason=(
+                "this candidate is not among the actions the agent would "
+                "propose right now; re-read the dry-run and submit a "
+                "current candidate"
+            ),
+        )
+        # A24.16: counted, not chained. A rejected candidate is an
+        # ATTEMPT outcome, and appending every one of them to a
+        # hash-chained governance store would be an amplification channel
+        # against the platform's own integrity record. The submission row
+        # above is the durable evidence an operator reads.
+        await _settle(OUTCOME_REJECTED)
+        await session.commit()
+        response.status_code = 409
+        return _submission_result(row, replayed=False)
+
+    # -- admission (A24.6) --------------------------------------------
+    # The ONE path, shared with the evaluator. It takes the tenant's
+    # admission lock and re-checks committed dedupe keys, so two
+    # concurrent submissions of the same candidate under DIFFERENT
+    # idempotency keys cannot both create a proposal.
+    proposal, code, reason = await admit_proposal(
+        session,
+        tenant_id=tenant_id,
+        payload=match,
+        origin=ORIGIN_INGRESS,
+        actor_ref=agent_id,
+        note=body.note,
+    )
+    row = await submissions.record(
+        tenant_id=tenant_id, agent_id=agent_id, agent_version=agent_version,
+        idempotency_key=body.idempotency_key, request_digest=digest,
+        candidate_ref=body.candidate_ref,
+        proposal_id=proposal.id if proposal is not None else None,
+        code=code, reason=reason,
+    )
+    await _settle(OUTCOME_ACCEPTED if proposal is not None else OUTCOME_REJECTED)
+    # A24.16: a submission that produced a proposal is a GOVERNED outcome
+    # and stays on the chain. So does a governed refusal reached after
+    # authorization -- there are at most a handful per agent per window,
+    # bounded by the attempt limit above.
+    await AuditRepo(session).append(
+        actor=attribution_key(agent_id, agent_version),
+        actor_ref=agent_id,
+        action=(
+            "agent_submission.accepted" if proposal is not None
+            else "agent_submission.refused"
+        ),
+        subject=row.id,
+        tenant_id=tenant_id,
+        detail={
+            "agent_id": agent_id,
+            "proposal_id": proposal.id if proposal is not None else "",
+            "action_type": match["action_type"],
+            "device_agent_id": match["device_agent_id"],
+            "code": code,
+        },
+    )
+    await session.commit()
+    if proposal is None:
+        response.status_code = 409
+    return _submission_result(row, replayed=False, proposal=proposal)
+
+
+def _submission_digest(body: SubmitProposal) -> str:
+    """What makes a retry a retry.
+
+    Covers the fields that describe the WORK, and deliberately not
+    `note`: re-sending the same candidate with a clarified note is the
+    same submission, and 409-ing it would punish the honest case.
+    """
+    import hashlib
+
+    payload = f"a6.v1|{body.candidate_ref}|{body.idempotency_key}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _submission_result(row, *, replayed: bool, proposal=None) -> dict:
+    """One shape for every answer this route gives.
+
+    `accepted` says a proposal EXISTS. It never says anything will run --
+    the words matter, because the caller is a machine that will act on
+    this field.
+    """
+    out = {
+        "submission_id": row.id,
+        "agent_id": row.agent_id,
+        "proposal_id": row.proposal_id or "",
+        "accepted": bool(row.proposal_id),
+        "replayed": replayed,
+        "code": row.code,
+        "reason": row.reason,
+        "submitted_at": row.created_at.isoformat() if row.created_at else None,
+        "governs": (
+            "A proposal was recorded. It confers nothing: it still faces "
+            "the approval ledger, the dispatch gates, the Site Manager's "
+            "safety state and the node's own allow list."
+        ) if row.proposal_id else (
+            "No proposal was created."
+        ),
+    }
+    if proposal is not None:
+        out["proposal"] = {
+            "id": proposal.id,
+            "status": proposal.status,
+            "disposition": proposal.disposition,
+            "disposition_reason": proposal.disposition_reason,
+            "blocking_conditions": proposal.blocking_conditions or [],
+            "action_type": proposal.action_type,
+            "device_agent_id": proposal.device_agent_id,
+            "site_id": proposal.site_id,
+            "params": proposal.params,
+            "requires_approval": proposal.status == PROPOSAL_AWAITING,
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------

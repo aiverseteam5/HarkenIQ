@@ -191,6 +191,12 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
         ("site.manage", OBJECT_GATED, True),
     ("GET", "/api/operational-agents/{agent_id}/identity"):
         ("fleet.view", READ_SCOPED, False),
+    # A6-1 (A24): external governed submission. OBJECT_GATED like every
+    # other mutation, and additionally self-restricted -- A24.5 requires
+    # the token-derived agent to BE the route's agent, which the handler
+    # asks before it loads anything.
+    ("POST", "/api/operational-agents/{agent_id}/proposals"):
+        ("proposal.submit", OBJECT_GATED, True),
     ("POST", "/api/operational-agents/{agent_id}/{transition}"):
         ("site.manage", OBJECT_GATED, True),
 

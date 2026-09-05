@@ -26,7 +26,7 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0021"),
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0022"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -719,6 +719,111 @@ class TestExistingDatabase:
         con.close()
         assert agents == 1, "the pre-A3 agent must survive the upgrade"
         assert rows == 0, "no identity may be invented for an existing agent"
+
+
+class TestCC0022AgentSubmissions:
+    """A6-1 (A24): the ingress ledger lands on a database with history."""
+
+    def _rewind(self, db):
+        """Put a populated database back at 0021, as a real upgrade finds it."""
+        con = sqlite3.connect(db)
+        con.execute("drop table if exists cc_agent_submissions")
+        con.execute(
+            "insert into cc_agent_proposals (id, tenant_id, agent_id, actor, "
+            " agent_version, site_id, device_agent_id, action_type, rationale, "
+            " disposition, disposition_reason, authorization_basis, status, "
+            " decided_by, dedupe_key, directive_id, dispatch_reason, outcome, "
+            " created_at) "
+            "values ('p1', 't1', 'a1', 'op-agent:a1@v1', 1, 's1', 'node-1', "
+            "'IDENTIFY_LED', 'r', 'requires_approval', '', 'human_approval', "
+            "'awaiting_approval', '', 'dk-1', '', '', '', datetime('now'))"
+        )
+        con.execute("update alembic_version set version_num='0021'")
+        con.commit()
+        con.close()
+
+    def test_cc_0022_adds_the_ledger_without_touching_proposals(self, tmp_path):
+        """Purely additive. A24.6's duplicate guarantee is a lock, not a
+        retroactive constraint, so an existing proposal must survive the
+        upgrade untouched -- including its dedupe key."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        self._rewind(db)
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        cols = _columns(db, "cc_agent_submissions")
+        for expected in (
+            "id", "tenant_id", "agent_id", "agent_version", "idempotency_key",
+            "request_digest", "candidate_ref", "proposal_id", "code", "reason",
+            "created_at",
+        ):
+            assert expected in cols, expected
+
+        con = sqlite3.connect(db)
+        # The historical proposal is exactly as it was.
+        row = con.execute(
+            "select dedupe_key, status from cc_agent_proposals where id='p1'"
+        ).fetchone()
+        assert row == ("dk-1", "awaiting_approval")
+        # And nothing was invented for it.
+        assert con.execute(
+            "select count(*) from cc_agent_submissions"
+        ).fetchone()[0] == 0
+        con.close()
+
+    def test_the_idempotency_constraint_exists_after_upgrade(self, tmp_path):
+        """The unique constraint IS the replay guarantee (A24.2). A table
+        created without it would leave the route's replay handling as a
+        best-effort read-then-write."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute(
+            "insert into cc_agent_submissions (id, tenant_id, agent_id, "
+            " agent_version, idempotency_key, request_digest, candidate_ref, "
+            " code, reason, created_at) "
+            "values ('s1','t1','a1',1,'k1','d','c','','',datetime('now'))"
+        )
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "insert into cc_agent_submissions (id, tenant_id, agent_id, "
+                " agent_version, idempotency_key, request_digest, candidate_ref, "
+                " code, reason, created_at) "
+                "values ('s2','t1','a1',1,'k1','d','c','','',datetime('now'))"
+            )
+            con.commit()
+        con.close()
+
+    def test_cc_0022_downgrades_and_leaves_everything_else(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        self._rewind(db)
+        _alembic("cc", db, "upgrade", "head")
+
+        _alembic("cc", db, "downgrade", "0021")
+        assert _version(db) == "0021"
+        con = sqlite3.connect(db)
+        tables = {
+            r[0] for r in con.execute(
+                "select name from sqlite_master where type='table'"
+            )
+        }
+        assert "cc_agent_submissions" not in tables
+        # A downgrade must not cost a proposal, an approval or an audit row.
+        assert con.execute(
+            "select count(*) from cc_agent_proposals where id='p1'"
+        ).fetchone()[0] == 1
+        con.close()
+
+    def test_cc_0022_is_idempotent(self, tmp_path):
+        """Re-running the chain over an already-upgraded database is a
+        no-op, which every additive migration here must be."""
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
 
 
 class TestCC0020AuditActorRef:
