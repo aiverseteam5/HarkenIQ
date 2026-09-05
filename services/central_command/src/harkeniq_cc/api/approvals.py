@@ -217,7 +217,7 @@ class ApprovalIncomplete(Exception):
         self.block = block
 
 
-async def _governing_policy(
+async def governing_policy(
     session: AsyncSession, tenant_id: str, action_type: str, device_agent_id: str,
 ):
     """(policy, group, members) for this action class, or (None, None, []).
@@ -299,7 +299,7 @@ async def _record_and_evaluate(
     out of scope, not in the required group) and ApprovalIncomplete when
     the decision was validly recorded but the subject still needs more.
     """
-    policy, group, members = await _governing_policy(
+    policy, group, members = await governing_policy(
         session, tenant_id, action_type, device_agent_id,
     )
     records_repo = ApprovalRecordRepo(session)
@@ -690,7 +690,7 @@ async def activation_approval_state(
     so a wildcard policy governs it -- which is what makes "dual approval
     for everything" mean everything, per A15.
     """
-    policy, group, _members = await _governing_policy(session, tenant_id, "", "")
+    policy, group, _members = await governing_policy(session, tenant_id, "", "")
     records = await ApprovalRecordRepo(session).list_for_subject(
         SUBJECT_AGENT_ACTIVATION, subject_ref,
     )

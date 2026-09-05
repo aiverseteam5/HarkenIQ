@@ -2984,18 +2984,23 @@ class AgentReadWindowRepo:
         )
         if updated.rowcount:
             return await self._current(tenant_id, agent_id, window_start)
-        row = CCAgentReadWindow(
-            tenant_id=tenant_id, agent_id=agent_id,
-            window_start=window_start, reads=1,
-        )
-        self.session.add(row)
+        # Opening the window. Inside a SAVEPOINT, because losing the race
+        # here must cost this statement and nothing else: the first
+        # implementation called `session.rollback()`, which discards the
+        # CALLER's whole transaction -- a helper cannot quietly undo work
+        # it never knew about, whatever else it gets right.
         try:
-            await self.session.flush()
+            async with self.session.begin_nested():
+                self.session.add(CCAgentReadWindow(
+                    tenant_id=tenant_id, agent_id=agent_id,
+                    window_start=window_start, reads=1,
+                ))
+                await self.session.flush()
             return 1
         except IntegrityError:
-            # Another replica opened this window first. Roll back only
-            # this statement's failure, then take the ordinary path.
-            await self.session.rollback()
+            # Another replica opened it first; the savepoint rolled back,
+            # the outer transaction is untouched, and the ordinary path
+            # now applies.
             await self.session.execute(
                 sa_update(CCAgentReadWindow)
                 .where(

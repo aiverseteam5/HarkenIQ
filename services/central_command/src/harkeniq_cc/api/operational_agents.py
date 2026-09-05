@@ -1247,13 +1247,46 @@ async def list_proposals(
     refused is exactly what an operator needs to see before raising a
     level, and hiding them would make the governance invisible.
     """
+    from harkeniq_cc.machine_identity import is_machine
+
     _enforce_machine_self(user, agent_id)
+    machine = is_machine(user)
+    if machine:
+        # A25.6 / MEDIUM 2: this list is a status read. Left unmetered it
+        # would be an unbounded substitute for the receipt endpoints --
+        # the same polling, in the same bucket, must cost the same.
+        # A human administrator is NOT charged: their reads are governed
+        # by ordinary scoped RBAC, not by an agent's polling allowance.
+        await _charge_machine_read(session, user)
+
     await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     proposals = _narrow_proposals(
         scope, await AgentProposalRepo(session).list_for_agent(
             user.tenant_id, agent_id, limit=limit,
         )
     )
+
+    if machine:
+        # HIGH 2: `proposal_dict` is the Console's payload -- approver
+        # identity, raw evidence, executable params, directive id,
+        # dispatch internals. Opening this route to machine-self reads
+        # without changing the projection would have handed every one of
+        # those to an external runtime.
+        from harkeniq_cc.receipts import machine_proposal_items
+
+        items = await machine_proposal_items(
+            session, user.tenant_id, proposals,
+            authority_for=lambda p: _authority_for_proposal(scope, p),
+        )
+        await session.commit()
+        return {
+            "proposals": items,
+            "total": len(items),
+            "agent_id": agent_id,
+            "tenant_id": user.tenant_id,
+            "view": "machine",
+        }
+
     return {
         "proposals": [proposal_dict(p) for p in proposals],
         "total": len(proposals),
@@ -2165,11 +2198,8 @@ async def _machine_read_gate(
     naming another in the path is refused and CHARGED for it rather than
     shifting the cost; then the read meter.
     """
-    from harkeniq_cc.ingress_limits import READ_WINDOW_S, admit_read
     from harkeniq_cc.machine_identity import is_machine
-    from harkeniq_cc.metrics import (
-        record_read_rate_limited, record_read_refusal,
-    )
+    from harkeniq_cc.metrics import record_read_refusal
 
     if not is_machine(user):
         record_read_refusal("not_machine")
@@ -2181,14 +2211,44 @@ async def _machine_read_gate(
             ),
         )
     _enforce_machine_self(user, agent_id)
+    await _charge_machine_read(session, user)
+
+
+def _authority_for_proposal(scope, proposal) -> bool:
+    """Does this scope currently reach the work? One implementation.
+
+    Asked by the receipt reads and by the machine list, so a proposal
+    cannot be narrowed in one and complete in the other.
+    """
+    if proposal is None or not getattr(proposal, "site_id", ""):
+        return True
+    if getattr(scope, "tenant_wide", False):
+        return True
+    return proposal.site_id in set(getattr(scope, "site_ids", ()) or ())
+
+
+async def _charge_machine_read(session, user) -> None:
+    """Charge one status read to this agent's polling bucket, or 429.
+
+    Shared by every machine status read so that alternating between the
+    receipt endpoints and the proposal list cannot multiply the
+    allowance -- which is exactly what an unmetered list would have let a
+    runtime do.
+    """
+    from harkeniq_cc.ingress_limits import READ_WINDOW_S, admit_read
+    from harkeniq_cc.metrics import record_read_rate_limited, record_read_refusal
 
     permitted, used = await admit_read(
         session, tenant_id=user.tenant_id, agent_id=user.user_id,
     )
+    # Committed HERE, before anything downstream can raise. A charge that
+    # only survived a successful read would make every refusal free --
+    # a 404-producing poll could then run unbounded, which is the same
+    # hole A6-1 closed for authenticated submission refusals.
+    await session.commit()
     if not permitted:
         record_read_rate_limited()
         record_read_refusal("rate_limited")
-        await session.commit()
         raise HTTPException(
             status_code=429,
             detail=(
@@ -2206,11 +2266,7 @@ async def _authority_over(session, user, scope, proposal) -> bool:
     with no site (a refusal that never reached one) is not estate
     information, so it does not narrow anything.
     """
-    if proposal is None or not getattr(proposal, "site_id", ""):
-        return True
-    if getattr(scope, "tenant_wide", False):
-        return True
-    return proposal.site_id in set(getattr(scope, "site_ids", ()) or ())
+    return _authority_for_proposal(scope, proposal)
 
 
 def _receipt_response(request: Request, payload: dict) -> Response:

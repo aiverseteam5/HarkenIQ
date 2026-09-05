@@ -109,16 +109,31 @@ def proposal_block(proposal, *, full: bool) -> dict[str, Any]:
         "created_at": _iso(proposal.created_at),
     }
     if full:
-        # Estate detail. A25.2 forbids every line of this once current
-        # authority is gone -- which is why it is added here rather than
-        # stripped somewhere else.
+        # ESTATE IDENTITY, and only that. A25.2 withholds every line of
+        # this once current authority is gone, which is why it is added
+        # here rather than stripped somewhere else.
+        #
+        # Note what is NOT here even under full authority, because these
+        # are machine projections and `full` is a question about the
+        # ESTATE, not about execution internals:
+        #
+        #   params                -- server-derived and never authored by
+        #                            the agent; it asked for a candidate,
+        #                            not for a payload
+        #   authorization_basis   -- how the platform justified running
+        #                            this is governance's business
+        #   dispatch_reason       -- internal delivery detail
+        #
+        # Conflating the two is what let the machine list serialize an
+        # executable payload to an external runtime.
         block.update({
             "action_type": proposal.action_type,
             "device_agent_id": proposal.device_agent_id,
             "site_id": proposal.site_id,
-            "params": proposal.params or {},
+            # Governance's own reasons for withholding the work. Useful to
+            # the submitter, and about the decision rather than the
+            # execution.
             "blocking_conditions": proposal.blocking_conditions or [],
-            "authorization_basis": proposal.authorization_basis,
         })
     return block
 
@@ -153,7 +168,7 @@ def approval_block(completion: Optional[dict], proposal) -> dict[str, Any]:
     return block
 
 
-def execution_block(proposal, *, full: bool) -> dict[str, Any]:
+def execution_block(proposal, *, full: bool = False) -> dict[str, Any]:
     """Whether it reached a site — not the internal handle that took it.
 
     `directive_id` is Central Command's link to a Site Manager record and
@@ -163,14 +178,14 @@ def execution_block(proposal, *, full: bool) -> dict[str, Any]:
     """
     if proposal is None:
         return {}
-    block = {
+    # `full` is not consulted: dispatch internals are internal at every
+    # authority level. What a submitter needs is whether its work reached
+    # a site, not how the delivery went.
+    return {
         "dispatched": bool(proposal.dispatched_at),
         "dispatched_at": _iso(proposal.dispatched_at),
         "directive_issued": bool(proposal.directive_id),
     }
-    if full:
-        block["dispatch_reason"] = _bounded(proposal.dispatch_reason)
-    return block
 
 
 def outcome_block(proposal, outcome_row=None) -> dict[str, Any]:
@@ -220,6 +235,44 @@ def terminal_block(proposal) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def approval_completion(session: Any, tenant_id: str, proposal) -> Optional[dict]:
+    """Ask the CANONICAL approval system, never a second opinion.
+
+    The first version of this called
+    `evaluate_completion(records, len(records))`, deriving "how many are
+    needed" from "how many have decided". That is not an approximation,
+    it is the wrong question: a policy requiring two approvers with one
+    record present would compute needed=1 and report the subject
+    APPROVED. A tenant that had configured dual authorization would have
+    been told, over a machine contract, that a single approval completed
+    it -- E0.1's own defect, arriving at a fifth origin.
+
+    So the governing policy and group are resolved through the same path
+    a real decision takes (`governing_policy`), and completion is decided
+    by the same rule (`approval_block`). There is one approval system;
+    this reads it.
+
+    Returns the canonical block, or None when the subject has no policy
+    and no records to speak of. The CALLER projects it -- identities in
+    this payload never reach a machine principal (A25.3).
+    """
+    from harkeniq_cc.api.approvals import governing_policy
+    from harkeniq_cc.approval_policy import (
+        SUBJECT_AGENT_PROPOSAL, approval_block as canonical_block,
+    )
+    from harkeniq_cc.db.repos import ApprovalRecordRepo
+
+    records = await ApprovalRecordRepo(session).list_for_subject(
+        SUBJECT_AGENT_PROPOSAL, proposal.id,
+    )
+    policy, group, _members = await governing_policy(
+        session, tenant_id, proposal.action_type, proposal.device_agent_id,
+    )
+    if not records and policy is None:
+        return None
+    return canonical_block(policy, group, records)
+
+
 async def build_receipt(
     session: Any,
     *,
@@ -235,21 +288,12 @@ async def build_receipt(
     estate the receipt may describe (A25.2) — never whether the receipt
     exists, which the caller's identity already settled.
     """
-    from harkeniq_cc.approval_policy import SUBJECT_AGENT_PROPOSAL
-    from harkeniq_cc.db.repos import ApprovalRecordRepo, OutcomeHistoryRepo
+    from harkeniq_cc.db.repos import OutcomeHistoryRepo
 
     completion = None
     outcome_row = None
     if proposal is not None:
-        records = await ApprovalRecordRepo(session).list_for_subject(
-            SUBJECT_AGENT_PROPOSAL, proposal.id,
-        )
-        if records:
-            from harkeniq_cc.approval_policy import evaluate_completion
-
-            # `required` here is the count actually recorded against the
-            # subject. The policy that set it is not machine-visible.
-            completion = evaluate_completion(records, len(records))
+        completion = await approval_completion(session, tenant_id, proposal)
         if proposal.directive_id:
             outcome_row = await OutcomeHistoryRepo(session).find_by_action_id(
                 tenant_id, f"directive:{proposal.directive_id}",
@@ -275,3 +319,49 @@ async def build_receipt(
             "withheld."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# The machine-safe list item (A25.3/A25.4, and the leak HIGH 2 found)
+# ---------------------------------------------------------------------------
+
+
+async def machine_proposal_items(
+    session: Any, tenant_id: str, proposals, *, authority_for
+) -> list[dict[str, Any]]:
+    """The proposal list, as a MACHINE principal may see it.
+
+    `proposal_dict` is the Console's payload and is correct there: it
+    carries `decided_by`, raw `evidence`, executable `params`,
+    `directive_id`, dispatch internals and full estate detail. None of
+    that may reach a machine principal (A25.3), and `list_proposals`
+    became machine-self-readable in this slice -- so the projection had
+    to follow the authorization rather than be left behind by it.
+
+    NO SECOND LIFECYCLE. Every field here comes from the same blocks the
+    receipt is built from, so a list item and a receipt for one proposal
+    can never describe it differently.
+
+    `authority_for(proposal) -> bool` is supplied by the caller, which
+    owns the scope question; the policy resolution is cached per
+    (action_type, device) because a list of fifty proposals over three
+    device classes must not become fifty policy resolutions.
+    """
+    cache: dict[tuple[str, str], Optional[dict]] = {}
+    items: list[dict[str, Any]] = []
+    for proposal in proposals:
+        key = (proposal.action_type or "", proposal.device_agent_id or "")
+        if key not in cache:
+            cache[key] = await approval_completion(session, tenant_id, proposal)
+        completion = cache[key]
+        full = authority_for(proposal)
+        items.append({
+            "proposal_id": proposal.id,
+            "created_at": _iso(proposal.created_at),
+            "proposal": proposal_block(proposal, full=full),
+            "approval": approval_block(completion, proposal),
+            "execution": execution_block(proposal, full=full),
+            "outcome": outcome_block(proposal),
+            "terminal": terminal_block(proposal),
+        })
+    return items

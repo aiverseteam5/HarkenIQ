@@ -107,14 +107,43 @@ async def _stack():
     return stack
 
 
-async def _site(stack, name="DC-1"):
+async def _agent_row(stack, agent_id="agent-A", site_id=""):
+    """A real operational agent row.
+
+    The proposal fixtures reference an agent id; the routes that resolve
+    the AGENT (the proposal list) need the row to exist, and a fixture
+    that skipped it was testing a 404 rather than the projection.
+    """
+    from harkeniq_cc.db.models import CCOperationalAgent, CCScopeGrant
+
+    async with stack.sessionmaker() as session:
+        session.add(CCOperationalAgent(
+            id=agent_id, tenant_id=TENANT, name=f"Agent {agent_id}",
+            status="active", version=1, activated_version=1,
+        ))
+        if site_id:
+            session.add(CCScopeGrant(
+                tenant_id=TENANT, principal_type="agent",
+                principal_ref=agent_id, scope_type="site", scope_ref=site_id,
+                granted_by="kc-owner",
+            ))
+        await session.commit()
+
+
+async def _site(stack, name="DC-1", node="node-1"):
+    """One site with one device.
+
+    The device id is per site: a node agent id identifies a node, so two
+    sites holding the same one is an estate that cannot exist -- and the
+    fleet lookup rightly raises on it.
+    """
     async with stack.sessionmaker() as session:
         site = CCSite(tenant_id=TENANT, site_name=name,
                       sm_endpoint="sm:50051", sm_token="tok")
         session.add(site)
         await session.flush()
         session.add(CCFleetCache(
-            site_id=site.id, agent_id="node-1", agent_name="n1",
+            site_id=site.id, agent_id=node, agent_name=node,
             vendor="Dell", model="R750", observation="observed",
         ))
         await session.commit()
@@ -283,6 +312,55 @@ class TestTheHistoricalReceipt:
         assert site_id not in blob
         assert "should never leak" not in blob
 
+    async def test_even_a_full_view_withholds_execution_internals(self):
+        """`full` is a question about the ESTATE, not about internals.
+
+        Found while fixing the machine list: `proposal_block(full=True)`
+        carried executable params and the authorization basis, so a
+        machine principal with current authority received an executable
+        payload it never authored. Conflating estate identity with
+        execution internals is what produced that.
+        """
+        import json
+
+        stack = await _stack()
+        site_id = await _site(stack)
+        async with stack.sessionmaker() as session:
+            row = CCAgentProposal(
+                tenant_id=TENANT, agent_id="agent-A",
+                actor="op-agent:agent-A@v1", agent_version=1,
+                site_id=site_id, device_agent_id="node-1",
+                action_type="SEL_CLEAR",
+                params={"secret_param": "EXEC-PAYLOAD"},
+                evidence={"diagnosis": "RAW-EVIDENCE"},
+                disposition="requires_approval",
+                authorization_basis="human_approval", status="dispatched",
+                dedupe_key="k-full", directive_id="dir-INTERNAL",
+                dispatch_reason="DISPATCH-INTERNALS",
+                dispatched_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+            await session.flush()
+            sub = CCAgentSubmission(
+                tenant_id=TENANT, agent_id="agent-A", agent_version=1,
+                idempotency_key="k-full", request_digest="d",
+                candidate_ref="c", proposal_id=row.id, code="", reason="",
+            )
+            session.add(sub)
+            await session.commit()
+            sub_id = sub.id
+        async with stack.as_machine("agent-A").client() as c:
+            body = (await c.get(
+                f"/api/operational-agents/agent-A/submissions/{sub_id}")).json()
+        assert body["view"] == "full"
+        blob = json.dumps(body)
+        for forbidden in ("EXEC-PAYLOAD", "RAW-EVIDENCE", "dir-INTERNAL",
+                          "DISPATCH-INTERNALS", "authorization_basis"):
+            assert forbidden not in blob, forbidden
+        # And it still answers the lifecycle.
+        assert body["proposal"]["device_agent_id"] == "node-1"
+        assert body["execution"]["directive_issued"] is True
+
     async def test_a_full_view_does_carry_estate_detail(self):
         """The narrowing must be the exception, not the default."""
         stack = await _stack()
@@ -298,7 +376,7 @@ class TestTheHistoricalReceipt:
     async def test_scope_narrowed_to_another_site_also_narrows(self):
         stack = await _stack()
         site_id = await _site(stack)
-        other = await _site(stack, name="DC-2")
+        other = await _site(stack, name="DC-2", node="node-2")
         sub_id, _ = await _work(stack, site_id)
         stack.narrow_to({other})
         async with stack.as_machine("agent-A").client() as c:
@@ -531,18 +609,85 @@ class TestReadsAreSafe:
         assert "etag" not in {k.lower() for k in res.headers}
         assert res.headers.get("cache-control") == "no-store"
 
-    async def test_polling_is_bounded(self):
+    async def test_polling_is_bounded(self, monkeypatch):
+        """Pinned to a FIXED window, not to the wall clock.
+
+        The first version issued `READ_MAX_PER_WINDOW + 2` real requests
+        and asserted a 429 appeared. It passed alone and failed inside the
+        module, because a loop that long can straddle a window boundary,
+        reset the count, and never reach the limit -- a flake of my own
+        making. The limit is a property of the counter, so the window is
+        held still and the property is asserted directly.
+        """
+        from harkeniq_cc import ingress_limits
+        from harkeniq_cc.db.repos import AgentReadWindowRepo
         from harkeniq_cc.ingress_limits import READ_MAX_PER_WINDOW
+
+        fixed = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            ingress_limits, "read_window_start", lambda now=None: fixed
+        )
 
         stack = await _stack()
         site_id = await _site(stack)
         sub_id, _ = await _work(stack, site_id)
+
+        # Spend the whole window, then ask for one more.
+        async with stack.sessionmaker() as session:
+            repo = AgentReadWindowRepo(session)
+            for _ in range(READ_MAX_PER_WINDOW):
+                await repo.increment(
+                    tenant_id=TENANT, agent_id="agent-A", window_start=fixed)
+            await session.commit()
+
         url = f"/api/operational-agents/agent-A/submissions/{sub_id}"
         async with stack.as_machine("agent-A").client() as c:
-            codes = set()
-            for _ in range(READ_MAX_PER_WINDOW + 2):
-                codes.add((await c.get(url)).status_code)
-        assert 429 in codes, "status polling was unbounded"
+            assert (await c.get(url)).status_code == 429, (
+                "status polling was unbounded"
+            )
+
+    async def test_the_proposal_list_shares_the_same_polling_budget(self):
+        """MEDIUM 2: alternating endpoints must not multiply the allowance."""
+        import sqlalchemy as sa
+
+        from harkeniq_cc.db.models import CCAgentReadWindow
+
+        stack = await _stack()
+        site_id = await _site(stack)
+        sub_id, prop_id = await _work(stack, site_id)
+        await _agent_row(stack, site_id=site_id)
+        async with stack.as_machine("agent-A").client() as c:
+            await c.get(
+                f"/api/operational-agents/agent-A/submissions/{sub_id}")
+            await c.get(
+                f"/api/operational-agents/agent-A/proposals/{prop_id}")
+            await c.get("/api/operational-agents/agent-A/proposals")
+        async with stack.sessionmaker() as session:
+            total = sum(w.reads for w in (await session.execute(
+                sa.select(CCAgentReadWindow))).scalars().all())
+        assert total == 3, (
+            f"three machine status reads counted as {total}: the proposal "
+            "list is an unmetered substitute for the receipt endpoints"
+        )
+
+    async def test_a_human_list_read_is_not_charged_to_an_agent(self):
+        """A human administrator is governed by RBAC, not by a polling budget."""
+        import sqlalchemy as sa
+
+        from harkeniq_cc.db.models import CCAgentReadWindow
+
+        stack = await _stack()
+        site_id = await _site(stack)
+        await _work(stack, site_id)
+        await _agent_row(stack, site_id=site_id)
+        stack.as_person(role="tenant_owner")
+        async with stack.client() as c:
+            res = await c.get("/api/operational-agents/agent-A/proposals")
+        assert res.status_code == 200
+        async with stack.sessionmaker() as session:
+            rows = (await session.execute(
+                sa.select(CCAgentReadWindow))).scalars().all()
+        assert rows == [], "a human read was charged to a machine bucket"
 
     async def test_read_accounting_is_separate_from_submission_attempts(self):
         """A25.6: a poll must not be counted as a governed attempt."""
@@ -673,3 +818,307 @@ class TestTenancyAndReplay:
                 f"/api/operational-agents/agent-A/submissions/{sub_id}")).json()
         assert body["outcome"]["classification"] == "PARTIAL"
         assert body["outcome"]["fault_resolved"] is False
+
+
+# ---------------------------------------------------------------------------
+# 7. Approval completion comes from the CANONICAL policy (A25.3 / one system)
+# ---------------------------------------------------------------------------
+
+
+class TestApprovalCompletionIsCanonical:
+    """The receipt must ask the approval system, not count records.
+
+    The first implementation called `evaluate_completion(records,
+    len(records))`, deriving "how many are needed" from "how many have
+    decided". A tenant with dual authorization configured and one
+    approval recorded would have been told, over a machine contract, that
+    the subject was APPROVED -- E0.1's own defect arriving at a fifth
+    origin.
+    """
+
+    async def _with_policy(self, stack, *, required, approvals, denied=False):
+        from harkeniq_cc.approval_policy import SUBJECT_AGENT_PROPOSAL
+        from harkeniq_cc.db.models import CCApprovalPolicy, CCApprovalRecord
+
+        site_id = await _site(stack)
+        sub_id, prop_id = await _work(stack, site_id, status="awaiting_approval")
+        async with stack.sessionmaker() as session:
+            session.add(CCApprovalPolicy(
+                tenant_id=TENANT, name="dual", action_type="*",
+                device_type="*", risk_level="*",
+                required_approvers=required, approval_mode="require_approval",
+                created_by="kc-owner",
+            ))
+            for n in range(approvals):
+                session.add(CCApprovalRecord(
+                    tenant_id=TENANT, subject_type=SUBJECT_AGENT_PROPOSAL,
+                    subject_ref=prop_id, approver_ref=f"kc-approver-{n}",
+                    approver_email=f"approver{n}@example.com",
+                    decision="approved", scope_ok=True,
+                    decided_at=datetime.now(timezone.utc),
+                ))
+            if denied:
+                session.add(CCApprovalRecord(
+                    tenant_id=TENANT, subject_type=SUBJECT_AGENT_PROPOSAL,
+                    subject_ref=prop_id, approver_ref="kc-objector",
+                    approver_email="objector@example.com",
+                    decision="denied", scope_ok=True, reason="no",
+                    decided_at=datetime.now(timezone.utc),
+                ))
+            await session.commit()
+        return sub_id
+
+    async def _approval(self, stack, sub_id):
+        async with stack.as_machine("agent-A").client() as c:
+            body = (await c.get(
+                f"/api/operational-agents/agent-A/submissions/{sub_id}")).json()
+        return body["approval"]
+
+    async def test_two_required_none_received_is_pending(self):
+        stack = await _stack()
+        sub_id = await self._with_policy(stack, required=2, approvals=0)
+        block = await self._approval(stack, sub_id)
+        assert block["state"] == "pending"
+        assert (block["granted_count"], block["required_count"]) == (0, 2)
+
+    async def test_two_required_one_received_is_still_pending(self):
+        """THE regression. `len(records)` would have said approved."""
+        stack = await _stack()
+        sub_id = await self._with_policy(stack, required=2, approvals=1)
+        block = await self._approval(stack, sub_id)
+        assert block["state"] == "pending", (
+            "one approval completed a two-approver policy -- the receipt is "
+            "deriving the requirement from the records instead of the policy"
+        )
+        assert (block["granted_count"], block["required_count"]) == (1, 2)
+
+    async def test_two_required_two_received_is_approved(self):
+        stack = await _stack()
+        sub_id = await self._with_policy(stack, required=2, approvals=2)
+        block = await self._approval(stack, sub_id)
+        assert block["state"] == "approved"
+        assert (block["granted_count"], block["required_count"]) == (2, 2)
+
+    async def test_a_denial_is_terminal_whatever_the_count(self):
+        """D16: one objection outranks any number of approvals."""
+        stack = await _stack()
+        sub_id = await self._with_policy(stack, required=2, approvals=2, denied=True)
+        block = await self._approval(stack, sub_id)
+        assert block["state"] == "denied"
+
+    async def test_the_canonical_path_is_the_one_being_called(self):
+        """Structural: one approval system, asked through its own door."""
+        import inspect
+
+        from harkeniq_cc import receipts
+
+        # Strip the docstring before reading the code. This module has
+        # now twice written a structural test that failed on its own
+        # prose -- the docstring here deliberately QUOTES the defective
+        # call in order to explain it.
+        import ast
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(receipts.approval_completion)
+        ))
+        fn = tree.body[0]
+        if (
+            fn.body and isinstance(fn.body[0], ast.Expr)
+            and isinstance(fn.body[0].value, ast.Constant)
+        ):
+            fn.body = fn.body[1:]
+        code = ast.unparse(fn)
+
+        assert "governing_policy" in code, (
+            "the receipt resolves no policy -- it is guessing the requirement"
+        )
+        assert "canonical_block" in code
+        assert "len(records)" not in code, (
+            "the requirement is being derived from the records again"
+        )
+
+    async def test_identities_still_never_escape_the_canonical_block(self):
+        """The canonical block carries emails; the projection must not."""
+        import json
+
+        stack = await _stack()
+        sub_id = await self._with_policy(stack, required=2, approvals=2)
+        block = await self._approval(stack, sub_id)
+        assert set(block) == {
+            "required", "state", "granted_count", "required_count", "decided_at",
+        }
+        assert "approver0@example.com" not in json.dumps(block)
+
+
+# ---------------------------------------------------------------------------
+# 8. The machine proposal LIST (HIGH 2)
+# ---------------------------------------------------------------------------
+
+
+class TestTheMachineProposalList:
+    """`list_proposals` became machine-self-readable in this slice.
+
+    The authorization moved and the PROJECTION did not, so an external
+    runtime would have received the Console's payload: approver identity,
+    raw evidence, executable params, directive id, dispatch internals.
+    """
+
+    async def _poisoned(self, stack):
+        """A proposal carrying every field that must not reach a machine."""
+        site_id = await _site(stack)
+        await _agent_row(stack, site_id=site_id)
+        async with stack.sessionmaker() as session:
+            row = CCAgentProposal(
+                tenant_id=TENANT, agent_id="agent-A",
+                actor="op-agent:agent-A@v1", agent_version=1,
+                site_id=site_id, device_agent_id="node-1",
+                action_type="SEL_CLEAR",
+                params={"secret_param": "EXEC-PAYLOAD"},
+                rationale="because",
+                evidence={"diagnosis": "RAW-EVIDENCE-BLOB"},
+                disposition="requires_approval",
+                disposition_reason="needs a human",
+                blocking_conditions=[{"code": "x", "detail": "BLOCKING-DETAIL"}],
+                authorization_basis="human_approval",
+                status="dispatched",
+                decided_by="alice@example.com",
+                decided_at=datetime.now(timezone.utc),
+                dedupe_key="k-poison", directive_id="dir-INTERNAL",
+                dispatch_reason="DISPATCH-INTERNALS",
+                dispatched_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+            await session.commit()
+        return site_id
+
+    async def test_no_forbidden_field_appears_anywhere_in_the_response(self):
+        """Hostile serialization: search the whole document, not the keys."""
+        import json
+
+        stack = await _stack()
+        await self._poisoned(stack)
+        async with stack.as_machine("agent-A").client() as c:
+            res = await c.get("/api/operational-agents/agent-A/proposals")
+        assert res.status_code == 200, res.text
+        blob = json.dumps(res.json())
+        for forbidden in (
+            "alice@example.com",     # approver identity
+            "decided_by",            # the field itself
+            "RAW-EVIDENCE-BLOB",     # raw evidence
+            "EXEC-PAYLOAD",          # executable params
+            "dir-INTERNAL",          # internal correlation handle
+            "DISPATCH-INTERNALS",    # dispatch internals
+        ):
+            assert forbidden not in blob, forbidden
+        assert res.json()["view"] == "machine"
+
+    async def test_the_machine_list_still_answers_the_lifecycle(self):
+        """Withholding must not make the list useless."""
+        stack = await _stack()
+        await self._poisoned(stack)
+        async with stack.as_machine("agent-A").client() as c:
+            body = (await c.get(
+                "/api/operational-agents/agent-A/proposals")).json()
+        item = body["proposals"][0]
+        assert item["proposal"]["status"] == "dispatched"
+        assert item["execution"]["dispatched"] is True
+        assert item["execution"]["directive_issued"] is True
+        assert item["terminal"]["terminal"] is False
+        assert set(item["approval"]) == {
+            "required", "state", "granted_count", "required_count", "decided_at",
+        }
+
+    async def test_a_human_administrator_still_gets_the_rich_projection(self):
+        """The Console's payload is correct for a human and must survive."""
+        import json
+
+        stack = await _stack()
+        await self._poisoned(stack)
+        stack.as_person(role="tenant_owner")
+        async with stack.client() as c:
+            res = await c.get("/api/operational-agents/agent-A/proposals")
+        assert res.status_code == 200
+        blob = json.dumps(res.json())
+        assert "alice@example.com" in blob, (
+            "the human administrator lost the authorized rich projection"
+        )
+        assert "RAW-EVIDENCE-BLOB" in blob
+        assert res.json().get("view") != "machine"
+
+    async def test_the_list_and_the_receipt_cannot_disagree(self):
+        """One set of blocks, so a list item and a receipt match."""
+        stack = await _stack()
+        site_id = await _site(stack)
+        await _agent_row(stack, site_id=site_id)
+        sub_id, prop_id = await _work(stack, site_id, status="dispatched",
+                                      directive_id="dir-1")
+        async with stack.as_machine("agent-A").client() as c:
+            listed = (await c.get(
+                "/api/operational-agents/agent-A/proposals")).json()
+            receipt = (await c.get(
+                f"/api/operational-agents/agent-A/submissions/{sub_id}")).json()
+        item = next(
+            i for i in listed["proposals"] if i["proposal_id"] == prop_id
+        )
+        for block in ("proposal", "approval", "execution", "terminal"):
+            assert item[block] == receipt[block], block
+
+
+class TestTheReadCounterKeepsItsTransactionContract:
+    """LOW: a helper may not roll back work it never knew about."""
+
+    async def test_losing_the_open_race_does_not_discard_caller_work(self):
+        import sqlalchemy as sa
+
+        from harkeniq_cc.db.models import CCAgentReadWindow, CCSite
+        from harkeniq_cc.db.repos import AgentReadWindowRepo
+        from harkeniq_cc.ingress_limits import read_window_start
+
+        stack = await _stack()
+        window = read_window_start()
+        # Another replica has already opened this window.
+        async with stack.sessionmaker() as session:
+            session.add(CCAgentReadWindow(
+                tenant_id=TENANT, agent_id="agent-A",
+                window_start=window, reads=1))
+            await session.commit()
+
+        async with stack.sessionmaker() as session:
+            # Caller work that must survive the increment's lost race.
+            session.add(CCSite(
+                tenant_id=TENANT, site_name="caller-work",
+                sm_endpoint="sm:1", sm_token="t"))
+            await session.flush()
+            used = await AgentReadWindowRepo(session).increment(
+                tenant_id=TENANT, agent_id="agent-A", window_start=window)
+            await session.commit()
+
+        assert used == 2
+        async with stack.sessionmaker() as session:
+            sites = (await session.execute(
+                sa.select(CCSite).where(CCSite.site_name == "caller-work")
+            )).scalars().all()
+        assert len(sites) == 1, (
+            "the read counter rolled back the caller's transaction"
+        )
+
+    def test_it_does_not_call_session_rollback(self):
+        """Structural: the shape that caused it must not return."""
+        import ast
+        import inspect
+        import textwrap
+
+        from harkeniq_cc.db.repos import AgentReadWindowRepo
+
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(AgentReadWindowRepo.increment)))
+        fn = tree.body[0]
+        if (
+            fn.body and isinstance(fn.body[0], ast.Expr)
+            and isinstance(fn.body[0].value, ast.Constant)
+        ):
+            fn.body = fn.body[1:]
+        code = ast.unparse(fn)
+        assert "session.rollback()" not in code
+        assert "begin_nested" in code

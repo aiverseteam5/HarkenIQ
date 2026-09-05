@@ -321,3 +321,172 @@ class TestCorrelationIsObservable:
             "list_outcome_dicts dropped action_id -- settlement falls back "
             "to matching on device, action class and a time window"
         )
+
+
+class TestLegacyNeverConsumesAKeyedOutcome:
+    """The coexistence defect: one execution, two proposals settled.
+
+    A legacy proposal (no `directive_id`) could match by proximity against
+    an outcome whose `action_id` names a DIFFERENT, keyed proposal. That
+    outcome would then settle both — the keyed one exactly, and the legacy
+    one by inference. Exact correlation is only worth something if the
+    legacy path cannot reach into it.
+    """
+
+    async def test_a_keyed_outcome_settles_only_its_own_proposal(self):
+        state, site_id = await _stack()
+        t0 = datetime.now(timezone.utc)
+        # Same device, same action class, same actor, overlapping timing.
+        legacy = await _dispatched(
+            state, site_id, directive_id="", key="k-legacy", at=t0)
+        keyed = await _dispatched(
+            state, site_id, directive_id="dir-NEW", key="k-keyed",
+            at=t0 + timedelta(seconds=1))
+        await _outcome(state, site_id, action_id="directive:dir-NEW",
+                       outcome="SUCCESS", at=t0 + timedelta(seconds=2))
+
+        assert await agent_runtime.settle_outcomes(state, TENANT) == 1, (
+            "one outcome settled more than one proposal"
+        )
+        assert await _status(state, keyed) == ("completed", "SUCCESS")
+        assert await _status(state, legacy) == ("dispatched", ""), (
+            "a legacy proposal consumed an outcome that belongs to a keyed one"
+        )
+
+    async def test_a_legacy_proposal_still_takes_a_legacy_outcome(self):
+        """The fallback must survive for genuinely historical rows."""
+        state, site_id = await _stack()
+        t0 = datetime.now(timezone.utc)
+        legacy = await _dispatched(
+            state, site_id, directive_id="", key="k-legacy", at=t0)
+        keyed = await _dispatched(
+            state, site_id, directive_id="dir-NEW", key="k-keyed", at=t0)
+        await _outcome(state, site_id, action_id="node-action-77",
+                       outcome="SUCCESS", at=t0 + timedelta(seconds=1))
+        await _outcome(state, site_id, action_id="directive:dir-NEW",
+                       outcome="FAILURE", at=t0 + timedelta(seconds=2))
+
+        assert await agent_runtime.settle_outcomes(state, TENANT) == 2
+        assert await _status(state, legacy) == ("completed", "SUCCESS")
+        assert await _status(state, keyed) == ("failed", "FAILURE")
+
+    @pytest.mark.parametrize("action_id", [
+        "directive:",                 # malformed: prefix with no id
+        "directive:not-a-real-one",   # a directive that is not ours
+        "directive:dir-OTHER",        # another proposal's key
+    ])
+    async def test_no_directive_shaped_id_is_ever_a_legacy_candidate(
+        self, action_id
+    ):
+        state, site_id = await _stack()
+        t0 = datetime.now(timezone.utc)
+        legacy = await _dispatched(
+            state, site_id, directive_id="", key="k-legacy", at=t0)
+        await _outcome(state, site_id, action_id=action_id,
+                       outcome="SUCCESS", at=t0 + timedelta(seconds=1))
+        assert await agent_runtime.settle_outcomes(state, TENANT) == 0
+        assert await _status(state, legacy) == ("dispatched", "")
+
+    async def test_the_newest_legacy_outcome_does_not_shadow_the_keyed_one(self):
+        """Several nearby historical outcomes must not confuse either path."""
+        state, site_id = await _stack()
+        t0 = datetime.now(timezone.utc)
+        legacy = await _dispatched(
+            state, site_id, directive_id="", key="k-legacy", at=t0)
+        keyed = await _dispatched(
+            state, site_id, directive_id="dir-K", key="k-keyed", at=t0)
+        for n, oc in enumerate(("FAILURE", "SUCCESS", "PARTIAL"), start=1):
+            await _outcome(state, site_id, action_id=f"node-action-{n}",
+                           outcome=oc, at=t0 + timedelta(seconds=n))
+        await _outcome(state, site_id, action_id="directive:dir-K",
+                       outcome="SUCCESS", at=t0 + timedelta(seconds=9))
+
+        assert await agent_runtime.settle_outcomes(state, TENANT) == 2
+        # The keyed proposal took its own outcome, not the nearest one.
+        assert await _status(state, keyed) == ("completed", "SUCCESS")
+        # The legacy proposal took the first legacy candidate.
+        status, outcome = await _status(state, legacy)
+        assert status in ("completed", "failed") and outcome in (
+            "FAILURE", "SUCCESS", "PARTIAL")
+
+
+class TestReadWindowHousekeeping:
+    """MEDIUM 1: bounded retention, on a pass that already runs."""
+
+    async def test_stale_windows_are_pruned_and_current_ones_kept(self):
+        import sqlalchemy as sa
+
+        from harkeniq_cc.db.models import CCAgentReadWindow
+        from harkeniq_cc.db.repos import AgentReadWindowRepo
+        from harkeniq_cc.ingress_limits import READ_RETENTION_S, read_window_start
+
+        state, _ = await _stack()
+        now = read_window_start()
+        stale = now - timedelta(seconds=READ_RETENTION_S * 2)
+        async with state.sessionmaker() as session:
+            repo = AgentReadWindowRepo(session)
+            await repo.increment(
+                tenant_id=TENANT, agent_id="a1", window_start=stale)
+            await repo.increment(
+                tenant_id=TENANT, agent_id="a1", window_start=now)
+            await repo.increment(
+                tenant_id="other-tenant", agent_id="a2", window_start=stale)
+            await session.commit()
+
+        assert await agent_runtime.prune_read_windows(state) == 1
+
+        async with state.sessionmaker() as session:
+            rows = (await session.execute(
+                sa.select(CCAgentReadWindow))).scalars().all()
+        # sqlite hands back naive datetimes; compare on the instant, not
+        # on tzinfo, so this asserts retention rather than a driver detail.
+        def moment(dt):
+            return dt.replace(tzinfo=None)
+
+        kept = {(r.tenant_id, moment(r.window_start)) for r in rows}
+        assert (TENANT, moment(now)) in kept, "the current window was pruned"
+        assert (TENANT, moment(stale)) not in kept
+        # Another tenant's stale window goes too -- retention is a horizon,
+        # not a per-tenant policy -- but no tenant's CURRENT window does.
+        assert ("other-tenant", moment(stale)) not in kept
+
+    async def test_pruning_is_not_on_the_request_path(self):
+        """A DELETE per GET would cost more than the read it meters."""
+        import inspect
+
+        from harkeniq_cc.api import operational_agents as oa
+
+        for handler in (oa.get_submission_receipt, oa.get_proposal_receipt,
+                        oa.list_proposals, oa._charge_machine_read):
+            assert "prune" not in inspect.getsource(handler)
+
+    async def test_it_runs_on_the_existing_pass(self):
+        """No new scheduler: CC already has a loop that does this work."""
+        import inspect
+
+        assert "prune_read_windows" in inspect.getsource(agent_runtime.run_once)
+
+    async def test_a_pruning_failure_does_not_grant_unlimited_reads(self):
+        """Housekeeping may fail; the limit must not."""
+        from harkeniq_cc.db.repos import AgentReadWindowRepo
+        from harkeniq_cc.ingress_limits import admit_read
+
+        state, _ = await _stack()
+
+        class Broken:
+            def __call__(self, *a, **k):
+                raise RuntimeError("prune exploded")
+
+        original = AgentReadWindowRepo.prune
+        AgentReadWindowRepo.prune = Broken()
+        try:
+            assert await agent_runtime.prune_read_windows(state) == 0
+        finally:
+            AgentReadWindowRepo.prune = original
+
+        # The counter still counts, so the limit still limits.
+        async with state.sessionmaker() as session:
+            _ok, used = await admit_read(
+                session, tenant_id=TENANT, agent_id="a1")
+            await session.commit()
+        assert used == 1

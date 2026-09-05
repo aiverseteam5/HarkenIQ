@@ -127,6 +127,12 @@ async def admit_attempt(
 READ_WINDOW_S = 60
 READ_MAX_PER_WINDOW = 120
 
+#: How long a spent window is kept before housekeeping drops it. Several
+#: windows wide on purpose: the limit only ever consults the CURRENT one,
+#: and a horizon close to the window size could let clock skew between
+#: replicas delete a window still being counted.
+READ_RETENTION_S = 3600
+
 
 def read_window_start(now=None) -> datetime:
     """The window a moment falls in. Fixed-size and aligned, so two

@@ -223,13 +223,23 @@ def _legacy_outcome_match(proposal, by_device_action) -> Optional[dict]:
     row rather than a guess about its age -- so the fallback is decidable,
     and countable, instead of approximate.
 
-    Unchanged from what it always did: attribution wins when present,
-    otherwise an outcome ingested before the dispatch cannot belong to it.
+    Attribution wins when present, and an outcome ingested before the
+    dispatch cannot belong to it -- both unchanged.
+
+    What IS new: a directive-attributed outcome is never a candidate here.
+    It belongs, by construction, to the keyed proposal named in its
+    action_id, and letting a keyless proposal take it would settle ONE
+    execution against TWO proposals -- the keyed one exactly, and this one
+    by proximity. Exact correlation is only worth anything if the legacy
+    path cannot reach into it.
     """
     candidates = by_device_action.get(
         (proposal.device_agent_id, proposal.action_type), []
     )
     for oc in candidates:
+        if (oc.get("action_id", "") or "").startswith(OUTCOME_ACTION_PREFIX):
+            # Spoken for. Its own proposal will claim it, or nobody will.
+            continue
         if oc.get("actor") and oc["actor"] != proposal.actor:
             continue
         ingested = oc.get("ingested_at")
@@ -589,15 +599,50 @@ async def settle_outcomes(state, tenant_id: str) -> int:
     return settled
 
 
+async def prune_read_windows(state) -> int:
+    """Drop status-read windows older than the retention horizon (A25.6).
+
+    Runs on the EXISTING operational-agent pass rather than in a new
+    scheduler, and never on the request path: a DELETE on every GET would
+    make the meter more expensive than the read it meters, and an
+    unbounded one would be worse than the growth it prevents.
+
+    Retention is a few windows, not a history: the counter answers "how
+    many reads in the last minute" and nothing older has a reader. The
+    horizon is deliberately several windows wide so a clock skew between
+    replicas can never prune a window that is still being counted.
+
+    A pruning failure must NEVER grant unlimited reads. It is swallowed
+    here for that reason -- the current window is what the limit consults,
+    and it is not what this deletes.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+    from harkeniq_cc.ingress_limits import READ_RETENTION_S, read_window_start
+
+    horizon = read_window_start() - timedelta(seconds=READ_RETENTION_S)
+    try:
+        async with state.sessionmaker() as session:
+            await AgentReadWindowRepo(session).prune(horizon)
+            await session.commit()
+        return 1
+    except Exception:  # noqa: BLE001 - housekeeping may not break the pass
+        logger.exception("read-window prune failed")
+        return 0
+
+
 async def run_once(state, tenant_id: str) -> dict[str, int]:
     """One full pass. Separated from the loop so tests can drive it."""
     created = await evaluate_agents(state, tenant_id)
     dispatched = await dispatch_decided(state, tenant_id)
     settled = await settle_outcomes(state, tenant_id)
+    # A25.6 housekeeping, amortized onto a pass that already runs. Not per
+    # request, and not another scheduler.
+    pruned = await prune_read_windows(state)
     return {
         "proposed": len(created),
         "dispatched": len(dispatched),
         "settled": settled,
+        "pruned_read_windows": pruned,
         "awaiting_approval": sum(
             1 for p in created if p.status == PROPOSAL_AWAITING
         ),
