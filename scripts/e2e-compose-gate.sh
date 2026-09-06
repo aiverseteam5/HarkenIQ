@@ -2927,7 +2927,7 @@ except Exception: print(-1)")
 a26_mode() {  # the tenant's CURRENT enforcement posture
   curl -sf -H "Authorization: Bearer $TOKEN" \
     http://localhost:8090/api/tenant-settings/scope-enforcement \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['mode'])"
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['scope_enforcement'])"
 }
 a26_set_mode() {
   curl -sf -X PUT -H "Authorization: Bearer $TOKEN" \
