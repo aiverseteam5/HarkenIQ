@@ -2598,3 +2598,49 @@ authority, execution, Site Manager coordination or Harken Node final
 authority. The observation that a machine principal reaches 45 of 97
 routes because `fleet.view` is one broad key is RECORDED here and belongs
 to A6-4's deliberate External Agent API Plane; it is not solved in A6-3.
+
+**A27.13 — Pre-merge remediation: a real 429 must be observable.**
+Independent review found the ingress attempt vocabulary carries no
+`throttled` outcome — A24.13 refuses an over-limit submission WITHOUT
+writing, deliberately, so the traffic a rate limit exists to bound
+cannot grow the table that bounds it. A27.8's projection nevertheless
+read `throttled` out of that same ledger, so the field was zero for
+every agent forever, A27.11's `throttled` state was unreachable by any
+amount of real traffic, and an operator could not distinguish a silent
+runtime from one being refused at the door.
+
+Both facts stand. A rejection still never enters
+`cc_agent_ingress_attempts` — a rejection counted as an attempt would
+consume the allowance it was just refused for, and the limit would eat
+itself. The refusal is instead counted in `cc_agent_throttle_windows`
+(CC migration **0025**, additive, no backfill): one row per (tenant,
+agent, aligned minute), incremented in place, so the bound is TIME and
+not request count — a flood of a million requests in one minute writes
+one row and increments it. Only an ACTUAL rejection marks it; the
+request that merely consumes the last slot was SERVED and is not
+throttling, because a state meaning "at the limit" is a different and
+far commoner fact. Atomicity comes from the same single-statement UPDATE
+plus unique-constraint-guarded insert that `cc_agent_read_windows`
+stands on, inside a SAVEPOINT so a lost open race costs one statement
+and never the caller's transaction (A25.12). `/ingress` reports the
+count and `last_throttled_at` on the SAME window as the attempt counts,
+so an operator reads one horizon rather than two that disagree.
+
+Nothing else moves: the attempt vocabulary, `ATTEMPT_WINDOW_S`,
+`ATTEMPT_MAX`, the 20-row refusal sample, machine-self behaviour,
+`fleet.view` + `READ_SCOPED`, and `MACHINE_PRINCIPAL_CEILING` are all
+unchanged.
+
+**A27.14 — Pre-merge remediation: provenance is consumed by a human.**
+A27.6 put provenance on both human payloads and the Console rendered
+neither, so the fact existed and no operator could see it. The Console
+now carries a typed, allow-listed presentation module applying the
+SERVER's own reading rule — `evaluator` → "HarkenIQ evaluator",
+`external_ingress` → "External agent runtime", and anything absent,
+empty or unrecognised → "Unknown historical source", never inferred into
+`evaluator` (A27.4). It is rendered on both intended surfaces: the
+approval-queue agent-proposal card, where the decision is made, and the
+Operational Agent proposal history. The queue's `origin` LANE is
+untouched and provenance is never merged into it (A27.2); the submission
+id is shown only for `external_ingress`, as bounded correlation detail
+that confers nothing (A25.2). No authorization internal is exposed.

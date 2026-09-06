@@ -3125,3 +3125,56 @@ campaigns, learning, predictive, warranty and policy posture. That is a
 real architectural observation and it is recorded, not solved: it belongs
 to A6-4's deliberate External Agent API Plane, where the surface can be
 designed rather than inherited.
+
+## §31b — A6-3 pre-merge remediation (A27.13, A27.14)
+
+Two HIGH findings from independent review. Both are the same shape as
+the two the slice itself was written to fix: **a fact that exists and
+nobody can act on.**
+
+### The throttled state was unreachable (A27.13)
+
+A24.13 refuses an over-limit submission without writing. That is right,
+and it is right for two reasons rather than one: a record that grew on
+every refusal would amplify the traffic it bounds, and a rejection
+recorded as an *attempt* would consume the allowance it was just refused
+for — the limit eating itself.
+
+What was wrong is that A27.8 then read `throttled` out of that ledger,
+where the word does not appear in the vocabulary at all. The projection
+was asking a table a question it structurally could not answer, so the
+number was zero forever and A27.11's second precedence rung could never
+be reached by real traffic.
+
+The fix keeps both properties by changing the SHAPE of the observation
+rather than the rule. Attempts are counted row-per-request because they
+are rare and individually meaningful. Rejections are the opposite —
+unbounded by definition, individually uninteresting, and interesting
+only in aggregate — so they are counted the way A25.6 already counts
+polling: a windowed counter, one row per aligned minute, incremented in
+place. Storage is bounded by TIME, not by traffic. A million requests in
+a minute write one row.
+
+The distinction the tests exist to hold is that **reaching the limit is
+not being throttled.** The request that consumes the last slot was
+served. Marking it would make the state mean "at the limit", which is a
+different fact, a much commoner one, and not what an operator is asking.
+
+### Provenance had no reader (A27.14)
+
+The slice put provenance on both human payloads and stopped there. The
+Console rendered neither, which is the house pattern one layer up: the
+column is correct, the API is correct, and the human still cannot see
+who asked.
+
+The presentation rule is a module rather than two pieces of page code
+on purpose. Two surfaces deciding independently is how they come to
+disagree, and the rule they have to share is the server's: an
+unrecognised value is exactly as unknown as an absent one. A page that
+rendered whatever arrived would put an unvetted string in front of an
+approver, and a page that defaulted to `evaluator` would assert the one
+thing A27.4 refuses to assert.
+
+The queue's `origin` lane is deliberately untouched, and there is a test
+whose only job is to fail if a later change merges the two words back
+together.

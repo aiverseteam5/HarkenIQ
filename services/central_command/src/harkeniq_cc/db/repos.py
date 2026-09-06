@@ -30,6 +30,7 @@ from harkeniq_cc.db.models import (
     CCAgentCapability,
     CCAgentIngressAttempt,
     CCAgentReadWindow,
+    CCAgentThrottleWindow,
     CCAgentProposal,
     CCAgentSubmission,
     CCScopeGrant,
@@ -3141,6 +3142,119 @@ class AgentReadWindowRepo:
         await self.session.execute(
             sa_delete(CCAgentReadWindow).where(
                 CCAgentReadWindow.window_start < before
+            )
+        )
+
+
+class AgentThrottleWindowRepo:
+    """A27.13: the rate-rejection counter. One row per agent per window.
+
+    Shaped exactly like `AgentReadWindowRepo` because it solves the same
+    problem: a signal that must survive concurrent writers from several
+    replicas without a row per request. The difference is what it counts
+    -- requests that were REFUSED, which is the one thing the attempt
+    ledger deliberately cannot hold.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(
+        self, *, tenant_id: str, agent_id: str, window_start: datetime, at: datetime
+    ) -> int:
+        """Mark one ACTUAL rejection and return this window's running total.
+
+        Atomic by construction rather than by lock: the UPDATE is a
+        single statement, and the INSERT that opens a window is guarded
+        by the unique constraint, so two replicas racing to open the
+        same window cannot both succeed. The ingress advisory lock is
+        also held by the production caller, which makes this belt and
+        braces rather than the only defence -- deliberately, because a
+        counter whose correctness depends on a lock somebody else takes
+        is a counter that will one day be called from somewhere else.
+        """
+        updated = await self.session.execute(
+            sa_update(CCAgentThrottleWindow)
+            .where(
+                CCAgentThrottleWindow.tenant_id == tenant_id,
+                CCAgentThrottleWindow.agent_id == agent_id,
+                CCAgentThrottleWindow.window_start == window_start,
+            )
+            .values(
+                rejected=CCAgentThrottleWindow.rejected + 1, last_at=at,
+            )
+        )
+        if updated.rowcount:
+            return await self._current(tenant_id, agent_id, window_start)
+        # Opening the window. Inside a SAVEPOINT: losing this race must
+        # cost this statement and nothing else -- a helper must never
+        # roll back a caller's transaction it knows nothing about
+        # (the defect A25.12 found in the read counter).
+        try:
+            async with self.session.begin_nested():
+                self.session.add(CCAgentThrottleWindow(
+                    tenant_id=tenant_id, agent_id=agent_id,
+                    window_start=window_start, rejected=1, last_at=at,
+                ))
+                await self.session.flush()
+            return 1
+        except IntegrityError:
+            await self.session.execute(
+                sa_update(CCAgentThrottleWindow)
+                .where(
+                    CCAgentThrottleWindow.tenant_id == tenant_id,
+                    CCAgentThrottleWindow.agent_id == agent_id,
+                    CCAgentThrottleWindow.window_start == window_start,
+                )
+                .values(
+                    rejected=CCAgentThrottleWindow.rejected + 1, last_at=at,
+                )
+            )
+            return await self._current(tenant_id, agent_id, window_start)
+
+    async def _current(
+        self, tenant_id: str, agent_id: str, window_start: datetime
+    ) -> int:
+        return int(
+            (
+                await self.session.execute(
+                    select(CCAgentThrottleWindow.rejected).where(
+                        CCAgentThrottleWindow.tenant_id == tenant_id,
+                        CCAgentThrottleWindow.agent_id == agent_id,
+                        CCAgentThrottleWindow.window_start == window_start,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+    async def observed(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> tuple[int, Optional[datetime]]:
+        """How many rejections in the window, and the most recent one.
+
+        Two aggregates the database computes, over rows bounded by the
+        alignment -- never a row-per-request read (A27.9).
+        """
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(func.sum(CCAgentThrottleWindow.rejected), 0),
+                    func.max(CCAgentThrottleWindow.last_at),
+                ).where(
+                    CCAgentThrottleWindow.tenant_id == tenant_id,
+                    CCAgentThrottleWindow.agent_id == agent_id,
+                    CCAgentThrottleWindow.window_start >= since,
+                )
+            )
+        ).one()
+        return int(row[0] or 0), row[1]
+
+    async def prune(self, before: datetime) -> None:
+        """Windows outside the retention horizon have no reader."""
+        await self.session.execute(
+            sa_delete(CCAgentThrottleWindow).where(
+                CCAgentThrottleWindow.window_start < before
             )
         )
 

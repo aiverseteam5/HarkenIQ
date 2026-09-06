@@ -11,6 +11,7 @@ import { useToast } from "../components/useToast";
 import { getJson, patchJson, postJson } from "../api";
 import { useAuth } from "../useAuth";
 import type { AgentProposal } from "../types";
+import { provenanceView } from "../proposalProvenance";
 
 /* A0+A1 — Operational Agents: the product noun, under existing governance.
  *
@@ -1781,6 +1782,17 @@ export default function OperationalAgents() {
                         variant={PROPOSAL_VARIANT[p.status] ?? "neutral"}
                         size="sm"
                       />
+                    </div>
+                    {/* A27.6: the second human surface. The same
+                        reading rule as the approval queue, from the same
+                        module -- a page that decided provenance for
+                        itself could disagree with the one where the
+                        decision is actually made. */}
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      {provenanceView(p.provenance).label}
+                      {provenanceView(p.provenance).submissionId
+                        ? ` \u00b7 submission ${provenanceView(p.provenance).submissionId}`
+                        : ""}
                     </div>
                     <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                       {p.rationale}

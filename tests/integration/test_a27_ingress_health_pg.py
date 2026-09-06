@@ -24,6 +24,7 @@ Gated on ``HARKEN_TEST_CC_PG_DSN``; skipped when unset.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -34,9 +35,13 @@ import sqlalchemy as sa
 from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.models import (
     CCAgentIngressAttempt, CCAgentProposal, CCAgentSubmission,
+    CCAgentThrottleWindow,
 )
 from harkeniq_cc.db.repos import AgentIngressAttemptRepo, AgentSubmissionRepo
-from harkeniq_cc.ingress_limits import ATTEMPT_WINDOW_S
+from harkeniq_cc.ingress_limits import (
+    ATTEMPT_WINDOW_S, record_throttled, throttle_window_start,
+    throttling_observed,
+)
 from harkeniq_cc.provenance import REFUSAL_SAMPLE, activity_state
 
 DSN = os.environ.get("HARKEN_TEST_CC_PG_DSN", "")
@@ -243,5 +248,158 @@ async def test_0024_is_additive_and_backfills_nothing():
         async with sm() as session:
             await session.execute(sa.delete(CCAgentProposal).where(
                 CCAgentProposal.tenant_id == tenant))
+            await session.commit()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# A27.13: the throttle counter, where connections actually race
+# ---------------------------------------------------------------------------
+#
+# sqlite `:memory:` is a StaticPool -- one shared connection -- so the
+# unit suite can assert the arithmetic and nothing about contention. This
+# is the engine where two writers genuinely collide, which is the only
+# place the savepoint-and-unique-constraint design can be judged.
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rejections_neither_lose_nor_corrupt_the_count():
+    """Many writers, one bucket, exact total.
+
+    Every task opens its own session on its own connection and records a
+    rejection into the SAME aligned window. One of them wins the insert
+    race; the rest must fall through to the update rather than raise, and
+    none may be dropped.
+    """
+    engine = await _engine()
+    sm = make_sessionmaker(engine)
+    tenant = f"t-a27-{uuid.uuid4().hex[:8]}"
+    agent = f"agent-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc)
+    writers = 40
+
+    async def one():
+        async with sm() as session:
+            await record_throttled(
+                session, tenant_id=tenant, agent_id=agent, now=now,
+            )
+            await session.commit()
+
+    try:
+        await asyncio.gather(*(one() for _ in range(writers)))
+
+        async with sm() as session:
+            rows = list((await session.execute(
+                sa.select(CCAgentThrottleWindow).where(
+                    CCAgentThrottleWindow.tenant_id == tenant)
+            )).scalars().all())
+            total, last_at = await throttling_observed(
+                session, tenant_id=tenant, agent_id=agent, now=now,
+            )
+
+        assert len(rows) == 1, (
+            f"{writers} concurrent rejections opened {len(rows)} buckets: the "
+            "unique constraint did not serialize the open race"
+        )
+        assert rows[0].rejected == writers, (
+            f"{writers} rejections totalled {rows[0].rejected}: increments "
+            "were lost under contention"
+        )
+        assert total == writers
+        assert last_at is not None
+    finally:
+        async with sm() as session:
+            await session.execute(sa.delete(CCAgentThrottleWindow).where(
+                CCAgentThrottleWindow.tenant_id == tenant))
+            await session.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_flood_across_minutes_is_bounded_by_time_not_traffic():
+    """The storage claim, on the real engine.
+
+    500 rejections spread over five aligned minutes must produce five
+    rows -- the bound that lets A24.13's no-amplification rule survive
+    while the refusal is still observed.
+    """
+    engine = await _engine()
+    sm = make_sessionmaker(engine)
+    tenant = f"t-a27-{uuid.uuid4().hex[:8]}"
+    agent = f"agent-{uuid.uuid4().hex[:8]}"
+    base = datetime.now(timezone.utc)
+
+    try:
+        async with sm() as session:
+            for minute in range(5):
+                at = base - timedelta(seconds=60 * minute)
+                for _ in range(100):
+                    await record_throttled(
+                        session, tenant_id=tenant, agent_id=agent, now=at,
+                    )
+            await session.commit()
+
+        async with sm() as session:
+            rows = list((await session.execute(
+                sa.select(CCAgentThrottleWindow).where(
+                    CCAgentThrottleWindow.tenant_id == tenant)
+            )).scalars().all())
+            total, _ = await throttling_observed(
+                session, tenant_id=tenant, agent_id=agent, now=base,
+            )
+
+        assert len(rows) == 5, f"500 rejections made {len(rows)} rows"
+        assert sum(r.rejected for r in rows) == 500, "a rejection was lost"
+        assert total == 500
+        # And every bucket is aligned, so two replicas writing the same
+        # second cannot disagree about which bucket it is.
+        for row in rows:
+            assert row.window_start == throttle_window_start(row.window_start)
+    finally:
+        async with sm() as session:
+            await session.execute(sa.delete(CCAgentThrottleWindow).where(
+                CCAgentThrottleWindow.tenant_id == tenant))
+            await session.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_window_filter_is_a_timestamptz_comparison():
+    """A rejection outside the reported window is not counted inside it.
+
+    The filter runs in SQL against a `timestamptz`, which is the shape
+    sqlite cannot produce -- the same class of divergence `_aware` exists
+    for on the Python side.
+    """
+    engine = await _engine()
+    sm = make_sessionmaker(engine)
+    tenant = f"t-a27-{uuid.uuid4().hex[:8]}"
+    agent = f"agent-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc)
+
+    try:
+        async with sm() as session:
+            await record_throttled(
+                session, tenant_id=tenant, agent_id=agent,
+                now=now - timedelta(seconds=ATTEMPT_WINDOW_S // 2),
+            )
+            await record_throttled(
+                session, tenant_id=tenant, agent_id=agent,
+                now=now - timedelta(seconds=ATTEMPT_WINDOW_S * 4),
+            )
+            await session.commit()
+
+        async with sm() as session:
+            total, last_at = await throttling_observed(
+                session, tenant_id=tenant, agent_id=agent, now=now,
+            )
+        assert total == 1, "a rejection outside the window was counted"
+        assert last_at is not None and last_at.tzinfo is not None, (
+            "PostgreSQL returned a naive timestamp for a tz-aware column"
+        )
+    finally:
+        async with sm() as session:
+            await session.execute(sa.delete(CCAgentThrottleWindow).where(
+                CCAgentThrottleWindow.tenant_id == tenant))
             await session.commit()
         await engine.dispose()

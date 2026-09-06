@@ -1135,6 +1135,55 @@ class CCAgentReadWindow(Base):
     )
 
 
+class CCAgentThrottleWindow(Base):
+    """A27.13: rate REJECTIONS, observed without amplifying them.
+
+    A24.13 refuses an over-limit submission WITHOUT writing, so the
+    traffic a rate limit exists to bound cannot grow the table that
+    bounds it. Correct -- and it left `throttled` structurally zero
+    forever, so A27.11's `throttled` state was unreachable in production
+    and an operator could not tell a silent runtime from one being
+    refused at the door.
+
+    Both things are true at once here. The observation is a COUNTER, one
+    row per (tenant, agent, aligned window): a flood of a million
+    requests in a minute writes one row and increments it, so storage is
+    bounded by TIME, not by traffic. Deliberately its own table and not
+    `cc_agent_ingress_attempts`, whose rows are the very thing the limit
+    counts -- a rejection recorded there would consume the allowance it
+    was refused for, and the limit would eat itself.
+
+    Only an ACTUAL rejection marks this. Reaching the limit on the
+    request that consumes the last slot is not throttling: that request
+    was served.
+    """
+
+    __tablename__ = "cc_agent_throttle_windows"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    #: Start of the fixed-size window this count belongs to.
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    #: How many requests were actually refused for rate in this window.
+    rejected: Mapped[int] = mapped_column(Integer, default=0)
+    #: The most recent rejection in this window. Kept beside the count
+    #: because "how many" and "how recently" are different questions and
+    #: a window start answers neither precisely.
+    last_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "agent_id", "window_start",
+            name="uq_agent_throttle_window",
+        ),
+    )
+
+
 class CCAgentProposal(Base):
     """A labelled, evidence-carrying proposal from an Operational Agent (A1).
 

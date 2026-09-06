@@ -4053,6 +4053,91 @@ A63_CROSS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_
   echo "a cross-agent ingress refusal was free" >&2; exit 1; }
 echo "operator read free to the agent; self read charged 1; cross-agent 403 charged to B"
 
+step "A6-3/AA: a REAL 429 is observable, and does not amplify (A27.13)"
+# The defect independent review found: A24.13 refuses an over-limit
+# submission WITHOUT writing -- correctly, because a rejection recorded
+# as an attempt would consume the allowance it was just refused for --
+# but the projection then read `throttled` out of that same ledger,
+# where the word is not in the vocabulary. Zero forever, so A27.11's
+# `throttled` state could never be reached by real traffic.
+#
+# Proven here with REAL requests against the REAL route: fill the
+# window, get a real 429, and read the operator surface.
+A63_FILL=$(docker compose exec -T central-command python -c "
+import os, sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.ingress_limits import ATTEMPT_MAX
+print(ATTEMPT_MAX)" | tr -d ' \r')
+[ -n "$A63_FILL" ] || { echo "could not read ATTEMPT_MAX" >&2; exit 1; }
+
+# Spend the allowance directly in the ledger. The point of the step is
+# the REJECTION path, and driving $A63_FILL real submissions through
+# Keycloak would add minutes to the gate to prove nothing extra.
+# Tagged ids so the filler can be removed again EXACTLY, leaving the
+# real attempts this gate produced earlier intact.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c "
+  INSERT INTO cc_agent_ingress_attempts (id, tenant_id, agent_id, outcome, created_at)
+  SELECT 'gatefill' || lpad(g::text, 24, '0'), 'tenant-demo', '$A6_AGENT',
+         'accepted', now()
+    FROM generate_series(1, $A63_FILL) g;" > /dev/null
+
+A63_THROTTLE_ROWS_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_throttle_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+
+# Ten real rejected requests. Storage must not grow with them.
+for N in 1 2 3 4 5 6 7 8 9 10; do
+  A63_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a63-throttle-$N\"}" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+  [ "$A63_CODE" = "429" ] || {
+    echo "request $N over the limit returned $A63_CODE, want 429" >&2; exit 1; }
+done
+
+A63_THROTTLE_ROWS=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_throttle_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$((A63_THROTTLE_ROWS - A63_THROTTLE_ROWS_BEFORE))" -le 1 ] || {
+  echo "10 rejections created $((A63_THROTTLE_ROWS - A63_THROTTLE_ROWS_BEFORE)) \
+rows: storage grows with the traffic it bounds" >&2; exit 1; }
+
+# And the attempt ledger did NOT grow: a rejection must never consume
+# the allowance it was refused for.
+A63_LEDGER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts
+    WHERE agent_id='$A6_AGENT' AND id LIKE 'gatefill%'" | tr -d ' \r')
+[ "$A63_LEDGER" = "$A63_FILL" ] || {
+  echo "the attempt ledger moved from $A63_FILL to $A63_LEDGER: a refused \
+request entered the record it is refused against" >&2; exit 1; }
+
+# The operator surface, which is the whole point.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" \
+  > /tmp/a63_throttled.json
+python3 -c "
+import json
+d = json.load(open('/tmp/a63_throttled.json'))
+sub = d['submission_activity']
+assert sub['throttled'] >= 10, ('the operator cannot see the refusals', sub)
+assert sub['last_throttled_at'], 'no time for the refusal'
+assert d['activity_state'] == 'throttled', d['activity_state']
+print('real 429 x10 -> throttled=%d, state=%s, %d throttle row(s)'
+      % (sub['throttled'], d['activity_state'], $A63_THROTTLE_ROWS))
+"
+
+# Remove ONLY the filler, so the agent can submit again and the real
+# attempts this gate recorded earlier are left exactly as they were.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c "
+  DELETE FROM cc_agent_ingress_attempts WHERE id LIKE 'gatefill%';" > /dev/null
+A63_REAL=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$A63_REAL" -ge 6 ] || {
+  echo "the cleanup removed real attempts too ($A63_REAL left)" >&2; exit 1; }
+
 step "A6-3/Z: a real 0023 -> head upgrade backfills nothing (A27.4)"
 # The promise is about EXISTING customer data, so it is proven against a
 # database that already holds proposals: drop the column, rewind, let

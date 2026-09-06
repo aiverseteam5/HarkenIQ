@@ -112,6 +112,7 @@ def submission_ids_for(rows: Iterable[Any]) -> dict[str, str]:
 #: accounting subsystem is created.
 from harkeniq_cc.ingress_limits import (  # noqa: E402 - after the docstring
     ATTEMPT_WINDOW_S, READ_MAX_PER_WINDOW, READ_WINDOW_S, read_window_start,
+    throttling_observed,
 )
 
 #: A27.9: the refusal sample. `cc_agent_submissions` is the DURABLE
@@ -248,7 +249,16 @@ async def build_ingress_health(
         int(v) for k, v in attempts.items()
         if k in ("rejected", "refused", "conflict")
     )
-    throttled = int(attempts.get("throttled", 0))
+    # A27.13: NOT from the attempt ledger. A rate rejection deliberately
+    # never becomes an attempt row -- it would consume the allowance it
+    # was refused for -- so this used to read a key the vocabulary does
+    # not contain and was zero forever, which made `activity_state`
+    # structurally unable to reach `throttled` in production. It comes
+    # from the bounded rejection counter, on the same window as the
+    # attempt counts so an operator sees one horizon, not two.
+    throttled, last_throttled_at = await throttling_observed(
+        session, tenant_id=tenant_id, agent_id=agent.id, now=now,
+    )
     last_auth = getattr(identity, "last_seen_at", None) if identity else None
 
     return {
@@ -270,6 +280,11 @@ async def build_ingress_health(
             "by_outcome": {k: int(v) for k, v in sorted(attempts.items())},
             "last_attempt_at": _iso(last_attempt_at),
             "last_accepted_at": _iso(last_accepted_at),
+            # A27.13: when a request was last actually refused for rate.
+            # A count answers "how many"; only a timestamp answers "how
+            # recently", and an operator deciding whether a runtime is
+            # still being throttled needs the second one.
+            "last_throttled_at": _iso(last_throttled_at),
         },
         "read_throttle": {
             "window_seconds": READ_WINDOW_S,

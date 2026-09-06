@@ -2058,7 +2058,7 @@ async def submit_proposal(
     from harkeniq_cc.ingress_limits import (
         ATTEMPT_WINDOW_S, OUTCOME_ACCEPTED, OUTCOME_CONFLICT,
         OUTCOME_REFUSED, OUTCOME_REJECTED, OUTCOME_REPLAYED, admit_attempt,
-        lock_agent_ingress,
+        lock_agent_ingress, record_throttled,
     )
     from harkeniq_cc.governance import (
         load_agent_scope, load_attention, load_autonomy_contract,
@@ -2114,8 +2114,20 @@ async def submit_proposal(
         session, tenant_id=tenant_id, agent_id=self_agent,
     )
     if not permitted:
-        # Refused without writing: a record that grew on every refusal
-        # would amplify the traffic it exists to bound.
+        # Refused without writing to the ATTEMPT ledger: a record that
+        # grew on every refusal would amplify the traffic it exists to
+        # bound, and a rejection counted as an attempt would consume the
+        # allowance it was just refused for.
+        #
+        # A27.13: but the refusal IS observed, in a counter bounded by
+        # time rather than by request count -- otherwise `throttled`
+        # stays zero forever and an operator cannot tell a silent
+        # runtime from one being refused at the door. Inside the same
+        # transaction and under the ingress lock already held, so the
+        # 429 and its observation commit together or not at all.
+        await record_throttled(
+            session, tenant_id=tenant_id, agent_id=self_agent,
+        )
         await session.commit()
         raise HTTPException(
             status_code=429,
