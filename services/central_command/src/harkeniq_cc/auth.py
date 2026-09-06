@@ -55,6 +55,9 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     "platform_super_admin": ["*"],
     "tenant_owner": [
         "tenant.view", "user.manage", "user.view", "role.manage",
+        # A26 (A25.13): read-only governance topology. Mirrors the
+        # Console; TestConsoleParity asserts full set equality.
+        "governance.view",
         "site.manage", "site.view", "fleet.view", "action.approve",
         "incident.view", "incident.acknowledge", "billing.manage",
         "billing.view", "license.view", "support.create", "support.view",
@@ -62,6 +65,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     ],
     "site_admin": [
         "site.manage", "site.view", "fleet.view", "action.approve",
+        "governance.view",
         "incident.view", "incident.acknowledge", "user.view",
     ],
     "operator": [
@@ -71,6 +75,9 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     ],
     # A13 (OQ-24): read-only everything + audit.export, nothing else.
     "auditor": [
+        # A26: read-only everything now includes governance topology --
+        # and still no approval and no mutation.
+        "governance.view",
         "fleet.view", "incident.view", "billing.view", "audit.view",
         "audit.export", "user.view", "site.view", "license.view",
         "support.view",

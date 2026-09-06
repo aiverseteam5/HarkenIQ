@@ -153,10 +153,28 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("POST", "/api/sites/register"):            ("site.manage", TENANT_GATED, True),
 
     # -- tenant governance: READ at permission, MUTATE at tenant scope
-    ("GET", "/api/policies/"):                  ("fleet.view", UNSCOPED, False),
+    # A26.11: READ_SCOPED, not UNSCOPED -- the ANSWER varies with the
+    # caller's resolved scope. Posture stays readable at `fleet.view`;
+    # `created_by` needs effective tenant `governance.view`. A route whose
+    # payload narrows by scope while declaring UNSCOPED is exactly the
+    # "declared unscoped, runtime scoped" divergence this table exists to
+    # make impossible.
+    ("GET", "/api/policies/"):                  ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/policies/autonomy"):          ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/groups"):            ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/groups/{group_id}"): ("fleet.view", UNSCOPED, False),
+    # A26 (A25.13): approval-group enumeration IS governance topology --
+    # the list names the groups, their external escalation channels and
+    # their creator; the detail names every approver by email and
+    # subject. `fleet.view` reaches down to `viewer` and is inside the
+    # machine ceiling, so both were readable by an Operational Agent.
+    # The LIST moves too: leaving it would keep the structure readable
+    # with only the names removed.
+    # A26.11: the route guard asks "could this actor ever"; the RESOLVED
+    # SCOPE asks "over the tenant, here". Approval groups have no site
+    # dimension, so the authority is over the tenant object -- a site-,
+    # org-unit- or device-scoped `governance.view` grant reads nothing,
+    # however broad the principal's ROLE is.
+    ("GET", "/api/policies/groups"):            ("governance.view", READ_SCOPED, False),
+    ("GET", "/api/policies/groups/{group_id}"): ("governance.view", READ_SCOPED, False),
     ("GET", "/api/policies/stop-switch"):       ("fleet.view", UNSCOPED, False),
     ("POST", "/api/policies/"):                 ("site.manage", TENANT_GATED, True),
     ("PATCH", "/api/policies/{policy_id}"):     ("site.manage", TENANT_GATED, True),

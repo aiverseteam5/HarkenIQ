@@ -2858,6 +2858,186 @@ else
   echo "no live machine token in scope; covered by unit tests"
 fi
 
+step "A26 (A25.13): approval topology needs EFFECTIVE tenant authority"
+# The pre-existing HIGH that A6-2's sweep found -- and the remediation
+# review's finding on top of it. The routes moved to `governance.view`,
+# but a route guard only answers "could this actor EVER hold this": E1.2
+# says a `permission_subset` is per grant and therefore cannot be
+# enforced there. So the RESOLVED SCOPE decides, over the tenant object.
+#
+# DENY here is the canonical READ shape, not a 403: the platform's own
+# `test_no_read_is_object_gated` holds that a read narrows rather than
+# refuses, because a 403 confirms the object it refuses -- and the
+# existence of a group id IS the topology. So: no rows, and 404.
+A26_EMAIL="a26-approver-$(date +%s)@demo"
+A26_GROUP=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"A26 on-call $(date +%s)\",\"required_count\":1}" \
+  http://localhost:8090/api/policies/groups \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['group']['id'])")
+[ -n "$A26_GROUP" ] || { echo "could not create the A26 group" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$A26_EMAIL\",\"role\":\"approver\"}" \
+  "http://localhost:8090/api/policies/groups/$A26_GROUP/members" > /dev/null
+
+sub_of() {  # sub_of <jwt>
+  python3 -c "
+import base64, json, sys
+t = sys.argv[1].split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])" "$1"
+}
+
+a26_probe() {  # a26_probe <label> <token> <allow|deny-scope|deny-role>
+  local label=$1 tok=$2 want=$3 lc dc n
+  lc=$(curl -s -o /tmp/a26_l.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
+    http://localhost:8090/api/policies/groups)
+  dc=$(curl -s -o /tmp/a26_d.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
+    "http://localhost:8090/api/policies/groups/$A26_GROUP")
+  n=$(python3 -c "
+import json,sys
+try: print(len(json.load(open('/tmp/a26_l.json')).get('groups', [])))
+except Exception: print(-1)")
+  case "$want" in
+    allow)
+      [ "$lc" = "200" ] && [ "$dc" = "200" ] && [ "$n" -ge 1 ] || {
+        echo "$label: want ALLOW, got list=$lc($n groups) detail=$dc" >&2; exit 1; }
+      grep -q "$A26_EMAIL" /tmp/a26_d.json || {
+        echo "$label: allowed but saw no approver -- the estate is empty" >&2
+        exit 1; } ;;
+    deny-scope)
+      # Effective scope refuses: absent, never 403.
+      [ "$lc" = "200" ] && [ "$n" = "0" ] && [ "$dc" = "404" ] || {
+        echo "$label: want scope-DENY (200/0 groups, 404), got list=$lc($n) detail=$dc" >&2
+        exit 1; } ;;
+    deny-role)
+      # The ROLE never holds it, so layer 1 refuses and names no object.
+      [ "$lc" = "403" ] && [ "$dc" = "403" ] || {
+        echo "$label: want role-DENY (403/403), got list=$lc detail=$dc" >&2
+        exit 1; } ;;
+  esac
+  for f in /tmp/a26_l.json /tmp/a26_d.json; do
+    if [ "$want" != "allow" ] && grep -q "$A26_EMAIL" "$f"; then
+      echo "$label: refused, but an approver identity was in the body" >&2
+      exit 1
+    fi
+  done
+  echo "  $(printf '%-34s' "$label") $want  list=$lc(${n} groups) detail=$dc"
+}
+
+a26_mode() {  # the tenant's CURRENT enforcement posture
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    http://localhost:8090/api/tenant-settings/scope-enforcement \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['scope_enforcement'])"
+}
+a26_set_mode() {
+  curl -sf -X PUT -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d "{\"mode\":\"$1\"}" \
+    http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+}
+A26_MODE_BEFORE=$(a26_mode)
+
+# The principals. The site-scoped one is THE ratified case: a `site_admin`
+# whose ROLE holds governance.view and whose GRANT reaches one site.
+tenant_realm_user gate-gov-site@demo gate-gov-site site_admin || true
+GOV_SITE_TOKEN=$(tenant_token gate-gov-site@demo gate-gov-site)
+[ "$(grant "$(sub_of "$GOV_SITE_TOKEN")" site "$E12_SITE" site_admin)" = "201" ] || {
+  echo "the site-scoped governance grant was refused" >&2; exit 1; }
+GOV_SITE_TOKEN=$(tenant_token gate-gov-site@demo gate-gov-site)
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+
+# ---- posture 1: legacy_open --------------------------------------------
+# A23.10 synthesis is for the NEVER-granted and is deliberately untouched
+# by A26, so the un-granted auditor is tenant-wide here. What synthesis
+# does NOT do is rescue a principal who HAS a grant that does not reach.
+a26_set_mode legacy_open
+echo "  -- legacy_open --"
+a26_probe "tenant owner (tenant grant)" "$TOKEN" allow
+a26_probe "auditor, never granted (A23.10)" "$AUD_TOKEN" allow
+a26_probe "site_admin, SITE grant only" "$GOV_SITE_TOKEN" deny-scope
+
+# ---- posture 2: strict --------------------------------------------------
+a26_set_mode strict
+echo "  -- strict --"
+a26_probe "tenant owner (tenant grant)" "$TOKEN" allow
+# The remediation, live: the ROLE holds governance.view and the principal
+# has no grant, so it reads nothing until it is granted.
+a26_probe "auditor, role only, NO grant" "$AUD_TOKEN" deny-scope
+[ "$(grant "$(sub_of "$AUD_TOKEN")" tenant "" auditor)" = "201" ] || {
+  echo "the auditor could not be granted tenant scope" >&2; exit 1; }
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+a26_probe "auditor, TENANT grant" "$AUD_TOKEN" allow
+a26_probe "site_admin, SITE grant only" "$GOV_SITE_TOKEN" deny-scope
+
+# An approver without the permission at all, and a machine principal:
+# both refused at layer 1, which names no object.
+a26_probe "operator (action.approve only)" "$OP_TOKEN" deny-role
+if [ -n "${N_TOKEN:-}" ]; then
+  a26_probe "machine principal" "$N_TOKEN" deny-role
+else
+  echo "  no live machine token in scope; covered by unit tests"
+fi
+
+# Leave the tenant exactly as this step found it -- later steps depend on
+# the posture, which is how this step's first version got its answer wrong.
+a26_set_mode "$A26_MODE_BEFORE"
+[ "$(a26_mode)" = "$A26_MODE_BEFORE" ] || {
+  echo "A26 left the tenant in the wrong enforcement posture" >&2; exit 1; }
+echo "effective tenant authority decides, under BOTH postures (restored: $A26_MODE_BEFORE)"
+
+step "A26.3: visibility and authority are independent in BOTH directions"
+# An approver decides without enumerating the topology; a governance
+# reader enumerates without deciding.
+OP_REC=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
+  http://localhost:8090/api/approvals/)
+[ "$OP_REC" = "200" ] || {
+  echo "an approver lost the queue they decide on ($OP_REC)" >&2; exit 1; }
+AUD_APPROVE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AUD_TOKEN" -H 'Content-Type: application/json' \
+  -d '{}' http://localhost:8090/api/approvals/a26-nonexistent/approve)
+[ "$AUD_APPROVE" = "403" ] || {
+  echo "a governance reader approved an action ($AUD_APPROVE)" >&2; exit 1; }
+AUD_MUT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AUD_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"a26-should-refuse"}' http://localhost:8090/api/policies/groups)
+[ "$AUD_MUT" = "403" ] || {
+  echo "a governance reader mutated governance ($AUD_MUT)" >&2; exit 1; }
+echo "approver keeps the queue (200); governance reader approves 403, mutates 403"
+
+step "A26.7: policy posture is projected, not filtered"
+# `/api/policies/` stays at fleet.view (A13/E0.3, S1 D2) -- an operator
+# must still see that their action needs two approvers. What they must
+# NOT see is who authored the rule.
+#
+# The policy is created HERE rather than reused: an earlier step deletes
+# the one it creates, so depending on gate ordering made this assert on
+# an empty list (caught by CI on the first run of this step).
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"A26 projection $(date +%s)\",\"required_approvers\":2,
+       \"group_id\":\"$A26_GROUP\"}" \
+  http://localhost:8090/api/policies/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)['policy']
+assert d['created_by'], 'the write response lost the author for a site.manage caller'
+print('policy created, author recorded:', d['created_by'])
+"
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['policies'], 'the gate has no policy to project'
+for p in d['policies']:
+    assert 'created_by' not in p, ('governance identity reached fleet.view', p)
+    assert 'required_approvers' in p, ('posture was lost', p)
+print('operator: posture present, created_by absent (%d policies)' % len(d['policies']))
+"
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/policies/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert all('created_by' in p for p in d['policies']), d['policies'][:1]
+print('governance reader: created_by present')
+"
+
 step "A4/H: the catalogue write is audited and the chain still verifies"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"entries":[

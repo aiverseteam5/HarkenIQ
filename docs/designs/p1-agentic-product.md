@@ -2883,3 +2883,164 @@ should be readable at `fleet.view` at all, or belongs behind
 not a projection detail.
 
 Recorded as A25.13 so it cannot be lost, and left for Vinod to sequence.
+
+---
+
+## §30 — A25.13 / Amendment A26: the governance visibility boundary
+
+A6-2's sweep of every route a machine principal can reach turned up one
+outside the Operational Agent surface, and independent review confirmed
+it: `GET /api/policies/groups/{group_id}` was gated on `fleet.view` and
+returned every approver's email address, role, canonical `principal_ref`
+and subject-binding status.
+
+The mistake was not a missing check. Both routes were checked, correctly,
+against the permission they declared. The permission was the wrong one,
+because **infrastructure visibility and governance-topology visibility
+had never been separated** — `fleet.view` was the only read permission a
+non-administrator held, so a governance read that "everyone should be
+able to see the posture of" landed on it, and the member list came along.
+
+### Why this is not solved with `action.approve`
+
+The obvious fix is the wrong one. Requiring `action.approve` to read
+approval topology conflates *may see who approves* with *may approve*,
+and HarkenIQ needs both halves of that distinction:
+
+* A **governance auditor / compliance reviewer / security reviewer** must
+  inspect who can approve what, and must not be able to approve anything.
+* An **approver** must be able to decide a subject, and has no need to
+  enumerate the tenant's approval structure to do it — the evidence they
+  decide on is `/api/approvals/{action_id}/records`, already correctly
+  split on `action.approve` OR `audit.view` by E0.3.
+
+So `governance.view` is its own permission and the two are independent in
+**both** directions. `operator` holds `action.approve` and does NOT get
+`governance.view`; `auditor` gets `governance.view` and still cannot
+approve. Neither is ever inferred from the other.
+
+### Why the LIST moves with the DETAIL
+
+The detail names the approvers. The list names the approval GROUPS,
+their Slack and GitHub escalation channels, and their creator. That is
+the same category of fact with the individuals removed, and a boundary
+that stopped at the detail would leave the tenant's governance structure
+enumerable by any machine principal. Both move.
+
+### Why three governance reads deliberately did NOT move
+
+`/api/policies/`, `/api/policies/autonomy` and `/api/policies/stop-switch`
+keep `fleet.view`, and not out of caution. A13/E0.3 and S1 **D2** ratified
+that posture belongs to the people living under it: an operator must be
+able to see that their action needs two approvers, what the estate may do
+unattended, and whether the stop switch is pulled. Moving those would
+re-litigate a ratified decision under cover of a security fix. Nothing
+here is replaced mechanically — two of five reads move, and each of the
+three that stay has a named reason.
+
+### The policy list is projected, not filtered
+
+One field on `/api/policies/` was genuinely misplaced: `created_by`, the
+operator who authored the rule. Posture is not authorship. So the route
+stays open and the ANSWER varies: a caller with `fleet.view` alone is
+built an operational projection by naming the fields it may have, and a
+caller with `governance.view` receives that projection plus the author.
+
+`_policy_dict` is now `{**_policy_posture_dict(p), "created_by": ...}` —
+additive. The rich object is never serialized and then stripped, for the
+reason A25.9 recorded: a subtractive filter passes every test written
+today and leaks the next field somebody adds upstream. Which is precisely
+how the approval-group detail came to leak in the first place.
+
+### One permission predicate, not two
+
+Asking "does this caller hold `governance.view`?" inside a handler needed
+a predicate, and the rule already existed twice inline in
+`require_permission` and `require_any_permission`. It is extracted to
+`deps.has_permission` and both guards now call it, so a handler cannot
+answer the question differently from the guard that admitted the caller.
+No second permission model.
+
+### Fail-closed survives the new permission
+
+A permission added to a ROLE must not add reach to a grant that was
+deliberately narrowed. A `permission_subset` that does not name
+`governance.view` does not acquire it because `tenant_owner` now carries
+it, an expired or revoked grant confers nothing, and A23-3's recorded
+role remains a ceiling — a subset may not name what the role never held.
+No migration, no backfill, and every one of those is tested.
+
+### Recorded and deliberately not built
+
+1. **Read-only Governance experience** for auditor / compliance /
+   security-review personas. The Console Policies page stays
+   `site.manage`-gated, so an auditor gains the API read and no page.
+   A product capability, sequenced after this slice — not a gap in it.
+2. **Governed sensitive-read audit / security observability.** Measured
+   here rather than assumed: ZERO of the platform's 97 declared routes
+   audit a GET. Sensitive-read auditing does not exist anywhere in
+   HarkenIQ, so there was nothing to extend. When it lands it must extend
+   the canonical hash-chained audit architecture; building a second audit
+   path inside an authorization slice would be the wrong shape.
+
+### §30b — A26 pre-merge remediation: eligibility is not authority
+
+Independent review found the boundary correct in *which permission* it
+demanded and wrong in *how it demanded it*. A26 shipped:
+
+```python
+dependencies=[Depends(require_permission("governance.view"))]
+...
+project = _policy_dict if has_permission(user, "governance.view") else ...
+```
+
+Both are nominal role membership. `get_scope`'s own docstring says why
+that cannot be the answer: `permission_subset` is per grant, so the
+effective permission is object-dependent, and "the route guard cannot be
+the place a subset is enforced."
+
+Reproduced with production `get_scope` and persisted grants under strict:
+
+| principal (before the fix) | group list | detail | approver leaked | `created_by` |
+|---|---|---|---|---|
+| tenant-wide auditor | 200 | 200 | yes | yes |
+| **SITE-scoped site_admin** | 200 | 200 | **yes** | **yes** |
+| **ORG-scoped site_admin** | 200 | 200 | **yes** | **yes** |
+| **tenant grant, subset `["fleet.view"]`** | 200 | 200 | **yes** | **yes** |
+
+My own A26 test module could not see any of it, because its fixture
+overrode `get_scope` with a scope synthesised from the principal's
+permissions. The test and the code made the same mistake, so they agreed.
+The module now reuses the persona matrix's production stack: nothing
+overrides scope, every ALLOW had to be granted, and reverting the fix
+turns 16 of its tests red.
+
+### Why not `forbid_out_of_scope`
+
+That is the obvious shape and it is the wrong one here. The platform
+already holds an invariant — `test_no_read_is_object_gated` — that a GET
+narrows rather than 403s, on the grounds that *a 403 on a read confirms
+the object it refuses*. On `/groups/{id}` that reasoning is at its
+strongest: confirming the id exists is precisely the topology fact
+`governance.view` protects. Using a 403 gate would have meant weakening a
+platform-wide read rule to accommodate one route.
+
+So the canonical read shape applies: **no rows** in the list, **404** on
+the detail — the same answer a cross-tenant id already gets, for all
+three reasons at once (no authority, wrong tenant, no such group). A
+principal whose ROLE lacks the permission is still refused 403 at the
+guard, which names no object.
+
+### One predicate
+
+`_governance_authority(scope)` is a thin named question delegating to
+`ResolvedScope.permits(..., tenant_object=True)`. `tenant_object` because
+`cc_approval_groups` is keyed by tenant and has no site column — the
+authority over tenant-wide topology is authority over the tenant. The
+three governance decisions (group list, group detail, policy projection)
+all call it, counted as AST calls by a test rather than as text, so a
+missing call site cannot pass.
+
+`site_admin` losing tenant-wide topology when its grant is site-scoped is
+the intended outcome, not a regression. Its ROLE still holds the
+permission; its GRANT decides where.

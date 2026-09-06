@@ -28,11 +28,26 @@ def require_role(*roles: str):
     return _check
 
 
+def has_permission(user: UserContext, permission: str) -> bool:
+    """Does this principal hold this permission? ONE implementation.
+
+    A26.7 needs to ask the question inside a handler rather than at the
+    route guard -- the policy list stays open at `fleet.view` and it is
+    the PROJECTION that varies with `governance.view`. The rule
+    ("holds it, or holds the wildcard") already existed twice, inline, in
+    the two guards below; it is extracted here so a handler asking the
+    question cannot answer it differently from the guard that admitted
+    the caller. There is no second permission model.
+    """
+    held = user.permissions
+    return permission in held or "*" in held
+
+
 def require_permission(permission: str):
     """Return a dependency that checks the user has a specific permission."""
 
     async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
-        if permission not in user.permissions and "*" not in user.permissions:
+        if not has_permission(user, permission):
             raise HTTPException(
                 status_code=403,
                 detail=f"missing permission: {permission}",
@@ -57,8 +72,7 @@ def require_any_permission(*permissions: str):
     """
 
     async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
-        held = set(user.permissions)
-        if "*" in held or held.intersection(permissions):
+        if any(has_permission(user, p) for p in permissions):
             return user
         raise HTTPException(
             status_code=403,
