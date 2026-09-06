@@ -31,6 +31,11 @@ PERMISSIONS: dict[str, str] = {
     "support.view":           "View support tickets",
     "audit.view":             "View audit logs",
     "audit.export":           "Export audit logs",
+    # A26 (A25.13): READ-ONLY governance configuration and approval
+    # topology. Visibility, never authority -- it implies no approval, no
+    # mutation, no delegation. Deliberately NOT inferred from
+    # action.approve in either direction (A26.3).
+    "governance.view":        "Inspect governance configuration and approval topology",
     "admin.dashboard":        "Access platform admin dashboard",
     # R4-3: community skill marketplace (OQ-22)
     "skill.submit":           "Submit skills to the marketplace",
@@ -51,6 +56,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
 
     "tenant_owner": {
         "tenant.view",
+        "governance.view",
         "user.manage",
         "user.view",
         "role.manage",
@@ -73,6 +79,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
 
     "site_admin": {
         "site.manage",
+        "governance.view",
         "site.view",
         "fleet.view",
         "action.approve",
@@ -99,6 +106,11 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     # tenant_owner already holds every permission granted here.
     "auditor": {
         "fleet.view",
+        # A26: read-only EVERYTHING includes governance topology. The
+        # auditor already reads approver identity through the approvals
+        # evidence routes (E0.3); this is the same persona, and it
+        # acquires no approval or mutation authority with it.
+        "governance.view",
         "incident.view",
         "billing.view",
         "audit.view",

@@ -155,8 +155,15 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     # -- tenant governance: READ at permission, MUTATE at tenant scope
     ("GET", "/api/policies/"):                  ("fleet.view", UNSCOPED, False),
     ("GET", "/api/policies/autonomy"):          ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/groups"):            ("fleet.view", UNSCOPED, False),
-    ("GET", "/api/policies/groups/{group_id}"): ("fleet.view", UNSCOPED, False),
+    # A26 (A25.13): approval-group enumeration IS governance topology --
+    # the list names the groups, their external escalation channels and
+    # their creator; the detail names every approver by email and
+    # subject. `fleet.view` reaches down to `viewer` and is inside the
+    # machine ceiling, so both were readable by an Operational Agent.
+    # The LIST moves too: leaving it would keep the structure readable
+    # with only the names removed.
+    ("GET", "/api/policies/groups"):            ("governance.view", UNSCOPED, False),
+    ("GET", "/api/policies/groups/{group_id}"): ("governance.view", UNSCOPED, False),
     ("GET", "/api/policies/stop-switch"):       ("fleet.view", UNSCOPED, False),
     ("POST", "/api/policies/"):                 ("site.manage", TENANT_GATED, True),
     ("PATCH", "/api/policies/{policy_id}"):     ("site.manage", TENANT_GATED, True),

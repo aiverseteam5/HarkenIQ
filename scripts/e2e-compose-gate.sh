@@ -2858,6 +2858,99 @@ else
   echo "no live machine token in scope; covered by unit tests"
 fi
 
+step "A26 (A25.13): approval topology is governance.view, not fleet.view"
+# The pre-existing HIGH that A6-2's sweep found and independent review
+# confirmed: the approval-group routes were gated on `fleet.view`, which
+# every tenant role down to `viewer` holds AND which sits inside the A20.3
+# machine ceiling -- so an Operational Agent could enumerate the tenant's
+# approvers by email and Keycloak subject.
+A26_EMAIL="a26-approver-$(date +%s)@demo"
+A26_GROUP=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"A26 on-call $(date +%s)\",\"required_count\":1}" \
+  http://localhost:8090/api/policies/groups \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['group']['id'])")
+[ -n "$A26_GROUP" ] || { echo "could not create the A26 group" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$A26_EMAIL\",\"role\":\"approver\"}" \
+  "http://localhost:8090/api/policies/groups/$A26_GROUP/members" > /dev/null
+
+a26_probe() {  # a26_probe <label> <token> <want-list> <want-detail>
+  local label=$1 tok=$2 want_l=$3 want_d=$4 code
+  code=$(curl -s -o /tmp/a26_l.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
+    http://localhost:8090/api/policies/groups)
+  [ "$code" = "$want_l" ] || {
+    echo "$label list -> $code, want $want_l" >&2; exit 1; }
+  code=$(curl -s -o /tmp/a26_d.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
+    "http://localhost:8090/api/policies/groups/$A26_GROUP")
+  [ "$code" = "$want_d" ] || {
+    echo "$label detail -> $code, want $want_d" >&2; exit 1; }
+  if [ "$want_d" != "200" ]; then
+    grep -q "$A26_EMAIL" /tmp/a26_d.json && {
+      echo "$label was refused but the body carried the approver" >&2; exit 1; }
+  fi
+  echo "  $(printf '%-30s' "$label") list=$want_l detail=$want_d"
+}
+
+# The two personas that must NOT see it, and the three that must.
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+a26_probe "operator (action.approve)" "$OP_TOKEN"  403 403
+a26_probe "auditor (governance.view)" "$AUD_TOKEN" 200 200
+a26_probe "tenant owner"              "$TOKEN"     200 200
+if [ -n "${N_TOKEN:-}" ]; then
+  a26_probe "machine principal"       "$N_TOKEN"   403 403
+else
+  echo "  no live machine token in scope; covered by unit tests"
+fi
+# The auditor really can read the approver, so 403 above is the boundary
+# and not an empty estate.
+curl -sf -H "Authorization: Bearer $AUD_TOKEN" \
+  "http://localhost:8090/api/policies/groups/$A26_GROUP" \
+  | grep -q "$A26_EMAIL" \
+  || { echo "the auditor could not read the approver it is meant to" >&2; exit 1; }
+echo "approval topology: operator+machine 403, auditor+owner 200"
+
+step "A26.3: visibility and authority are independent in BOTH directions"
+# An approver decides without enumerating the topology; a governance
+# reader enumerates without deciding.
+OP_REC=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP_TOKEN" \
+  http://localhost:8090/api/approvals/)
+[ "$OP_REC" = "200" ] || {
+  echo "an approver lost the queue they decide on ($OP_REC)" >&2; exit 1; }
+AUD_APPROVE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AUD_TOKEN" -H 'Content-Type: application/json' \
+  -d '{}' http://localhost:8090/api/approvals/a26-nonexistent/approve)
+[ "$AUD_APPROVE" = "403" ] || {
+  echo "a governance reader approved an action ($AUD_APPROVE)" >&2; exit 1; }
+AUD_MUT=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $AUD_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"a26-should-refuse"}' http://localhost:8090/api/policies/groups)
+[ "$AUD_MUT" = "403" ] || {
+  echo "a governance reader mutated governance ($AUD_MUT)" >&2; exit 1; }
+echo "approver keeps the queue (200); governance reader approves 403, mutates 403"
+
+step "A26.7: policy posture is projected, not filtered"
+# `/api/policies/` stays at fleet.view (A13/E0.3, S1 D2) -- an operator
+# must still see that their action needs two approvers. What they must
+# NOT see is who authored the rule.
+curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['policies'], 'the gate has no policy to project'
+for p in d['policies']:
+    assert 'created_by' not in p, ('governance identity reached fleet.view', p)
+    assert 'required_approvers' in p, ('posture was lost', p)
+print('operator: posture present, created_by absent (%d policies)' % len(d['policies']))
+"
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/policies/ \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert all('created_by' in p for p in d['policies']), d['policies'][:1]
+print('governance reader: created_by present')
+"
+
 step "A4/H: the catalogue write is audited and the chain still verifies"
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"entries":[

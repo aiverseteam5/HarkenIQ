@@ -2296,3 +2296,123 @@ permission and no machine-ceiling change: `fleet.view` already suffices.
 No change to what an external caller may supply — A24.2's unrepresentable
 set is permanent. These remain on the roadmap; they are simply not this
 slice.
+
+### A26 — 2026-09-06 — A25.13 governance visibility boundary (decided: Vinod)
+
+Closes the pre-existing HIGH that A6-2's sweep found and independent
+review confirmed. Recorded BEFORE the code, per change control.
+
+**A26.1 — The defect, stated exactly.** `GET /api/policies/groups/{group_id}`
+is authorized with `fleet.view` and returns approval-group membership:
+each member's email address, role, canonical `principal_ref` and
+subject-binding status. `GET /api/policies/groups` is likewise
+`fleet.view` and enumerates the tenant's approval groups, their external
+escalation channels and their creator. `fleet.view` is held by every
+tenant role down to `viewer`, and by every machine principal (A20.3), so
+an authenticated Operational Agent — and any human viewer — can enumerate
+the tenant's APPROVERS. Tenant isolation holds; the authorization
+boundary does not. Reproduced on `5fb38e8` before any change was written,
+for a machine principal, a `viewer` and an `auditor` alike.
+
+**Infrastructure visibility is not governance-topology visibility.** The
+two were conflated because both were reachable behind one permission.
+
+**A26.2 — `governance.view` enters the fixed vocabulary (spec §4).** The
+25th atomic permission, and the first added since A24's
+`proposal.submit`. It answers exactly one question:
+
+> *May this principal inspect governance configuration and governance
+> topology within its effective tenant and scope?*
+
+It is READ ONLY. It does not imply, and may never be read as implying,
+`action.approve`, `site.manage`, `role.manage`, `tenant.manage`,
+`audit.export`, delegation authority, governance mutation, autonomy
+authority or execution authority. **Visibility is not authority.**
+
+**A26.3 — The two directions are independent, and both are load-bearing.**
+
+    action.approve  !=  governance.view
+    governance.view !=  action.approve
+
+An approver may decide an approval without authority to enumerate the
+tenant's approval topology — which is why `operator` does NOT receive
+`governance.view`, though it holds `action.approve`. Deciding a subject
+needs `/api/approvals/{action_id}/records`, which is decision EVIDENCE
+about one subject and is already correctly gated (`action.approve` OR
+`audit.view`, E0.3). And a governance auditor may inspect topology
+without being able to approve anything — which is why `auditor` DOES
+receive it. Neither permission is ever inferred from the other.
+
+**A26.4 — Role mapping.** Granted to `tenant_owner`, `site_admin` and
+`auditor`. Withheld from `operator`, `viewer` and `platform_support`.
+The two `site.manage` roles already reach this data through the Console
+(whose Policies page is `site.manage`-gated), so nothing they hold is
+taken away; the `auditor` is A13/OQ-24's read-only-everything persona and
+already reads approver identity through the approvals evidence routes.
+`viewer` and `operator` lose an exposure they never had a product path
+to. `platform_super_admin` semantics are unchanged and no tenant-plane
+platform bypass is introduced.
+
+**A26.5 — Machine principals cannot hold it.**
+`MACHINE_PRINCIPAL_CEILING` is NOT widened: it remains
+`{fleet.view, incident.view, proposal.submit}`. No A0 read binding maps
+to `governance.view`, and no implicit expansion may introduce it. The
+effective-set intersection (A20.3) therefore makes it structurally
+unreachable by any machine identity, whatever bindings it is given.
+
+**A26.6 — What moves, and what deliberately does not.** Two routes move
+to `governance.view`: the approval-group LIST and the approval-group
+DETAIL. Enumerating the approval groups is itself governance topology, so
+leaving the list at `fleet.view` would leave the structure readable with
+only the names removed.
+
+Three governance reads KEEP `fleet.view`, on ratified grounds rather than
+convenience: `/api/policies/` (A13/E0.3 and S1 D2 — that an action needs
+two approvers is POSTURE, readable by the people living under it),
+`/api/policies/autonomy` (S1 D2 verbatim) and `/api/policies/stop-switch`
+(safety posture; everyone must be able to see the estate is halted). No
+permission is replaced mechanically.
+
+Every governance MUTATION stays at `site.manage`. Every approval
+decision and evidence route is untouched. The A6-1 ingress and A6-2
+machine status surfaces are untouched.
+
+**A26.7 — The policy list is projected, not filtered.** `created_by` on
+an approval policy is governance identity metadata, and it was reaching
+machine principals and viewers. Posture stays broadly readable and the
+AUTHOR does not: a caller holding `fleet.view` without `governance.view`
+receives an explicit operational projection built by NAMING the fields it
+may have; a caller holding `governance.view` receives that projection
+plus `created_by`. Constructed positively — the rich object is never
+serialized and then stripped, because a subtractive filter leaks the next
+field somebody adds upstream (A25.9's rule, applied here).
+
+**A26.8 — Scope and lifecycle are unchanged and still fail closed.**
+`governance.view` is subject to tenant identity, the E1.2 effective
+scope, and the A23 grant lifecycle. It is NOT tenant-global merely
+because it is a governance permission. In particular a narrowed
+`permission_subset` that does not name `governance.view` does NOT acquire
+it because the underlying role now carries it — deliberate fail-closed
+behaviour, and tested as such. No migration and no backfill: existing
+narrowed grants keep exactly the reach they were given.
+
+**A26.9 — Named production follow-ups, recorded and NOT implemented.**
+Neither is discarded; both are sequenced after this slice.
+
+1. **Read-only Governance experience** for auditor, compliance and
+   security-review personas. The Console Policies page stays
+   `site.manage`-gated in A26, so an auditor gains the API read and no
+   page. This is a product/UX capability, not a permission question.
+2. **Governed sensitive-read audit / security observability.** Measured
+   during this slice: ZERO of the platform's 97 declared routes audit a
+   GET — sensitive-read auditing does not exist anywhere in HarkenIQ, so
+   there was nothing to preserve or extend here. A real
+   production-readiness capability; when it lands it must extend the
+   canonical hash-chained audit architecture and must not introduce a
+   second audit system.
+
+**A26.10 — What A25.13 does not build.** No Console UI. No read
+auditing. No new role. No second RBAC, scope resolver, approval system,
+identity model, capability authority, execution engine or audit system.
+No machine-ceiling change. No schema change. No change to A6-1 ingress or
+A6-2 status. A6-3 is not started.

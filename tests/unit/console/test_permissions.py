@@ -5,8 +5,14 @@ from harkeniq_console.permissions import PERMISSIONS, ROLE_PERMISSIONS, has_perm
 
 class TestPermissionsDefined:
     def test_all_permissions_defined(self):
-        """Spec S4: 21 atomic permissions."""
-        assert len(PERMISSIONS) == 24  # 21 + R4-3 skill.submit/review/install
+        """Spec S4: 21 atomic permissions.
+
+        The count is hand-maintained ON PURPOSE: the vocabulary is fixed
+        and widening it is a spec amendment, so this assertion is the
+        forcing function that makes somebody say which amendment.
+        """
+        # 21 + R4-3 skill.submit/review/install + A26 governance.view
+        assert len(PERMISSIONS) == 25
 
 
 class TestFixedRoles:
@@ -40,6 +46,10 @@ class TestFixedRoles:
             "billing.view", "license.view", "support.create",
             "support.view", "audit.view", "audit.export",
             "skill.submit", "skill.install",  # R4-3 marketplace
+            # A26 (A25.13): READ-ONLY governance topology. The owner
+            # configures governance, so it loses nothing; the permission
+            # confers no authority it did not already hold.
+            "governance.view",
         }
         assert perms == expected
 
