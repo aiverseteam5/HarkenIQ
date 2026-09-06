@@ -2924,39 +2924,65 @@ except Exception: print(-1)")
   echo "  $(printf '%-34s' "$label") $want  list=$lc(${n} groups) detail=$dc"
 }
 
-# 1. The tenant owner holds a TENANT grant -> effective authority.
-a26_probe "tenant owner (tenant grant)" "$TOKEN" allow
+a26_mode() {  # the tenant's CURRENT enforcement posture
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    http://localhost:8090/api/tenant-settings/scope-enforcement \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['mode'])"
+}
+a26_set_mode() {
+  curl -sf -X PUT -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d "{\"mode\":\"$1\"}" \
+    http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
+}
+A26_MODE_BEFORE=$(a26_mode)
 
-# 2. The auditor holds governance.view in its ROLE. Under strict it has no
-#    grant yet, so it must be refused BEFORE it is granted -- that is the
-#    remediation, live.
-AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
-a26_probe "auditor, role only, NO grant" "$AUD_TOKEN" deny-scope
-[ "$(grant "$(sub_of "$AUD_TOKEN")" tenant "" auditor)" = "201" ] || {
-  echo "the auditor could not be granted tenant scope" >&2; exit 1; }
-AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
-a26_probe "auditor, TENANT grant" "$AUD_TOKEN" allow
-
-# 3. THE headline case: a site_admin whose ROLE holds governance.view and
-#    whose GRANT reaches one site only. Tenant-wide topology stays shut.
+# The principals. The site-scoped one is THE ratified case: a `site_admin`
+# whose ROLE holds governance.view and whose GRANT reaches one site.
 tenant_realm_user gate-gov-site@demo gate-gov-site site_admin || true
 GOV_SITE_TOKEN=$(tenant_token gate-gov-site@demo gate-gov-site)
 [ "$(grant "$(sub_of "$GOV_SITE_TOKEN")" site "$E12_SITE" site_admin)" = "201" ] || {
   echo "the site-scoped governance grant was refused" >&2; exit 1; }
 GOV_SITE_TOKEN=$(tenant_token gate-gov-site@demo gate-gov-site)
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+
+# ---- posture 1: legacy_open --------------------------------------------
+# A23.10 synthesis is for the NEVER-granted and is deliberately untouched
+# by A26, so the un-granted auditor is tenant-wide here. What synthesis
+# does NOT do is rescue a principal who HAS a grant that does not reach.
+a26_set_mode legacy_open
+echo "  -- legacy_open --"
+a26_probe "tenant owner (tenant grant)" "$TOKEN" allow
+a26_probe "auditor, never granted (A23.10)" "$AUD_TOKEN" allow
 a26_probe "site_admin, SITE grant only" "$GOV_SITE_TOKEN" deny-scope
 
-# 4. An approver without the permission at all: refused at layer 1.
-a26_probe "operator (action.approve only)" "$OP_TOKEN" deny-role
+# ---- posture 2: strict --------------------------------------------------
+a26_set_mode strict
+echo "  -- strict --"
+a26_probe "tenant owner (tenant grant)" "$TOKEN" allow
+# The remediation, live: the ROLE holds governance.view and the principal
+# has no grant, so it reads nothing until it is granted.
+a26_probe "auditor, role only, NO grant" "$AUD_TOKEN" deny-scope
+[ "$(grant "$(sub_of "$AUD_TOKEN")" tenant "" auditor)" = "201" ] || {
+  echo "the auditor could not be granted tenant scope" >&2; exit 1; }
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+a26_probe "auditor, TENANT grant" "$AUD_TOKEN" allow
+a26_probe "site_admin, SITE grant only" "$GOV_SITE_TOKEN" deny-scope
 
-# 5. A machine principal: the A20.3 ceiling, unchanged.
+# An approver without the permission at all, and a machine principal:
+# both refused at layer 1, which names no object.
+a26_probe "operator (action.approve only)" "$OP_TOKEN" deny-role
 if [ -n "${N_TOKEN:-}" ]; then
   a26_probe "machine principal" "$N_TOKEN" deny-role
 else
   echo "  no live machine token in scope; covered by unit tests"
 fi
-# The builder catalogue and the binding surface are unaffected.
-echo "approval topology: effective tenant authority decides, live"
+
+# Leave the tenant exactly as this step found it -- later steps depend on
+# the posture, which is how this step's first version got its answer wrong.
+a26_set_mode "$A26_MODE_BEFORE"
+[ "$(a26_mode)" = "$A26_MODE_BEFORE" ] || {
+  echo "A26 left the tenant in the wrong enforcement posture" >&2; exit 1; }
+echo "effective tenant authority decides, under BOTH postures (restored: $A26_MODE_BEFORE)"
 
 step "A26.3: visibility and authority are independent in BOTH directions"
 # An approver decides without enumerating the topology; a governance
