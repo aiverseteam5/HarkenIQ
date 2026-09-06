@@ -38,7 +38,13 @@ def create_app(state) -> FastAPI:
     # request, including the ones the routers reject.
     from harkeniq.metrics import mount_metrics
 
-    mount_metrics(app, "central-command")
+    registry = mount_metrics(app, "central-command")
+    # A25.6: the background loops settle proposals and must count into the
+    # same registry the routes do.
+    state.metrics = registry
+    from harkeniq_cc.metrics import register_a6_metrics
+
+    register_a6_metrics(registry)
 
     # QA-026: X-Request-Id propagation (R4-0 P3, finally wired) so a
     # partner incident can be traced across service logs.

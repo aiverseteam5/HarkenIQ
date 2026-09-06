@@ -205,6 +205,68 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
     return created
 
 
+#: A25.1: the shape the Site Manager writes for every directed
+#: execution (`harkeniq_sm/outcomes.py`). Declared here rather than
+#: spelled inline so the producer and the consumer name one string.
+OUTCOME_ACTION_PREFIX = "directive:"
+
+#: How a settlement was correlated. Reported on the audit entry and
+#: counted, because A25.1 retires the legacy path by measurement.
+CORRELATION_EXACT = "exact"
+CORRELATION_LEGACY = "legacy"
+
+
+def _legacy_outcome_match(proposal, by_device_action) -> Optional[dict]:
+    """The pre-A25 heuristic, for a proposal that can carry no exact key.
+
+    Reached only when `directive_id` is empty, which is a fact about the
+    row rather than a guess about its age -- so the fallback is decidable,
+    and countable, instead of approximate.
+
+    Attribution wins when present, and an outcome ingested before the
+    dispatch cannot belong to it -- both unchanged.
+
+    What IS new: a directive-attributed outcome is never a candidate here.
+    It belongs, by construction, to the keyed proposal named in its
+    action_id, and letting a keyless proposal take it would settle ONE
+    execution against TWO proposals -- the keyed one exactly, and this one
+    by proximity. Exact correlation is only worth anything if the legacy
+    path cannot reach into it.
+    """
+    candidates = by_device_action.get(
+        (proposal.device_agent_id, proposal.action_type), []
+    )
+    for oc in candidates:
+        if (oc.get("action_id", "") or "").startswith(OUTCOME_ACTION_PREFIX):
+            # Spoken for. Its own proposal will claim it, or nobody will.
+            continue
+        if oc.get("actor") and oc["actor"] != proposal.actor:
+            continue
+        ingested = oc.get("ingested_at")
+        if (
+            proposal.dispatched_at
+            and ingested
+            and ingested < proposal.dispatched_at
+        ):
+            continue
+        return oc
+    return None
+
+
+def _record_correlation(correlation: str) -> None:
+    """Count how settlements are being joined (A25.1, telemetry).
+
+    Deliberately best-effort: a metrics registry that is absent must
+    never stop a proposal from settling.
+    """
+    try:
+        from harkeniq_cc.metrics import record_correlation
+
+        record_correlation(correlation)
+    except Exception:  # noqa: BLE001 - telemetry must not break settlement
+        pass
+
+
 async def _dispatch_permitted(session, tenant_id: str, proposal) -> tuple[bool, str]:
     """May this proposal be dispatched AT ALL, right now? (A22.12.)
 
@@ -480,35 +542,42 @@ async def settle_outcomes(state, tenant_id: str) -> int:
             return 0
         outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
         audit = AuditRepo(session)
-        # Newest first: an outcome that arrived after the dispatch is the
-        # one that settles it.
-        by_key: dict[tuple[str, str], list[dict]] = {}
+
+        # A25.1: the EXACT key first. The Site Manager writes
+        # `directive:<directive_id>` for every directed execution, so a
+        # dispatched proposal that holds a directive id has exactly one
+        # outcome that belongs to it -- and settling by proximity instead
+        # let two proposals for one device and one action class settle
+        # each other.
+        by_action_id: dict[str, dict] = {}
+        # The legacy join, kept ONLY for proposals that can carry no key.
+        by_device_action: dict[tuple[str, str], list[dict]] = {}
         for oc in outcomes:
+            action_id = oc.get("action_id", "")
+            if action_id:
+                by_action_id.setdefault(action_id, oc)
             key = (oc.get("device_agent_id", ""), oc.get("action_type", ""))
-            by_key.setdefault(key, []).append(oc)
+            by_device_action.setdefault(key, []).append(oc)
 
         for proposal in open_rows:
-            candidates = by_key.get(
-                (proposal.device_agent_id, proposal.action_type), []
-            )
-            match = None
-            for oc in candidates:
-                # Attribution wins when it is present; otherwise fall back
-                # to the time window, since outcomes reported before this
-                # slice carried no actor at all.
-                if oc.get("actor") and oc["actor"] != proposal.actor:
-                    continue
-                ingested = oc.get("ingested_at")
-                if (
-                    proposal.dispatched_at
-                    and ingested
-                    and ingested < proposal.dispatched_at
-                ):
-                    continue
-                match = oc
-                break
+            directive_id = getattr(proposal, "directive_id", "") or ""
+            if directive_id:
+                # Exact, or nothing. A proposal whose outcome has not
+                # arrived stays `dispatched` rather than borrowing
+                # somebody else's: unsettled and visible beats settled and
+                # wrong, and `terminal correlation failure` is what
+                # surfaces one that never arrives.
+                match = by_action_id.get(f"{OUTCOME_ACTION_PREFIX}{directive_id}")
+                correlation = CORRELATION_EXACT
+            else:
+                # No directive id means no key could ever exist for this
+                # row, which is the one case the heuristic still serves.
+                # Counted, so retiring it later is a measurement.
+                match = _legacy_outcome_match(proposal, by_device_action)
+                correlation = CORRELATION_LEGACY
             if match is None:
                 continue
+            _record_correlation(correlation)
             await prop_repo.settle(proposal, match.get("outcome", "UNKNOWN"))
             settled += 1
             await audit.append(
@@ -520,10 +589,45 @@ async def settle_outcomes(state, tenant_id: str) -> int:
                     "outcome": proposal.outcome,
                     "action_type": proposal.action_type,
                     "device_agent_id": proposal.device_agent_id,
+                    # A25.1: which join settled it. An operator auditing a
+                    # disputed execution needs to know whether the link
+                    # was exact or inferred.
+                    "correlation": correlation,
                 },
             )
         await session.commit()
     return settled
+
+
+async def prune_read_windows(state) -> int:
+    """Drop status-read windows older than the retention horizon (A25.6).
+
+    Runs on the EXISTING operational-agent pass rather than in a new
+    scheduler, and never on the request path: a DELETE on every GET would
+    make the meter more expensive than the read it meters, and an
+    unbounded one would be worse than the growth it prevents.
+
+    Retention is a few windows, not a history: the counter answers "how
+    many reads in the last minute" and nothing older has a reader. The
+    horizon is deliberately several windows wide so a clock skew between
+    replicas can never prune a window that is still being counted.
+
+    A pruning failure must NEVER grant unlimited reads. It is swallowed
+    here for that reason -- the current window is what the limit consults,
+    and it is not what this deletes.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+    from harkeniq_cc.ingress_limits import READ_RETENTION_S, read_window_start
+
+    horizon = read_window_start() - timedelta(seconds=READ_RETENTION_S)
+    try:
+        async with state.sessionmaker() as session:
+            await AgentReadWindowRepo(session).prune(horizon)
+            await session.commit()
+        return 1
+    except Exception:  # noqa: BLE001 - housekeeping may not break the pass
+        logger.exception("read-window prune failed")
+        return 0
 
 
 async def run_once(state, tenant_id: str) -> dict[str, int]:
@@ -531,10 +635,14 @@ async def run_once(state, tenant_id: str) -> dict[str, int]:
     created = await evaluate_agents(state, tenant_id)
     dispatched = await dispatch_decided(state, tenant_id)
     settled = await settle_outcomes(state, tenant_id)
+    # A25.6 housekeeping, amortized onto a pass that already runs. Not per
+    # request, and not another scheduler.
+    pruned = await prune_read_windows(state)
     return {
         "proposed": len(created),
         "dispatched": len(dispatched),
         "settled": settled,
+        "pruned_read_windows": pruned,
         "awaiting_approval": sum(
             1 for p in created if p.status == PROPOSAL_AWAITING
         ),

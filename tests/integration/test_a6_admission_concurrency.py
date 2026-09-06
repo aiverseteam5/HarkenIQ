@@ -533,3 +533,85 @@ class TestTheCatalogueSeedsExactlyOnce:
                         CCCapabilityCatalogue.tenant_id == tenant))
                 await session.commit()
             await engine.dispose()
+
+
+class TestReadMeteringIsAtomic:
+    """A25.6: the read counter must be correct across replicas.
+
+    The submission limiter is serialized by an advisory lock. The read
+    counter deliberately is NOT: it is a single atomic UPDATE, which is
+    both cheaper and correct for traffic where a row per request would
+    make the meter the largest writer in the system. That claim is only
+    worth making if it is proved on a real engine, because sqlite is
+    single-writer and would pass either way.
+    """
+
+    async def test_concurrent_reads_are_all_counted(self):
+        from harkeniq_cc.db.models import CCAgentReadWindow
+        from harkeniq_cc.ingress_limits import admit_read, read_window_start
+
+        engine, sessionmaker = await _engine()
+        tenant, agent = f"t-{uuid.uuid4().hex[:8]}", uuid.uuid4().hex[:32]
+        window = read_window_start()
+        gate = asyncio.Barrier(8)
+
+        async def read_once():
+            async with sessionmaker() as session:
+                await gate.wait()
+                permitted, used = await admit_read(
+                    session, tenant_id=tenant, agent_id=agent)
+                await session.commit()
+                return permitted, used
+
+        try:
+            results = await asyncio.gather(*(read_once() for _ in range(8)))
+            assert all(permitted for permitted, _ in results)
+
+            async with sessionmaker() as session:
+                total = (await session.execute(
+                    sa.select(CCAgentReadWindow.reads).where(
+                        CCAgentReadWindow.tenant_id == tenant,
+                        CCAgentReadWindow.agent_id == agent,
+                        CCAgentReadWindow.window_start == window,
+                    )
+                )).scalar()
+            assert total == 8, (
+                f"eight concurrent reads counted as {total}: the increment "
+                "is losing updates, so the limit is advisory"
+            )
+            # And exactly one window row exists -- the unique constraint is
+            # what makes the race to open it safe.
+            async with sessionmaker() as session:
+                rows = (await session.execute(
+                    sa.select(CCAgentReadWindow).where(
+                        CCAgentReadWindow.tenant_id == tenant)
+                )).scalars().all()
+            assert len(rows) == 1
+        finally:
+            async with sessionmaker() as session:
+                await session.execute(sa.delete(CCAgentReadWindow).where(
+                    CCAgentReadWindow.tenant_id == tenant))
+                await session.commit()
+            await engine.dispose()
+
+    async def test_one_agent_does_not_consume_another_agents_window(self):
+        from harkeniq_cc.db.models import CCAgentReadWindow
+        from harkeniq_cc.ingress_limits import admit_read
+
+        engine, sessionmaker = await _engine()
+        tenant = f"t-{uuid.uuid4().hex[:8]}"
+        a, b = uuid.uuid4().hex[:32], uuid.uuid4().hex[:32]
+        try:
+            async with sessionmaker() as session:
+                for _ in range(5):
+                    await admit_read(session, tenant_id=tenant, agent_id=a)
+                _permitted, used_b = await admit_read(
+                    session, tenant_id=tenant, agent_id=b)
+                await session.commit()
+            assert used_b == 1
+        finally:
+            async with sessionmaker() as session:
+                await session.execute(sa.delete(CCAgentReadWindow).where(
+                    CCAgentReadWindow.tenant_id == tenant))
+                await session.commit()
+            await engine.dispose()

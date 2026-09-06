@@ -41,6 +41,25 @@ TREATMENTS = frozenset({READ_SCOPED, OBJECT_GATED, TENANT_GATED, UNSCOPED})
 #: Treatments whose handler MUST consume the resolved scope.
 SCOPE_CONSUMING = frozenset({READ_SCOPED, OBJECT_GATED, TENANT_GATED})
 
+#: A25: routes that serve a MACHINE principal only.
+#:
+#: They carry an ordinary permission and an ordinary scope treatment --
+#: the guard and the scope question are unchanged -- but their handler
+#: refuses a human outright, because the lifecycle receipt is an agent
+#: closing its own transaction and a person reads the same facts through
+#: the Console's agent view.
+#:
+#: Declared in runtime code rather than as a test exception, for the
+#: reason A23-1 moved this whole table out of a test file: an exclusion
+#: only a test can see is a promise nothing keeps. The suite asserts BOTH
+#: directions over this set -- a listed route must actually refuse a
+#: human, and an unlisted one must not -- so adding a name here cannot
+#: quietly hide a route from the persona matrix.
+MACHINE_ONLY_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/api/operational-agents/{agent_id}/submissions/{submission_id}"),
+    ("GET", "/api/operational-agents/{agent_id}/proposals/{proposal_id}"),
+})
+
 #: (method, path) -> (permission, treatment, audited)
 #:
 #: `permission` is what the route guard demands -- layer 1, "could this
@@ -163,6 +182,14 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/operational-agents/catalogue"):   ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/operational-agents/{agent_id}"):  ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/operational-agents/{agent_id}/proposals"): ("fleet.view", READ_SCOPED, False),
+    # A6-2 (A25): the machine lifecycle receipt. READ_SCOPED because the
+    # caller's CURRENT scope decides how much estate detail the receipt
+    # may carry (A25.2) -- the historical exception narrows the answer, it
+    # never removes the scope question.
+    ("GET", "/api/operational-agents/{agent_id}/submissions/{submission_id}"):
+        ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/operational-agents/{agent_id}/proposals/{proposal_id}"):
+        ("fleet.view", READ_SCOPED, False),
     # Object-gated on the agent's SCOPE, not tenant-gated: a tenant gate
     # would make the delegation ceiling unreachable (a tenant-wide
     # creator can delegate anything), so the ceiling IS the gate.

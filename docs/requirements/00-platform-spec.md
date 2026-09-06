@@ -2137,3 +2137,162 @@ to it on every hostile or malformed request is an amplification channel
 against the platform's own integrity store. Governed outcomes — a
 submission that produced a proposal, an authenticated identity refused —
 remain audited. High-volume attempt outcomes are counted, not chained.
+
+### A25 — 2026-09-05 — A6-2 machine status and outcome correlation (decided: Vinod)
+
+A6-1 answered how an external Operational Agent submits governed intent.
+A6-2 answers how that same agent reliably follows what HarkenIQ did with
+it. It builds the machine feedback loop into the existing governed
+capability plane; it does not reduce it. External agents are first-class
+actors, not reduced UI automation clients.
+
+**A25.1 — Exact correlation, and the defect it closes.** Central Command
+holds an exact execution key and discards it before settlement. The Site
+Manager records every directed execution as
+`action_id = "directive:<directive_id>"`, `FleetOutcome.action_id` carries
+it, and `cc_outcome_history.action_id` stores it — but the projection the
+settlement loop consumes omits the field, so proposals are settled by a
+heuristic on device, action class, actor and a time window. Two dispatched
+proposals for one device and one action class can therefore be settled by
+each other's outcome. Settlement now joins on the exact key. The heuristic
+survives ONLY for outcomes that can carry no key — a proposal dispatched
+without a directive id — and that fallback is explicit, counted and
+tested, so its eventual retirement is a measurement rather than a guess.
+A proposal that holds a directive id waits for its own outcome and is
+never settled by another's: unsettled and visible beats settled and wrong.
+
+**A25.2 — Historical receipt, bounded (D1).** Operational reads stay
+current-authority. No grant, revoked, expired or vanished scope never
+restores estate visibility. One exception, and only one: the SAME logical
+Operational Agent that submitted a governed request retains access to the
+lifecycle RECEIPT for that exact submission after its scope narrows or is
+revoked. This is historical transaction attribution, not operational
+authority.
+
+Where current authority is absent the receipt may carry only:
+submission id, accepted/refused state, proposal id where one exists,
+proposal lifecycle state, approval required/state/counts, execution and
+terminal state, outcome classification, lifecycle timestamps, and a
+bounded refusal or failure reason. It may NOT carry device or site
+details, fleet state, raw evidence, executable parameters, authorization
+basis internals, human approver identity, group membership, other agents,
+or any current estate information.
+
+**A submission id is not a bearer credential.** Receipt access requires
+authentication as the same logical agent that created the submission.
+Cross-agent and cross-tenant access fail closed. The exception covers an
+agent's own submission and proposal lineage and generalizes to nothing
+else; it is not an A23 scope bypass.
+
+**A25.3 — Approver identity is never machine-visible (D2).** A machine
+projection may report that governance occurred — required, state, granted
+and required counts, and justified timestamps. It may not report who: no
+`decided_by`, no approver email, no Keycloak subject, no group membership.
+The canonical approval ledger is unchanged; safety is achieved by
+projection, never by weakening the record.
+
+**A25.4 — The layers stay separate.** No synthetic lifecycle status is
+invented. The machine projection preserves submission, proposal, approval,
+execution, outcome and terminality as distinct facts. Proposal status is
+not approval state is not execution state is not outcome. `approved` does
+not mean executed and is NOT terminal. `PARTIAL` and `ROLLBACK` never
+silently become a generic external failure without the canonical outcome
+classification beside them. The legal `approved → awaiting_approval`
+transition, which the per-agent budget produces, stays representable.
+
+**A25.5 — Machine-self is normalized (closes G5, per A24.5).** An
+Operational Agent must not inspect another Operational Agent merely
+because both occupy overlapping estate scope. The self-restriction that
+`dry-run` and submission already carry is extended to the remaining
+agent-addressed machine routes. Human administration continues under the
+ordinary scoped RBAC model and is not converted into a machine-self route.
+
+**A25.6 — Reads are metered separately from governed attempts.** Status
+polling and proposal submission are different traffic with different
+meaning, and must not share an accounting bucket. The A24.13 ledger
+continues to count governed submission attempts; read traffic is counted
+in its own bucket so that abuse detection, tenant and per-agent quotas,
+capacity management and entitlements can later distinguish them. Normal
+polling reads are never appended to the governance audit chain.
+
+**A25.7 — Caching may not conceal a transition.** Strong caching is
+permitted only where the underlying state can no longer change. `approved`
+is not terminal, and no caching semantics may hide `approved →
+awaiting_approval` or any later dispatch or outcome transition.
+
+**A25.9 — The projection follows the authorization, everywhere (pre-merge
+remediation).** When a route becomes readable by a machine principal, its
+PAYLOAD becomes part of that decision. A25.3 and A25.5 apply to the whole
+Operational Agent surface, not only to the receipt endpoints: the agent
+detail, the agent listing, the preflight read, the runtime read and the
+identity read are answered from allow-listed machine projections built by
+NAMING the fields that may pass. Filtering a rich payload by removal is
+forbidden — a subtractive filter leaks the next field added upstream. Two
+withheld sets are distinguished. Operator identity (`decided_by`,
+`approvers`, `created_by`, `activated_by`, `produced_by`, `acknowledged_by`,
+`issued_by`, `rotated_by`, `revoked_by`, governing policy and group names)
+never reaches a machine on ANY response FROM THIS SURFACE — see A25.13 for
+the one place outside it where the rule is not yet true. Execution and
+delivery internals
+(`params`, `evidence`, `rationale`, `authorization_basis`, `directive_id`,
+`dispatch_reason`) never reach a machine on a LIFECYCLE or STATUS response;
+`dry-run` is the single deliberate exception, because A22.2 requires it to
+return the agent's own resolved parameters for work it has not proposed.
+The agent-binding catalogue is an operator surface and is refused to a
+machine principal: it enumerates the tenant's bindable sites and devices,
+and a machine has nothing to build and no self to narrow the answer to.
+
+**A25.10 — Accounting identity is server-derived, and accounting precedes
+the target decision (pre-merge remediation).** The read bucket is resolved
+exclusively from the authenticated principal — the tenant and Operational
+Agent the validated token names. It is never derived from a route
+parameter, a request body, a query value, a proposal or submission
+identifier, or any other caller-supplied identity; otherwise a caller
+could spend another agent's allowance. The order is: authenticate, derive
+the canonical machine identity, ACCOUNT against the caller, then decide
+about the target and respond. Accounting is not authorization and may
+never weaken a permission, scope or self check — but an authenticated
+refusal that costs nothing is an unbounded channel, so a cross-agent,
+not-found or otherwise refused machine read is charged to the caller that
+made it. Every machine-readable route on this surface consumes the same
+allowance, so no route can become the unmetered substitute for another.
+
+**A25.11 — Durable read accounting owns its own transaction (pre-merge
+remediation).** The read meter opens a short-lived session from the
+canonical session infrastructure, writes and commits ONLY the counter, and
+closes. It never receives, commits or rolls back the caller's business
+transaction — the same rule the counter's own SAVEPOINT already applied
+one level down. Charges are therefore durable independently of whatever
+the request does afterwards, including a refusal.
+
+**A25.12 — Approval completion is per subject (pre-merge remediation).**
+Approval state is read from the E0.1 ledger by `subject_ref`, so it may
+never be cached, shared or inferred across subjects. Policy RESOLUTION —
+which depends only on action class, device type and risk — may be cached.
+A projection that cached completion under policy coordinates lets two
+proposals sharing an agent, a device and an action class report one
+another's approval state, decided by list order.
+
+**A25.13 — Named follow-up, found by the A25.9 sweep and NOT fixed here.**
+Sweeping every route a machine principal can reach found one outside the
+Operational Agent surface where A25.3 is not yet true: `GET
+/api/policies/groups/{group_id}` is gated at `fleet.view` (E0.3's A13
+read-split) and returns each member's email address and Keycloak subject,
+so an authenticated Operational Agent can enumerate the tenant's
+APPROVERS. `GET /api/policies/` and `GET /api/policies/groups` likewise
+return policy and group names and `created_by`. This is PRE-EXISTING — it
+has been reachable by a machine principal since A3 gave one `fleet.view`
+(2026-08-31) — and A6-2 neither introduced nor widened it. It is recorded
+rather than fixed because A6-2 is the Operational Agent surface and the
+approval-policy router has human consumers this slice did not review. The
+decision on whether to refuse a machine principal there, and on whether
+approver membership should be readable at `fleet.view` at all rather than
+at `action.approve`, is Vinod's.
+
+**A25.8 — What A6-2 does not build.** No MCP, webhooks, event streaming or
+SDKs. No Console UI. No new autonomy policy, approval model, RBAC, scope
+resolver, execution state machine or outcome store. No `/api/v1`. No new
+permission and no machine-ceiling change: `fleet.view` already suffices.
+No change to what an external caller may supply — A24.2's unrepresentable
+set is permanent. These remain on the roadmap; they are simply not this
+slice.

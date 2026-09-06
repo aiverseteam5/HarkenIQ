@@ -37,6 +37,12 @@ class AppState:
     intelligence: object = None
     # QA-019: verified LicenseInfo (None = no license configured)
     license: object = None
+    # A25.6: the app's own MetricsRegistry, set by `create_app`. Carried
+    # on the state rather than kept module-global so the background loops
+    # and the HTTP routes count into ONE registry while two apps in one
+    # process still cannot report each other's traffic -- the property
+    # E0.3 mounted a per-app registry to get.
+    metrics: object = None
 
 
 async def make_state(config: CCConfig) -> AppState:
