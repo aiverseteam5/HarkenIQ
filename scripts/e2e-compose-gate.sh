@@ -2933,6 +2933,19 @@ step "A26.7: policy posture is projected, not filtered"
 # `/api/policies/` stays at fleet.view (A13/E0.3, S1 D2) -- an operator
 # must still see that their action needs two approvers. What they must
 # NOT see is who authored the rule.
+#
+# The policy is created HERE rather than reused: an earlier step deletes
+# the one it creates, so depending on gate ordering made this assert on
+# an empty list (caught by CI on the first run of this step).
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"A26 projection $(date +%s)\",\"required_approvers\":2,
+       \"group_id\":\"$A26_GROUP\"}" \
+  http://localhost:8090/api/policies/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)['policy']
+assert d['created_by'], 'the write response lost the author for a site.manage caller'
+print('policy created, author recorded:', d['created_by'])
+"
 curl -sf -H "Authorization: Bearer $OP_TOKEN" http://localhost:8090/api/policies/ \
   | python3 -c "
 import sys, json
