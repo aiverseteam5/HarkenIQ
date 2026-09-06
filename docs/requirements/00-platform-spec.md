@@ -2411,6 +2411,63 @@ Neither is discarded; both are sequenced after this slice.
    canonical hash-chained audit architecture and must not introduce a
    second audit system.
 
+**A26.11 — Eligibility is not authority (pre-merge remediation).** A26's
+first implementation guarded the two topology reads with
+`require_permission("governance.view")` alone and selected the policy
+projection with `has_permission(user, "governance.view")`. Both ask
+NOMINAL role membership. E1.2 states the rule they broke in its own
+words: the route guard answers *"could this actor ever hold this
+permission"*, and it cannot answer the other question, because
+`permission_subset` is PER GRANT and the effective permission is
+therefore object-dependent.
+
+Reproduced against the running handlers under STRICT enforcement with
+rows in `cc_scope_grants`: a SITE-scoped `site_admin`, an ORG-scoped
+`site_admin`, and a tenant-wide grant whose subset was `["fleet.view"]`
+each read every approver's email address and Keycloak subject, and each
+received `created_by`. The platform's canonical chain —
+
+    role permission ∩ effective grant permission ∩ effective scope
+                    ∩ grant lifecycle ∩ tenant boundary
+
+— was being cut after its first term.
+
+Both topology reads and the policy projection now ask the canonical
+E1.2/A23 resolver through ONE predicate,
+`scope.permits("governance.view", tenant_object=True)`. `tenant_object`
+because `cc_approval_groups` is keyed by tenant and has no site
+dimension: the authority that reads tenant-wide approval topology is
+authority over the TENANT. A site-, org-unit-, device- or
+device-class-scoped grant reads nothing, however broad the principal's
+ROLE — including `site_admin`, whose role holds `governance.view`. That
+is deliberate and is not a capability reduction: site-specific
+governance topology, if the product later wants it, is a correctly
+scoped projection rather than tenant-wide leakage. Revoked, expired,
+inert/orphaned, missing and narrowed grants all fail closed.
+
+**The refusal shape is the canonical READ shape, not a new one.** The
+platform's `test_no_read_is_object_gated` invariant holds that a GET must
+narrow rather than 403, *because a 403 on a read confirms the object it
+refuses* — and here the existence of a group id IS the topology being
+protected. So a caller without effective authority receives an empty
+group list and a 404 on the detail, the same answer a cross-tenant id
+already gets. `forbid_out_of_scope` was considered and rejected for
+exactly this reason; using it would have required weakening a
+platform-wide read invariant for one route. A principal whose ROLE lacks
+`governance.view` is still refused 403 by the route guard, which names no
+object.
+
+All three routes are re-declared **READ_SCOPED**, because their answer
+now varies with the resolved scope and the A23 route contract must
+describe runtime truth in both directions — declared-scoped/runtime-
+unscoped and declared-unscoped/runtime-scoped are equally wrong. The
+A23.2 consumption census enforces the first; a test naming these three
+routes enforces the second.
+
+No second RBAC, resolver or authorization mechanism was introduced: one
+predicate delegating to `ResolvedScope.permits`, which already checks
+coverage and permission on the SAME grant and skips inert rows.
+
 **A26.10 — What A25.13 does not build.** No Console UI. No read
 auditing. No new role. No second RBAC, scope resolver, approval system,
 identity model, capability authority, execution engine or audit system.

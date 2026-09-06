@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import (
-    forbid_out_of_scope, get_cc_state, get_scope, get_session, has_permission,
+    forbid_out_of_scope, get_cc_state, get_scope, get_session,
     require_permission,
 )
 from harkeniq_cc.approval_policy import MODE_AUTO_APPROVE
@@ -94,6 +94,33 @@ class BudgetCreateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Serializers
 # ---------------------------------------------------------------------------
+
+
+def _governance_authority(scope) -> bool:
+    """Does this caller EFFECTIVELY hold `governance.view` here? (A26.11.)
+
+    The canonical question, asked of the canonical E1.2/A23 resolver.
+    Nothing new is invented: `ResolvedScope.permits` checks coverage and
+    permission on the SAME grant, skips inert rows, and `resolve()` has
+    already dropped revoked, expired and foreign-realm grants.
+
+    `tenant_object=True` because approval policies and groups have no
+    site dimension -- `cc_approval_groups` is keyed by tenant alone. So
+    the authority that reads tenant-wide approval topology is authority
+    over the TENANT, and a site-, org-unit- or device-scoped grant does
+    not confer it however broad the principal's ROLE is.
+
+    THE DEFECT THIS CLOSES. A26 shipped these routes behind
+    `require_permission("governance.view")` alone. That is layer 1 --
+    "could this actor ever" -- and E1.2 says so explicitly: the route
+    guard cannot enforce a subset, because `permission_subset` is PER
+    GRANT. Reproduced against the running handlers under strict
+    enforcement with persisted grants: a SITE-scoped `site_admin`, an
+    ORG-scoped `site_admin`, and a tenant-wide grant whose subset was
+    `["fleet.view"]` all read every approver's email address. A role
+    permission is eligibility; it was being used as authority.
+    """
+    return scope.permits("governance.view", tenant_object=True)
 
 
 def _policy_posture_dict(p) -> dict:
@@ -185,17 +212,24 @@ def _budget_dict(b) -> dict:
 async def list_policies(
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """List approval policies for the tenant.
 
     A26.7: posture for everyone, the author only for a governance
-    reader. The permission is asked HERE rather than at the route guard
+    reader. The question is asked HERE rather than at the route guard
     because the route stays open at `fleet.view` -- what changes is how
     much of each rule the answer carries.
+
+    A26.11: and it is asked of the RESOLVED SCOPE, not of the role. The
+    first version read `has_permission(user, "governance.view")`, which
+    is nominal role membership; a narrowed, revoked, expired or
+    site-scoped principal kept the author.
     """
     policies = await ApprovalPolicyRepo(session).list_all(user.tenant_id)
-    governance = has_permission(user, "governance.view")
-    project = _policy_dict if governance else _policy_posture_dict
+    project = (
+        _policy_dict if _governance_authority(scope) else _policy_posture_dict
+    )
     return {
         "policies": [project(p) for p in policies],
         "total": len(policies),
@@ -360,9 +394,21 @@ async def delete_policy(
 async def list_groups(
     user: UserContext = Depends(require_permission("governance.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
-    """List approval groups for the tenant."""
+    """List approval groups for the tenant.
+
+    READ_SCOPED, and the scope is a TENANT question (A26.11). A caller
+    without effective tenant `governance.view` sees no groups -- the
+    canonical read shape, "rows filtered to the caller's scope", rather
+    than a 403. `test_no_read_is_object_gated` holds that a read must
+    narrow rather than refuse, because a 403 on a read confirms what it
+    refuses; that reasoning applies here more than anywhere, since the
+    existence of a tenant's approval groups IS the topology.
+    """
     repo = ApprovalGroupRepo(session)
+    if not _governance_authority(scope):
+        return {"groups": [], "total": 0, "tenant_id": user.tenant_id}
     groups = await repo.list_all(user.tenant_id)
     rows = []
     for g in groups:
@@ -428,9 +474,19 @@ async def get_group(
     group_id: str,
     user: UserContext = Depends(require_permission("governance.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
-    """Group detail with members (QA-036: the Console detail panel's shape)."""
+    """Group detail with members (QA-036: the Console detail panel's shape).
+
+    A26.11: effective tenant authority, asked BEFORE the row is fetched,
+    and answered 404 rather than 403 -- the same answer a cross-tenant id
+    already gets. A 403 here would confirm that this group id exists,
+    which is the fact `governance.view` exists to withhold. One shape for
+    all three reasons: no authority, wrong tenant, no such group.
+    """
     repo = ApprovalGroupRepo(session)
+    if not _governance_authority(scope):
+        raise HTTPException(status_code=404, detail="group not found")
     group = await repo.get_by_id(group_id)
     if group is None or group.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="group not found")

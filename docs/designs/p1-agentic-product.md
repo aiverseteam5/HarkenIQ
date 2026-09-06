@@ -2982,3 +2982,65 @@ No migration, no backfill, and every one of those is tested.
    HarkenIQ, so there was nothing to extend. When it lands it must extend
    the canonical hash-chained audit architecture; building a second audit
    path inside an authorization slice would be the wrong shape.
+
+### §30b — A26 pre-merge remediation: eligibility is not authority
+
+Independent review found the boundary correct in *which permission* it
+demanded and wrong in *how it demanded it*. A26 shipped:
+
+```python
+dependencies=[Depends(require_permission("governance.view"))]
+...
+project = _policy_dict if has_permission(user, "governance.view") else ...
+```
+
+Both are nominal role membership. `get_scope`'s own docstring says why
+that cannot be the answer: `permission_subset` is per grant, so the
+effective permission is object-dependent, and "the route guard cannot be
+the place a subset is enforced."
+
+Reproduced with production `get_scope` and persisted grants under strict:
+
+| principal (before the fix) | group list | detail | approver leaked | `created_by` |
+|---|---|---|---|---|
+| tenant-wide auditor | 200 | 200 | yes | yes |
+| **SITE-scoped site_admin** | 200 | 200 | **yes** | **yes** |
+| **ORG-scoped site_admin** | 200 | 200 | **yes** | **yes** |
+| **tenant grant, subset `["fleet.view"]`** | 200 | 200 | **yes** | **yes** |
+
+My own A26 test module could not see any of it, because its fixture
+overrode `get_scope` with a scope synthesised from the principal's
+permissions. The test and the code made the same mistake, so they agreed.
+The module now reuses the persona matrix's production stack: nothing
+overrides scope, every ALLOW had to be granted, and reverting the fix
+turns 16 of its tests red.
+
+### Why not `forbid_out_of_scope`
+
+That is the obvious shape and it is the wrong one here. The platform
+already holds an invariant — `test_no_read_is_object_gated` — that a GET
+narrows rather than 403s, on the grounds that *a 403 on a read confirms
+the object it refuses*. On `/groups/{id}` that reasoning is at its
+strongest: confirming the id exists is precisely the topology fact
+`governance.view` protects. Using a 403 gate would have meant weakening a
+platform-wide read rule to accommodate one route.
+
+So the canonical read shape applies: **no rows** in the list, **404** on
+the detail — the same answer a cross-tenant id already gets, for all
+three reasons at once (no authority, wrong tenant, no such group). A
+principal whose ROLE lacks the permission is still refused 403 at the
+guard, which names no object.
+
+### One predicate
+
+`_governance_authority(scope)` is a thin named question delegating to
+`ResolvedScope.permits(..., tenant_object=True)`. `tenant_object` because
+`cc_approval_groups` is keyed by tenant and has no site column — the
+authority over tenant-wide topology is authority over the tenant. The
+three governance decisions (group list, group detail, policy projection)
+all call it, counted as AST calls by a test rather than as text, so a
+missing call site cannot pass.
+
+`site_admin` losing tenant-wide topology when its grant is site-scoped is
+the intended outcome, not a regression. Its ROLE still holds the
+permission; its GRANT decides where.

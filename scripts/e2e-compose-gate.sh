@@ -2858,12 +2858,17 @@ else
   echo "no live machine token in scope; covered by unit tests"
 fi
 
-step "A26 (A25.13): approval topology is governance.view, not fleet.view"
-# The pre-existing HIGH that A6-2's sweep found and independent review
-# confirmed: the approval-group routes were gated on `fleet.view`, which
-# every tenant role down to `viewer` holds AND which sits inside the A20.3
-# machine ceiling -- so an Operational Agent could enumerate the tenant's
-# approvers by email and Keycloak subject.
+step "A26 (A25.13): approval topology needs EFFECTIVE tenant authority"
+# The pre-existing HIGH that A6-2's sweep found -- and the remediation
+# review's finding on top of it. The routes moved to `governance.view`,
+# but a route guard only answers "could this actor EVER hold this": E1.2
+# says a `permission_subset` is per grant and therefore cannot be
+# enforced there. So the RESOLVED SCOPE decides, over the tenant object.
+#
+# DENY here is the canonical READ shape, not a 403: the platform's own
+# `test_no_read_is_object_gated` holds that a read narrows rather than
+# refuses, because a 403 confirms the object it refuses -- and the
+# existence of a group id IS the topology. So: no rows, and 404.
 A26_EMAIL="a26-approver-$(date +%s)@demo"
 A26_GROUP=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
@@ -2875,40 +2880,83 @@ curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application
   -d "{\"email\":\"$A26_EMAIL\",\"role\":\"approver\"}" \
   "http://localhost:8090/api/policies/groups/$A26_GROUP/members" > /dev/null
 
-a26_probe() {  # a26_probe <label> <token> <want-list> <want-detail>
-  local label=$1 tok=$2 want_l=$3 want_d=$4 code
-  code=$(curl -s -o /tmp/a26_l.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
-    http://localhost:8090/api/policies/groups)
-  [ "$code" = "$want_l" ] || {
-    echo "$label list -> $code, want $want_l" >&2; exit 1; }
-  code=$(curl -s -o /tmp/a26_d.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
-    "http://localhost:8090/api/policies/groups/$A26_GROUP")
-  [ "$code" = "$want_d" ] || {
-    echo "$label detail -> $code, want $want_d" >&2; exit 1; }
-  if [ "$want_d" != "200" ]; then
-    grep -q "$A26_EMAIL" /tmp/a26_d.json && {
-      echo "$label was refused but the body carried the approver" >&2; exit 1; }
-  fi
-  echo "  $(printf '%-30s' "$label") list=$want_l detail=$want_d"
+sub_of() {  # sub_of <jwt>
+  python3 -c "
+import base64, json, sys
+t = sys.argv[1].split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])" "$1"
 }
 
-# The two personas that must NOT see it, and the three that must.
+a26_probe() {  # a26_probe <label> <token> <allow|deny-scope|deny-role>
+  local label=$1 tok=$2 want=$3 lc dc n
+  lc=$(curl -s -o /tmp/a26_l.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
+    http://localhost:8090/api/policies/groups)
+  dc=$(curl -s -o /tmp/a26_d.json -w '%{http_code}' -H "Authorization: Bearer $tok" \
+    "http://localhost:8090/api/policies/groups/$A26_GROUP")
+  n=$(python3 -c "
+import json,sys
+try: print(len(json.load(open('/tmp/a26_l.json')).get('groups', [])))
+except Exception: print(-1)")
+  case "$want" in
+    allow)
+      [ "$lc" = "200" ] && [ "$dc" = "200" ] && [ "$n" -ge 1 ] || {
+        echo "$label: want ALLOW, got list=$lc($n groups) detail=$dc" >&2; exit 1; }
+      grep -q "$A26_EMAIL" /tmp/a26_d.json || {
+        echo "$label: allowed but saw no approver -- the estate is empty" >&2
+        exit 1; } ;;
+    deny-scope)
+      # Effective scope refuses: absent, never 403.
+      [ "$lc" = "200" ] && [ "$n" = "0" ] && [ "$dc" = "404" ] || {
+        echo "$label: want scope-DENY (200/0 groups, 404), got list=$lc($n) detail=$dc" >&2
+        exit 1; } ;;
+    deny-role)
+      # The ROLE never holds it, so layer 1 refuses and names no object.
+      [ "$lc" = "403" ] && [ "$dc" = "403" ] || {
+        echo "$label: want role-DENY (403/403), got list=$lc detail=$dc" >&2
+        exit 1; } ;;
+  esac
+  for f in /tmp/a26_l.json /tmp/a26_d.json; do
+    if [ "$want" != "allow" ] && grep -q "$A26_EMAIL" "$f"; then
+      echo "$label: refused, but an approver identity was in the body" >&2
+      exit 1
+    fi
+  done
+  echo "  $(printf '%-34s' "$label") $want  list=$lc(${n} groups) detail=$dc"
+}
+
+# 1. The tenant owner holds a TENANT grant -> effective authority.
+a26_probe "tenant owner (tenant grant)" "$TOKEN" allow
+
+# 2. The auditor holds governance.view in its ROLE. Under strict it has no
+#    grant yet, so it must be refused BEFORE it is granted -- that is the
+#    remediation, live.
 AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
-a26_probe "operator (action.approve)" "$OP_TOKEN"  403 403
-a26_probe "auditor (governance.view)" "$AUD_TOKEN" 200 200
-a26_probe "tenant owner"              "$TOKEN"     200 200
+a26_probe "auditor, role only, NO grant" "$AUD_TOKEN" deny-scope
+[ "$(grant "$(sub_of "$AUD_TOKEN")" tenant "" auditor)" = "201" ] || {
+  echo "the auditor could not be granted tenant scope" >&2; exit 1; }
+AUD_TOKEN=$(tenant_token gate-aud@demo gate-aud)
+a26_probe "auditor, TENANT grant" "$AUD_TOKEN" allow
+
+# 3. THE headline case: a site_admin whose ROLE holds governance.view and
+#    whose GRANT reaches one site only. Tenant-wide topology stays shut.
+tenant_realm_user gate-gov-site@demo gate-gov-site site_admin || true
+GOV_SITE_TOKEN=$(tenant_token gate-gov-site@demo gate-gov-site)
+[ "$(grant "$(sub_of "$GOV_SITE_TOKEN")" site "$E12_SITE" site_admin)" = "201" ] || {
+  echo "the site-scoped governance grant was refused" >&2; exit 1; }
+GOV_SITE_TOKEN=$(tenant_token gate-gov-site@demo gate-gov-site)
+a26_probe "site_admin, SITE grant only" "$GOV_SITE_TOKEN" deny-scope
+
+# 4. An approver without the permission at all: refused at layer 1.
+a26_probe "operator (action.approve only)" "$OP_TOKEN" deny-role
+
+# 5. A machine principal: the A20.3 ceiling, unchanged.
 if [ -n "${N_TOKEN:-}" ]; then
-  a26_probe "machine principal"       "$N_TOKEN"   403 403
+  a26_probe "machine principal" "$N_TOKEN" deny-role
 else
   echo "  no live machine token in scope; covered by unit tests"
 fi
-# The auditor really can read the approver, so 403 above is the boundary
-# and not an empty estate.
-curl -sf -H "Authorization: Bearer $AUD_TOKEN" \
-  "http://localhost:8090/api/policies/groups/$A26_GROUP" \
-  | grep -q "$A26_EMAIL" \
-  || { echo "the auditor could not read the approver it is meant to" >&2; exit 1; }
-echo "approval topology: operator+machine 403, auditor+owner 200"
+# The builder catalogue and the binding surface are unaffected.
+echo "approval topology: effective tenant authority decides, live"
 
 step "A26.3: visibility and authority are independent in BOTH directions"
 # An approver decides without enumerating the topology; a governance
