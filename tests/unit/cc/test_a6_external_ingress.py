@@ -737,7 +737,11 @@ class TestWhatAcceptanceMeans:
                     CCAuditLog.action == "agent_proposal.created"
                 )
             )).scalars().all()
-        assert rows and rows[0].detail.get("origin") == "ingress"
+        # A27.3: `external_ingress` is the canonical spelling and is what
+        # NEW audit entries carry. Historical entries keep the pre-A27
+        # `"ingress"` and are never rewritten -- the chain is immutable,
+        # and rewriting it would be a worse lie than an old spelling.
+        assert rows and rows[0].detail.get("origin") == "external_ingress"
 
     async def test_every_submission_is_audited_with_a_stable_actor_ref(self):
         stack = await _stack()

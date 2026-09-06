@@ -97,7 +97,7 @@ def _route_dict(route) -> dict:
     }
 
 
-def _proposal_item(proposal) -> dict:
+def _proposal_item(proposal, submission_id: str = "") -> dict:
     """One agent proposal as a queue item.
 
     Carries the SAME envelope a node-originated action carries so a
@@ -107,8 +107,17 @@ def _proposal_item(proposal) -> dict:
     """
     from harkeniq_cc.api.operational_agents import proposal_dict
 
+    from harkeniq_cc.provenance import provenance_block
+
     return {
+        # WHICH QUEUE LANE this is. Unchanged, and deliberately NOT
+        # provenance: A27.2 separated the two questions precisely
+        # because this field said "agent" for a proposal HarkenIQ
+        # reasoned itself AND for one an external runtime asked for.
         "origin": "agent",
+        # A27.6: WHO CAUSED IT. The question an approver actually needs
+        # answered before deciding.
+        "provenance": provenance_block(proposal, submission_id),
         "id": proposal.id,
         "site_id": proposal.site_id,
         # `action_id` is the proposal id for an agent item: there is no
@@ -1087,8 +1096,23 @@ async def list_pending(
                 _activation_item(agent, await pre_repo.current(agent.id))
             )
 
+    # A27.6: one `IN` over the whole page, never one lookup per row --
+    # and not issued at all on a page that renders no proposals.
+    from harkeniq_cc.db.repos import AgentSubmissionRepo
+    from harkeniq_cc.provenance import submission_ids_for
+
+    by_proposal: dict[str, str] = {}
+    if page == 1 and proposals:
+        by_proposal = submission_ids_for(
+            await AgentSubmissionRepo(session).for_proposals(
+                user.tenant_id, [p.id for p in proposals],
+            )
+        )
+
     items = (
-        activations + [_proposal_item(p) for p in proposals] if page == 1 else []
+        activations
+        + [_proposal_item(p, by_proposal.get(p.id, "")) for p in proposals]
+        if page == 1 else []
     ) + [_route_dict(r) for r in routes]
 
     # E0.1: every item says how many approvals it needs and how many it

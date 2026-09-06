@@ -26,7 +26,10 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0023"),
+    # A27 (A6-3) adds 0024. The head is hand-declared ON PURPOSE: a new
+    # migration is a schema amendment, and this assertion is what makes
+    # somebody say which one.
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0024"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.

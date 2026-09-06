@@ -245,6 +245,10 @@ MACHINE_ROUTES: dict[str, tuple[int, bool]] = {
     "/{agent_id}": (200, False),
     "/{agent_id}/preflight": (200, False),
     "/{agent_id}/runtime": (200, False),
+    # A27.8 (A6-3): a machine reads its OWN ingress health, through this
+    # same self rule, and the answer carries no operator identity and no
+    # execution internals.
+    "/{agent_id}/ingress": (200, False),
     "/{agent_id}/identity": (200, False),
     "/{agent_id}/dry-run": (200, True),
     "/{agent_id}/proposals": (200, False),

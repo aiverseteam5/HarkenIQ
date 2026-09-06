@@ -1161,6 +1161,18 @@ class CCAgentProposal(Base):
     agent_id: Mapped[str] = mapped_column(String(32), index=True)
     #: Frozen attribution key: op-agent:<id>@v<n>. Stored, not derived,
     #: so a later version bump cannot rewrite history.
+    #: A27.2 (A6-3): PROPOSAL PROVENANCE -- who caused this to exist.
+    #: `evaluator` | `external_ingress`; NULL on every row created before
+    #: A6-3, which projects as `unknown` and is NEVER backfilled (A27.4):
+    #: a pre-A6-3 proposal has no authoritative provenance, and asserting
+    #: `evaluator` would manufacture a fact nobody checked.
+    #:
+    #: Written transactionally by `admit_proposal` (A27.5) and never an
+    #: authorization input -- an externally submitted proposal is
+    #: governed identically to an internally derived one.
+    provenance_type: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
     actor: Mapped[str] = mapped_column(String(255), default="")
     agent_version: Mapped[int] = mapped_column(Integer, default=1)
     site_id: Mapped[str] = mapped_column(String(32), default="", index=True)

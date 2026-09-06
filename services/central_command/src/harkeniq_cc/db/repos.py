@@ -2854,6 +2854,67 @@ class AgentSubmissionRepo:
             )
         ).scalar_one_or_none()
 
+    async def recent_refusals(
+        self, tenant_id: str, agent_id: str, *, limit: int = 20
+    ) -> tuple[list[CCAgentSubmission], Optional[datetime]]:
+        """The newest refusals, and when something last landed.
+
+        A27.9: `cc_agent_submissions` is the DURABLE idempotency ledger
+        and is deliberately never pruned, so it is the one structure that
+        must never be scanned whole. Deterministic ordering, fixed limit,
+        and "last accepted" is one indexed MAX rather than a walk looking
+        for it.
+
+        A refusal is a submission that produced no proposal -- which is
+        exactly what `proposal_id IS NULL` means on this table.
+        """
+        refusals = list(
+            (
+                await self.session.execute(
+                    select(CCAgentSubmission)
+                    .where(
+                        CCAgentSubmission.tenant_id == tenant_id,
+                        CCAgentSubmission.agent_id == agent_id,
+                        CCAgentSubmission.proposal_id.is_(None),
+                    )
+                    .order_by(CCAgentSubmission.created_at.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+        )
+        last_accepted = (
+            await self.session.execute(
+                select(func.max(CCAgentSubmission.created_at)).where(
+                    CCAgentSubmission.tenant_id == tenant_id,
+                    CCAgentSubmission.agent_id == agent_id,
+                    CCAgentSubmission.proposal_id.is_not(None),
+                )
+            )
+        ).scalar()
+        return refusals, last_accepted
+
+    async def for_proposals(
+        self, tenant_id: str, proposal_ids: list[str]
+    ) -> list[CCAgentSubmission]:
+        """The submissions behind these proposals, in ONE query.
+
+        A27.6 wants the submission id beside an externally-originated
+        proposal on a queue. Fetching it per row would make a fifty-item
+        queue fifty extra queries; this is one `IN` over the page.
+        """
+        if not proposal_ids:
+            return []
+        return list(
+            (
+                await self.session.execute(
+                    select(CCAgentSubmission).where(
+                        CCAgentSubmission.tenant_id == tenant_id,
+                        CCAgentSubmission.proposal_id.in_(proposal_ids),
+                    )
+                )
+            ).scalars().all()
+        )
+
     async def record(
         self,
         *,
@@ -2944,6 +3005,42 @@ class AgentIngressAttemptRepo:
             or 0
         )
 
+    async def counts_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> dict[str, int]:
+        """Attempt outcomes in the window, GROUPED BY the database.
+
+        A27.9: an aggregate over the window that already prunes itself --
+        never a row-by-row read and never a scan outside the window. The
+        grouping is done in SQL so the payload is bounded by the number
+        of OUTCOMES, not by traffic.
+        """
+        rows = (
+            await self.session.execute(
+                select(CCAgentIngressAttempt.outcome, func.count().label("n"))
+                .where(
+                    CCAgentIngressAttempt.tenant_id == tenant_id,
+                    CCAgentIngressAttempt.agent_id == agent_id,
+                    CCAgentIngressAttempt.created_at >= since,
+                )
+                .group_by(CCAgentIngressAttempt.outcome)
+            )
+        ).all()
+        return {(outcome or "unknown"): int(n) for outcome, n in rows}
+
+    async def last_attempt_at(
+        self, tenant_id: str, agent_id: str
+    ) -> Optional[datetime]:
+        """When this agent last tried anything. One indexed MAX."""
+        return (
+            await self.session.execute(
+                select(func.max(CCAgentIngressAttempt.created_at)).where(
+                    CCAgentIngressAttempt.tenant_id == tenant_id,
+                    CCAgentIngressAttempt.agent_id == agent_id,
+                )
+            )
+        ).scalar()
+
     async def prune(
         self, tenant_id: str, agent_id: str, before: datetime
     ) -> None:
@@ -3027,6 +3124,17 @@ class AgentReadWindowRepo:
             ).scalar()
             or 0
         )
+
+    async def usage(
+        self, *, tenant_id: str, agent_id: str, window_start: datetime
+    ) -> int:
+        """How much of the CURRENT window this agent has spent.
+
+        A read, not an increment: an operator inspecting a runtime's
+        throttle state must not consume that runtime's allowance. The
+        increment stays in `admit_read`, which remains the only writer.
+        """
+        return await self._current(tenant_id, agent_id, window_start)
 
     async def prune(self, before: datetime) -> None:
         """Windows outside the retention horizon have no reader."""
