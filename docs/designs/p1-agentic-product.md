@@ -2766,3 +2766,120 @@ new RBAC/scope/execution/outcome systems, `/api/v1`. Cursor pagination is
 included only if it drops cleanly into the existing list projection; if it
 would require redesigning the history model it is deferred and recorded,
 because the priority contract is direct correlation by id.
+
+---
+
+## §29b — A6-2 pre-merge remediation (A25.9–A25.12)
+
+Four findings from the final independent review, and the reason each one
+existed. All four are the same shape: a decision that was correct where it
+was made and was not carried to the places that came to depend on it.
+
+### The projection did not follow the authorization (A25.9)
+
+A25.5 opened five routes to a machine principal — the agent detail, the
+listing, the preflight read, the runtime read and the identity read — and
+each one kept the payload it was written for, which is the Console's. So
+`GET /{agent_id}` answered an external runtime with `proposal_dict`:
+executable `params`, raw `evidence`, `authorization_basis`, `decided_by`,
+`directive_id`, `dispatch_reason`, plus `created_by` and `activated_by`
+naming real people. The listing enumerated every OTHER agent in the tenant.
+The identity read had no self rule at all, so an agent could read another
+agent's credential row and the operators who issued, rotated and revoked
+it.
+
+The fix is a set of projections that build their answer by naming what may
+pass. Not a filter: a subtractive sanitizer leaks the next field somebody
+adds upstream, which is exactly how this surface came to leak. Two withheld
+sets, because they are withheld for different reasons and one has an
+exception:
+
+* **Operator identity** — never, on any machine response, dry-run included.
+* **Execution internals** — never on a lifecycle or status response.
+  `dry-run` returns the agent's own resolved parameters, evidence and
+  rationale for work it has NOT proposed, which A22.2 requires by name.
+
+The binding catalogue is refused to a machine outright. It is the agent
+BUILDER's surface — every site and device the caller may bind, by name —
+and a machine has nothing to build and no self to narrow it to.
+
+Proven by hostile serialization: planted operator identities and planted
+internals are searched for RECURSIVELY, keys and values, on every
+machine-readable route, with the same estate read by a human administrator
+to prove the rich projection survived for them. The route table is asserted
+COMPLETE against the running router, so a new machine-readable route cannot
+be added without deciding what it costs and what it may say.
+
+### Approval completion was cached across proposals (A25.12)
+
+`machine_proposal_items` cached the completion block under
+`(action_type, device_agent_id)`. Completion is read from the E0.1 ledger
+by `subject_ref = proposal.id`, and those two coordinates do not determine
+a proposal. Two proposals by one agent for one action class on one device
+therefore shared one answer, decided by whichever the list reached first:
+an approved proposal could report a pending sibling as APPROVED, or conceal
+a real approval behind a pending one.
+
+Policy RESOLUTION is genuinely proposal-independent — `resolve_policy`
+selects on action class, device type and risk — so that is the half that is
+cached, and it is now the only half. The ledger read runs per proposal,
+always. Proven with P1 at 2 of 2 and P2 at 0 of 2 under one dual-authorization
+policy, in both list orders, plus the denial case, plus a structural test
+that the completion cannot return behind a cache.
+
+### An authenticated refusal was free (A25.10)
+
+`_machine_read_gate` asked the self rule before the meter, so an agent
+naming another agent in the path was refused without charge — an unbounded
+channel for an authenticated runtime. Its own docstring said it charged for
+that refusal; the code did the opposite.
+
+The order is now authenticate → derive the canonical machine identity →
+account → decide about the target → respond, in the one helper every
+machine-readable route on this surface calls. Accounting is not
+authorization: nothing was weakened to meter traffic, and the self rule,
+the scope resolver and the repository's tenant filter all still refuse.
+
+The bucket identity is the token's, and only the token's. Asserted
+structurally as well as behaviourally — the meter's parameters are
+`(request, user)`, the only attributes it reads on `user` are `tenant_id`
+and `user_id`, and `request` is used for exactly one thing: reaching the
+canonical sessionmaker.
+
+### The meter committed the caller's transaction (A25.11)
+
+`_charge_machine_read` took the request's session and committed it — a
+helper committing work it never knew about, which is the mirror of the
+`session.rollback()` defect the counter itself already had one level down.
+It now opens its own short-lived session, writes and commits only the
+counter, and closes.
+
+The durability proof is on real PostgreSQL, and the reason is measured
+rather than assumed: in-memory sqlite uses a StaticPool, so two sessions
+share ONE connection and a commit on either commits both. No implementation
+can be isolated there, so the unit suite pins the property structurally —
+the function cannot commit or roll back what it never receives — and the
+seven-step proof (uncommitted business mutation → accounting durable →
+business still invisible → caller rolls back → accounting survives →
+business gone) runs against the engine production uses.
+
+
+### One finding the sweep produced that this slice does NOT fix
+
+Sweeping every route a machine principal can reach — not only the
+Operational Agent router — found `GET /api/policies/groups/{group_id}`
+returning each member's email address and Keycloak subject at
+`fleet.view`, which a machine principal holds. An authenticated
+Operational Agent can therefore enumerate the tenant's approvers, which is
+the fact A25.3 exists to withhold.
+
+It is PRE-EXISTING: E0.3's A13 read-split put that route at `fleet.view`,
+and A3 put `fleet.view` inside the machine ceiling on 2026-08-31. A6-2
+neither introduced nor widened it, and A6-2 is the Operational Agent
+surface. The approval-policy router has human consumers this slice did not
+review, and the real question underneath — whether approver MEMBERSHIP
+should be readable at `fleet.view` at all, or belongs behind
+`action.approve` like the decisions themselves — is a governance decision,
+not a projection detail.
+
+Recorded as A25.13 so it cannot be lost, and left for Vinod to sequence.

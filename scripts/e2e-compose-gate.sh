@@ -3547,6 +3547,174 @@ assert d['code'] == 'operation_in_flight', d
 print('second agent refused:', d['reason'])
 "
 
+step "A6-2/P: the human administrator KEEPS the rich projection"
+# Re-minted: the A6-2 steps add a couple of dozen round trips before A6/K
+# asserts that REVOCATION, not expiry, is what refuses the token.
+A6_TOKEN=$(a6_token)
+[ -n "$A6_TOKEN" ] || { echo "A6-2 could not re-mint the machine token" >&2; exit 1; }
+# Establish, from the deployment itself, what a machine must not be told.
+# Hard-coding a name here would only ever test the name.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT" > /tmp/a6_human.json
+A6_CREATOR=$(python3 -c "
+import json; print(json.load(open('/tmp/a6_human.json'))['agent']['created_by'])")
+python3 -c "
+import json
+d = json.load(open('/tmp/a6_human.json'))
+assert d.get('view') != 'machine', 'a human got the machine projection'
+assert d['agent']['created_by'], 'the operator lost who built the agent'
+blob = json.dumps(d)
+assert '\"params\"' in blob, 'the operator lost the executable parameters'
+assert '\"authorization_basis\"' in blob, 'the operator lost the governance basis'
+print('operator detail: rich, created_by =', d['agent']['created_by'])
+"
+[ -n "$A6_CREATOR" ] || { echo "no creator recorded on the agent" >&2; exit 1; }
+
+step "A6-2/Q: EVERY machine read of an agent is an allow-listed projection"
+# HIGH 1, live. `get_agent`, the listing, the preflight read, the runtime
+# read and the identity read all became machine-self-readable and kept the
+# Console's payload -- executable params, raw evidence, directive ids,
+# dispatch internals, and `created_by` / `activated_by` / `produced_by` /
+# `issued_by` naming real people. Searched RECURSIVELY: a top-level key
+# check would pass a payload that nested the leak one level down.
+A6_SUB=$(python3 -c "
+import json; print(json.load(open('/tmp/a6_replay.json'))['submission_id'])")
+A6_A_BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+A6_B_BEFORE=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_B'" \
+  | tr -d ' \r')
+for R in "" "/preflight" "/runtime" "/identity" "/proposals" \
+         "/proposals/$A6_PROP" "/submissions/$A6_SUB"; do
+  curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT$R" \
+    > /tmp/a6_machine.json || {
+      echo "machine read of '$R' failed" >&2; exit 1; }
+  A6_SRC="$_REPO_ROOT/services/central_command/src" \
+  A6_ROUTE="$R" A6_CREATOR="$A6_CREATOR" python3 - <<'A62PY'
+import json, os, sys
+sys.path.insert(0, os.environ["A6_SRC"])
+from harkeniq_cc.receipts import MACHINE_IDENTITY_FIELDS, MACHINE_INTERNAL_FIELDS
+
+
+def walk(node, keys, values):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            keys.add(k)
+            walk(v, keys, values)
+    elif isinstance(node, list):
+        for item in node:
+            walk(item, keys, values)
+    elif isinstance(node, str):
+        values.add(node)
+
+
+route = os.environ["A6_ROUTE"] or "(detail)"
+keys, values = set(), set()
+walk(json.load(open("/tmp/a6_machine.json")), keys, values)
+leaked = keys & (MACHINE_IDENTITY_FIELDS | MACHINE_INTERNAL_FIELDS)
+assert not leaked, (route, sorted(leaked))
+creator = os.environ["A6_CREATOR"]
+assert not any(creator in v for v in values), (route, creator)
+print("  %-26s clean" % route)
+A62PY
+done
+echo "seven machine reads: no operator identity, no execution internals"
+
+step "A6-2/R: an agent inspects ITSELF and no other, on every route"
+# The identity read had no self rule at all: an authenticated agent could
+# read another agent's credential row -- client id, realm, and the
+# operators who issued, rotated and revoked it.
+for R in "" "/preflight" "/runtime" "/identity" "/proposals" "/dry-run"; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT$R")
+  [ "$CODE" = "403" ] || {
+    echo "agent B read agent A'$R' ($CODE), want 403" >&2; exit 1; }
+done
+# The builder catalogue is an operator surface: every site and device the
+# caller may bind, by name, and a machine has nothing to build.
+CAT=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/catalogue")
+[ "$CAT" = "403" ] || {
+  echo "a machine read the binding catalogue ($CAT)" >&2; exit 1; }
+# The listing shows a machine its own row and nobody else's.
+curl -sf -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['view'] == 'machine', d.get('view')
+ids = [a['id'] for a in d['agents']]
+assert ids == ['$A6_B'], ids
+print('listing as a machine ->', ids)
+"
+echo "six cross-agent reads refused, catalogue refused, listing narrowed to self"
+
+step "A6-2/S: a machine refusal is charged to the CALLER, never to the target"
+# MEDIUM, live. The self rule used to run BEFORE the meter, so a
+# cross-agent 403 was free -- an unbounded channel for an authenticated
+# runtime. And the bucket comes from the TOKEN: if it came from the agent
+# named in the path, agent B's eight refusals would have been billed to
+# agent A, and a caller could exhaust another agent's allowance.
+A6_A_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+A6_B_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_B'" \
+  | tr -d ' \r')
+[ "$((A6_A_AFTER - A6_A_BEFORE))" = "7" ] || {
+  echo "agent A made 7 reads of its own and was charged \
+$((A6_A_AFTER - A6_A_BEFORE))" >&2; exit 1; }
+[ "$((A6_B_AFTER - A6_B_BEFORE))" = "8" ] || {
+  echo "agent B made 8 refused reads (6 cross-agent + catalogue + listing) \
+and was charged $((A6_B_AFTER - A6_B_BEFORE)): an authenticated refusal is free" >&2
+  exit 1; }
+echo "caller charged 8 refusals; target charged only its own 7 reads"
+
+step "A6-2/T: polling is durable, and is not the submission ledger"
+# Accounting owns its own transaction, so a charge survives whatever the
+# request does afterwards -- including a 404. It is also its own bucket:
+# a poll is never counted as a governed submission attempt.
+A6_404=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/submissions/no-such-id")
+[ "$A6_404" = "404" ] || { echo "expected 404, got $A6_404" >&2; exit 1; }
+A6_A_404=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$((A6_A_404 - A6_A_AFTER))" = "1" ] || {
+  echo "a 404-producing poll was free" >&2; exit 1; }
+A6_POLL_ATTEMPTS=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts WHERE agent_id='$A6_B'" \
+  | tr -d ' \r')
+[ "$A6_POLL_ATTEMPTS" = "1" ] || {
+  echo "agent B made ONE submission attempt and $A6_POLL_ATTEMPTS are recorded" >&2
+  echo "-- polls were counted in the governed submission ledger" >&2; exit 1; }
+echo "refused poll charged, and no poll entered the submission ledger"
+
+step "A6-2/U: the machine list and the machine receipt cannot disagree"
+# HIGH 2's shape, live: approval state is read per proposal, so the row in
+# the list and the receipt for that proposal must be identical. (The
+# independence of two proposals sharing one policy coordinate is proven in
+# the unit suite, where two same-coordinate proposals can be created.)
+curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals" \
+  > /tmp/a6_list.json
+curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals/$A6_PROP" \
+  > /tmp/a6_receipt.json
+python3 -c "
+import json
+listed = json.load(open('/tmp/a6_list.json'))
+receipt = json.load(open('/tmp/a6_receipt.json'))
+assert listed['view'] == 'machine', listed.get('view')
+item = next(i for i in listed['proposals'] if i['proposal_id'] == '$A6_PROP')
+for block in ('proposal', 'approval', 'execution', 'terminal'):
+    assert item[block] == receipt[block], (block, item[block], receipt[block])
+assert set(item['approval']) == {
+    'required', 'state', 'granted_count', 'required_count', 'decided_at'}
+print('list item and receipt agree on all four blocks; approval names no one')
+"
+
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \

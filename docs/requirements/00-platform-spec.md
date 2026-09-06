@@ -2220,6 +2220,75 @@ permitted only where the underlying state can no longer change. `approved`
 is not terminal, and no caching semantics may hide `approved →
 awaiting_approval` or any later dispatch or outcome transition.
 
+**A25.9 — The projection follows the authorization, everywhere (pre-merge
+remediation).** When a route becomes readable by a machine principal, its
+PAYLOAD becomes part of that decision. A25.3 and A25.5 apply to the whole
+Operational Agent surface, not only to the receipt endpoints: the agent
+detail, the agent listing, the preflight read, the runtime read and the
+identity read are answered from allow-listed machine projections built by
+NAMING the fields that may pass. Filtering a rich payload by removal is
+forbidden — a subtractive filter leaks the next field added upstream. Two
+withheld sets are distinguished. Operator identity (`decided_by`,
+`approvers`, `created_by`, `activated_by`, `produced_by`, `acknowledged_by`,
+`issued_by`, `rotated_by`, `revoked_by`, governing policy and group names)
+never reaches a machine on ANY response FROM THIS SURFACE — see A25.13 for
+the one place outside it where the rule is not yet true. Execution and
+delivery internals
+(`params`, `evidence`, `rationale`, `authorization_basis`, `directive_id`,
+`dispatch_reason`) never reach a machine on a LIFECYCLE or STATUS response;
+`dry-run` is the single deliberate exception, because A22.2 requires it to
+return the agent's own resolved parameters for work it has not proposed.
+The agent-binding catalogue is an operator surface and is refused to a
+machine principal: it enumerates the tenant's bindable sites and devices,
+and a machine has nothing to build and no self to narrow the answer to.
+
+**A25.10 — Accounting identity is server-derived, and accounting precedes
+the target decision (pre-merge remediation).** The read bucket is resolved
+exclusively from the authenticated principal — the tenant and Operational
+Agent the validated token names. It is never derived from a route
+parameter, a request body, a query value, a proposal or submission
+identifier, or any other caller-supplied identity; otherwise a caller
+could spend another agent's allowance. The order is: authenticate, derive
+the canonical machine identity, ACCOUNT against the caller, then decide
+about the target and respond. Accounting is not authorization and may
+never weaken a permission, scope or self check — but an authenticated
+refusal that costs nothing is an unbounded channel, so a cross-agent,
+not-found or otherwise refused machine read is charged to the caller that
+made it. Every machine-readable route on this surface consumes the same
+allowance, so no route can become the unmetered substitute for another.
+
+**A25.11 — Durable read accounting owns its own transaction (pre-merge
+remediation).** The read meter opens a short-lived session from the
+canonical session infrastructure, writes and commits ONLY the counter, and
+closes. It never receives, commits or rolls back the caller's business
+transaction — the same rule the counter's own SAVEPOINT already applied
+one level down. Charges are therefore durable independently of whatever
+the request does afterwards, including a refusal.
+
+**A25.12 — Approval completion is per subject (pre-merge remediation).**
+Approval state is read from the E0.1 ledger by `subject_ref`, so it may
+never be cached, shared or inferred across subjects. Policy RESOLUTION —
+which depends only on action class, device type and risk — may be cached.
+A projection that cached completion under policy coordinates lets two
+proposals sharing an agent, a device and an action class report one
+another's approval state, decided by list order.
+
+**A25.13 — Named follow-up, found by the A25.9 sweep and NOT fixed here.**
+Sweeping every route a machine principal can reach found one outside the
+Operational Agent surface where A25.3 is not yet true: `GET
+/api/policies/groups/{group_id}` is gated at `fleet.view` (E0.3's A13
+read-split) and returns each member's email address and Keycloak subject,
+so an authenticated Operational Agent can enumerate the tenant's
+APPROVERS. `GET /api/policies/` and `GET /api/policies/groups` likewise
+return policy and group names and `created_by`. This is PRE-EXISTING — it
+has been reachable by a machine principal since A3 gave one `fleet.view`
+(2026-08-31) — and A6-2 neither introduced nor widened it. It is recorded
+rather than fixed because A6-2 is the Operational Agent surface and the
+approval-policy router has human consumers this slice did not review. The
+decision on whether to refuse a machine principal there, and on whether
+approver membership should be readable at `fleet.view` at all rather than
+at `action.approve`, is Vinod's.
+
 **A25.8 — What A6-2 does not build.** No MCP, webhooks, event streaming or
 SDKs. No Console UI. No new autonomy policy, approval model, RBAC, scope
 resolver, execution state machine or outcome store. No `/api/v1`. No new
