@@ -3938,7 +3938,8 @@ step "A6-3/W: provenance is written WITH the proposal, in one transaction"
 # its own creation -- i.e. a second write path.
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT coalesce(provenance_type,'<NULL>')||'='||count(*)
-     FROM cc_agent_proposals GROUP BY 1 ORDER BY 1" \
+     FROM cc_agent_proposals
+    GROUP BY coalesce(provenance_type,'<NULL>') ORDER BY 1" \
   | tr -d ' \r' | grep -v '^$' > /tmp/a63_prov_counts.txt
 cat /tmp/a63_prov_counts.txt
 python3 -c "
@@ -4055,11 +4056,19 @@ echo "operator read free to the agent; self read charged 1; cross-agent 403 char
 step "A6-3/Z: a real 0023 -> head upgrade backfills nothing (A27.4)"
 # The promise is about EXISTING customer data, so it is proven against a
 # database that already holds proposals: drop the column, rewind, let
-# Central Command's own alembic bring it forward, and confirm every row
-# comes back with NO provenance rather than a manufactured `evaluator`.
-# The same proposal that read `external_ingress` a moment ago now reads
-# `unknown` through the same API -- the FACT was lost, and the platform
-# says so instead of guessing.
+# Central Command bring it forward, and confirm every row comes back with
+# NO provenance rather than a manufactured `evaluator`. The same proposal
+# that read `external_ingress` a moment ago then reads `unknown` through
+# the same API -- the FACT was lost, and the platform says so instead of
+# guessing it back from the submission still sitting beside it.
+#
+# Central Command is STOPPED across the window. Its agent evaluator runs
+# every 20s in this stack and reads `cc_agent_proposals`, so a column
+# that briefly does not exist would raise inside a background loop --
+# an ERROR log the last gate step correctly refuses, roughly one run in
+# four. The upgrade then rides the service's OWN entrypoint (`alembic
+# upgrade head`), which is the production upgrade path rather than a
+# hand-invoked one.
 #
 # The gate restores what it deliberately destroyed (the A26 rule), from a
 # snapshot taken here, and re-asserts the original answer afterwards.
@@ -4071,11 +4080,18 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
 A63_TOTAL=$(wc -l < /tmp/a63_snapshot.txt | tr -d ' ')
 [ "$A63_TOTAL" -gt 0 ] || { echo "no proposals to prove the upgrade against" >&2; exit 1; }
 
+docker compose stop central-command > /dev/null
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
   alter table cc_agent_proposals drop column provenance_type;
   update alembic_version set version_num='0023';" > /dev/null
-docker compose exec -T central-command sh -c \
-  "cd /app/services/central_command && alembic upgrade head" 2>&1 | tail -1
+docker compose start central-command > /dev/null
+A63_UP=""
+for _ in $(seq 90); do
+  if curl -sf http://localhost:8090/healthz > /dev/null 2>&1; then A63_UP=yes; break; fi
+  sleep 1
+done
+[ -n "$A63_UP" ] || {
+  echo "central-command did not come back after the 0023 rewind" >&2; exit 1; }
 A63_VERSION=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "select version_num from alembic_version" | tr -d ' \r')
 [ "$A63_VERSION" = "$CC_HEAD" ] || {
