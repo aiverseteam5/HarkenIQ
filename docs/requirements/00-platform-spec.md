@@ -2971,3 +2971,179 @@ starts no A6-4 work. The A6-4 boundary is produced as a proposal for
 separate ratification after this amendment is merged and main-verified;
 no A6-4 branch, spec amendment or implementation exists or is authorised
 by this amendment.
+
+### A29 — 2026-09-07 — A6-4: the deliberate External Agent API Plane (decided: Vinod)
+
+A6-1 gave an external runtime a governed way to write, A6-2 a governed
+way to read, A6-3 the human's ability to supervise both. None of them
+asked the prior question: **which of Central Command's routes an external
+runtime should be able to reach at all.** Nobody ever decided. Ratified
+with amendments after review; recorded BEFORE the code, per change
+control.
+
+**A29.1 — The gap, measured by executing the contract on `8ab45c5`.** A
+machine principal reaches **46 of 98 declared routes**, not because a
+product decision admitted them but because their required permission
+happens to be a member of `MACHINE_PRINCIPAL_CEILING`. `fleet.view` alone
+opens 43. Exactly **one** is a write — the governed
+`POST /api/operational-agents/{agent_id}/proposals` — so the write
+boundary is already correct and A6-4 does not reopen it; this is a
+read-surface correction. Of the 46, ten are agent-self reads already
+object-gated, and **23 are estate, fleet-intelligence and
+governance-posture reads with no stated machine job**: campaigns, learning,
+outcomes, predictive risk, warranty, firmware exposure, approval-policy
+topology, autonomy budgets, tenant enforcement settings and its impact
+census, sites, and Harken Node inventory.
+
+**A29.2 — The declaration already exists and is discarded.**
+`operational_agent.READ_CAPABILITIES` declares five machine read jobs and
+`INGRESS_CAPABILITIES` a sixth, each naming its own route family. At
+`auth.py`, `machine_permissions()` converts those bindings into coarse
+permissions and **the bindings themselves are never carried onto the
+`UserContext`**, so the route guard sees only `fleet.view`. An agent bound
+to `attention` alone — the floor, since `REQUIRED_READS` is
+`("attention", "autonomy")` — thereby reaches the whole estate. The house
+pattern again: declared, and not consulted where the decision is made.
+A6-4A's enforcement is carrying an existing declaration to the guard, not
+designing a machine policy model.
+
+**A29.3 — B1: default deny.** No named machine job means no machine
+reach. A route becomes machine-reachable by being declared against a job
+and by nothing else — not by a permission entering the ceiling, not by a
+binding being added, not by a handler forgetting to check.
+
+**A29.4 — B3: route-surface eligibility is a product/API contract, not
+authorization.** It answers exactly one question: *may this principal
+species use this product surface?* It grants no permission, scope,
+autonomy, approval or execution, and it replaces nothing. The
+authorization chain runs unchanged after it: identity → canonical
+permission vocabulary → canonical scope resolver → machine ceiling →
+explicit A0 binding → object/self gate → handler. **No second RBAC, no
+second resolver, no second machine policy engine, no route ACL
+configuration, no duplicated authorization table.**
+
+**A29.5 — Ratified surfaces, and INTERNAL deferred.** `HUMAN`, `MACHINE`
+and `BOTH` are ratified for A6-4A. `INTERNAL` is **deferred on evidence**:
+`ROUTE_CONTRACT` contains zero routes matching `internal`, and Central
+Command has no independently authenticated internal or service principal
+route class — the CC↔Console channel is CC acting as a *client* against
+Console, not a Central Command route. Inventing a service-to-service
+identity taxonomy merely to complete an enum is refused. `INTERNAL`
+returns when a concrete route needs it.
+
+**A29.6 — B4, and the typed job model.** Bindings become load-bearing at
+the guard: `bound_reads` and `bound_ingress` are carried onto the
+`UserContext` and checked against the route's declared job. **Human
+description strings are never load-bearing** — the job is an explicit
+typed identifier, and the vocabulary is the A0 binding vocabulary itself
+so there is no second naming system: `attention`, `incidents`,
+`proposals`, plus `self`. `self` is deliberately not a binding: it names
+the agent's own record, which is gated by identity through the existing
+A25.5 helper rather than by configuration, so an agent can always read
+itself and can never read another. A test asserts that every job other
+than `self` is a real A0 binding name.
+
+**A29.7 — B2: broad fleet and tenant-learning APIs are not part of the
+plane.** Direct machine reach is removed from generic `/api/fleet/*`
+browsing and generic `/api/learning/*` tenant-learning state. The runtime
+receives the device and evidence context it needs to reason **through the
+governed candidate and attention projections**, not through estate
+browsing. Future capability-intent or target-discovery work may add a
+deliberate, machine-safe target discovery contract if proven necessary.
+**A6-4A does not delete the `fleet` and `learning` binding persistence or
+configuration vocabulary** — configured bindings are preserved and
+reported for compatibility and migration evidence. This slice narrows API
+reach; unrelated binding-schema cleanup needs its own decision.
+
+**A29.8 — B8: governance conclusions, never governance construction.** A26
+kept the posture reads at `fleet.view` on the ratified ground that
+*posture belongs to the people living under it* — reasoning about
+**people**, into which the machine ceiling swept machine principals as a
+side effect. Machine direct reach is therefore removed from approval
+policy topology and rules, autonomy budget configuration, the tenant
+scope-enforcement settings route, the scope-enforcement impact census, and
+approval group and principal topology. A6-4B may later supply narrowly
+allow-listed **conclusions** — autonomy disposition, approval required,
+blocking reason, stop or halt conclusion, effective enforcement posture —
+and never the configuration that produced them. This is the line A25.3
+drew for approver identity, applied to policy topology.
+
+**A29.9 — B7: a machine reads its effective reach, never its
+construction.** An agent that cannot see what it may address cannot avoid
+proposing outside it. The projection carries reach and enforcement
+posture; it withholds per-grant type, ref and permission subset, inert
+grant targets and reasons, `previously_granted`, `synthesis`,
+`administered` and `contextual_unit_ids`. A23 and A26 fail-closed
+lifecycle semantics are preserved exactly: a revoked, expired or
+vanished-target grant reaches nothing and the projection reports reduced
+reach rather than concealing it. **The replacement projection is A6-4B**;
+in A6-4A `/api/scope-grants/me` becomes `HUMAN`.
+
+**A29.10 — B5/B6: discovery, and no vocabulary change.** Discovery
+separates ADDRESSABLE from AUTHORIZED TO EXECUTE and authors **no second
+catalogue**, composing from `load_capability_registry`,
+`capabilities.parameter_contract`, `catalogue_view`, `ACTION_RISK` and
+`ACTION_REVERSIBILITY`. It grants no permission, scope, autonomy,
+approval or execution. **A6-4 adds no permission and does not move the
+ceiling.** `capability.discover` was considered and refused: `fleet.view`
+is honest for discovery, the defect was surface breadth rather than a
+missing authority, and minting `machine.*` duplicates would be the
+parallel machine RBAC A29.4 forbids. The vocabulary stays at 25;
+`MACHINE_PRINCIPAL_CEILING` stays
+`{fleet.view, incident.view, proposal.submit}`.
+
+**A29.11 — B9: A6-4A then A6-4B.** A6-4A is a **pure narrowing** —
+reviewable as one question, *can a machine still reach anything it was
+not declared for* — and adds no endpoint and no projection, so nothing new
+can leak. A6-4B is **additive**, and every new projection is a potential
+leak deserving its own A25.9 sweep rather than sharing a review with a
+narrowing. A6-4A first: narrow the surface, then design the deliberate
+contract inside the narrowed boundary. **A6-4B receives its own boundary
+and review after A6-4A is merged and main-verified.**
+
+**A29.12 — No route stays broadly machine-readable to cover a temporary
+gap.** Verified rather than assumed: the CC-resident evaluator composes
+in-process (`load_attention`, `load_autonomy_contract`) and never over
+HTTP, and the compose gate's machine token drives only agent-self reads,
+`dry-run`, `ingress` and the submit — all of which A6-4A keeps. Where a
+REPLACE route cannot remain without violating default-deny, its existing
+human endpoint is classified `HUMAN` and the machine capability is
+deferred to A6-4B. `/api/autonomy/` and `/api/capabilities/*` are the two
+that take a temporary capability gap, recorded here rather than papered
+over.
+
+**A29.13 — The permanent structural invariant.** A non-vacuous test proves
+that a permission entering `MACHINE_PRINCIPAL_CEILING` opens **zero** new
+routes unless both the route is declared `MACHINE`/`BOTH` and the
+authenticated agent carries the required job binding. Also proved: every
+machine-reachable route is declared; every machine-reachable route names a
+job; every declared machine route matches runtime behaviour in both
+directions; no undeclared route is machine-reachable; a persona holding
+one job reaches exactly that job's declared set; and the ceiling and
+canonical permission vocabulary are unchanged. The before/after census is
+frozen and reported. **Baseline: 46 of 98.** The completion report states
+the exact post-enforcement count and list.
+
+**A29.14 — A6-4A scope.** IN: route-surface declaration; typed machine-job
+declaration; `bound_reads`/`bound_ingress` on `UserContext`; canonical
+guard enforcement; default-deny; KEEP/REMOVE applied; broad fleet and
+learning machine reach removed; governance-construction routes removed
+from the machine surface; the proposal submit path unchanged; audited and
+metered authenticated refusals; REPORT → ASSERT → ENFORCE; the
+before/after matrix; the structural tests; a one-job-at-a-time
+authenticated machine persona sweep; and migration reporting for
+configured bindings that lose direct route reach. OUT: the discovery
+endpoint; the self-scope, autonomy, attention and incident replacement
+projections; the `actor.species` accuracy fix where it needs an additive
+projection change; A6-4B; events, webhooks, MCP, SDKs; capability-intent
+or evidence ingress; new permissions; ceiling changes; PX work; and any
+redesign of the proposal write path.
+
+**A29.15 — Compatibility, stated plainly.** There is no GA external-agent
+contract: A6-1 shipped 2026-09-05 and no `/api/v1` namespace or published
+external API version exists. The before/after report is produced anyway,
+because removing 23 routes from a machine surface deserves one. Refusal
+shape follows existing convention — 404 where confirming the object would
+itself leak, 403 for a species refusal on a route whose existence is not
+sensitive, matching how `/api/operational-agents/catalogue` already
+answers a machine.
