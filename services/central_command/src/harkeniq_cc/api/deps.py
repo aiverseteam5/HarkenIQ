@@ -157,8 +157,12 @@ async def enforce_route_surface(request: Request, user: UserContext) -> None:
             _charge_machine_read, _record_surface_refusal_window,
         )
 
+        # ONE WINDOW for the whole refusal: the charge opens the row and
+        # returns which one, and the evidence updates THAT row. Computing
+        # it twice would straddle a minute boundary and drop the evidence.
+        window = None
         try:
-            await _charge_machine_read(request, user)
+            window = await _charge_machine_read(request, user)
         except HTTPException as exhausted:
             # Already over its polling allowance: 429 is the truer answer,
             # and it is what stops the probe.
@@ -168,7 +172,9 @@ async def enforce_route_surface(request: Request, user: UserContext) -> None:
         # a process-local counter cannot tell an operator WHICH runtime is
         # misconfigured, and a row per refusal would be the amplifier
         # A24.13 and A27.13 both refused.
-        await _record_surface_refusal_window(request, user, reason)
+        await _record_surface_refusal_window(
+            request, user, reason, window=window,
+        )
     record_surface_refusal(reason)
     raise HTTPException(status_code=403, detail=detail)
 

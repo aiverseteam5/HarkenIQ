@@ -2465,7 +2465,8 @@ async def _machine_read_gate(
 
 
 async def _record_surface_refusal_window(
-    request: Request, user: UserContext, reason: str
+    request: Request, user: UserContext, reason: str,
+    window: Optional[datetime] = None,
 ) -> None:
     """A29.16: durable, attributable, bounded refusal evidence.
 
@@ -2482,6 +2483,16 @@ async def _record_surface_refusal_window(
     from harkeniq_cc.db.repos import AgentReadWindowRepo
     from harkeniq_cc.ingress_limits import read_window_start
 
+    # ONE WINDOW PER REQUEST. `_charge_machine_read` opened a row for the
+    # window it computed and RETURNS it; recomputing here would target the
+    # next window across a minute boundary, and `record_refusal`
+    # deliberately does not create rows -- so the evidence would be
+    # silently dropped. CI found it as a job that passed on one run and
+    # failed on another at the same commit, which is what a boundary looks
+    # like when you assume it is a flake.
+    now = datetime.now(timezone.utc)
+    window = window or read_window_start(now)
+
     try:
         sessionmaker = request.app.state.cc.sessionmaker
         async with sessionmaker() as accounting:
@@ -2491,9 +2502,9 @@ async def _record_surface_refusal_window(
                 # a caller cannot choose whose window it marks.
                 tenant_id=user.tenant_id,
                 agent_id=user.user_id,
-                window_start=read_window_start(),
+                window_start=window,
                 reason=reason,
-                at=datetime.now(timezone.utc),
+                at=now,
             )
             await accounting.commit()
     except Exception:  # noqa: BLE001 - accounting must not change behaviour
@@ -2538,7 +2549,9 @@ def _authority_for_proposal(scope, proposal) -> bool:
     return proposal.site_id in set(getattr(scope, "site_ids", ()) or ())
 
 
-async def _charge_machine_read(request: Request, user: UserContext) -> None:
+async def _charge_machine_read(
+    request: Request, user: UserContext
+) -> datetime:
     """Charge one status read to this agent's polling bucket, or 429.
 
     Shared by every machine read on this surface, so that alternating
@@ -2564,20 +2577,31 @@ async def _charge_machine_read(request: Request, user: UserContext) -> None:
     neither committed nor rolled back, and this function holds no
     reference to it.
     """
-    from harkeniq_cc.ingress_limits import READ_WINDOW_S, admit_read
+    from harkeniq_cc.ingress_limits import (
+        READ_WINDOW_S, admit_read, read_window_start,
+    )
     from harkeniq_cc.metrics import record_read_rate_limited, record_read_refusal
 
     tenant_id, agent_id = user.tenant_id, user.user_id
+    # Derived HERE, from the clock, never from the caller.
+    now = datetime.now(timezone.utc)
     sessionmaker = request.app.state.cc.sessionmaker
     async with sessionmaker() as accounting:
         permitted, used = await admit_read(
-            accounting, tenant_id=tenant_id, agent_id=agent_id,
+            accounting, tenant_id=tenant_id, agent_id=agent_id, now=now,
         )
+        # A29.16: the window this charge OPENED, returned so the refusal
+        # evidence updates that exact row. Recomputing it downstream would
+        # straddle a minute boundary and silently drop the evidence, and
+        # taking a `now` PARAMETER would put a bucket-selecting value in
+        # the signature -- which is precisely the property A25.9 asserts
+        # is absent. Returning it keeps both true.
         # Durable BEFORE anything downstream can raise. A charge that only
         # survived a successful read would make every refusal free -- a
         # 404-producing poll could then run unbounded, which is the same
         # hole A6-1 closed for authenticated submission refusals.
         await accounting.commit()
+    window = read_window_start(now)
     if not permitted:
         record_read_rate_limited()
         record_read_refusal("rate_limited")

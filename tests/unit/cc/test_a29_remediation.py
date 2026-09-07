@@ -302,6 +302,83 @@ class TestRefusalsAreAttributableAndBounded:
         assert sum(r.refused_job_not_bound for r in rows) == 1
         assert sum(r.refused_surface_not_allowed for r in rows) == 0
 
+    async def test_the_charge_and_the_evidence_share_ONE_window(self):
+        """The minute-boundary defect, pinned deterministically.
+
+        `_charge_machine_read` opens the row for the window it computes
+        and RETURNS which one. If the evidence recomputed the window it
+        would target the next one across a boundary, and `record_refusal`
+        deliberately does not create rows -- so the evidence vanished. CI
+        found it as a job that passed on one run and failed on another at
+        the SAME commit, which is what a boundary looks like when you
+        assume it is a flake.
+
+        The window is threaded rather than taken as a `now` parameter,
+        because a bucket-selecting value in `_charge_machine_read`'s
+        signature is exactly the property A25.9 asserts is absent.
+        """
+        from harkeniq_cc.api.operational_agents import (
+            _record_surface_refusal_window,
+        )
+
+        stack = await _stack()
+        agent_id, _ = await _ready(stack)
+
+        # A window that is deliberately NOT the current one. An
+        # implementation that recomputes `now` targets the current window
+        # instead, finds no row, and drops the evidence.
+        past = read_window_start(datetime.now(timezone.utc) - timedelta(seconds=180))
+        assert past != read_window_start(datetime.now(timezone.utc)), (
+            "the fixture is vacuous: both windows are the same"
+        )
+
+        class _Req:
+            app = type("A", (), {"state": type("S", (), {})()})()
+
+        request = _Req()
+        request.app.state.cc = stack.app.state.cc
+        user = type("U", (), {
+            "tenant_id": TENANT, "user_id": agent_id, "species": "agent",
+        })()
+
+        # Open the row the charge would have opened for that window.
+        async with stack.sessionmaker() as s:
+            await AgentReadWindowRepo(s).increment(
+                tenant_id=TENANT, agent_id=agent_id, window_start=past,
+            )
+            await s.commit()
+
+        await _record_surface_refusal_window(
+            request, user, "surface_not_allowed", window=past,
+        )
+
+        rows = await _windows(stack, agent_id)
+        marked = [r for r in rows if r.surface_refused]
+        assert marked, (
+            "the evidence was written to a window the charge never opened"
+        )
+        assert sum(r.surface_refused for r in marked) == 1
+        assert all(
+            r.window_start.replace(tzinfo=timezone.utc) == past
+            for r in marked
+        ), [r.window_start for r in marked]
+
+    async def test_the_charge_does_not_take_a_bucket_selecting_argument(self):
+        """A25.9's property, preserved by the remediation.
+
+        The first fix threaded an instant as a PARAMETER, which put a
+        window-selecting value in the signature and turned two A25.9
+        structural tests red. Returning the window instead keeps the
+        boundary correct and the property decidable where A25.9 decides
+        it.
+        """
+        import inspect
+
+        from harkeniq_cc.api.operational_agents import _charge_machine_read
+
+        params = set(inspect.signature(_charge_machine_read).parameters)
+        assert params == {"request", "user"}, params
+
     async def test_7_many_refusals_create_NO_per_request_rows(self):
         stack = await _stack()
         agent_id, _ = await _ready(stack)
