@@ -41,24 +41,148 @@ TREATMENTS = frozenset({READ_SCOPED, OBJECT_GATED, TENANT_GATED, UNSCOPED})
 #: Treatments whose handler MUST consume the resolved scope.
 SCOPE_CONSUMING = frozenset({READ_SCOPED, OBJECT_GATED, TENANT_GATED})
 
-#: A25: routes that serve a MACHINE principal only.
-#:
-#: They carry an ordinary permission and an ordinary scope treatment --
-#: the guard and the scope question are unchanged -- but their handler
-#: refuses a human outright, because the lifecycle receipt is an agent
-#: closing its own transaction and a person reads the same facts through
-#: the Console's agent view.
-#:
-#: Declared in runtime code rather than as a test exception, for the
-#: reason A23-1 moved this whole table out of a test file: an exclusion
-#: only a test can see is a promise nothing keeps. The suite asserts BOTH
-#: directions over this set -- a listed route must actually refuse a
-#: human, and an unlisted one must not -- so adding a name here cannot
-#: quietly hide a route from the persona matrix.
-MACHINE_ONLY_ROUTES: frozenset[tuple[str, str]] = frozenset({
-    ("GET", "/api/operational-agents/{agent_id}/submissions/{submission_id}"),
-    ("GET", "/api/operational-agents/{agent_id}/proposals/{proposal_id}"),
+# ---------------------------------------------------------------------------
+# A29 (A6-4A): the External Agent API Plane
+# ---------------------------------------------------------------------------
+#
+# Route-surface eligibility answers ONE question: may this principal
+# SPECIES use this product surface? It is a product/API contract and it
+# is NOT authorization (A29.4). It grants no permission, no scope, no
+# autonomy, no approval and no execution, and it replaces nothing: the
+# chain runs unchanged after it -- identity, canonical permission
+# vocabulary, canonical scope resolver, machine ceiling, explicit A0
+# binding, object/self gate, handler.
+#
+# The surface field can only EXCLUDE. A route declared MACHINE that the
+# caller lacks the permission for is still refused by the permission
+# guard. The moment it could ADMIT rather than only exclude it would be
+# an ACL, which is the second authorization system A29.4 forbids.
+
+SURFACE_HUMAN = "human"      # people only; a machine principal is refused
+SURFACE_MACHINE = "machine"  # machine principals only; a human is refused
+SURFACE_BOTH = "both"        # both, each through its own projection
+
+SURFACES = frozenset({SURFACE_HUMAN, SURFACE_MACHINE, SURFACE_BOTH})
+
+#: A29.5: INTERNAL is DEFERRED on evidence. `ROUTE_CONTRACT` contains no
+#: route matching `internal`, and Central Command has no independently
+#: authenticated internal or service principal route class -- the
+#: CC<->Console channel is CC acting as a CLIENT against Console, not a
+#: Central Command route. Completing the enum for its own sake would be
+#: inventing a service-to-service identity taxonomy nothing needs.
+
+# -- the typed machine jobs (A29.6) -----------------------------------------
+#
+# The vocabulary is the A0 BINDING vocabulary, so there is no second
+# naming system to keep in step. Human description strings are never
+# load-bearing: the guard reads these identifiers, never a sentence.
+
+#: The agent's own record. Deliberately NOT an A0 binding: reading its own
+#: identity, runtime, preflight, ingress health and proposal lifecycle is
+#: not a configured capability, it is a principal reading itself. Any
+#: authenticated machine principal holds it, and `_machine_self_read`
+#: continues to decide WHICH agent. Configuration decides what an agent
+#: sees of the estate; identity decides what it sees of itself.
+JOB_SELF = "self"
+
+#: A0 read binding `attention` -- the ranked situations it may reason over.
+JOB_ATTENTION = "attention"
+
+#: A0 read binding `incidents`.
+JOB_INCIDENTS = "incidents"
+
+#: A0 ingress binding `proposals` -- the one write on the plane.
+JOB_PROPOSALS = "proposals"
+
+MACHINE_JOBS = frozenset({
+    JOB_SELF, JOB_ATTENTION, JOB_INCIDENTS, JOB_PROPOSALS,
 })
+
+#: Jobs that must name a real A0 binding. `self` is the one exception and
+#: is listed here so the exception is declared rather than implied.
+JOBS_WITHOUT_A_BINDING = frozenset({JOB_SELF})
+
+#: (method, path) -> (surface, job). THE POSITIVE DECLARATION.
+#:
+#: A29.3 -- DEFAULT DENY. A route absent from this table is HUMAN and is
+#: not machine-reachable, without anyone writing that down. This is the
+#: property that survives: adding a permission to
+#: `MACHINE_PRINCIPAL_CEILING` opens ZERO new routes, because reach is
+#: declared here and nowhere else.
+#:
+#: There is no negative form of this table on purpose. An exclusion list
+#: would have to be kept in step with every new route, and the failure
+#: mode of forgetting would be silent exposure. Forgetting to add a route
+#: here fails closed instead.
+MACHINE_SURFACE: dict[tuple[str, str], tuple[str, str]] = {
+    # -- job: self. The agent's own record (A29.6). ---------------------
+    ("GET", "/api/operational-agents/{agent_id}"):
+        (SURFACE_BOTH, JOB_SELF),
+    ("GET", "/api/operational-agents/{agent_id}/runtime"):
+        (SURFACE_BOTH, JOB_SELF),
+    ("GET", "/api/operational-agents/{agent_id}/identity"):
+        (SURFACE_BOTH, JOB_SELF),
+    ("GET", "/api/operational-agents/{agent_id}/preflight"):
+        (SURFACE_BOTH, JOB_SELF),
+    # A22.2: dry-run returns the REAL resolved params for the agent's OWN
+    # candidates, and is the one projection exception. It is not exempt
+    # from the identity gate, and nothing else is exempt from either.
+    ("GET", "/api/operational-agents/{agent_id}/dry-run"):
+        (SURFACE_BOTH, JOB_SELF),
+    ("GET", "/api/operational-agents/{agent_id}/ingress"):
+        (SURFACE_BOTH, JOB_SELF),
+    ("GET", "/api/operational-agents/{agent_id}/proposals"):
+        (SURFACE_BOTH, JOB_SELF),
+    # A25: the lifecycle receipts. MACHINE, not BOTH -- an agent closing
+    # its own transaction; a person reads the same facts through the
+    # Console's agent view.
+    ("GET", "/api/operational-agents/{agent_id}/proposals/{proposal_id}"):
+        (SURFACE_MACHINE, JOB_SELF),
+    ("GET", "/api/operational-agents/{agent_id}/submissions/{submission_id}"):
+        (SURFACE_MACHINE, JOB_SELF),
+
+    # -- job: attention. The situations it may reason over. -------------
+    ("GET", "/api/attention/"):
+        (SURFACE_BOTH, JOB_ATTENTION),
+
+    # -- job: incidents. -------------------------------------------------
+    ("GET", "/api/incidents/"):
+        (SURFACE_BOTH, JOB_INCIDENTS),
+    ("GET", "/api/incidents/{incident_id}"):
+        (SURFACE_BOTH, JOB_INCIDENTS),
+
+    # -- job: proposals. The ONE write on the plane (A24), unchanged. ----
+    # MACHINE: A24 refuses a person here in the handler's own words --
+    # "a person proposes through the Console, not through ingress".
+    ("POST", "/api/operational-agents/{agent_id}/proposals"):
+        (SURFACE_MACHINE, JOB_PROPOSALS),
+}
+
+#: A25, now DERIVED rather than hand-kept: the machine-only members of the
+#: one declaration. Retaining the name keeps the A25 assertions -- a
+#: listed route must actually refuse a human, and an unlisted one must not
+#: -- working against a single source of truth instead of a side-set that
+#: could drift from it.
+MACHINE_ONLY_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    route for route, (surface, _job) in MACHINE_SURFACE.items()
+    if surface == SURFACE_MACHINE
+)
+
+
+def machine_surface(method: str, path: str) -> tuple[str, str]:
+    """The declared surface and job for a route. Default deny.
+
+    An undeclared route is HUMAN with no job, which is what makes
+    "no named machine job means no machine reach" (A29.3) true by
+    construction rather than by maintenance.
+    """
+    return MACHINE_SURFACE.get((method.upper(), path), (SURFACE_HUMAN, ""))
+
+
+def machine_reachable(method: str, path: str) -> bool:
+    """Is this route part of the External Agent API Plane at all?"""
+    surface, _job = machine_surface(method, path)
+    return surface in (SURFACE_MACHINE, SURFACE_BOTH)
 
 #: (method, path) -> (permission, treatment, audited)
 #:

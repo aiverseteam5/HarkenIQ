@@ -170,16 +170,22 @@ class TestMachineOnlyRoutesAreChecked:
         from harkeniq_cc.route_contract import MACHINE_ONLY_ROUTES
 
         handlers = {
-            "/api/operational-agents/{agent_id}/submissions/{submission_id}":
+            ("GET", "/api/operational-agents/{agent_id}/submissions/{submission_id}"):
                 oa.get_submission_receipt,
-            "/api/operational-agents/{agent_id}/proposals/{proposal_id}":
+            ("GET", "/api/operational-agents/{agent_id}/proposals/{proposal_id}"):
                 oa.get_proposal_receipt,
+            # A24: the one write on the plane refuses a person in its own
+            # words -- "a person proposes through the Console, not through
+            # ingress" -- rather than through the read gate.
+            ("POST", "/api/operational-agents/{agent_id}/proposals"):
+                oa.submit_proposal,
         }
-        for _method, path in MACHINE_ONLY_ROUTES:
-            handler = handlers.get(path)
-            assert handler is not None, f"no handler mapped for {path}"
-            assert "_machine_read_gate" in inspect.getsource(handler), (
-                f"{path} is declared machine-only but never asks the gate"
+        for route in MACHINE_ONLY_ROUTES:
+            handler = handlers.get(route)
+            assert handler is not None, f"no handler mapped for {route}"
+            source = inspect.getsource(handler)
+            assert "_machine_read_gate" in source or "is_machine" in source, (
+                f"{route} is declared machine-only but never asks the gate"
             )
 
 

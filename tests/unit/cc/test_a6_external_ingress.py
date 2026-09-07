@@ -42,6 +42,7 @@ from harkeniq_cc.machine_identity import (
     machine_permissions,
 )
 from harkeniq_cc.runtime import AppState
+from harkeniq_cc.route_contract import MACHINE_JOBS
 
 from tests.unit.cc.conftest import seed_tenant_admin
 
@@ -90,6 +91,7 @@ async def _stack() -> Stack:
                 user_id=agent_id, email=f"op-agent:{agent_id}@v1",
                 tenant_id=TENANT, role="", permissions=perms,
                 species="agent", identity_id="id-1",
+                machine_jobs=MACHINE_JOBS,
             )
         sub, email, role = stack.persona
         return UserContext(

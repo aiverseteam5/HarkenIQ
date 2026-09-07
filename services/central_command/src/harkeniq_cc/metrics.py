@@ -136,3 +136,34 @@ def record_read_refusal(reason: str) -> None:
 
 def record_read_rate_limited() -> None:
     _inc(M_READ_RATE_LIMITED)
+
+
+# ---------------------------------------------------------------------------
+# A29 (A6-4A): the External Agent API plane
+# ---------------------------------------------------------------------------
+
+M_SURFACE_REFUSED = "cc_route_surface_refused_total"
+
+#: Bounded, for the reason A25.11 recorded: `/metrics` is unauthenticated,
+#: and interpolating a caller-supplied value into a metric NAME is a way
+#: to put a tenant or agent id on a scrape surface. Anything unrecognised
+#: collapses to `other`.
+SURFACE_REFUSAL_REASONS = frozenset({
+    "route_not_on_the_machine_plane",
+    "agent_lacks_the_required_binding",
+    "machine_only_route",
+    "other",
+})
+
+
+def record_surface_refusal(reason: str) -> None:
+    """A request refused on species eligibility, by bounded reason.
+
+    Also the REPORT half of A29's migration discipline: the counter tells
+    an operator how much real traffic the narrowing turned away, by
+    reason, without naming who was turned away.
+    """
+    if reason not in SURFACE_REFUSAL_REASONS:
+        reason = "other"
+    _inc(M_SURFACE_REFUSED)
+    _inc(f"{M_SURFACE_REFUSED}_{reason}")

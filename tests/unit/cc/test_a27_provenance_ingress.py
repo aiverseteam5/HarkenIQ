@@ -52,6 +52,7 @@ from harkeniq_cc.provenance import (
     PROVENANCE_UNKNOWN, REFUSAL_SAMPLE, activity_state,
 )
 from harkeniq_cc.scope import SCOPE_SITE, SCOPE_TENANT
+from harkeniq_cc.route_contract import MACHINE_JOBS
 
 from tests.unit.cc.test_e1_persona_matrix import (
     TENANT, _client, _grant, _stack, _strict,
@@ -145,6 +146,7 @@ def _machine_client(app, agent_id=AGENT):
         return UserContext(
             user_id=agent_id, email=f"op-agent:{agent_id}@v1", tenant_id=TENANT,
             role="", species="agent", identity_id="id-1",
+                machine_jobs=MACHINE_JOBS,
             permissions=machine_permissions(["fleet", "incidents"], ["proposals"]),
         )
 

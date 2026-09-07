@@ -60,6 +60,7 @@ from tests.unit.cc.test_a23_3_recovery import (
     _vanish_site,
     _vanish_unit,
 )
+from harkeniq_cc.route_contract import MACHINE_JOBS
 from tests.unit.cc.test_e1_scope_api_and_chain import TENANT, _client, _strict
 
 NOW = datetime.now(timezone.utc)
@@ -156,7 +157,7 @@ def _machine_client(app, agent_id):
         return UserContext(
             user_id=agent_id, email="", tenant_id=TENANT, role="",
             permissions=["fleet.view", "incident.view"], species="agent",
-            identity_id="ident-1",
+            identity_id="ident-1", machine_jobs=MACHINE_JOBS,
         )
 
     app.dependency_overrides[get_current_user] = _fake
@@ -500,12 +501,23 @@ class TestOverTheApp:
             assert scope.synthesis == "agent"
             assert scope.previously_granted is evidence
             async with _machine_client(app, agent_id) as c:
-                r = await c.get("/api/fleet/?page_size=200")
+                # A29.7 (A6-4A): /api/fleet/ left the machine plane, so the
+                # HTTP vehicle is now `/api/attention/` -- still the read
+                # every agent holds, still resolved through the SAME scope
+                # resolver, and still zero for a scopeless agent. The
+                # subject here is synthesis, not which route carries it.
+                r = await c.get("/api/attention/")
                 assert r.status_code == 200, r.text
                 d = r.json()
                 assert len(d.get("devices", d.get("items", []))) == 0
-                me = (await c.get("/api/scope-grants/me")).json()
-                assert me["tenant_wide"] is False and me["synthesis"] == "agent"
+                # A29.9: the self-scope read left the machine plane, and
+                # its machine-safe replacement is A6-4B's. The authority
+                # for "not synthesized" is the in-process resolver above;
+                # what is asserted over HTTP now is that the CONSTRUCTION
+                # of the agent's authority is no longer machine-readable.
+                me = await c.get("/api/scope-grants/me")
+                assert me.status_code == 403
+                assert "External Agent API plane" in me.text
         # A scoped agent still reaches exactly its rows: nothing lost.
         kept = await _agent(sm, "Kept", scopes=[(SCOPE_SITE, estate["site-1"])])
         async with sm() as session:

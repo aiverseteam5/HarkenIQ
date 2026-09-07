@@ -4223,6 +4223,111 @@ print('restored:', item['provenance']['type'])
 "
 echo "0023 -> $CC_HEAD with $A63_TOTAL rows present: column re-added, zero backfilled"
 
+step "A6-4A/AB: the machine plane is DECLARED -- off-plane routes refuse"
+# A29.3. The defect: a machine principal reached 46 of 98 routes because
+# their permission happened to be in MACHINE_PRINCIPAL_CEILING, and
+# `fleet.view` alone opened 43. Proven here with a REAL machine token
+# against the REAL routes, not with a stubbed principal.
+A6_TOKEN=$(a6_token)
+[ -n "$A6_TOKEN" ] || { echo "A6-4A could not mint the machine token" >&2; exit 1; }
+
+# Off the plane: estate browsing, fleet intelligence, governance
+# construction. Each is a route the machine reached before A6-4A.
+for OFF in "/api/fleet/" "/api/learning/signals" "/api/campaigns/" \
+           "/api/outcomes/patterns" "/api/predictive/risk" "/api/warranty/" \
+           "/api/firmware/exposure" "/api/sites/" "/api/agents/" \
+           "/api/policies/" "/api/policies/autonomy" "/api/policies/stop-switch" \
+           "/api/tenant-settings/scope-enforcement" \
+           "/api/tenant-settings/scope-enforcement/impact" \
+           "/api/scope-grants/me" "/api/autonomy/" "/api/capabilities/" \
+           "/api/operational-agents/" "/api/operational-agents/catalogue"; do
+  A64_CODE=$(curl -s -o /tmp/a64_off.json -w '%{http_code}' \
+    -H "Authorization: Bearer $A6_TOKEN" "http://localhost:8090$OFF")
+  [ "$A64_CODE" = "403" ] || {
+    echo "machine reached $OFF -> $A64_CODE, want 403" >&2
+    head -c 300 /tmp/a64_off.json >&2; exit 1; }
+  grep -q "External Agent API plane" /tmp/a64_off.json || {
+    echo "$OFF refused for the wrong reason" >&2; cat /tmp/a64_off.json >&2
+    exit 1; }
+done
+echo "19 off-plane routes refused a real machine token"
+
+# On the plane, with the job bound: unchanged.
+for ON in "/api/attention/" "/api/incidents/" \
+          "/api/operational-agents/$A6_AGENT" \
+          "/api/operational-agents/$A6_AGENT/runtime" \
+          "/api/operational-agents/$A6_AGENT/ingress"; do
+  curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+    "http://localhost:8090$ON" > /dev/null || {
+      echo "on-plane route $ON refused a bound machine token" >&2; exit 1; }
+done
+echo "on-plane reads unchanged for a bound agent"
+
+# A HUMAN is unaffected: the narrowing is machine-only.
+for HUM in "/api/fleet/" "/api/policies/" "/api/autonomy/" "/api/capabilities/" \
+           "/api/scope-grants/me"; do
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090$HUM" > /dev/null || {
+      echo "the narrowing hit a HUMAN read: $HUM" >&2; exit 1; }
+done
+echo "human reads unaffected"
+
+step "A6-4A/AC: the BINDING decides, not the permission (A29.6)"
+# Agent B holds the same ceiling permissions and a different binding set.
+# Nothing but the job can explain a different answer. Its token is
+# re-minted: the one from earlier in the run is past its 300s lifetime.
+B_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$A6_B&client_secret=$B_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$B_TOKEN" ] || { echo "could not re-mint agent B's token" >&2; exit 1; }
+A64_B_ATT=$(curl -s -o /tmp/a64_b.json -w '%{http_code}' \
+  -H "Authorization: Bearer $B_TOKEN" "http://localhost:8090/api/attention/")
+A64_B_SELF=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/runtime")
+[ "$A64_B_SELF" = "200" ] || {
+  echo "agent B could not read its OWN record ($A64_B_SELF): 'self' needs no binding" >&2
+  exit 1; }
+echo "self read needs no binding (B self=$A64_B_SELF); attention=$A64_B_ATT"
+
+step "A6-4A/AD: an authenticated refusal is metered, and bounded (A25.10)"
+# A refused probe is charged to the agent the TOKEN names, so a runtime
+# cannot sweep the plane for free. The read window is also the BOUND: one
+# row per minute, then 429 -- deliberately no audit row per refusal, which
+# would amplify traffic a misconfigured runtime generates at will.
+A64_READS_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+for _ in 1 2 3 4 5; do
+  curl -s -o /dev/null -H "Authorization: Bearer $A6_TOKEN" \
+    "http://localhost:8090/api/fleet/"
+done
+A64_READS_AFTER=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$((A64_READS_AFTER - A64_READS_BEFORE))" -ge 5 ] || {
+  echo "5 refused probes cost $((A64_READS_AFTER - A64_READS_BEFORE)) reads: \
+an authenticated refusal was free" >&2; exit 1; }
+A64_ROWS=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$A64_ROWS" -le 3 ] || {
+  echo "the refusal meter grew to $A64_ROWS rows: storage follows traffic" >&2
+  exit 1; }
+echo "5 refusals charged $((A64_READS_AFTER - A64_READS_BEFORE)) reads in $A64_ROWS row(s)"
+
+curl -sf "http://localhost:8090/metrics" > /tmp/a64_metrics.txt
+grep -q "cc_route_surface_refused_total" /tmp/a64_metrics.txt || {
+  echo "the surface refusal is not on the metrics surface" >&2; exit 1; }
+grep -qE "cc_route_surface_refused_total_[a-z_]+ " /tmp/a64_metrics.txt || {
+  echo "no bounded reason on the refusal metric" >&2; exit 1; }
+grep -q "$A6_AGENT" /tmp/a64_metrics.txt && {
+  echo "an agent id reached the unauthenticated metrics surface" >&2; exit 1; }
+echo "refusals counted by bounded reason; no identifier on /metrics"
+
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \
