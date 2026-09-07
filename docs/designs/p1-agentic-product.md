@@ -3178,3 +3178,195 @@ thing A27.4 refuses to assert.
 The queue's `origin` lane is deliberately untouched, and there is a test
 whose only job is to fail if a later change merges the two words back
 together.
+
+## §32 — PX0 / Amendment A28: the HarkenIQ experience architecture
+
+Every design section before this one reasoned about a capability. This
+one reasons about the surface a human reaches every capability through,
+and it exists because that surface is now the platform's weakest layer.
+
+### The measurement, and why it is not a styling problem
+
+HarkenIQ can answer, for any action on any device at any moment: what the
+node can execute, what policy permits, whose scope reaches it, whether
+autonomy grants it, how many humans must approve, what the blast radius
+is, what happened, and what the fleet learned. Very few operations
+platforms can answer half of that.
+
+The Console renders it as 37 pages with **nine links between them**.
+
+The numbers that matter are not the 519 inline styles. They are these:
+**zero** uses of `useSearchParams`, so nothing an operator looks at can be
+sent to a colleague; **nine** cross-surface links, of the sixteen the
+narrative needs; and one — Incidents to the approvals *list*, not to the
+approval. An incident commander cannot say "look at this approval". They
+can only say "go to approvals and search".
+
+That is a collaboration failure, not a polish gap, and it is why PX is a
+product program rather than a restyle.
+
+### The house pattern, one layer further out
+
+`receipts.py` already composes the narrative as named blocks —
+`submission_block`, `proposal_block`, `approval_block`, `execution_block`,
+`outcome_block`, `terminal_block`, assembled by `build_receipt()`.
+
+A6-2 built it for machines. No human surface consumes it.
+
+So the external agent runtime receives a governed lifecycle receipt and
+the human operator receives a list. This ledger has recorded the same
+shape ten times inside the backend — declared, written, and unreadable at
+the point where somebody must act on it. A28 is its first appearance at
+the product layer, and recognising it is what makes the case view a
+projection to be proven rather than a system to be invented.
+
+### Why the primitive layer is healthy and the product still is not
+
+`PageHeader` is used by 35 of 37 pages, `Toast` by 34, `EmptyState` by 30,
+`StatusBadge` by 29, `DataTable` by 28, breadcrumbs by 35. That is not a
+team ignoring its own components.
+
+What does not exist is the layer above them. There is no
+`GovernanceDecision`, no `EvidencePanel`, no `EffectiveScope`, no
+`BlastRadius`. So a page that must show a governance verdict builds one
+out of raw divs — and `detailRow`, `detailLabel` and `detailValue` are
+each declared fourteen separate times because the label/value pair is the
+most common domain idea in the product and has no home.
+
+The 519 inline styles are a symptom of a missing L2, not of carelessness.
+Consolidating them without building L2 would produce 519 new literals.
+
+### Why A6-4 comes first
+
+A new human read at `fleet.view` is automatically reachable by every
+machine principal, because `fleet.view` is one broad key. A27.12 recorded
+that a machine principal reaches a large share of the declared routes for
+exactly this reason and assigned it to A6-4.
+
+Adding human projection endpoints before that boundary is corrected means
+retrofitting machine isolation onto surfaces built without it. So the
+order is A6-4, then PX — and PX0 is ratified now precisely so that the
+architecture is settled while the boundary work happens.
+
+### Why the case view is conditional
+
+The first draft of this architecture said the human case view would cost
+"almost no backend", on the strength of `build_receipt()`. That was wrong,
+and the independent review was right to stop it.
+
+`build_receipt()` is a lifecycle *skeleton* keyed on a submission. A human
+case view additionally needs a canonical operation identity, correlation
+across incident/proposal/approval/execution/outcome, campaign and device
+relationships, tenant and scope enforcement, bounded evidence, a
+human-versus-machine projection split, and stable deep-link semantics.
+
+None of those is proven to exist yet. So PX5A proves them from the
+repository before PX5B builds anything, and the standing rule is that **no
+case table or state machine is created merely because the UI would like
+one**. The UI tells the story. It does not own the story.
+
+### D-IA4: the same rule, applied to the Attention home
+
+Attention becomes the tenant home because it is the only surface that
+answers "what needs me now", and because a ranked, server-composed answer
+beats a grid of static tiles. But an operational home implies an
+operational posture, and posture is exactly where a UI is tempted to
+derive a conclusion.
+
+Three of the proposed lenses map to contracts that exist — safety posture
+(`FleetSafetyState` / `cc_safety_state`), effective scope (`/api/me` →
+`ResolvedScope`), freshness (poll state). "Fleet health" and "active
+automation" do not, yet.
+
+Composing separately authoritative lenses visually is fine. Deriving a
+new health conclusion to fill a card is a second aggregation authority,
+and it is forbidden for the same reason the case view is a projection. A
+lens without a canonical contract is deferred, not manufactured — the
+D-AX3 treatment, applied a second time.
+
+### The context bar is the piece a generic dashboard does not have
+
+Tenant · effective scope · enforcement posture · safety state · freshness,
+permanently.
+
+Under strict enforcement a site-scoped operator sees a genuinely
+different estate from a tenant owner, and today nothing on screen says
+so. An operator who does not know their own reach reads an empty incident
+list as "nothing is wrong". A tenant stop switch denies every action
+class and is currently discoverable only by navigating into Autonomy.
+
+Safety that is visible only where you went looking for it is not a safety
+indicator. Every input to this bar is already a server contract; none of
+it is new.
+
+### Why brand foundation cannot wait for PX8
+
+The original plan put brand at the end, on the reasoning that a brand
+applied to an incoherent product makes the incoherence look intentional.
+That reasoning holds for brand *completion*. It does not hold for brand
+*foundation*.
+
+PX2 through PX7 design a shell, a component layer and six product
+surfaces. All of that is designed against some accent, some type scale,
+some density and some elevation philosophy. If those are provisional, the
+work is done twice.
+
+So the foundation — accent direction, semantic-colour independence, type
+and mono principles, density, elevation, icon direction, mark constraints
+— lands at PX1B and constrains everything after it. The artwork lands at
+PX8.
+
+The mono principles are not decoration: this product's screens are full
+of SHAs, service tags, interface names, plan hashes and directive ids, and
+`0/O` and `1/l/I` must be unambiguous.
+
+### D-B4: what HarkenIQ should feel like
+
+Operational precision, authority, safety, explainability, calm.
+
+An enterprise control system, not a consumer AI assistant. An operator
+stares at this for eight hours. Severity dominates brand colour when
+something is wrong — a product whose accent competes with its critical
+state has mis-ranked its own information. Whitespace clarifies hierarchy
+rather than thinning density. Animation communicates a state transition
+or it does not appear.
+
+This is recorded as a lock because it is the decision most easily eroded
+one slice at a time.
+
+### Why accessibility is per-slice and not a closing act
+
+Treating WCAG as a PX8 cleanup means every surface built between now and
+then is built wrong and then reworked. It also misreads what the standard
+buys here: keyboard-first operation, managed focus and status encoded in
+shape as well as colour are simply what a NOC surface needs at 3am.
+
+So every slice carries its applicable gate, and PX8 produces the audit
+evidence rather than the remediation.
+
+### Why the slices are small
+
+The first draft had eight large slices, including one that built twelve
+domain components at once. Twelve components plus primitive consolidation
+plus accessibility infrastructure is not a reviewable PR, and a component
+catalogue built ahead of its consumers is a showroom.
+
+Hence D-DS6 — a component enters production with a workflow that uses it —
+and the split into PX3A/B/C/D, PX4A/B, PX5A/B, PX1A/B. Fifteen slices
+instead of eight, each independently valuable and independently
+reviewable. That is sequencing discipline; the end-state product is
+unchanged.
+
+### The risk this section exists to name
+
+PX is uniquely able to create a second governance universe by accident,
+because **a UI that computes an answer is a second authority**. A page
+that decides locally for a snappier interaction, a dashboard that derives
+a health summary, a mobile approval that drops the blast radius to fit a
+screen — each is a divergence from the enforcement path, and each would
+look like a UI improvement in review.
+
+That is why P1, D-IA4, D-AX2, D-AC3 and the per-slice invariant assertion
+are all locks rather than guidance, and why every PX slice must assert
+that no second RBAC system, scope resolver, capability authority,
+approval path, execution engine or identity model was introduced.
