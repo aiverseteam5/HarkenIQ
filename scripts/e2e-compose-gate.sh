@@ -2504,13 +2504,25 @@ A3_TOKEN=$(a3_token "$A3_SECRET")
 [ -n "$A3_TOKEN" ] || { echo "client_credentials grant failed" >&2; exit 1; }
 echo "machine token obtained"
 
-step "A3: the machine principal reads what the ceiling allows — and no more"
-for READ in fleet incidents attention; do
+step "A3: the machine principal reads what the ceiling AND the plane allow"
+# A29.3 split one question into two. The CEILING admits a permission; the
+# PLANE admits a route. This agent binds `incidents` and `fleet`, so it
+# holds fleet.view and incident.view exactly as before -- and `/api/fleet/`
+# is no longer part of the External Agent API plane, so the permission it
+# still holds no longer reaches it.
+for READ in incidents attention; do
   CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A3_TOKEN" \
     "http://localhost:8090/api/$READ/")
   [ "$CODE" = "200" ] || { echo "machine read /api/$READ/ -> $CODE, want 200" >&2; exit 1; }
 done
-echo "fleet.view / incident.view reads OK"
+OFFPLANE=$(curl -s -o /tmp/a3_off.json -w '%{http_code}' \
+  -H "Authorization: Bearer $A3_TOKEN" "http://localhost:8090/api/fleet/")
+[ "$OFFPLANE" = "403" ] || {
+  echo "machine read /api/fleet/ -> $OFFPLANE, want 403 (A29.7)" >&2; exit 1; }
+grep -q "External Agent API plane" /tmp/a3_off.json || {
+  echo "/api/fleet/ refused a machine for the wrong reason" >&2
+  cat /tmp/a3_off.json >&2; exit 1; }
+echo "on-plane reads 200; fleet.view held and /api/fleet/ off the plane (403)"
 
 # The intersection is PER AGENT, not a global grant: an agent that never
 # bound `incidents` does not get incident.view, even though the ceiling
@@ -2531,14 +2543,24 @@ N_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
   -d "grant_type=client_credentials&client_id=op-agent-$A3_NARROW&client_secret=$N_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
-    http://localhost:8090/api/fleet/)" = "200" ] \
-  || { echo "an agent with attention+autonomy lost fleet.view" >&2; exit 1; }
+# A29.6, live and at its sharpest. This agent holds fleet.view -- A0's
+# REQUIRED_READS gave it attention+autonomy, which map to exactly that --
+# and the agent above holds fleet.view too. The PERMISSION is identical.
+# Only the binding differs, so only the binding can explain the answer.
+NARROW_ATT=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $N_TOKEN" http://localhost:8090/api/attention/)
+[ "$NARROW_ATT" = "200" ] || {
+  echo "an agent with the forced attention binding lost /api/attention/ ($NARROW_ATT)" >&2
+  exit 1; }
+NARROW_FLEET=$(curl -s -o /tmp/a3_narrow.json -w '%{http_code}' \
+  -H "Authorization: Bearer $N_TOKEN" http://localhost:8090/api/fleet/)
+[ "$NARROW_FLEET" = "403" ] || {
+  echo "an agent that never bound fleet reached /api/fleet/ ($NARROW_FLEET)" >&2; exit 1; }
 NARROW=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
   http://localhost:8090/api/incidents/)
 [ "$NARROW" = "403" ] || {
   echo "an agent that never bound incidents got incident.view ($NARROW)" >&2; exit 1; }
-echo "unbound read refused (403): the intersection is per agent"
+echo "same ceiling permission, different bindings: attention 200, fleet 403, incidents 403"
 
 step "A3: the machine principal CANNOT approve its own work (the headline)"
 APPR=$(curl -s -o /tmp/a3_appr.json -w '%{http_code}' -X POST \
@@ -2884,13 +2906,16 @@ if [ -n "${N_TOKEN:-}" ]; then
     -d '{"entries":[]}' http://localhost:8090/api/capabilities/catalogue)
   [ "$M_CODE" = "403" ] || {
     echo "a live machine principal rewrote the catalogue ($M_CODE)" >&2; exit 1; }
-  # And it can still READ it -- fleet.view is inside the A20.3 ceiling.
+  # A29.7: it can no longer READ it either. The A20.3 ceiling still admits
+  # fleet.view -- that has not moved -- but the capability registry left the
+  # machine plane, and governed discovery is A6-4B's to design deliberately
+  # rather than something a runtime scrapes off a human fleet API.
   R_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $N_TOKEN" \
     http://localhost:8090/api/capabilities/catalogue)
-  [ "$R_CODE" = "200" ] || {
-    echo "a machine principal cannot read the catalogue ($R_CODE)" >&2; exit 1; }
-  echo "live machine principal: read 200, write 403 -- it cannot widen its own capability"
+  [ "$R_CODE" = "403" ] || {
+    echo "the capability catalogue is still machine-readable ($R_CODE)" >&2; exit 1; }
+  echo "live machine principal: read 403, write 403 -- discovery is A6-4B's"
 else
   echo "no live machine token in scope; covered by unit tests"
 fi
