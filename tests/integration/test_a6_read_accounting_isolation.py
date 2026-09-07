@@ -214,7 +214,7 @@ async def test_concurrent_reads_are_counted_exactly_once_each():
     try:
         async def one():
             async with sm() as session:
-                permitted, _ = await admit_read(
+                permitted, _, _window = await admit_read(
                     session, tenant_id=TENANT, agent_id=agent_id,
                 )
                 await session.commit()

@@ -558,7 +558,7 @@ class TestReadMeteringIsAtomic:
         async def read_once():
             async with sessionmaker() as session:
                 await gate.wait()
-                permitted, used = await admit_read(
+                permitted, used, _window = await admit_read(
                     session, tenant_id=tenant, agent_id=agent)
                 await session.commit()
                 return permitted, used
@@ -605,7 +605,7 @@ class TestReadMeteringIsAtomic:
             async with sessionmaker() as session:
                 for _ in range(5):
                     await admit_read(session, tenant_id=tenant, agent_id=a)
-                _permitted, used_b = await admit_read(
+                _permitted, used_b, _w = await admit_read(
                     session, tenant_id=tenant, agent_id=b)
                 await session.commit()
             assert used_b == 1

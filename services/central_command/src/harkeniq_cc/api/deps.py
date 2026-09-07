@@ -157,24 +157,27 @@ async def enforce_route_surface(request: Request, user: UserContext) -> None:
             _charge_machine_read, _record_surface_refusal_window,
         )
 
-        # ONE WINDOW for the whole refusal: the charge opens the row and
-        # returns which one, and the evidence updates THAT row. Computing
-        # it twice would straddle a minute boundary and drop the evidence.
-        window = None
+        # ONE WINDOW for the whole refusal. The charge computes it once,
+        # opens that row, and hands it back; the evidence updates THAT
+        # row. Nothing here computes a window, so nothing can drift across
+        # a minute boundary, and the caller cannot supply one.
         try:
             window = await _charge_machine_read(request, user)
         except HTTPException as exhausted:
             # Already over its polling allowance: 429 is the truer answer,
-            # and it is what stops the probe.
+            # and it is what stops the probe. No row was charged, so there
+            # is no row to mark.
             if exhausted.status_code == 429:
                 raise
-        # A29.16: durable, attributable, and bounded by the SAME window --
-        # a process-local counter cannot tell an operator WHICH runtime is
-        # misconfigured, and a row per refusal would be the amplifier
-        # A24.13 and A27.13 both refused.
-        await _record_surface_refusal_window(
-            request, user, reason, window=window,
-        )
+            window = None
+        if window is not None:
+            # A29.16: durable, attributable, bounded by that same window --
+            # a process-local counter cannot tell an operator WHICH runtime
+            # is misconfigured, and a row per refusal would be the
+            # amplifier A24.13 and A27.13 both refused.
+            await _record_surface_refusal_window(
+                request, user, reason, window=window,
+            )
     record_surface_refusal(reason)
     raise HTTPException(status_code=403, detail=detail)
 

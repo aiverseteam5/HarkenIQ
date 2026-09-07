@@ -3177,6 +3177,40 @@ class AgentReadWindowRepo:
             )
         ).scalar() or 0)
 
+    async def refusals_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> tuple[dict[str, int], Optional[datetime]]:
+        """Refusal evidence in the window, and the most recent one.
+
+        Two aggregates the database computes over rows bounded by the
+        window alignment -- never a row-per-request read (A27.9). A READ:
+        an operator inspecting a runtime's refusals must not spend that
+        runtime's allowance, exactly as `usage` established.
+        """
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(CCAgentReadWindow.surface_refused), 0),
+                    func.coalesce(
+                        func.sum(
+                            CCAgentReadWindow.refused_surface_not_allowed), 0),
+                    func.coalesce(
+                        func.sum(CCAgentReadWindow.refused_job_not_bound), 0),
+                    func.max(CCAgentReadWindow.last_surface_refused_at),
+                ).where(
+                    CCAgentReadWindow.tenant_id == tenant_id,
+                    CCAgentReadWindow.agent_id == agent_id,
+                    CCAgentReadWindow.window_start >= since,
+                )
+            )
+        ).one()
+        return {
+            "total": int(row[0] or 0),
+            "surface_not_allowed": int(row[1] or 0),
+            "machine_job_not_bound": int(row[2] or 0),
+        }, row[3]
+
     async def usage(
         self, *, tenant_id: str, agent_id: str, window_start: datetime
     ) -> int:

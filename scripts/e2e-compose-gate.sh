@@ -4443,6 +4443,45 @@ grep -q "$A6_AGENT" /tmp/a64_metrics.txt && {
   echo "an agent id reached the unauthenticated metrics surface" >&2; exit 1; }
 echo "refusals counted by bounded reason; no identifier on /metrics"
 
+# A29.16: THE EVIDENCE HAS A PRODUCTION READER. Durable, bounded and
+# attributable is worth nothing if no operator can ask for it, so it
+# rides the EXISTING A6-3 ingress-health contract -- same route, same
+# `fleet.view`, same scope, same machine-self rule, no new permission.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" \
+  > /tmp/a64_ingress_ref.json
+python3 -c "
+import json
+d = json.load(open('/tmp/a64_ingress_ref.json'))
+b = d['surface_refusals']
+assert b['total'] >= 5, ('the operator cannot see the refusals', b)
+assert b['by_reason']['surface_not_allowed'] >= 5, b
+assert set(b['by_reason']) == {'surface_not_allowed', 'machine_job_not_bound'}, b
+assert b['last_surface_refused_at'], b
+# Two different facts, never merged: a governed submission that was
+# CONSIDERED and declined is not a request refused at the plane.
+assert 'refused' in d['submission_activity'], d['submission_activity']
+blob = json.dumps(d).lower()
+for banned in ('campaigns', 'query', 'traceback', 'select ', 'client_id'):
+    assert banned not in blob, banned
+print('operator reads %d surface refusal(s), %d surface_not_allowed, last at %s'
+      % (b['total'], b['by_reason']['surface_not_allowed'],
+         b['last_surface_refused_at'][:19]))
+"
+# The machine reads its OWN and no other, through the unchanged A27.8 rule.
+A64_SELF_REF=$(curl -s -o /tmp/a64_self_ref.json -w '%{http_code}' \
+  -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress")
+[ "$A64_SELF_REF" = "200" ] || {
+  echo "the agent could not read its own refusal evidence ($A64_SELF_REF)" >&2
+  exit 1; }
+python3 -c "
+import json
+b = json.load(open('/tmp/a64_self_ref.json'))['surface_refusals']
+assert b['total'] >= 5, b
+print('machine self-read sees its own refusals:', b['total'])
+"
+
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \

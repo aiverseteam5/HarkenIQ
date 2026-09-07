@@ -240,6 +240,24 @@ async def build_ingress_health(
         tenant_id=tenant_id, agent_id=agent.id,
         window_start=read_window_start(now),
     )
+    # A29.16: the refusal evidence A6-4A records has no other reader. It
+    # answers the operator's question -- WHICH runtime is being refused,
+    # how often, for which closed reason, and how recently -- and it
+    # belongs on this contract rather than a second one, because a second
+    # telemetry vocabulary for the same runtime is how a surface ends up
+    # answering neither question.
+    #
+    # Read on the SAME horizon as the attempt counts, so an operator sees
+    # one window rather than several that disagree.
+    # Named distinctly: `refusals` below is the submission refusal SAMPLE,
+    # a different fact on a different ledger. Reusing the name silently
+    # overwrote this dict, which is the kind of collision a projection
+    # built by naming what may pass is supposed to make impossible.
+    surface_counts, surface_last_at = await AgentReadWindowRepo(
+        session
+    ).refusals_since(
+        tenant_id, agent.id, read_window_start(window_start),
+    )
     refusals, last_accepted_at = await AgentSubmissionRepo(session).recent_refusals(
         tenant_id, agent.id, limit=REFUSAL_SAMPLE,
     )
@@ -292,6 +310,22 @@ async def build_ingress_health(
             "limit": READ_MAX_PER_WINDOW,
             "exhausted": reads_used >= READ_MAX_PER_WINDOW,
         },
+        # A29.16: refusals at the API PLANE -- a route this runtime may
+        # not use, or a job its operator never bound. Distinct from
+        # `submission_activity.refused`, which counts governed submissions
+        # that were considered and declined; these were never considered
+        # at all. Named on the same horizon as the rest of this contract.
+        "surface_refusals": {
+            "window_seconds": ATTEMPT_WINDOW_S,
+            "total": surface_counts["total"],
+            # The CLOSED reason vocabulary, one count each. No path, query,
+            # body or error text appears here or in the store behind it.
+            "by_reason": {
+                "surface_not_allowed": surface_counts["surface_not_allowed"],
+                "machine_job_not_bound": surface_counts["machine_job_not_bound"],
+            },
+            "last_surface_refused_at": _iso(surface_last_at),
+        },
         # A27.9: bounded sample, newest first, never the whole ledger.
         "recent_refusals": [
             {
@@ -313,7 +347,11 @@ async def build_ingress_health(
             "session for an external runtime and claims none: "
             "`last_authenticated_at` is the last persisted authentication "
             "observation, not a connection. The counts and timestamps are "
-            "authoritative; `activity_state` is a summary over them."
+            "authoritative; `activity_state` is a summary over them. "
+            "`surface_refusals` counts requests refused at the API plane "
+            "-- a route this runtime may not use, or a job its operator "
+            "never bound -- which is a different fact from a governed "
+            "submission that was considered and declined."
         ),
     }
 
