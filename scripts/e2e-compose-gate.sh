@@ -2567,11 +2567,23 @@ APPR=$(curl -s -o /tmp/a3_appr.json -w '%{http_code}' -X POST \
   -H "Authorization: Bearer $A3_TOKEN" \
   "http://localhost:8090/api/approvals/anything/approve")
 [ "$APPR" = "403" ] || { echo "machine token approved ($APPR), want 403" >&2; cat /tmp/a3_appr.json >&2; exit 1; }
+# A29.3: refused BEFORE the permission is even considered -- the approval
+# route is not on the machine plane at all, which is a stronger refusal
+# than lacking the permission. The permission fact is asserted DIRECTLY
+# against the ceiling rather than read out of a message, so this step
+# still fails if `action.approve` is ever admitted to it.
 python3 -c "
 import json
 d = json.load(open('/tmp/a3_appr.json'))['detail']
-assert 'action.approve' in d, d
+assert 'External Agent API plane' in d, d
 print('approval refused:', d[:80])
+"
+docker compose exec -T central-command python -c "
+import sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING as C
+assert 'action.approve' not in C, C
+print('and the ceiling still excludes action.approve:', sorted(C))
 "
 
 step "A3: every other permission in the vocabulary is refused"
