@@ -2644,3 +2644,330 @@ Operational Agent proposal history. The queue's `origin` LANE is
 untouched and provenance is never merged into it (A27.2); the submission
 id is shown only for `external_ingress`, as bounded correlation detail
 that confers nothing (A25.2). No authorization internal is exposed.
+
+### A28 — 2026-09-07 — PX0: the HarkenIQ product-experience architecture (decided: Vinod)
+
+Every amendment to this section so far has governed a platform
+capability. This one governs the **surface through which a human reaches
+every capability already built**, and it is recorded because that surface
+is now the platform's weakest layer by a wide margin.
+
+Ratified after an independent architecture review, with amendments. The
+assessment was measured on `main` at
+`3e8369e5bf31691e4e0a0982420dfe4cbe093270` (A6-3 merged, main verified).
+
+**A28.1 — The finding, measured.** HarkenIQ can state, for any action on
+any device at any moment, what the node can execute, what policy permits,
+whose scope reaches it, whether autonomy grants it, how many humans must
+approve, what the blast radius is, what happened, and what the fleet
+learned. The Console renders that as **37 independent pages with nine
+links between them**. Measured on the assessed commit: 519 inline
+`style={{}}` sites and 310 locally declared `CSSProperties` constants,
+with one concept redeclared up to fifteen times; **zero** uses of
+`useSearchParams`, so no incident, proposal, approval, campaign wave or
+agent has a URL; **zero** `@media` queries in either UI; 53 `<label>`
+elements against 6 `htmlFor`; one `aria-live` region; no focus trap or
+focus restore in the drawer or the dialog; 29 pages choosing a status
+variant with no shared mapping; `GET /api/attention` rendered by a page
+titled "Risk & Exposure"; and the string "External Agent" appearing
+**zero** times, though A6-1, A6-2 and A6-3 shipped that actor class.
+
+**A28.2 — It is the house pattern, at the product layer.**
+`harkeniq_cc/receipts.py` already composes the operating narrative as
+named blocks — `submission_block`, `proposal_block`, `approval_block`,
+`execution_block`, `outcome_block`, `terminal_block`, assembled by
+`build_receipt()`. It was built in A6-2 **for machines**, and no human
+surface consumes it; the Console renders the flat `proposal_dict`
+instead. Declared, written, and unreadable at the point where somebody
+must act on it — the eleventh recorded instance, and the first outside
+the backend. The external agent receives a governed lifecycle receipt;
+the human operator receives a list.
+
+**A28.3 — What PX is, and is not.** PX is the connective human operating
+layer over the governed architecture that already exists. It is NOT a
+cosmetic redesign, NOT a frontend rewrite, and NOT a second governance
+system. It creates no second domain model, RBAC system, scope resolver,
+capability authority, autonomy model, approval system, execution engine,
+identity model or agent governance plane. Human UI, external agent
+runtimes, future MCP clients and integrations all remain consumers of the
+SAME governed capability plane, and the Harken Node remains final
+execution authority.
+
+**A28.4 — The operating narrative.** Nine stages, in order, each mapping
+to contracts that already exist:
+
+    Attention -> Evidence -> Agent Assessment -> Recommendation ->
+    Capability -> Governance -> Execution -> Outcome -> Learning
+
+`Capability` is a stage and not a footnote: A17 established three
+distinguishable block reasons — not implemented anywhere, not permitted
+by this node, not declared/unknown — and collapsing them into
+"unavailable" would discard the distinction the platform pays to
+maintain, making a fleet mid-upgrade indistinguishable from one that
+cannot do the thing at all.
+
+**A28.5 — Sequencing (amendment).** **A6-4 is the next production
+implementation slice; PX implementation follows it.** A6-4 establishes
+the External Agent API Plane boundary, and new human projections must not
+widen machine reach while that boundary is unresolved — a machine
+principal currently reaches a large share of the declared routes because
+`fleet.view` is one broad key (A27.12). PX architecture is ratified by
+this amendment; **no PX production implementation runs concurrently with
+A6-4.**
+
+**A28.6 — Ratified principles.** P1 the screen never decides — every
+governance answer is server-composed and rendered verbatim, because a
+page that reaches its own verdict can show an operator something the
+enforcement path will not honour. P2 everything an operator can see, they
+can link to. P3 UNKNOWN is a first-class rendered state, never a blank or
+an optimistic default (A17.4, A19.9, A27.4 at the data layer; the same
+rule at the presentation layer). P4 a refusal surfaces the server's own
+reason and names the blocking condition. P5 plumbing is not product. P6
+one case, many lenses. P7 freshness is content, and silence never renders
+as health.
+
+**A28.7 — Canonical terminology.** "Agent" is never a bare noun in
+customer-facing text. The three actors are **Harken Node** (L1, the
+per-device agent, final execution authority), **Operational Agent** (the
+governed, scoped, budgeted actor a tenant configures) and **External
+Agent Runtime** (a third-party runtime holding a machine identity,
+submitting by reference). **Device** is the physical hardware; a Harken
+Node is HarkenIQ running on it, and the two are not interchangeable. The
+customer-facing planes are **HarkenIQ Central Command** and **HarkenIQ
+Site Manager**. No code is renamed by this amendment; URLs move once,
+with redirects, in PX2.
+
+**A28.8 — Information architecture.** Six tenant groups: OPERATE
+(Attention, Incidents, Approvals, Campaigns) · INFRASTRUCTURE (Sites &
+Fleet, Harken Nodes, Capabilities) · AGENTS (Operational Agents, Agent
+Activity) · INTELLIGENCE (Outcomes & Reliability, Learning, Predictive
+Risk) · GOVERNANCE (Autonomy, Policies, Organization, Access, Audit) ·
+ADMINISTRATION (Users, Subscription & Usage, Downloads, Support,
+Marketplace). Autonomy sits in GOVERNANCE and not INTELLIGENCE, because
+S5 built `/api/autonomy` as a decision boundary and filing it as an
+insight would tell an operator it is a report. The platform plane keeps
+its own IA and never adopts tenant group names. Six groups / five items
+is a **strong design constraint, not a constitutional invariant**
+(D-IA3); a proven product need may change it through normal ratification.
+
+**A28.9 — Attention is the tenant operational home (amendment).**
+`/t/{tenant}` opens Attention, not a generic Overview — it is the only
+surface that answers "what needs me now", it is already ranked
+server-side, and it is the read every actor in the platform holds. It is
+NOT today's Risk & Exposure page renamed. It composes existing governed
+lenses: operational posture, ranked attention, active incidents, pending
+approvals, active campaign/execution state, stale infrastructure, recent
+consequential outcomes. It creates **no second aggregation authority**;
+every summary comes from a canonical server contract. There is no
+separate Overview dashboard.
+
+**A28.10 — D-IA4: every Attention lens must prove its contract.** The
+same architectural rule A28.13 places on the case view. For each named
+lens PX2 documents (1) the canonical backing contract, (2) its
+authorization and scope treatment, (3) its freshness semantics, (4) its
+empty and unknown semantics. **A lens with no canonical authoritative
+contract is DEFERRED, not invented.** Specifically: "fleet health" and
+"active automation" are not yet shown to resolve to a single canonical
+read, and neither may be manufactured to fill a dashboard card. The UI
+may COMPOSE separately authoritative lenses visually; it may NOT
+independently derive a new governance or health conclusion.
+
+**A28.11 — The persistent operational context bar.** The shell states, at
+all times: tenant · effective scope · enforcement posture · safety state ·
+freshness. Every one is an existing server contract (`ResolvedScope` via
+`/api/me`, `cc_tenant_settings.enforcement`, `FleetSafetyState`, the stop
+switch). This is not optional chrome: under strict enforcement a
+site-scoped operator sees a genuinely different estate from a tenant
+owner, and an operator who does not know their own reach will read an
+empty list as "nothing is wrong". A tenant stop switch denies every
+action class and must be visible from every screen, not only from the
+Autonomy page.
+
+**A28.12 — Design-system architecture.** Four layers: L0 accessible
+primitives (headless behaviour only, third-party permitted) → L1
+HarkenIQ primitives (already adopted at 28–35 of 37 pages) → L2 HarkenIQ
+**domain** components (missing entirely, which is why the 519 inline
+styles exist) → L3 product experiences (composition only). **No
+third-party framework owns HarkenIQ's product language above L0.** The
+token set is completed before anything is restyled. Styling is statically
+extracted; no runtime CSS-in-JS. One semantic status module owns domain
+status → severity for every platform enumeration, and Site Manager
+imports the same module. `console-ui/src/proposalProvenance.ts` (A27.14)
+is the reference shape for every L2 component: a closed vocabulary, the
+server's own reading rule applied client-side so the two cannot disagree,
+unrecognised values collapsing to a first-class unknown, and a projection
+returning exactly what may pass.
+
+**A28.13 — The Governed Operation view is a read projection, and its
+endpoint is conditional.** D-AX2 is ratified: the case view is a
+projection over canonical objects, never an authority, workflow engine,
+state machine or persistence model; a stage with no data renders as *not
+reached*, which is a real state. D-AX3 — a human projection endpoint —
+is **CONDITIONAL** pending PX5A. The earlier characterisation that it
+would cost "almost no backend" was wrong and is withdrawn:
+`build_receipt()` supplies a lifecycle skeleton, not a canonical human
+case identity. Before any endpoint is approved, PX5A must prove from the
+repository: canonical operation identity; whether one stable identifier
+spans incident, proposal, approval, execution and outcome; cross-object
+correlation; incident-to-proposal linkage; campaign/device relationships;
+tenant and scope authorization; bounded evidence; human-versus-machine
+projection separation; and stable deep-link semantics. **No case table or
+state machine is created merely because the UI would like one.**
+
+**A28.14 — Governance is presented as eight distinct concepts.**
+Capability ≠ Permission ≠ Scope ≠ Autonomy ≠ Approval ≠ Execution ≠
+Outcome ≠ Learning, never merged into a single allowed/blocked indicator
+anywhere in the product. When an action cannot proceed, the UI names
+WHICH of the eight refused it. Governance reads as posture and changes as
+ceremony (the A26/A13 read-write split, expressed visually). Every
+governance object shows its own recovery path, because A23-3 already
+built the recovery endpoints.
+
+**A28.15 — Operational Agent experience.** The A19 activation ceremony —
+CREATE → CONFIGURE → PREFLIGHT → ACKNOWLEDGE → APPROVAL → ACTIVATE → RUN
+→ OBSERVE — is the server's, mirrored by the page and independently
+refused by the server in its own words. An External Agent Runtime is a
+distinct visual class: it holds a credential, submits by reference, is
+metered and can be throttled, none of which is true of the CC-resident
+evaluator. The 1,820-line agent page becomes six addressable views —
+identity, reach, capability, governance, readiness, activity — over the
+same contracts.
+
+**A28.16 — Site Manager positioning.** It remains **HarkenIQ Site
+Manager — Local Site Operations** and never becomes a second Central
+Command: no tenant switching, no RBAC surface, no autonomy
+configuration, no campaign orchestration, no cross-site anything. It
+shares HarkenIQ tokens, semantic status vocabulary and language; it does
+not necessarily share Central Command's layout, and its single-column
+density correctly signals a smaller scope. It gains durable URL routing
+(D-SM4). **Connectivity language is evidence-based (D-SM3, conditional):**
+absent an authoritative connectivity or heartbeat contract it must not
+claim *connected*, *online* or *offline*, and may state only factual
+observations — last successful Central Command exchange, last
+synchronization attempt, pending uploads, locally available actions, last
+directive received. This is A27.10's standard applied to a second surface.
+
+**A28.17 — Headless surfaces are a recorded decision, not an omission.**
+Machine proposal submission, token exchange, machine receipts, ingress
+accounting internals, outcome-correlation internals, SM→Node dispatch
+plumbing and any future MCP transport stay headless; the human sees
+decisions, exceptions, risk, progress and outcomes. Every capability with
+no human surface is classified either *headless by design*, with its
+reason, or *UI debt*, with an owning slice. `MACHINE_ONLY_ROUTES` is the
+existing mechanism and its assertion in both directions is the model.
+
+**A28.18 — Accessibility is a per-slice Definition of Done.** WCAG 2.2 AA
+is the HarkenIQ product standard. Every new or migrated primitive, page
+or surface satisfies its applicable accessibility requirements **when it
+is introduced**. PX8 is the formal audit and VPAT-evidence stage; it is
+**not** the first remediation stage. Non-negotiables: accessible names on
+every control; labels associated with controls; focus visible, trapped in
+overlays and restored on close; async results announced through a live
+region; status encoded in shape or text as well as colour; 4.5:1 body and
+3:1 large-text and UI-boundary contrast verified in both themes;
+`prefers-reduced-motion` respected.
+
+**A28.19 — Responsive scope, and mobile keeps full governance context.**
+Three widths: ≥1280px the design target; 768–1279px fully usable; <768px
+a deliberate subset — Attention, incident detail, approval and denial.
+**D-AC3 (LOCK):** mobile approval retains provenance, action, target,
+evidence, effective scope, policy, approval state, blast radius,
+reversibility, consequence and required confirmation. **No
+swipe-to-approve. No reduced governance path.** Mobile is a responsive
+presentation over the same backend authority and the same ceremony as
+desktop.
+
+**A28.20 — D-B4: HarkenIQ's visual personality (LOCK).** HarkenIQ
+communicates operational precision, authority, safety, explainability and
+calm. It must remain readable at enterprise operational density for
+prolonged use — an operator should be able to work in it for eight hours.
+It must NOT adopt consumer-AI visual decoration as its primary product
+language. **Brand colour never competes with semantic severity:** when
+something is wrong, severity dominates. Whitespace clarifies hierarchy
+rather than reducing information density, and animation communicates
+state transition rather than decorating.
+
+**A28.21 — D-B5: brand foundation lands early (LOCK).** Established at
+PX1B, before the shell and components are designed: canonical HarkenIQ
+spelling and capitalization; one mark concept and initial mark
+constraints; an owned accent-family direction (the assessed accent
+`#632ca6` is a competitor's brand colour and is not defensible for a
+vendor-neutral platform); semantic-colour independence; typography
+principles; mono typography principles for IDs, SHAs, IPs, service tags
+and hashes, which are load-bearing content in this product; density
+principles; border, radius and elevation principles; icon-family
+direction; plane naming and lockup constraints. Final SVG artwork,
+completed lockups, full typography rollout, dark mode and formal brand
+documentation remain PX8. Deferring all of it to PX8 would have PX2–PX7
+designed against temporary assumptions and restyled twice.
+
+**A28.22 — D-DS6: a domain component requires a real consumer (LOCK).**
+No detached domain-component catalogue. A new L2 component enters
+production only together with at least one real product workflow that
+consumes it. This is what keeps the design system a product language
+rather than a showroom.
+
+**A28.23 — Migration. D-M1 stands; D-M2 is new.** D-M1 is unchanged: **no
+rewrite, migrate in place** — the 37 pages encode years of hard-won
+correctness, including defects found and fixed by the slices that built
+them, and a rewrite discards that to gain consistency. D-M2 replaces the
+absolute earlier phrasing: **do not combine UNRELATED workflow behaviour
+and broad visual restyling in one PR**; accessibility, responsive
+behaviour and semantic interaction may legitimately change both
+appearance and behaviour when they are intrinsically part of the same
+focused correction. Tokens precede components; components precede pages.
+New code uses the new layer from day one, enforced by lint rather than
+review memory. Every PX slice asserts that no second RBAC, scope
+resolver, capability authority, approval path, execution engine or
+identity model was introduced — PX is uniquely able to create a second
+governance universe by accident, because a UI that computes an answer IS
+a second authority.
+
+**A28.24 — Quality gates.** Console Vitest becomes mandatory in CI as
+PX1A's first commit: the `ui-build` job runs only `npm ci && npm run
+build`, and `vitest` appears nowhere in CI, `scripts/` or any git hook,
+so the tests protecting A27.14's provenance rule pass only when run by
+hand. Later gates: token lint (no raw hex or px outside the token file);
+a contract-render test per L2 component; `jest-axe` on every primitive
+and page shell; a route-contract test that every listed object is
+addressable; a terminology lint banning bare "Agent" in user-facing
+strings; visual regression on the primitive gallery; and a compose-gate
+step proving the human and machine projections never describe one
+operation differently. The tests that have caught the most in this
+codebase are structural, and the UI equivalents are what will keep PX
+honest after PX ships.
+
+**A28.25 — The ratified program.** A6-4 (External Agent API Plane) ·
+PX1A (engineering and semantic foundation) · PX1B (brand and visual
+foundation) · PX2 (shell, IA, Attention operational home, context bar,
+responsive foundation) · PX3A (accessible interaction primitives) · PX3B
+(Attention/Incident/Approval domain components) · PX3C
+(Execution/Campaign/Outcome domain components) · PX3D
+(Governance/Scope/Capability/Learning domain components) · PX4A (stable
+object URLs and query-string collection state) · PX4B (cross-surface and
+audit links) · PX5A (Governed Operation correlation and identity
+contract) · PX5B (human Governed Operation projection and experience) ·
+PX6 (Governance and Operational Agent recomposition) · PX7 (Site Manager
+alignment) · PX8 (brand completion, dark mode, formal accessibility and
+VPAT evidence). **This is sequencing discipline, not a reduction of
+HarkenIQ's end-state product.**
+
+**A28.26 — Disposition of the 44 assessed decisions.** RATIFIED (36):
+P1–P7, D-T1, D-T2, D-T3, D-IA1, D-IA2, D-SH1, D-SH2, D-SH3, D-DS1,
+D-DS2, D-DS3, D-DS4, D-AX1, D-AX2, D-GX1, D-GX2, D-GX3, D-OA1, D-OA2,
+D-OA3, D-SM1, D-SM2, D-SM4, D-HS1, D-AC1, D-AC2, D-QG1, D-QG2, D-M1.
+RATIFIED AND RE-SEQUENCED (3): D-B1, D-B2, D-B3 — foundation at PX1B,
+completion at PX8. RATIFIED AND DOWNGRADED (1): D-IA3 — a strong design
+constraint, not an invariant. CONDITIONAL (2): D-AX3 pending PX5A;
+D-SM3 pending an authoritative connectivity contract. DEFERRED (2):
+D-DS5 dark mode, until the token set is complete; D-HS2 warranty —
+accepted as identified UI debt with **no owning slice assigned**, pending
+validation of persona, workflow and backend maturity. REJECTED: none.
+NEW THIS AMENDMENT (6): D-IA4, D-B4, D-B5, D-AC3, D-DS6, D-M2.
+
+**A28.27 — What this amendment does not do.** It changes no production
+code, no permission, no route, no dependency and no backend authority. It
+starts no A6-4 work. The A6-4 boundary is produced as a proposal for
+separate ratification after this amendment is merged and main-verified;
+no A6-4 branch, spec amendment or implementation exists or is authorised
+by this amendment.
