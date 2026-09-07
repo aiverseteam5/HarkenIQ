@@ -229,6 +229,63 @@ class TestNothingElseMoved:
         assert SURFACE_REASONS <= SURFACE_REFUSAL_REASONS
         assert "other" in SURFACE_REFUSAL_REASONS
 
+    async def test_every_incremented_counter_is_registered(self):
+        """A counter that is only incremented is silently dead.
+
+        `MetricsRegistry.inc` looks the name up and returns if it is
+        absent, so an unregistered counter never reaches `/metrics` and
+        never raises -- the telemetry form of declared-with-no-reader.
+        A29's counter had this defect and so, it turned out, did two of
+        A25's suffixed families, which is why this is a general test over
+        the module rather than a check of the new name.
+
+        Executed rather than grepped: register on a real registry, drive
+        every recorder, and require every name to have appeared.
+        """
+        import sys
+
+        sys.path.insert(0, "src")
+        from harkeniq.metrics import MetricsRegistry
+        from harkeniq_cc import metrics as m
+
+        registry = MetricsRegistry()
+        m.register_a6_metrics(registry)
+
+        drivers = (
+            [(m.record_surface_refusal, r) for r in m.SURFACE_REFUSAL_REASONS]
+            + [(m.record_read_refusal, r) for r in m.READ_REFUSAL_REASONS]
+            + [(m.record_correlation, j) for j in m.CORRELATION_JOINS]
+        )
+        for fn, arg in drivers:
+            fn(arg)
+        m.record_status_read()
+        m.record_read_rate_limited()
+        m.record_terminal_failure()
+
+        dead = [
+            name for name, metric in registry._metrics.items()
+            if metric.value == 0.0
+            and name.startswith((
+                m.M_SURFACE_REFUSED, m.M_READ_REFUSED, m.M_CORRELATION,
+            ))
+        ]
+        assert not dead, (
+            "these counters were registered but no recorder moved them: "
+            f"{sorted(dead)}"
+        )
+        # And the inverse, which is the defect: a name that recorders
+        # increment but nobody registered would be absent entirely.
+        for base, reasons in (
+            (m.M_SURFACE_REFUSED, m.SURFACE_REFUSAL_REASONS),
+            (m.M_READ_REFUSED, m.READ_REFUSAL_REASONS),
+            (m.M_CORRELATION, m.CORRELATION_JOINS),
+        ):
+            for reason in reasons:
+                assert f"{base}_{reason}" in registry._metrics, (
+                    f"{base}_{reason} is incremented and never registered, "
+                    "so it is a silent no-op"
+                )
+
 
 # ---------------------------------------------------------------------------
 # 4. Runtime matches the declaration, in both directions

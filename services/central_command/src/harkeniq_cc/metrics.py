@@ -41,6 +41,36 @@ M_CROSS_AGENT = "harkeniq_cc_agent_cross_agent_attempts_total"
 M_CROSS_TENANT = "harkeniq_cc_agent_cross_tenant_attempts_total"
 M_RECEIPT_NARROWED = "harkeniq_cc_agent_receipt_narrowed_total"
 
+# ---------------------------------------------------------------------------
+# A29 (A6-4A): the External Agent API plane
+# ---------------------------------------------------------------------------
+
+M_SURFACE_REFUSED = "harkeniq_cc_route_surface_refused_total"
+
+#: Bounded, for the reason A25.11 recorded: `/metrics` is unauthenticated,
+#: and interpolating a caller-supplied value into a metric NAME is a way
+#: to put a tenant or agent id on a scrape surface. Anything unrecognised
+#: collapses to `other`.
+SURFACE_REFUSAL_REASONS = frozenset({
+    "route_not_on_the_machine_plane",
+    "agent_lacks_the_required_binding",
+    "machine_only_route",
+    "other",
+})
+
+
+def record_surface_refusal(reason: str) -> None:
+    """A request refused on species eligibility, by bounded reason.
+
+    Also the REPORT half of A29's migration discipline: the counter tells
+    an operator how much real traffic the narrowing turned away, by
+    reason, without naming who was turned away.
+    """
+    if reason not in SURFACE_REFUSAL_REASONS:
+        reason = "other"
+    _inc(M_SURFACE_REFUSED)
+    _inc(f"{M_SURFACE_REFUSED}_{reason}")
+
 #: The process-wide registry, set by `create_app`. A module-level handle
 #: exists only so a background loop that holds no app can still count;
 #: the registry itself is per-app, which is the property E0.3 wanted.
@@ -70,6 +100,35 @@ def register_a6_metrics(registry: Any) -> None:
         M_RECEIPT_NARROWED,
         "Receipts served narrowed because current authority was absent",
     )
+    # A29 (A6-4A). Registered with EVERY bounded reason, not just the
+    # base: `MetricsRegistry.inc` silently IGNORES an unregistered name,
+    # so a suffixed counter that is only incremented never reaches
+    # /metrics. Each reason set below is closed, so enumerating it here
+    # is finite by construction and can never become an unbounded label.
+    registry.counter(
+        M_SURFACE_REFUSED,
+        "Requests refused because the principal species may not use the route",
+    )
+    for _reason in sorted(SURFACE_REFUSAL_REASONS):
+        registry.counter(
+            f"{M_SURFACE_REFUSED}_{_reason}",
+            f"Route-surface refusals: {_reason}",
+        )
+    # The same defect, found next door while fixing the above and fixed
+    # with it: A25 increments these two suffixed families and registered
+    # neither, so `correlation_total{join}` and the per-reason refusal
+    # counts have been silent since A6-2. `record_correlation`'s whole
+    # stated purpose (A25.1) is retiring the legacy join BY MEASUREMENT,
+    # which a counter that never appears cannot do.
+    for _join in sorted(CORRELATION_JOINS):
+        registry.counter(
+            f"{M_CORRELATION}_{_join}", f"Settlements joined: {_join}",
+        )
+    for _reason in sorted(READ_REFUSAL_REASONS):
+        registry.counter(
+            f"{M_READ_REFUSED}_{_reason}",
+            f"Machine status read refusals: {_reason}",
+        )
 
 
 def _inc(name: str, value: float = 1.0) -> None:
@@ -137,33 +196,3 @@ def record_read_refusal(reason: str) -> None:
 def record_read_rate_limited() -> None:
     _inc(M_READ_RATE_LIMITED)
 
-
-# ---------------------------------------------------------------------------
-# A29 (A6-4A): the External Agent API plane
-# ---------------------------------------------------------------------------
-
-M_SURFACE_REFUSED = "cc_route_surface_refused_total"
-
-#: Bounded, for the reason A25.11 recorded: `/metrics` is unauthenticated,
-#: and interpolating a caller-supplied value into a metric NAME is a way
-#: to put a tenant or agent id on a scrape surface. Anything unrecognised
-#: collapses to `other`.
-SURFACE_REFUSAL_REASONS = frozenset({
-    "route_not_on_the_machine_plane",
-    "agent_lacks_the_required_binding",
-    "machine_only_route",
-    "other",
-})
-
-
-def record_surface_refusal(reason: str) -> None:
-    """A request refused on species eligibility, by bounded reason.
-
-    Also the REPORT half of A29's migration discipline: the counter tells
-    an operator how much real traffic the narrowing turned away, by
-    reason, without naming who was turned away.
-    """
-    if reason not in SURFACE_REFUSAL_REASONS:
-        reason = "other"
-    _inc(M_SURFACE_REFUSED)
-    _inc(f"{M_SURFACE_REFUSED}_{reason}")
