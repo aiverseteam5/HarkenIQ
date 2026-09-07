@@ -486,7 +486,7 @@ class TestReadWindowHousekeeping:
 
         # The counter still counts, so the limit still limits.
         async with state.sessionmaker() as session:
-            _ok, used = await admit_read(
+            _ok, used, _window = await admit_read(
                 session, tenant_id=TENANT, agent_id="a1")
             await session.commit()
         assert used == 1

@@ -2025,6 +2025,10 @@ async def submit_proposal(
     agent_id: str,
     body: SubmitProposal,
     response: Response,
+    # A29.15: carried so the handler can ask the canonical route-surface
+    # decision. It is read for the matched route template and nothing
+    # else -- no path value, query or body reaches the decision.
+    request: Request = None,  # type: ignore[assignment]
     # A24.13: `proposal.submit` is enforced INSIDE the handler, not as a
     # route dependency. Not a weakening -- the same permission, refused
     # with the same 403 -- but a dependency answers before the durable
@@ -2151,6 +2155,27 @@ async def submit_proposal(
     # Caught as a class rather than enumerated: a check added here later
     # is metered by construction instead of by whoever remembers.
     try:
+        # A29.15 (A6-4A HIGH 1): the SAME canonical route-surface and typed
+        # job decision the read plane consumes, evaluated here rather than
+        # at the guard so it lands INSIDE the attempt ledger A24.13 built.
+        #
+        # It cannot be a route dependency: dependencies resolve before the
+        # handler, so a refusal would arrive before `admit_attempt` and be
+        # free -- the exact hole A24.13 closed by moving authorization
+        # inside the meter. Sharing the DECISION and not the refusal
+        # handler is what lets the declaration be authoritative for the
+        # write while each plane keeps its own anti-amplification shape.
+        #
+        # Removing this route's declaration, or changing its declared job,
+        # therefore fails the write CLOSED.
+        from harkeniq_cc.api.deps import evaluate_route_surface
+
+        surface_reason, surface_detail = evaluate_route_surface(request, user)
+        if surface_reason:
+            from harkeniq_cc.metrics import record_surface_refusal
+
+            record_surface_refusal(surface_reason)
+            raise HTTPException(status_code=403, detail=surface_detail)
         if not (
             "proposal.submit" in user.permissions or "*" in user.permissions
         ):
@@ -2439,6 +2464,55 @@ async def _machine_read_gate(
     _enforce_machine_self(user, agent_id)
 
 
+async def _record_surface_refusal_window(
+    request: Request, user: UserContext, reason: str, window: datetime,
+) -> None:
+    """A29.16: durable, attributable, bounded refusal evidence.
+
+    Extends the row `_charge_machine_read` has already opened for this
+    window rather than writing anywhere new, so the storage bound is
+    unchanged: one row per (tenant, agent, window), whatever the traffic.
+
+    Owns its own short-lived session for the reason A25.12 recorded --
+    accounting is not business state and a helper must never commit or
+    roll back a caller's transaction. Best effort: telemetry may not
+    change behaviour, and a refusal that fails to record is still a
+    refusal.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+
+    # `window` is REQUIRED and has no fallback on purpose. The charge
+    # computed it and the evidence must land on that exact row; a
+    # fallback would recompute, and recomputing IS the defect.
+    #
+    # `at` is a TIMESTAMP, not a bucket key, so taking it from the clock
+    # here is safe -- it records when the refusal happened and selects
+    # nothing.
+    at = datetime.now(timezone.utc)
+    try:
+        sessionmaker = request.app.state.cc.sessionmaker
+        async with sessionmaker() as accounting:
+            await AgentReadWindowRepo(accounting).record_refusal(
+                # Server-derived, from the validated token. Nothing here
+                # reads the route's `agent_id`, the query or the body, so
+                # a caller cannot choose whose window it marks.
+                tenant_id=user.tenant_id,
+                agent_id=user.user_id,
+                window_start=window,
+                reason=reason,
+                at=at,
+            )
+            await accounting.commit()
+    except Exception:  # noqa: BLE001 - accounting must not change behaviour
+        # WARNING, not debug. This swallow is correct -- telemetry may not
+        # change behaviour -- but it hid a `NameError` in this very
+        # function through a full CI cycle: the evidence silently stopped
+        # being written and every test that did not assert the counter
+        # stayed green. A29.16 exists for operator observability, so an
+        # observation that cannot be recorded is itself operator-visible.
+        logger.warning("surface refusal not recorded", exc_info=True)
+
+
 async def _machine_self_read(
     request: Request, user: UserContext, agent_id: str
 ) -> bool:
@@ -2477,7 +2551,9 @@ def _authority_for_proposal(scope, proposal) -> bool:
     return proposal.site_id in set(getattr(scope, "site_ids", ()) or ())
 
 
-async def _charge_machine_read(request: Request, user: UserContext) -> None:
+async def _charge_machine_read(
+    request: Request, user: UserContext
+) -> datetime:
     """Charge one status read to this agent's polling bucket, or 429.
 
     Shared by every machine read on this surface, so that alternating
@@ -2509,7 +2585,12 @@ async def _charge_machine_read(request: Request, user: UserContext) -> None:
     tenant_id, agent_id = user.tenant_id, user.user_id
     sessionmaker = request.app.state.cc.sessionmaker
     async with sessionmaker() as accounting:
-        permitted, used = await admit_read(
+        # A29.16: `admit_read` computes the window ONCE and hands it back.
+        # It is the only place on this path that may compute it -- see the
+        # boundary note there -- and it is returned rather than taken as a
+        # parameter so no caller can name the bucket it spends, which is
+        # the property A25.9 asserts from this signature.
+        permitted, used, window = await admit_read(
             accounting, tenant_id=tenant_id, agent_id=agent_id,
         )
         # Durable BEFORE anything downstream can raise. A charge that only
@@ -2527,6 +2608,12 @@ async def _charge_machine_read(request: Request, user: UserContext) -> None:
                 f"{READ_WINDOW_S} seconds"
             ),
         )
+    # The window this charge actually landed on. Returned rather than
+    # recomputed by the caller: that recomputation is the minute-boundary
+    # race, and an annotation promising a datetime while the function
+    # fell off its end returning None is how the race survived a fix that
+    # claimed to close it.
+    return window
 
 
 async def _authority_over(session, user, scope, proposal) -> bool:

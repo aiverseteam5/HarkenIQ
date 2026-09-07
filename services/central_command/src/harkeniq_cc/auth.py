@@ -105,6 +105,20 @@ class UserContext:
     #: Carried so the scope dependency can resolve agent grants without
     #: a second lookup, and so audit can name the identity.
     identity_id: str = ""
+    #: A29.6 (A6-4A): the A0 BINDINGS this machine principal actually
+    #: holds, carried to the guard.
+    #:
+    #: `machine_permissions()` maps bindings to coarse permissions and
+    #: used to drop the bindings here -- so the guard saw `fleet.view`
+    #: and could not tell an agent bound to `attention` alone from one
+    #: bound to the whole estate. That is why a machine principal reached
+    #: 46 of 98 routes: the declaration existed and was discarded one
+    #: layer before the decision.
+    #:
+    #: Empty for a human, and empty for a machine principal with no
+    #: bindings -- which reaches only the `self` job, because reach is
+    #: declared and never inferred.
+    machine_jobs: frozenset[str] = field(default_factory=frozenset)
 
 
 # Module-level auth state; set by configure_auth at app startup.
@@ -258,7 +272,18 @@ async def _machine_principal(request: Request, validated) -> UserContext:
         # that the one write in the ceiling cannot be reached by a read
         # binding -- the ceiling admits `proposal.submit`, and only an
         # explicit `ingress` binding puts it in this list.
-        permissions = machine_permissions(bound_reads(caps), bound_ingress(caps))
+        reads, ingress = bound_reads(caps), bound_ingress(caps)
+        permissions = machine_permissions(reads, ingress)
+        # A29.6: the bindings THEMSELVES, not only what they imply. The
+        # guard asks whether the route's declared job is one of these;
+        # `machine_permissions` above answers a different question and
+        # cannot answer this one. `self` is added unconditionally because
+        # it is not a binding -- an agent may always read its own record
+        # (A29.6), and `_machine_self_read` decides which agent.
+        from harkeniq_cc.route_contract import JOB_SELF
+
+        jobs = frozenset({JOB_SELF}) | {str(b) for b in reads} \
+            | {str(b) for b in ingress}
         await identities.touch(
             identity, request.headers.get("user-agent", "")[:255],
         )
@@ -276,4 +301,5 @@ async def _machine_principal(request: Request, validated) -> UserContext:
             is_platform_user=False,
             species=SPECIES_AGENT,
             identity_id=identity.id,
+            machine_jobs=jobs,
         )

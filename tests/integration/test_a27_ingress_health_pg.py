@@ -34,8 +34,8 @@ import sqlalchemy as sa
 
 from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.models import (
-    CCAgentIngressAttempt, CCAgentProposal, CCAgentSubmission,
-    CCAgentThrottleWindow,
+    CCAgentIngressAttempt, CCAgentProposal, CCAgentReadWindow,
+    CCAgentSubmission, CCAgentThrottleWindow,
 )
 from harkeniq_cc.db.repos import AgentIngressAttemptRepo, AgentSubmissionRepo
 from harkeniq_cc.ingress_limits import (
@@ -401,5 +401,129 @@ async def test_the_window_filter_is_a_timestamptz_comparison():
         async with sm() as session:
             await session.execute(sa.delete(CCAgentThrottleWindow).where(
                 CCAgentThrottleWindow.tenant_id == tenant))
+            await session.commit()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# A29.16 (A6-4A remediation): refusal evidence, where connections race
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_surface_refusals_are_exact_and_bounded():
+    """Many writers, one window row, exact totals per closed reason.
+
+    sqlite `:memory:` is a StaticPool -- one shared connection -- so the
+    unit suite asserts arithmetic and nothing about contention. This is
+    the engine where two writers genuinely collide, and the only place the
+    single-statement UPDATE can be judged.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+    from harkeniq_cc.ingress_limits import read_window_start
+
+    engine = await _engine()
+    sm = make_sessionmaker(engine)
+    tenant = f"t-a29-{uuid.uuid4().hex[:8]}"
+    agent = f"agent-{uuid.uuid4().hex[:8]}"
+    other = f"agent-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc)
+    window = read_window_start(now)
+    writers = 40
+
+    async def refuse(agent_id, reason):
+        async with sm() as session:
+            await AgentReadWindowRepo(session).record_refusal(
+                tenant_id=tenant, agent_id=agent_id, window_start=window,
+                reason=reason, at=datetime.now(timezone.utc),
+            )
+            await session.commit()
+
+    try:
+        # The row must exist first: `record_refusal` deliberately does NOT
+        # create it, because accounting may never be what grows storage.
+        for who in (agent, other):
+            async with sm() as session:
+                await AgentReadWindowRepo(session).increment(
+                    tenant_id=tenant, agent_id=who, window_start=window,
+                )
+                await session.commit()
+
+        await asyncio.gather(*[
+            refuse(agent, "surface_not_allowed" if i % 2 == 0
+                   else "machine_job_not_bound")
+            for i in range(writers)
+        ])
+
+        async with sm() as session:
+            rows = list((await session.execute(
+                sa.select(CCAgentReadWindow).where(
+                    CCAgentReadWindow.tenant_id == tenant)
+            )).scalars().all())
+
+        mine = [r for r in rows if r.agent_id == agent]
+        theirs = [r for r in rows if r.agent_id == other]
+
+        assert len(mine) == 1, (
+            f"{writers} concurrent refusals produced {len(mine)} rows for one "
+            "agent: storage followed request volume"
+        )
+        assert mine[0].surface_refused == writers, (
+            f"{writers} refusals totalled {mine[0].surface_refused}: "
+            "increments were lost under contention"
+        )
+        assert mine[0].refused_surface_not_allowed == writers // 2
+        assert mine[0].refused_job_not_bound == writers // 2
+        assert mine[0].last_surface_refused_at is not None
+        assert mine[0].last_surface_refused_at.tzinfo is not None
+
+        # ATTRIBUTION: the other agent's window is untouched.
+        assert len(theirs) == 1 and theirs[0].surface_refused == 0, (
+            "one agent's refusals were charged to another"
+        )
+    finally:
+        async with sm() as session:
+            await session.execute(sa.delete(CCAgentReadWindow).where(
+                CCAgentReadWindow.tenant_id == tenant))
+            await session.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_refusal_evidence_never_creates_a_row_of_its_own():
+    """A29.16's storage bound, on the real engine.
+
+    With no window open, a refusal records nothing rather than minting a
+    row. The alternative -- create-on-refusal -- would let unauthenticated
+    -shaped traffic grow the table it is meant to be bounded by.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+    from harkeniq_cc.ingress_limits import read_window_start
+
+    engine = await _engine()
+    sm = make_sessionmaker(engine)
+    tenant = f"t-a29-{uuid.uuid4().hex[:8]}"
+    agent = f"agent-{uuid.uuid4().hex[:8]}"
+
+    try:
+        async with sm() as session:
+            for _ in range(50):
+                await AgentReadWindowRepo(session).record_refusal(
+                    tenant_id=tenant, agent_id=agent,
+                    window_start=read_window_start(),
+                    reason="surface_not_allowed",
+                    at=datetime.now(timezone.utc),
+                )
+            await session.commit()
+        async with sm() as session:
+            rows = (await session.execute(
+                sa.select(sa.func.count()).select_from(CCAgentReadWindow)
+                .where(CCAgentReadWindow.tenant_id == tenant)
+            )).scalar()
+        assert rows == 0, f"refusal accounting minted {rows} row(s)"
+    finally:
+        async with sm() as session:
+            await session.execute(sa.delete(CCAgentReadWindow).where(
+                CCAgentReadWindow.tenant_id == tenant))
             await session.commit()
         await engine.dispose()

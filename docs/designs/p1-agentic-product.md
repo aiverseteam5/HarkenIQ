@@ -3370,3 +3370,117 @@ That is why P1, D-IA4, D-AX2, D-AC3 and the per-slice invariant assertion
 are all locks rather than guidance, and why every PX slice must assert
 that no second RBAC system, scope resolver, capability authority,
 approval path, execution engine or identity model was introduced.
+
+## §33 — A6-4A / Amendment A29: narrowing the External Agent API Plane
+
+### The question nobody asked
+
+A6-1, A6-2 and A6-3 each answered a real question about the external
+runtime: how it writes, how it reads what happened, how a human
+supervises the relationship. None of them asked which of Central
+Command's 98 routes it should be able to reach at all.
+
+The answer today is 46, and no product decision produced that number. It
+is the arithmetic of `permission ∈ MACHINE_PRINCIPAL_CEILING`, and
+`fleet.view` — one broad key opening campaigns, learning, predictive
+risk, warranty, firmware exposure, policy posture, tenant enforcement
+settings, sites and Harken Nodes — accounts for 43 of them.
+
+### The declaration was already written
+
+The temptation here is to design a machine policy model. That would be
+the wrong instinct, because the machine job model already exists.
+
+`READ_CAPABILITIES` declares five machine read jobs. Each names its own
+route family, in its own description. `INGRESS_CAPABILITIES` declares a
+sixth. An operator configuring an agent chooses from exactly this
+vocabulary.
+
+Then `auth.py` maps the chosen bindings to coarse permissions through
+`machine_permissions()` and drops the bindings on the floor. The
+`UserContext` carries `permissions=["fleet.view"]` and nothing that
+remembers *why*. The guard, which is the only place that could act on
+the distinction, cannot see it.
+
+So an operator who deliberately binds an agent to `attention` alone —
+and cannot bind it to less, because `REQUIRED_READS` is
+`("attention", "autonomy")` — has configured an agent that reads the
+whole estate. The A0 binding UI is not merely imprecise; it is untrue.
+
+This is the eleventh instance of the pattern this ledger keeps
+recording, and the fix is the same shape it has been every time: carry
+the declaration to the point where somebody acts on it.
+
+### Why the surface field is not authorization
+
+`ROUTE_CONTRACT` already declares, per route, a permission and a scope
+treatment. A6-4A adds a third question — may this principal *species*
+use this product surface — and it is deliberately a different kind of
+question from the first two.
+
+Permission asks what a principal may ever hold. Scope asks whether they
+hold it here. Surface asks whether this route is part of the product
+this species is offered at all. A route declared `MACHINE` that the
+caller lacks the permission for is still refused by the permission
+guard; the surface field never grants, it only excludes.
+
+Keeping that distinction sharp is what stops A6-4 from becoming a second
+authorization system. The moment surface eligibility could *admit*
+rather than only exclude, it would be an ACL.
+
+### Default-deny is the whole point
+
+The narrowing is worth little on its own — someone would re-widen it
+within three slices, because the widening mechanism is invisible.
+
+The mechanism is this: add a permission to `MACHINE_PRINCIPAL_CEILING`
+and every route requiring it silently becomes machine-reachable. That is
+how 46 happened. So the invariant is not "these 33 routes are now
+closed", it is **an undeclared route is never machine-reachable, whatever
+the ceiling grows to contain** — and the test that proves it adds a
+permission to the ceiling and asserts reach is unchanged.
+
+`MACHINE_SURFACE` is therefore a positive declaration with no negative
+form. A route absent from it is HUMAN, without anyone writing that down.
+
+### Why `self` is a job but not a binding
+
+The ten agent-self reads have no A0 binding and should not acquire one.
+An agent reading its own identity, runtime, preflight, ingress health and
+proposal lifecycle is not exercising a configured capability — it is
+reading its own record, which it must always be able to do and which no
+operator should have to enable.
+
+So `self` is a job the route declares and the guard admits for any
+authenticated machine principal, with `_machine_self_read` continuing to
+enforce *which* agent. Configuration decides what an agent may see of the
+estate; identity decides what it may see of itself.
+
+### The two temporary capability gaps, named
+
+`/api/autonomy/` and `/api/capabilities/*` become HUMAN in A6-4A, and a
+runtime loses HTTP reach to both until A6-4B supplies machine-safe
+conclusions.
+
+That is deliberate. The alternative — keeping a broad route
+machine-readable because its replacement has not been built — is exactly
+how the current 46 accumulated, and it would make the default-deny
+invariant untestable while the exception existed.
+
+It is safe to take the gap because there is no GA external contract, the
+CC-resident evaluator composes in-process rather than over HTTP, and the
+compose gate's machine token drives only routes A6-4A keeps. All three
+were verified, not assumed.
+
+### What A6-4A deliberately does not do
+
+It adds no endpoint and no projection. That is what makes it reviewable
+as a single question: can a machine still reach anything it was not
+declared for?
+
+A6-4B is the additive half — discovery, and the machine projections for
+autonomy conclusion, self-scope, attention and incidents. Every one of
+those is a new surface with a new leak risk, and each deserves the A25.9
+recursive sweep as its own review rather than sharing one with a
+narrowing. Ordering them the other way would mean building projections
+onto a plane still open at 46 routes.

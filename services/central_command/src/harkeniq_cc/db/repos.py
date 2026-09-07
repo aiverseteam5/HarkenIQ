@@ -3126,6 +3126,91 @@ class AgentReadWindowRepo:
             or 0
         )
 
+    #: A29.16: the CLOSED reason vocabulary, mapped to its column. A
+    #: reason outside this table is counted in the total and in nothing
+    #: else, so an unrecognised value can never mint a column or widen
+    #: the schema.
+    REFUSAL_COLUMNS = {
+        "surface_not_allowed": "refused_surface_not_allowed",
+        "machine_job_not_bound": "refused_job_not_bound",
+    }
+
+    async def record_refusal(
+        self, *, tenant_id: str, agent_id: str, window_start: datetime,
+        reason: str, at: datetime,
+    ) -> int:
+        """Add bounded refusal evidence to THIS window. Returns the total.
+
+        Atomic by the same single-statement UPDATE `increment` stands on,
+        and it deliberately does NOT create the row: the refusal was
+        already charged through `admit_read`, which opened it. If the row
+        is somehow absent the evidence is dropped rather than a second
+        row minted -- accounting must never be the thing that grows
+        storage under a flood.
+
+        Identity is the CALLER's, derived server-side by the caller from
+        the validated token; nothing here reads a path, a query or a body.
+        """
+        values = {
+            "surface_refused": CCAgentReadWindow.surface_refused + 1,
+            "last_surface_refused_at": at,
+        }
+        column = self.REFUSAL_COLUMNS.get(reason)
+        if column:
+            values[column] = getattr(CCAgentReadWindow, column) + 1
+        await self.session.execute(
+            sa_update(CCAgentReadWindow)
+            .where(
+                CCAgentReadWindow.tenant_id == tenant_id,
+                CCAgentReadWindow.agent_id == agent_id,
+                CCAgentReadWindow.window_start == window_start,
+            )
+            .values(**values)
+        )
+        return int((
+            await self.session.execute(
+                select(CCAgentReadWindow.surface_refused).where(
+                    CCAgentReadWindow.tenant_id == tenant_id,
+                    CCAgentReadWindow.agent_id == agent_id,
+                    CCAgentReadWindow.window_start == window_start,
+                )
+            )
+        ).scalar() or 0)
+
+    async def refusals_since(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> tuple[dict[str, int], Optional[datetime]]:
+        """Refusal evidence in the window, and the most recent one.
+
+        Two aggregates the database computes over rows bounded by the
+        window alignment -- never a row-per-request read (A27.9). A READ:
+        an operator inspecting a runtime's refusals must not spend that
+        runtime's allowance, exactly as `usage` established.
+        """
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(CCAgentReadWindow.surface_refused), 0),
+                    func.coalesce(
+                        func.sum(
+                            CCAgentReadWindow.refused_surface_not_allowed), 0),
+                    func.coalesce(
+                        func.sum(CCAgentReadWindow.refused_job_not_bound), 0),
+                    func.max(CCAgentReadWindow.last_surface_refused_at),
+                ).where(
+                    CCAgentReadWindow.tenant_id == tenant_id,
+                    CCAgentReadWindow.agent_id == agent_id,
+                    CCAgentReadWindow.window_start >= since,
+                )
+            )
+        ).one()
+        return {
+            "total": int(row[0] or 0),
+            "surface_not_allowed": int(row[1] or 0),
+            "machine_job_not_bound": int(row[2] or 0),
+        }, row[3]
+
     async def usage(
         self, *, tenant_id: str, agent_id: str, window_start: datetime
     ) -> int:

@@ -43,10 +43,156 @@ def has_permission(user: UserContext, permission: str) -> bool:
     return permission in held or "*" in held
 
 
+# ---------------------------------------------------------------------------
+# A29 (A6-4A): route-surface eligibility
+# ---------------------------------------------------------------------------
+
+#: Refusal reasons, closed. They reach the audit entry and the metric, and
+#: A25.11 established that an unbounded reason set on a scrape surface is
+#: a way to smuggle a tenant or agent id into an unauthenticated endpoint.
+SURFACE_REFUSE_UNDECLARED = "surface_not_allowed"
+SURFACE_REFUSE_NO_JOB = "machine_job_not_bound"
+SURFACE_REFUSE_HUMAN = "machine_only_route"
+
+SURFACE_REASONS = frozenset({
+    SURFACE_REFUSE_UNDECLARED, SURFACE_REFUSE_NO_JOB, SURFACE_REFUSE_HUMAN,
+})
+
+
+def _route_key(request: Request) -> tuple[str, str]:
+    """The templated route this request matched, or ("","") if unmatched."""
+    route = request.scope.get("route")
+    path = getattr(route, "path", "")
+    return (request.method.upper(), path)
+
+
+def evaluate_route_surface(
+    request: Request, user: UserContext
+) -> tuple[str, str]:
+    """May this principal SPECIES use this product surface? (A29.4.)
+
+    PURE. It reads the declaration and answers; it meters nothing, raises
+    nothing and touches no database. Returns ``(reason, detail)``, and
+    ``("", "")`` when the principal is eligible.
+
+    THE ONE CANONICAL SOURCE OF ROUTE-SURFACE TRUTH. Both planes consume
+    exactly this function -- the read plane through
+    :func:`enforce_route_surface` below, the governed write through the
+    handler, inside the attempt ledger A24.13 built. They cannot share a
+    refusal HANDLER, because each meters in its own shape and folding them
+    together would cost one of them its anti-amplification property. They
+    can and must share the DECISION, or the declaration is authoritative
+    for reads and decorative for the write.
+
+    Asked before the permission question and answering a different one.
+    Permission asks what a principal may ever hold; scope asks whether
+    they hold it here; this asks whether the route is part of the product
+    offered to this species at all.
+
+    It can only EXCLUDE. A route declared MACHINE that the caller lacks
+    the permission for is still refused by the permission guard -- nothing
+    here admits anybody, which is what keeps it a product contract rather
+    than a second authorization system.
+
+    DEFAULT DENY (A29.3). A route absent from `MACHINE_SURFACE` is not
+    machine-reachable, so a permission entering `MACHINE_PRINCIPAL_CEILING`
+    opens nothing on its own. That is the property this exists for; the
+    narrowing is the occasion, not the point.
+    """
+    from harkeniq_cc.machine_identity import is_machine
+    from harkeniq_cc.route_contract import (
+        SURFACE_HUMAN, SURFACE_MACHINE, machine_surface,
+    )
+
+    method, path = _route_key(request)
+    surface, job = machine_surface(method, path)
+
+    if not is_machine(user):
+        if surface == SURFACE_MACHINE:
+            return (
+                SURFACE_REFUSE_HUMAN,
+                "this is a machine-principal surface; a person reads these "
+                "facts through the Console",
+            )
+        return "", ""
+
+    if surface == SURFACE_HUMAN:
+        return (
+            SURFACE_REFUSE_UNDECLARED,
+            "this route is not part of the External Agent API plane",
+        )
+    if job not in getattr(user, "machine_jobs", frozenset()):
+        # A29.6: the BINDING decides, not the permission. An agent whose
+        # operator did not bind this job is refused even though the
+        # ceiling admits the permission the route demands.
+        return SURFACE_REFUSE_NO_JOB, f"this agent holds no {job!r} binding"
+    return "", ""
+
+
+async def enforce_route_surface(request: Request, user: UserContext) -> None:
+    """The READ plane's handler for :func:`evaluate_route_surface`.
+
+    A25.10: AN AUTHENTICATED REFUSAL IS NOT FREE. The request is charged
+    to the agent the TOKEN names before it is refused, so a runtime cannot
+    probe the plane without spending its own allowance. Charged here
+    rather than in the handler because a refused request never reaches
+    one -- and only on refusal, so a served request is still metered
+    exactly once, by the handler.
+
+    The read window is also the BOUND (A27.13's rule): it is a windowed
+    counter, so a flood costs one row per minute and then 429s. The same
+    row now carries bounded, attributable refusal evidence (A29.16) --
+    still one row per (tenant, agent, window), never one per request.
+    """
+    from harkeniq_cc.metrics import record_surface_refusal
+
+    reason, detail = evaluate_route_surface(request, user)
+    if not reason:
+        return
+
+    from harkeniq_cc.machine_identity import is_machine
+
+    if is_machine(user):
+        from harkeniq_cc.api.operational_agents import (
+            _charge_machine_read, _record_surface_refusal_window,
+        )
+
+        # ONE WINDOW for the whole refusal. The charge computes it once,
+        # opens that row, and hands it back; the evidence updates THAT
+        # row. Nothing here computes a window, so nothing can drift across
+        # a minute boundary, and the caller cannot supply one.
+        try:
+            window = await _charge_machine_read(request, user)
+        except HTTPException as exhausted:
+            # Already over its polling allowance: 429 is the truer answer,
+            # and it is what stops the probe. No row was charged, so there
+            # is no row to mark.
+            if exhausted.status_code == 429:
+                raise
+            window = None
+        if window is not None:
+            # A29.16: durable, attributable, bounded by that same window --
+            # a process-local counter cannot tell an operator WHICH runtime
+            # is misconfigured, and a row per refusal would be the
+            # amplifier A24.13 and A27.13 both refused.
+            await _record_surface_refusal_window(
+                request, user, reason, window=window,
+            )
+    record_surface_refusal(reason)
+    raise HTTPException(status_code=403, detail=detail)
+
+
 def require_permission(permission: str):
     """Return a dependency that checks the user has a specific permission."""
 
-    async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
+    async def _check(
+        request: Request,
+        user: UserContext = Depends(get_current_user),
+    ) -> UserContext:
+        # A29.4: species eligibility first, then the unchanged permission
+        # question. Ordering matters only for the message a caller sees;
+        # neither can admit anybody the other refuses.
+        await enforce_route_surface(request, user)
         if not has_permission(user, permission):
             raise HTTPException(
                 status_code=403,
@@ -71,7 +217,11 @@ def require_any_permission(*permissions: str):
     `any-of` gate on a write would be exactly that.
     """
 
-    async def _check(user: UserContext = Depends(get_current_user)) -> UserContext:
+    async def _check(
+        request: Request,
+        user: UserContext = Depends(get_current_user),
+    ) -> UserContext:
+        await enforce_route_surface(request, user)
         if any(has_permission(user, p) for p in permissions):
             return user
         raise HTTPException(

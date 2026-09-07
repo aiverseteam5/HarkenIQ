@@ -58,6 +58,7 @@ from harkeniq_cc.db.models import (
     CCApprovalGroup, CCApprovalGroupMember, CCApprovalPolicy, CCScopeGrant,
 )
 from harkeniq_cc.scope import SCOPE_ORG_UNIT, SCOPE_SITE, SCOPE_TENANT
+from harkeniq_cc.route_contract import MACHINE_JOBS
 
 from tests.unit.cc.test_e1_persona_matrix import (
     TENANT, _client, _grant, _legacy, _stack, _strict,
@@ -121,6 +122,7 @@ def _machine_client(app, agent_id="agent-A"):
         return UserContext(
             user_id=agent_id, email=f"op-agent:{agent_id}@v1", tenant_id=TENANT,
             role="", species="agent", identity_id="id-1",
+                machine_jobs=MACHINE_JOBS,
             # The widest a machine could ever hold: every read binding the
             # platform has, intersected with the A20.3 ceiling.
             permissions=machine_permissions(
@@ -465,9 +467,17 @@ class TestTheMachineBoundaryIsUnchanged:
         assert listing.status_code == 403
         assert detail.status_code == 403
         assert APPROVER_EMAIL not in detail.text
-        assert posture.status_code == 200, "a machine keeps fleet posture"
-        rows = posture.json()["policies"]
-        assert rows and "created_by" not in rows[0]
+        # A29.8 (A6-4A) REVERSES the A26-era assumption asserted here.
+        # A26 kept the posture reads at `fleet.view` on the ratified ground
+        # that posture belongs to THE PEOPLE LIVING UNDER IT -- reasoning
+        # about people, into which the machine ceiling swept machine
+        # principals as a side effect. B8: a machine receives governance
+        # CONCLUSIONS, never governance CONSTRUCTION, and approval policy
+        # rules are construction. A6-4B may supply the conclusion.
+        assert posture.status_code == 403, (
+            "approval policy topology is governance construction (A29.8)"
+        )
+        assert APPROVER_EMAIL not in posture.text
 
     async def test_a_machine_with_a_tenant_grant_still_reads_no_topology(self):
         """Even granted tenant-wide, the A20.3 ceiling holds.

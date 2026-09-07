@@ -56,6 +56,7 @@ from harkeniq_cc.governance import load_agent_scope, load_attention
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.scope import SCOPE_ONLY_MARKER, ScopeError
+from harkeniq_cc.route_contract import MACHINE_JOBS
 
 from tests.unit.cc.conftest import seed_legacy, seed_tenant_admin
 
@@ -137,6 +138,7 @@ async def _stack() -> Stack:
                 user_id=agent_id, email=f"op-agent:{agent_id}@v1",
                 tenant_id=TENANT, role="", permissions=perms,
                 species="agent", identity_id="id-1",
+                machine_jobs=MACHINE_JOBS,
             )
         sub, email, role = stack.persona
         return UserContext(

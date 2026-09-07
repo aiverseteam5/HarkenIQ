@@ -1850,7 +1850,31 @@ A234_TOKEN=$(curl -sf -X POST \
   -d "grant_type=client_credentials&client_id=op-agent-$A234_AGENT&client_secret=$A234_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 [ -n "$A234_TOKEN" ] || { echo "E: no machine token" >&2; exit 1; }
-a234_expect "E agent with no scope rows (legacy_open)" "$A234_TOKEN" False agent False 0
+# A29.9/A29.7: `/api/scope-grants/me` and `/api/fleet/` both left the
+# machine plane, so case E can no longer use `a234_expect` -- which reads
+# both with the caller's token. The SUBJECT is unchanged: an agent with no
+# scope rows is never synthesized and reaches nothing. It is now proved
+# through the route a machine still holds, plus the two refusals that are
+# themselves A29 facts.
+A234_ME=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/scope-grants/me)
+A234_FLEET=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/fleet/)
+[ "$A234_ME" = "403" ] && [ "$A234_FLEET" = "403" ] || {
+  echo "E: grant construction or fleet browsing is still machine-readable \
+(me=$A234_ME fleet=$A234_FLEET)" >&2; exit 1; }
+# Reach itself: the on-plane read a scopeless agent still holds must be
+# empty. In process the resolver says tenant_wide False / synthesis agent;
+# over HTTP this is what that means.
+curl -sf -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/attention/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('items', d.get('devices', []))
+assert items == [], ('E: a scopeless agent reached something', items)
+print('E agent with no scope rows: reach none over HTTP; construction 403')"
 curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/tenant-settings/scope-enforcement/impact \
   | python3 -c "
 import sys, json
@@ -1862,7 +1886,17 @@ print('E: the impact report still names the scopeless agent (reporting stayed; t
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"strict"}' http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
 a234_expect "F never-granted (strict)" "$NEVER_TOKEN" False strict False 0
-a234_expect "F agent (strict)" "$A234_TOKEN" False agent False 0
+# Same as case E: a machine principal, and both of `a234_expect`'s
+# vehicles are off the plane (A29.7/A29.9). The strict claim is that
+# nobody is synthesized -- proved here by the on-plane read being empty
+# under strict, exactly as it was under legacy_open.
+curl -sf -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/attention/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('items', d.get('devices', []))
+assert items == [], ('F agent (strict): reached something', items)
+print('F agent (strict): reach none, under strict as under legacy_open')"
 curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
   | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['valid'], d; print('chain valid,', d['length'], 'entries')"
 
@@ -2470,13 +2504,25 @@ A3_TOKEN=$(a3_token "$A3_SECRET")
 [ -n "$A3_TOKEN" ] || { echo "client_credentials grant failed" >&2; exit 1; }
 echo "machine token obtained"
 
-step "A3: the machine principal reads what the ceiling allows — and no more"
-for READ in fleet incidents attention; do
+step "A3: the machine principal reads what the ceiling AND the plane allow"
+# A29.3 split one question into two. The CEILING admits a permission; the
+# PLANE admits a route. This agent binds `incidents` and `fleet`, so it
+# holds fleet.view and incident.view exactly as before -- and `/api/fleet/`
+# is no longer part of the External Agent API plane, so the permission it
+# still holds no longer reaches it.
+for READ in incidents attention; do
   CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $A3_TOKEN" \
     "http://localhost:8090/api/$READ/")
   [ "$CODE" = "200" ] || { echo "machine read /api/$READ/ -> $CODE, want 200" >&2; exit 1; }
 done
-echo "fleet.view / incident.view reads OK"
+OFFPLANE=$(curl -s -o /tmp/a3_off.json -w '%{http_code}' \
+  -H "Authorization: Bearer $A3_TOKEN" "http://localhost:8090/api/fleet/")
+[ "$OFFPLANE" = "403" ] || {
+  echo "machine read /api/fleet/ -> $OFFPLANE, want 403 (A29.7)" >&2; exit 1; }
+grep -q "External Agent API plane" /tmp/a3_off.json || {
+  echo "/api/fleet/ refused a machine for the wrong reason" >&2
+  cat /tmp/a3_off.json >&2; exit 1; }
+echo "on-plane reads 200; fleet.view held and /api/fleet/ off the plane (403)"
 
 # The intersection is PER AGENT, not a global grant: an agent that never
 # bound `incidents` does not get incident.view, even though the ceiling
@@ -2497,25 +2543,47 @@ N_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
   -d "grant_type=client_credentials&client_id=op-agent-$A3_NARROW&client_secret=$N_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
-    http://localhost:8090/api/fleet/)" = "200" ] \
-  || { echo "an agent with attention+autonomy lost fleet.view" >&2; exit 1; }
+# A29.6, live and at its sharpest. This agent holds fleet.view -- A0's
+# REQUIRED_READS gave it attention+autonomy, which map to exactly that --
+# and the agent above holds fleet.view too. The PERMISSION is identical.
+# Only the binding differs, so only the binding can explain the answer.
+NARROW_ATT=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $N_TOKEN" http://localhost:8090/api/attention/)
+[ "$NARROW_ATT" = "200" ] || {
+  echo "an agent with the forced attention binding lost /api/attention/ ($NARROW_ATT)" >&2
+  exit 1; }
+NARROW_FLEET=$(curl -s -o /tmp/a3_narrow.json -w '%{http_code}' \
+  -H "Authorization: Bearer $N_TOKEN" http://localhost:8090/api/fleet/)
+[ "$NARROW_FLEET" = "403" ] || {
+  echo "an agent that never bound fleet reached /api/fleet/ ($NARROW_FLEET)" >&2; exit 1; }
 NARROW=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $N_TOKEN" \
   http://localhost:8090/api/incidents/)
 [ "$NARROW" = "403" ] || {
   echo "an agent that never bound incidents got incident.view ($NARROW)" >&2; exit 1; }
-echo "unbound read refused (403): the intersection is per agent"
+echo "same ceiling permission, different bindings: attention 200, fleet 403, incidents 403"
 
 step "A3: the machine principal CANNOT approve its own work (the headline)"
 APPR=$(curl -s -o /tmp/a3_appr.json -w '%{http_code}' -X POST \
   -H "Authorization: Bearer $A3_TOKEN" \
   "http://localhost:8090/api/approvals/anything/approve")
 [ "$APPR" = "403" ] || { echo "machine token approved ($APPR), want 403" >&2; cat /tmp/a3_appr.json >&2; exit 1; }
+# A29.3: refused BEFORE the permission is even considered -- the approval
+# route is not on the machine plane at all, which is a stronger refusal
+# than lacking the permission. The permission fact is asserted DIRECTLY
+# against the ceiling rather than read out of a message, so this step
+# still fails if `action.approve` is ever admitted to it.
 python3 -c "
 import json
 d = json.load(open('/tmp/a3_appr.json'))['detail']
-assert 'action.approve' in d, d
+assert 'External Agent API plane' in d, d
 print('approval refused:', d[:80])
+"
+docker compose exec -T central-command python -c "
+import sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING as C
+assert 'action.approve' not in C, C
+print('and the ceiling still excludes action.approve:', sorted(C))
 "
 
 step "A3: every other permission in the vocabulary is refused"
@@ -2605,13 +2673,16 @@ B_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
   -d "grant_type=client_credentials&client_id=op-agent-$A3_B&client_secret=$B_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+# A29.7: /api/fleet/ left the machine plane, so the proof that the
+# credential WORKS uses a route still on it. The subject is the identity,
+# not the route.
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
-    http://localhost:8090/api/fleet/)" = "200" ] \
+    http://localhost:8090/api/attention/)" = "200" ] \
   || { echo "the second machine identity never worked" >&2; exit 1; }
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/operational-agents/$A3_B/retire" >/dev/null
 RET=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
-  http://localhost:8090/api/fleet/)
+  http://localhost:8090/api/attention/)
 [ "$RET" = "401" ] || { echo "a retired agent still authenticated ($RET)" >&2; exit 1; }
 curl -sf -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/operational-agents/$A3_B/identity" | python3 -c "
@@ -2847,13 +2918,16 @@ if [ -n "${N_TOKEN:-}" ]; then
     -d '{"entries":[]}' http://localhost:8090/api/capabilities/catalogue)
   [ "$M_CODE" = "403" ] || {
     echo "a live machine principal rewrote the catalogue ($M_CODE)" >&2; exit 1; }
-  # And it can still READ it -- fleet.view is inside the A20.3 ceiling.
+  # A29.7: it can no longer READ it either. The A20.3 ceiling still admits
+  # fleet.view -- that has not moved -- but the capability registry left the
+  # machine plane, and governed discovery is A6-4B's to design deliberately
+  # rather than something a runtime scrapes off a human fleet API.
   R_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $N_TOKEN" \
     http://localhost:8090/api/capabilities/catalogue)
-  [ "$R_CODE" = "200" ] || {
-    echo "a machine principal cannot read the catalogue ($R_CODE)" >&2; exit 1; }
-  echo "live machine principal: read 200, write 403 -- it cannot widen its own capability"
+  [ "$R_CODE" = "403" ] || {
+    echo "the capability catalogue is still machine-readable ($R_CODE)" >&2; exit 1; }
+  echo "live machine principal: read 403, write 403 -- discovery is A6-4B's"
 else
   echo "no live machine token in scope; covered by unit tests"
 fi
@@ -3818,16 +3892,19 @@ CAT=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN"
   "http://localhost:8090/api/operational-agents/catalogue")
 [ "$CAT" = "403" ] || {
   echo "a machine read the binding catalogue ($CAT)" >&2; exit 1; }
-# The listing shows a machine its own row and nobody else's.
-curl -sf -H "Authorization: Bearer $B_TOKEN" \
-  "http://localhost:8090/api/operational-agents/" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-assert d['view'] == 'machine', d.get('view')
-ids = [a['id'] for a in d['agents']]
-assert ids == ['$A6_B'], ids
-print('listing as a machine ->', ids)
-"
+# A29.7 SUPERSEDES A25.9's self-only listing, and goes further: the
+# listing left the plane. A runtime knows its own id from its own token
+# and has no job requiring the EXISTENCE of its siblings. Refusing the
+# route is strictly stronger than projecting it -- there is no projection
+# left to get wrong.
+LIST=$(curl -s -o /tmp/a64_list.json -w '%{http_code}' \
+  -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/")
+[ "$LIST" = "403" ] || {
+  echo "a machine still enumerated the agent listing ($LIST)" >&2; exit 1; }
+grep -q "$A6_AGENT" /tmp/a64_list.json && {
+  echo "the refusal body named another agent" >&2; exit 1; }
+echo "listing as a machine -> 403, and names nobody"
 echo "six cross-agent reads refused, catalogue refused, listing narrowed to self"
 
 step "A6-2/S: a machine refusal is charged to the CALLER, never to the target"
@@ -4222,6 +4299,188 @@ assert item['provenance'] == {
 print('restored:', item['provenance']['type'])
 "
 echo "0023 -> $CC_HEAD with $A63_TOTAL rows present: column re-added, zero backfilled"
+
+step "A6-4A/AB: the machine plane is DECLARED -- off-plane routes refuse"
+# A29.3. The defect: a machine principal reached 46 of 98 routes because
+# their permission happened to be in MACHINE_PRINCIPAL_CEILING, and
+# `fleet.view` alone opened 43. Proven here with a REAL machine token
+# against the REAL routes, not with a stubbed principal.
+A6_TOKEN=$(a6_token)
+[ -n "$A6_TOKEN" ] || { echo "A6-4A could not mint the machine token" >&2; exit 1; }
+
+# Off the plane: estate browsing, fleet intelligence, governance
+# construction. Each is a route the machine reached before A6-4A.
+for OFF in "/api/fleet/" "/api/learning/signals" "/api/campaigns/" \
+           "/api/outcomes/patterns" "/api/predictive/risk" "/api/warranty/" \
+           "/api/firmware/exposure" "/api/sites/" "/api/agents/" \
+           "/api/policies/" "/api/policies/autonomy" "/api/policies/stop-switch" \
+           "/api/tenant-settings/scope-enforcement" \
+           "/api/tenant-settings/scope-enforcement/impact" \
+           "/api/scope-grants/me" "/api/autonomy/" "/api/capabilities/" \
+           "/api/operational-agents/" "/api/operational-agents/catalogue"; do
+  A64_CODE=$(curl -s -o /tmp/a64_off.json -w '%{http_code}' \
+    -H "Authorization: Bearer $A6_TOKEN" "http://localhost:8090$OFF")
+  [ "$A64_CODE" = "403" ] || {
+    echo "machine reached $OFF -> $A64_CODE, want 403" >&2
+    head -c 300 /tmp/a64_off.json >&2; exit 1; }
+  grep -q "External Agent API plane" /tmp/a64_off.json || {
+    echo "$OFF refused for the wrong reason" >&2; cat /tmp/a64_off.json >&2
+    exit 1; }
+done
+echo "19 off-plane routes refused a real machine token"
+
+# On the plane, with the job bound: unchanged.
+for ON in "/api/attention/" "/api/incidents/" \
+          "/api/operational-agents/$A6_AGENT" \
+          "/api/operational-agents/$A6_AGENT/runtime" \
+          "/api/operational-agents/$A6_AGENT/ingress"; do
+  curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+    "http://localhost:8090$ON" > /dev/null || {
+      echo "on-plane route $ON refused a bound machine token" >&2; exit 1; }
+done
+echo "on-plane reads unchanged for a bound agent"
+
+# A HUMAN is unaffected: the narrowing is machine-only.
+for HUM in "/api/fleet/" "/api/policies/" "/api/autonomy/" "/api/capabilities/" \
+           "/api/scope-grants/me"; do
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090$HUM" > /dev/null || {
+      echo "the narrowing hit a HUMAN read: $HUM" >&2; exit 1; }
+done
+echo "human reads unaffected"
+
+step "A6-4A/AC: the BINDING decides, not the permission (A29.6)"
+# Agent B holds the same ceiling permissions and a different binding set.
+# Nothing but the job can explain a different answer. Its token is
+# re-minted: the one from earlier in the run is past its 300s lifetime.
+B_TOKEN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$A6_B&client_secret=$B_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$B_TOKEN" ] || { echo "could not re-mint agent B's token" >&2; exit 1; }
+A64_B_ATT=$(curl -s -o /tmp/a64_b.json -w '%{http_code}' \
+  -H "Authorization: Bearer $B_TOKEN" "http://localhost:8090/api/attention/")
+A64_B_SELF=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_B/runtime")
+[ "$A64_B_SELF" = "200" ] || {
+  echo "agent B could not read its OWN record ($A64_B_SELF): 'self' needs no binding" >&2
+  exit 1; }
+echo "self read needs no binding (B self=$A64_B_SELF); attention=$A64_B_ATT"
+
+step "A6-4A/AD: an authenticated refusal is metered, and bounded (A25.10)"
+# A refused probe is charged to the agent the TOKEN names, so a runtime
+# cannot sweep the plane for free. The read window is also the BOUND: one
+# row per minute, then 429 -- deliberately no audit row per refusal, which
+# would amplify traffic a misconfigured runtime generates at will.
+A64_READS_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+# A29.16 attribution: agent B has its own refusals from A6-2/R, which is
+# exactly why the claim has to be "A's probes did not move B's window"
+# and not "B was never refused".
+A64_B_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(surface_refused),0) FROM cc_agent_read_windows
+    WHERE agent_id='$A6_B'" | tr -d ' \r')
+for _ in 1 2 3 4 5; do
+  curl -s -o /dev/null -H "Authorization: Bearer $A6_TOKEN" \
+    "http://localhost:8090/api/fleet/"
+done
+A64_READS_AFTER=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$((A64_READS_AFTER - A64_READS_BEFORE))" -ge 5 ] || {
+  echo "5 refused probes cost $((A64_READS_AFTER - A64_READS_BEFORE)) reads: \
+an authenticated refusal was free" >&2; exit 1; }
+A64_ROWS=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$A64_ROWS" -le 3 ] || {
+  echo "the refusal meter grew to $A64_ROWS rows: storage follows traffic" >&2
+  exit 1; }
+echo "5 refusals charged $((A64_READS_AFTER - A64_READS_BEFORE)) reads in $A64_ROWS row(s)"
+
+# A29.16: the durable evidence is ATTRIBUTABLE -- which tenant, which
+# agent, which closed reason, how many, how recently -- and it rides the
+# window row that already exists rather than a row per refusal.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT surface_refused || '|' || refused_surface_not_allowed || '|' ||
+          refused_job_not_bound || '|' ||
+          (CASE WHEN last_surface_refused_at IS NOT NULL THEN 1 ELSE 0 END)
+     FROM cc_agent_read_windows
+    WHERE tenant_id='tenant-demo' AND agent_id='$A6_AGENT'
+      AND surface_refused > 0" | tr -d ' \r' | python3 -c "
+import sys
+rows = [r for r in sys.stdin.read().split() if r]
+assert rows, 'no attributable refusal evidence for the refused agent'
+total = sum(int(r.split('|')[0]) for r in rows)
+plane = sum(int(r.split('|')[1]) for r in rows)
+assert total >= 5, ('refusals not recorded on the agent window', rows)
+assert plane >= 5, ('the closed reason was not counted', rows)
+assert all(r.split('|')[3] == '1' for r in rows), rows
+print('attributable: %d refusal(s), %d surface_not_allowed, in %d window row(s)'
+      % (total, plane, len(rows)))
+"
+# And agent A's refusals did not move agent B's window: the evidence is
+# ATTRIBUTED, not a global count.
+A64_B_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(surface_refused),0) FROM cc_agent_read_windows
+    WHERE agent_id='$A6_B'" | tr -d ' \r')
+[ "$A64_B_AFTER" = "$A64_B_BEFORE" ] || {
+  echo "agent A's refusals moved agent B's window \
+($A64_B_BEFORE -> $A64_B_AFTER)" >&2; exit 1; }
+echo "agent B's window unmoved by A's probes (held at $A64_B_AFTER, its own)"
+
+curl -sf "http://localhost:8090/metrics" > /tmp/a64_metrics.txt
+grep -q "cc_route_surface_refused_total" /tmp/a64_metrics.txt || {
+  echo "the surface refusal is not on the metrics surface" >&2; exit 1; }
+grep -qE "cc_route_surface_refused_total_[a-z_]+ " /tmp/a64_metrics.txt || {
+  echo "no bounded reason on the refusal metric" >&2; exit 1; }
+grep -q "$A6_AGENT" /tmp/a64_metrics.txt && {
+  echo "an agent id reached the unauthenticated metrics surface" >&2; exit 1; }
+echo "refusals counted by bounded reason; no identifier on /metrics"
+
+# A29.16: THE EVIDENCE HAS A PRODUCTION READER. Durable, bounded and
+# attributable is worth nothing if no operator can ask for it, so it
+# rides the EXISTING A6-3 ingress-health contract -- same route, same
+# `fleet.view`, same scope, same machine-self rule, no new permission.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" \
+  > /tmp/a64_ingress_ref.json
+python3 -c "
+import json
+d = json.load(open('/tmp/a64_ingress_ref.json'))
+b = d['surface_refusals']
+assert b['total'] >= 5, ('the operator cannot see the refusals', b)
+assert b['by_reason']['surface_not_allowed'] >= 5, b
+assert set(b['by_reason']) == {'surface_not_allowed', 'machine_job_not_bound'}, b
+assert b['last_surface_refused_at'], b
+# Two different facts, never merged: a governed submission that was
+# CONSIDERED and declined is not a request refused at the plane.
+assert 'refused' in d['submission_activity'], d['submission_activity']
+blob = json.dumps(d).lower()
+for banned in ('campaigns', 'query', 'traceback', 'select ', 'client_id'):
+    assert banned not in blob, banned
+print('operator reads %d surface refusal(s), %d surface_not_allowed, last at %s'
+      % (b['total'], b['by_reason']['surface_not_allowed'],
+         b['last_surface_refused_at'][:19]))
+"
+# The machine reads its OWN and no other, through the unchanged A27.8 rule.
+A64_SELF_REF=$(curl -s -o /tmp/a64_self_ref.json -w '%{http_code}' \
+  -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress")
+[ "$A64_SELF_REF" = "200" ] || {
+  echo "the agent could not read its own refusal evidence ($A64_SELF_REF)" >&2
+  exit 1; }
+python3 -c "
+import json
+b = json.load(open('/tmp/a64_self_ref.json'))['surface_refusals']
+assert b['total'] >= 5, b
+print('machine self-read sees its own refusals:', b['total'])
+"
 
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \

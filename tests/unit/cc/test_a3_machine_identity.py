@@ -39,6 +39,7 @@ from harkeniq_cc.machine_identity import (
     machine_permissions,
 )
 from harkeniq_cc.runtime import AppState
+from harkeniq_cc.route_contract import MACHINE_JOBS
 
 from tests.unit.cc.conftest import seed_tenant_admin
 
@@ -141,6 +142,7 @@ class Stack:
             user_id=agent_id, email=f"op-agent:{agent_id}@v1",
             tenant_id=tenant, role="", permissions=list(permissions),
             species=SPECIES_AGENT, identity_id="ident-1",
+            machine_jobs=MACHINE_JOBS,
         )
         return self
 
@@ -546,15 +548,29 @@ class TestMachinePrincipalOverHTTP:
         return agent_id
 
     @pytest.mark.asyncio
-    async def test_it_can_read_what_the_ceiling_allows(self):
+    async def test_it_can_read_what_the_ceiling_AND_the_plane_allow(self):
+        """A29.3: the ceiling admits a PERMISSION; the plane admits a ROUTE.
+
+        Both facts are asserted here because A6-4A separated them. Holding
+        `fleet.view` no longer implies reaching everything gated on it --
+        `/api/fleet/` left the plane (A29.7) while the permission that
+        guards it is unchanged.
+        """
+        from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+
         stack = await _stack()
         site_id = await _seed(stack)
         async with stack.client() as c:
             agent_id = await self._credentialed(stack, c, site_id)
             stack.as_machine(agent_id, ["fleet.view", "incident.view"])
-            assert (await c.get("/api/fleet/")).status_code == 200
+            # On the plane, with the job bound.
             assert (await c.get("/api/incidents/")).status_code == 200
             assert (await c.get("/api/attention/")).status_code == 200
+            # Off the plane, though the ceiling still admits its permission.
+            assert "fleet.view" in MACHINE_PRINCIPAL_CEILING
+            off = await c.get("/api/fleet/")
+            assert off.status_code == 403
+            assert "External Agent API plane" in off.text
 
     @pytest.mark.asyncio
     async def test_it_CANNOT_approve_its_own_work(self):
@@ -566,7 +582,15 @@ class TestMachinePrincipalOverHTTP:
             stack.as_machine(agent_id, ["fleet.view", "incident.view"])
             res = await c.post("/api/approvals/anything/approve")
             assert res.status_code == 403
-            assert "action.approve" in res.json()["detail"]
+            # A29.3: refused BEFORE the permission is even considered --
+            # the approval route is not on the machine plane at all. The
+            # permission answer is asserted directly rather than through
+            # the message, so this still fails if the ceiling ever admits
+            # `action.approve`.
+            assert "External Agent API plane" in res.text
+            from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+
+            assert "action.approve" not in MACHINE_PRINCIPAL_CEILING
 
     @pytest.mark.asyncio
     async def test_it_cannot_reach_any_mutation(self):
@@ -608,10 +632,12 @@ class TestMachinePrincipalOverHTTP:
         async with stack.client() as c:
             agent_id = await self._credentialed(stack, c, site_id)
             stack.as_machine(agent_id, ["fleet.view", "incident.view"])
-            fleet = (await c.get("/api/fleet/")).json()
-            # It sees its own site, and it resolved through the agent
-            # principal type -- a user-typed lookup would find no grants.
-            assert isinstance(fleet.get("devices", fleet.get("items")), list)
+            # A29.7: the vehicle moved to a route still on the plane.
+            # The subject is the RESOLVER -- an agent resolves through the
+            # agent principal type, where a user-typed lookup finds no
+            # grants -- not which route demonstrates it.
+            seen = (await c.get("/api/attention/")).json()
+            assert isinstance(seen.get("items", seen.get("devices")), list)
 
 
 # ---------------------------------------------------------------------------

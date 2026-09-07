@@ -31,6 +31,7 @@ from harkeniq_cc.db.models import (
     CCAgentProposal, CCAgentSubmission, CCFleetCache, CCOutcomeHistory, CCSite,
 )
 from harkeniq_cc.runtime import AppState
+from harkeniq_cc.route_contract import MACHINE_JOBS
 
 from tests.unit.cc.conftest import seed_tenant_admin
 
@@ -46,8 +47,14 @@ class Stack:
         self.tenant_wide = True
         self.site_ids: set = set()
 
-    def as_machine(self, agent_id, permissions=("fleet.view", "incident.view")):
+    def as_machine(self, agent_id, permissions=("fleet.view", "incident.view"),
+                   jobs=None):
+        """A29.6: `jobs` are the agent's A0 BINDINGS, as production carries
+        them. Defaults to the full declared set -- these suites test what a
+        machine may do GIVEN the bindings; the A29 suite passes a narrower
+        set to prove the binding gate itself."""
         self.machine = (agent_id, list(permissions))
+        self.machine_jobs = MACHINE_JOBS if jobs is None else frozenset(jobs)
         return self
 
     def as_person(self, role="tenant_owner"):
@@ -84,6 +91,7 @@ async def _stack():
                 user_id=agent_id, email=f"op-agent:{agent_id}@v1",
                 tenant_id=TENANT, role="", permissions=perms,
                 species="agent", identity_id="id-1",
+                machine_jobs=getattr(stack, "machine_jobs", MACHINE_JOBS),
             )
         sub, email, role = stack.persona
         return UserContext(

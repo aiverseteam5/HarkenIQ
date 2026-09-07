@@ -240,7 +240,11 @@ async def _poisoned_estate(stack):
 #: evidence and rationale for the agent's OWN candidates. It is not
 #: exempt from the identity check, and nothing is.
 MACHINE_ROUTES: dict[str, tuple[int, bool]] = {
-    "/": (200, False),
+    # A29.7 (A6-4A): the LISTING left the machine plane. A runtime knows
+    # its own agent id from its own token and has no job requiring the
+    # existence of its siblings; A6-4B may supply a self-only listing if
+    # one proves necessary.
+    "/": (403, False),
     "/catalogue": (403, False),
     "/{agent_id}": (200, False),
     "/{agent_id}/preflight": (200, False),
@@ -478,15 +482,22 @@ class TestNoMachineResponseCarriesAForbiddenField:
 
 
 class TestAnAgentInspectsItselfAndNoOther:
-    async def test_the_listing_shows_a_machine_only_its_own_row(self):
+    async def test_the_listing_is_off_the_machine_plane_entirely(self):
+        """A29.7 SUPERSEDES A25.9's self-only listing, and goes further.
+
+        A25.9 narrowed the listing so a machine saw only its own row. A6-4A
+        removes the route from the plane: a runtime knows its own agent id
+        from its own token and has no job requiring the EXISTENCE of its
+        siblings. Refusing the route is strictly stronger than projecting
+        it, because there is no projection left to get wrong.
+        """
         stack = await _stack()
         await _poisoned_estate(stack)
         async with stack.as_machine("agent-A").client() as c:
-            body = (await c.get(f"{PREFIX}/")).json()
-        assert body["view"] == "machine"
-        assert [a["id"] for a in body["agents"]] == ["agent-A"], (
-            "a machine enumerated another agent through the listing"
-        )
+            res = await c.get(f"{PREFIX}/")
+        assert res.status_code == 403
+        assert "External Agent API plane" in res.text
+        assert "agent-B" not in res.text
 
     async def test_a_human_still_sees_every_agent_they_may_reach(self):
         stack = await _stack()
@@ -524,7 +535,9 @@ class TestAnAgentInspectsItselfAndNoOther:
         async with stack.as_machine("agent-A").client() as c:
             res = await c.get(f"{PREFIX}/catalogue")
         assert res.status_code == 403
-        assert "operator surface" in res.text
+        # A29.3: the refusal moved from a hand-written handler check to the
+        # declaration. Same answer, now true by construction.
+        assert "External Agent API plane" in res.text
 
 
 # ---------------------------------------------------------------------------

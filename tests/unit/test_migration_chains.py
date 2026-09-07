@@ -26,10 +26,11 @@ import pytest
 REPO = Path(__file__).parents[2]
 
 SERVICES = {
-    # A27 (A6-3) adds 0024, and A27.13's bounded throttle counter 0025.
-    # The head is hand-declared ON PURPOSE: a new migration is a schema
-    # amendment, and this assertion is what makes somebody say which one.
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0025"),
+    # A27 (A6-3) adds 0024, A27.13's bounded throttle counter 0025, and
+    # A29.16's bounded refusal evidence 0026. The head is hand-declared ON
+    # PURPOSE: a new migration is a schema amendment, and this assertion
+    # is what makes somebody say which one.
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0026"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.

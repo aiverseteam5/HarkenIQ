@@ -233,13 +233,23 @@ def read_window_start(now=None) -> datetime:
 
 async def admit_read(
     session: Any, *, tenant_id: str, agent_id: str, now=None
-) -> tuple[bool, int]:
+) -> tuple[bool, int, datetime]:
     """May this agent make one more status read in the current window?
 
     Atomic by construction: the increment is a single UPDATE, and the
     first read of a window inserts under the unique constraint, so two
     replicas cannot both believe they created it. Returns
-    ``(permitted, used_after)``.
+    ``(permitted, used_after, window)``.
+
+    A29.16: THE WINDOW IS RETURNED because this is the only place it may
+    be computed for a request. It used to be derived three separate times
+    on one path -- here, in `_charge_machine_read`, and again in the
+    refusal recorder -- and any two of those can fall on opposite sides
+    of a minute. A request at 12:00:59.999 then charged the 12:00 row and
+    recorded its refusal evidence against 12:01, where no row exists;
+    `record_refusal` deliberately does not create one, so the evidence
+    was silently lost. Aligning clocks would not fix that. Computing the
+    window once and carrying it does.
     """
     from harkeniq_cc.db.repos import AgentReadWindowRepo
 
@@ -247,4 +257,4 @@ async def admit_read(
     used = await AgentReadWindowRepo(session).increment(
         tenant_id=tenant_id, agent_id=agent_id, window_start=window,
     )
-    return used <= READ_MAX_PER_WINDOW, used
+    return used <= READ_MAX_PER_WINDOW, used, window
