@@ -52,8 +52,8 @@ M_SURFACE_REFUSED = "harkeniq_cc_route_surface_refused_total"
 #: to put a tenant or agent id on a scrape surface. Anything unrecognised
 #: collapses to `other`.
 SURFACE_REFUSAL_REASONS = frozenset({
-    "route_not_on_the_machine_plane",
-    "agent_lacks_the_required_binding",
+    "surface_not_allowed",
+    "machine_job_not_bound",
     "machine_only_route",
     "other",
 })

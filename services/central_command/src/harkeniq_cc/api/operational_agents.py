@@ -2025,6 +2025,10 @@ async def submit_proposal(
     agent_id: str,
     body: SubmitProposal,
     response: Response,
+    # A29.15: carried so the handler can ask the canonical route-surface
+    # decision. It is read for the matched route template and nothing
+    # else -- no path value, query or body reaches the decision.
+    request: Request = None,  # type: ignore[assignment]
     # A24.13: `proposal.submit` is enforced INSIDE the handler, not as a
     # route dependency. Not a weakening -- the same permission, refused
     # with the same 403 -- but a dependency answers before the durable
@@ -2151,6 +2155,27 @@ async def submit_proposal(
     # Caught as a class rather than enumerated: a check added here later
     # is metered by construction instead of by whoever remembers.
     try:
+        # A29.15 (A6-4A HIGH 1): the SAME canonical route-surface and typed
+        # job decision the read plane consumes, evaluated here rather than
+        # at the guard so it lands INSIDE the attempt ledger A24.13 built.
+        #
+        # It cannot be a route dependency: dependencies resolve before the
+        # handler, so a refusal would arrive before `admit_attempt` and be
+        # free -- the exact hole A24.13 closed by moving authorization
+        # inside the meter. Sharing the DECISION and not the refusal
+        # handler is what lets the declaration be authoritative for the
+        # write while each plane keeps its own anti-amplification shape.
+        #
+        # Removing this route's declaration, or changing its declared job,
+        # therefore fails the write CLOSED.
+        from harkeniq_cc.api.deps import evaluate_route_surface
+
+        surface_reason, surface_detail = evaluate_route_surface(request, user)
+        if surface_reason:
+            from harkeniq_cc.metrics import record_surface_refusal
+
+            record_surface_refusal(surface_reason)
+            raise HTTPException(status_code=403, detail=surface_detail)
         if not (
             "proposal.submit" in user.permissions or "*" in user.permissions
         ):
@@ -2437,6 +2462,42 @@ async def _machine_read_gate(
         )
     await _charge_machine_read(request, user)
     _enforce_machine_self(user, agent_id)
+
+
+async def _record_surface_refusal_window(
+    request: Request, user: UserContext, reason: str
+) -> None:
+    """A29.16: durable, attributable, bounded refusal evidence.
+
+    Extends the row `_charge_machine_read` has already opened for this
+    window rather than writing anywhere new, so the storage bound is
+    unchanged: one row per (tenant, agent, window), whatever the traffic.
+
+    Owns its own short-lived session for the reason A25.12 recorded --
+    accounting is not business state and a helper must never commit or
+    roll back a caller's transaction. Best effort: telemetry may not
+    change behaviour, and a refusal that fails to record is still a
+    refusal.
+    """
+    from harkeniq_cc.db.repos import AgentReadWindowRepo
+    from harkeniq_cc.ingress_limits import read_window_start
+
+    try:
+        sessionmaker = request.app.state.cc.sessionmaker
+        async with sessionmaker() as accounting:
+            await AgentReadWindowRepo(accounting).record_refusal(
+                # Server-derived, from the validated token. Nothing here
+                # reads the route's `agent_id`, the query or the body, so
+                # a caller cannot choose whose window it marks.
+                tenant_id=user.tenant_id,
+                agent_id=user.user_id,
+                window_start=read_window_start(),
+                reason=reason,
+                at=datetime.now(timezone.utc),
+            )
+            await accounting.commit()
+    except Exception:  # noqa: BLE001 - accounting must not change behaviour
+        logger.debug("surface refusal not recorded", exc_info=True)
 
 
 async def _machine_self_read(

@@ -4396,6 +4396,35 @@ A64_ROWS=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc 
   exit 1; }
 echo "5 refusals charged $((A64_READS_AFTER - A64_READS_BEFORE)) reads in $A64_ROWS row(s)"
 
+# A29.16: the durable evidence is ATTRIBUTABLE -- which tenant, which
+# agent, which closed reason, how many, how recently -- and it rides the
+# window row that already exists rather than a row per refusal.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT surface_refused || '|' || refused_surface_not_allowed || '|' ||
+          refused_job_not_bound || '|' ||
+          (last_surface_refused_at IS NOT NULL)
+     FROM cc_agent_read_windows
+    WHERE tenant_id='tenant-demo' AND agent_id='$A6_AGENT'
+      AND surface_refused > 0" | tr -d ' \r' | python3 -c "
+import sys
+rows = [r for r in sys.stdin.read().split() if r]
+assert rows, 'no attributable refusal evidence for the refused agent'
+total = sum(int(r.split('|')[0]) for r in rows)
+plane = sum(int(r.split('|')[1]) for r in rows)
+assert total >= 5, ('refusals not recorded on the agent window', rows)
+assert plane >= 5, ('the closed reason was not counted', rows)
+assert all(r.split('|')[3] == 't' for r in rows), rows
+print('attributable: %d refusal(s), %d surface_not_allowed, in %d window row(s)'
+      % (total, plane, len(rows)))
+"
+# And another agent's window is untouched: attribution, not a global count.
+A64_OTHER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(surface_refused),0) FROM cc_agent_read_windows
+    WHERE agent_id='$A6_B'" | tr -d ' \r')
+[ "$A64_OTHER" = "0" ] || {
+  echo "agent B was charged agent A's refusals ($A64_OTHER)" >&2; exit 1; }
+echo "another agent's window unmoved"
+
 curl -sf "http://localhost:8090/metrics" > /tmp/a64_metrics.txt
 grep -q "cc_route_surface_refused_total" /tmp/a64_metrics.txt || {
   echo "the surface refusal is not on the metrics surface" >&2; exit 1; }

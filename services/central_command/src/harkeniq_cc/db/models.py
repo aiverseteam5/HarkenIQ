@@ -1128,6 +1128,42 @@ class CCAgentReadWindow(Base):
     )
     reads: Mapped[int] = mapped_column(Integer, default=0)
 
+    # -- A29.16 (A6-4A): bounded, ATTRIBUTABLE refusal evidence ---------
+    #
+    # A refusal was durably CHARGED (it moved `reads`) and nothing said
+    # WHO was refused or WHY. The process-local metric cannot answer
+    # either: `/metrics` is unauthenticated, so a tenant or agent id may
+    # never be a label there (A25.11), which is exactly the attribution
+    # an operator needs to find the misconfigured runtime.
+    #
+    # So the evidence rides the row that already exists. Storage stays
+    # bounded by (tenant, agent, window) and never by request volume --
+    # a flood costs one row per minute and then 429s, which is the
+    # property A24.13 and A27.13 both refused to trade away.
+    #
+    # The reason counters are a CLOSED set, one column each, rather than
+    # a JSON blob or a free-text column: a bounded vocabulary in the
+    # schema cannot be widened by a caller, and no path, query, body or
+    # error text is ever stored.
+    surface_refused: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    #: `surface_not_allowed` -- the route is not on the machine plane.
+    refused_surface_not_allowed: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    #: `machine_job_not_bound` -- on the plane, but this agent holds no
+    #: binding for the job the route declares.
+    refused_job_not_bound: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    #: When this window last refused anything. "How many" and "how
+    #: recently" are different questions and a window start answers
+    #: neither precisely.
+    last_surface_refused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "tenant_id", "agent_id", "window_start", name="uq_agent_read_window"

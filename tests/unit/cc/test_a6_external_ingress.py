@@ -57,8 +57,13 @@ class Stack:
         self.persona = ("kc-owner", "owner@example.com", "tenant_owner")
         self.machine = None
 
-    def as_machine(self, agent_id, permissions=(SUBMIT, "fleet.view")):
+    def as_machine(self, agent_id, permissions=(SUBMIT, "fleet.view"),
+                   jobs=None):
+        """A29.6: `jobs` are the agent's A0 BINDINGS, as production carries
+        them. Defaults to the full declared set; the A29 suites pass a
+        narrower one to prove the binding gate itself."""
         self.machine = (agent_id, list(permissions))
+        self.machine_jobs = MACHINE_JOBS if jobs is None else frozenset(jobs)
         return self
 
     def as_person(self, sub="kc-owner", email="owner@example.com",
@@ -91,7 +96,7 @@ async def _stack() -> Stack:
                 user_id=agent_id, email=f"op-agent:{agent_id}@v1",
                 tenant_id=TENANT, role="", permissions=perms,
                 species="agent", identity_id="id-1",
-                machine_jobs=MACHINE_JOBS,
+                machine_jobs=getattr(stack, "machine_jobs", MACHINE_JOBS),
             )
         sub, email, role = stack.persona
         return UserContext(
