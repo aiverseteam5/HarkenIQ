@@ -4377,6 +4377,13 @@ A64_READS_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
   -d harkeniq_cc -tAc \
   "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$A6_AGENT'" \
   | tr -d ' \r')
+# A29.16 attribution: agent B has its own refusals from A6-2/R, which is
+# exactly why the claim has to be "A's probes did not move B's window"
+# and not "B was never refused".
+A64_B_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT coalesce(sum(surface_refused),0) FROM cc_agent_read_windows
+    WHERE agent_id='$A6_B'" | tr -d ' \r')
 for _ in 1 2 3 4 5; do
   curl -s -o /dev/null -H "Authorization: Bearer $A6_TOKEN" \
     "http://localhost:8090/api/fleet/"
@@ -4417,13 +4424,15 @@ assert all(r.split('|')[3] == '1' for r in rows), rows
 print('attributable: %d refusal(s), %d surface_not_allowed, in %d window row(s)'
       % (total, plane, len(rows)))
 "
-# And another agent's window is untouched: attribution, not a global count.
-A64_OTHER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+# And agent A's refusals did not move agent B's window: the evidence is
+# ATTRIBUTED, not a global count.
+A64_B_AFTER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT coalesce(sum(surface_refused),0) FROM cc_agent_read_windows
     WHERE agent_id='$A6_B'" | tr -d ' \r')
-[ "$A64_OTHER" = "0" ] || {
-  echo "agent B was charged agent A's refusals ($A64_OTHER)" >&2; exit 1; }
-echo "another agent's window unmoved"
+[ "$A64_B_AFTER" = "$A64_B_BEFORE" ] || {
+  echo "agent A's refusals moved agent B's window \
+($A64_B_BEFORE -> $A64_B_AFTER)" >&2; exit 1; }
+echo "agent B's window unmoved by A's probes (held at $A64_B_AFTER, its own)"
 
 curl -sf "http://localhost:8090/metrics" > /tmp/a64_metrics.txt
 grep -q "cc_route_surface_refused_total" /tmp/a64_metrics.txt || {
