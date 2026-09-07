@@ -4402,7 +4402,7 @@ echo "5 refusals charged $((A64_READS_AFTER - A64_READS_BEFORE)) reads in $A64_R
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT surface_refused || '|' || refused_surface_not_allowed || '|' ||
           refused_job_not_bound || '|' ||
-          (last_surface_refused_at IS NOT NULL)
+          (CASE WHEN last_surface_refused_at IS NOT NULL THEN 1 ELSE 0 END)
      FROM cc_agent_read_windows
     WHERE tenant_id='tenant-demo' AND agent_id='$A6_AGENT'
       AND surface_refused > 0" | tr -d ' \r' | python3 -c "
@@ -4413,7 +4413,7 @@ total = sum(int(r.split('|')[0]) for r in rows)
 plane = sum(int(r.split('|')[1]) for r in rows)
 assert total >= 5, ('refusals not recorded on the agent window', rows)
 assert plane >= 5, ('the closed reason was not counted', rows)
-assert all(r.split('|')[3] == 't' for r in rows), rows
+assert all(r.split('|')[3] == '1' for r in rows), rows
 print('attributable: %d refusal(s), %d surface_not_allowed, in %d window row(s)'
       % (total, plane, len(rows)))
 "
