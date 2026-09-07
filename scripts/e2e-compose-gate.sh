@@ -1850,7 +1850,31 @@ A234_TOKEN=$(curl -sf -X POST \
   -d "grant_type=client_credentials&client_id=op-agent-$A234_AGENT&client_secret=$A234_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 [ -n "$A234_TOKEN" ] || { echo "E: no machine token" >&2; exit 1; }
-a234_expect "E agent with no scope rows (legacy_open)" "$A234_TOKEN" False agent False 0
+# A29.9/A29.7: `/api/scope-grants/me` and `/api/fleet/` both left the
+# machine plane, so case E can no longer use `a234_expect` -- which reads
+# both with the caller's token. The SUBJECT is unchanged: an agent with no
+# scope rows is never synthesized and reaches nothing. It is now proved
+# through the route a machine still holds, plus the two refusals that are
+# themselves A29 facts.
+A234_ME=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/scope-grants/me)
+A234_FLEET=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/fleet/)
+[ "$A234_ME" = "403" ] && [ "$A234_FLEET" = "403" ] || {
+  echo "E: grant construction or fleet browsing is still machine-readable \
+(me=$A234_ME fleet=$A234_FLEET)" >&2; exit 1; }
+# Reach itself: the on-plane read a scopeless agent still holds must be
+# empty. In process the resolver says tenant_wide False / synthesis agent;
+# over HTTP this is what that means.
+curl -sf -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/attention/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('items', d.get('devices', []))
+assert items == [], ('E: a scopeless agent reached something', items)
+print('E agent with no scope rows: reach none over HTTP; construction 403')"
 curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/tenant-settings/scope-enforcement/impact \
   | python3 -c "
 import sys, json
@@ -1862,7 +1886,17 @@ print('E: the impact report still names the scopeless agent (reporting stayed; t
 curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"strict"}' http://localhost:8090/api/tenant-settings/scope-enforcement > /dev/null
 a234_expect "F never-granted (strict)" "$NEVER_TOKEN" False strict False 0
-a234_expect "F agent (strict)" "$A234_TOKEN" False agent False 0
+# Same as case E: a machine principal, and both of `a234_expect`'s
+# vehicles are off the plane (A29.7/A29.9). The strict claim is that
+# nobody is synthesized -- proved here by the on-plane read being empty
+# under strict, exactly as it was under legacy_open.
+curl -sf -H "Authorization: Bearer $A234_TOKEN" \
+  http://localhost:8090/api/attention/ | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('items', d.get('devices', []))
+assert items == [], ('F agent (strict): reached something', items)
+print('F agent (strict): reach none, under strict as under legacy_open')"
 curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
   | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['valid'], d; print('chain valid,', d['length'], 'entries')"
 
@@ -2605,13 +2639,16 @@ B_TOKEN=$(curl -sf -X POST \
   "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
   -d "grant_type=client_credentials&client_id=op-agent-$A3_B&client_secret=$B_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+# A29.7: /api/fleet/ left the machine plane, so the proof that the
+# credential WORKS uses a route still on it. The subject is the identity,
+# not the route.
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
-    http://localhost:8090/api/fleet/)" = "200" ] \
+    http://localhost:8090/api/attention/)" = "200" ] \
   || { echo "the second machine identity never worked" >&2; exit 1; }
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/operational-agents/$A3_B/retire" >/dev/null
 RET=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
-  http://localhost:8090/api/fleet/)
+  http://localhost:8090/api/attention/)
 [ "$RET" = "401" ] || { echo "a retired agent still authenticated ($RET)" >&2; exit 1; }
 curl -sf -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/operational-agents/$A3_B/identity" | python3 -c "
@@ -3818,16 +3855,19 @@ CAT=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN"
   "http://localhost:8090/api/operational-agents/catalogue")
 [ "$CAT" = "403" ] || {
   echo "a machine read the binding catalogue ($CAT)" >&2; exit 1; }
-# The listing shows a machine its own row and nobody else's.
-curl -sf -H "Authorization: Bearer $B_TOKEN" \
-  "http://localhost:8090/api/operational-agents/" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-assert d['view'] == 'machine', d.get('view')
-ids = [a['id'] for a in d['agents']]
-assert ids == ['$A6_B'], ids
-print('listing as a machine ->', ids)
-"
+# A29.7 SUPERSEDES A25.9's self-only listing, and goes further: the
+# listing left the plane. A runtime knows its own id from its own token
+# and has no job requiring the EXISTENCE of its siblings. Refusing the
+# route is strictly stronger than projecting it -- there is no projection
+# left to get wrong.
+LIST=$(curl -s -o /tmp/a64_list.json -w '%{http_code}' \
+  -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/")
+[ "$LIST" = "403" ] || {
+  echo "a machine still enumerated the agent listing ($LIST)" >&2; exit 1; }
+grep -q "$A6_AGENT" /tmp/a64_list.json && {
+  echo "the refusal body named another agent" >&2; exit 1; }
+echo "listing as a machine -> 403, and names nobody"
 echo "six cross-agent reads refused, catalogue refused, listing narrowed to self"
 
 step "A6-2/S: a machine refusal is charged to the CALLER, never to the target"
