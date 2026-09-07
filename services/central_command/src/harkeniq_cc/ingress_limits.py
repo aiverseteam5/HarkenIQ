@@ -39,6 +39,19 @@ outcome counts: accepted, replayed, conflicting, rejected, refused.
 WRITES ARE BOUNDED BY THE LIMIT THEY ENFORCE. Once an agent is over its
 window the request is refused WITHOUT recording, so the table cannot be
 grown by the traffic it exists to bound.
+
+AND THE REFUSAL IS STILL OBSERVED (A27.13)
+------------------------------------------
+Not recording the refusal in the attempt ledger is right -- a rejection
+recorded there would consume the allowance it was refused for. But it
+left `throttled` structurally zero, so A27.11's `throttled` state could
+never be reached by real traffic and an operator could not tell a silent
+runtime from one being refused at the door.
+
+So the rejection is counted in its OWN bounded structure: one row per
+(tenant, agent, aligned window), incremented in place. A flood of a
+million requests in one minute writes one row. The bound is TIME, not
+traffic, which is the property the no-write rule was protecting.
 """
 
 from __future__ import annotations
@@ -103,10 +116,86 @@ async def admit_attempt(
     await repo.prune(tenant_id, agent_id, window_start)
     used = await repo.count_since(tenant_id, agent_id, window_start)
     if used >= ATTEMPT_MAX:
-        # Refused WITHOUT writing. A record that grew on every refusal
-        # would be an amplifier on the exact traffic it bounds.
+        # Refused WITHOUT writing to the ATTEMPT ledger. A record that
+        # grew on every refusal would be an amplifier on the exact
+        # traffic it bounds. The refusal is observed instead by the
+        # caller through `record_throttled`, in a structure bounded by
+        # time rather than by request count (A27.13).
         return False, used
+    # NOT throttling. This request is being SERVED; it merely happens to
+    # take the last slot. Marking it would make `throttled` mean
+    # "at the limit", which is a different fact and a much commoner one.
     return True, used
+
+
+# ---------------------------------------------------------------------------
+# A27.13: the rejection is observed, bounded by TIME rather than traffic
+# ---------------------------------------------------------------------------
+
+#: Bucket granularity for the rejection counter. Aligned like
+#: `read_window_start` so replicas agree which bucket a second falls in,
+#: and small enough that summing the buckets inside `ATTEMPT_WINDOW_S`
+#: answers "throttled in the last hour" to within one bucket.
+#:
+#: This is what makes the structure bounded: at most one row per agent
+#: per minute however many requests arrive in it.
+THROTTLE_WINDOW_S = 60
+
+#: How long spent buckets are kept. Wider than the attempt window on
+#: purpose -- the projection reads a full `ATTEMPT_WINDOW_S` back, and a
+#: horizon close to that could let clock skew between replicas delete a
+#: bucket still being reported.
+THROTTLE_RETENTION_S = ATTEMPT_WINDOW_S * 3
+
+
+def throttle_window_start(now=None) -> datetime:
+    """The rejection bucket a moment falls in. Fixed-size and aligned."""
+    now = now or datetime.now(timezone.utc)
+    epoch = int(now.timestamp()) // THROTTLE_WINDOW_S * THROTTLE_WINDOW_S
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+async def record_throttled(
+    session: Any, *, tenant_id: str, agent_id: str, now=None
+) -> int:
+    """Observe that ONE request was actually refused for rate.
+
+    Called only where `admit_attempt` returned False -- i.e. a real
+    request received a real 429. Returns the running total for the
+    current bucket.
+
+    Housekeeping runs only when a bucket is OPENED, not on every
+    rejection: pruning per request would put a DELETE in front of flood
+    traffic, which is the shape this whole design exists to avoid.
+    """
+    from harkeniq_cc.db.repos import AgentThrottleWindowRepo
+
+    now = now or datetime.now(timezone.utc)
+    repo = AgentThrottleWindowRepo(session)
+    window = throttle_window_start(now)
+    total = await repo.record(
+        tenant_id=tenant_id, agent_id=agent_id, window_start=window, at=now,
+    )
+    if total == 1:
+        await repo.prune(now - timedelta(seconds=THROTTLE_RETENTION_S))
+    return total
+
+
+async def throttling_observed(
+    session: Any, *, tenant_id: str, agent_id: str, now=None
+) -> tuple[int, Any]:
+    """Rejections inside the attempt window, and the most recent one.
+
+    Read on the SAME horizon the attempt counts use, so an operator sees
+    one consistent window rather than two that disagree.
+    """
+    from harkeniq_cc.db.repos import AgentThrottleWindowRepo
+
+    now = now or datetime.now(timezone.utc)
+    return await AgentThrottleWindowRepo(session).observed(
+        tenant_id, agent_id,
+        throttle_window_start(now - timedelta(seconds=ATTEMPT_WINDOW_S)),
+    )
 
 
 # ---------------------------------------------------------------------------

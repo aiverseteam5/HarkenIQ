@@ -2473,3 +2473,174 @@ auditing. No new role. No second RBAC, scope resolver, approval system,
 identity model, capability authority, execution engine or audit system.
 No machine-ceiling change. No schema change. No change to A6-1 ingress or
 A6-2 status. A6-3 is not started.
+
+### A27 — 2026-09-06 — A6-3 external-agent provenance and ingress operability (decided: Vinod)
+
+A6-1 gave an external runtime a governed way to WRITE; A6-2 gave it a
+governed way to READ what happened. A6-3 completes the third side of the
+same interaction: the **human's** ability to attribute and supervise it.
+Recorded BEFORE the code, per change control.
+
+**A27.1 — The gap, measured on `6748baf`.** `origin` (`evaluator` |
+`ingress`) is passed to `admit_proposal()` and written **only into the
+audit-entry detail JSON**. There is no column on `cc_agent_proposals` and
+no API payload carries it. Meanwhile `/api/approvals/` already spends the
+word `origin` on the queue LANE (`node` / `agent` / `agent_activation` /
+`campaign_wave`), so an approver sees `"agent"` for a proposal HarkenIQ
+reasoned itself AND for one an external runtime asked for. A24's own
+comment claims "an approver is never left guessing"; today they are.
+Separately `cc_agent_submissions`, `cc_agent_ingress_attempts` and
+`cc_agent_read_windows` are written by the meter and the submit route and
+read by **nothing else** — no human can answer whether a runtime is
+submitting, being refused, throttled or silent, though A25.6 collected
+the data for exactly that purpose.
+
+**A27.2 — Provenance is its own first-class concept (D2).** A dedicated
+persisted discriminator `cc_agent_proposals.provenance_type`, NOT an
+overload of the approvals lane `origin`. Closed vocabulary, canonical
+values:
+
+    evaluator         HarkenIQ's own CC-resident loop derived it
+    external_ingress  an authenticated external runtime asked for it
+    unknown           no authoritative provenance exists for this row
+
+The value is `external_ingress`, deliberately not shortened to
+`"ingress"`. The vocabulary is designed so a later ratified source
+(skill, event, MCP, operator, campaign) is ADDED without reinterpreting
+today's values; none of those is implemented here.
+
+**A27.3 — One semantic fact, one canonical spelling going forward (D1).**
+`ORIGIN_INGRESS` becomes the canonical `external_ingress` and is the
+single source both the column and new audit entries read. Historical
+audit entries keep `{"origin": "ingress"}` and are **never rewritten** —
+the chain is immutable and a rewrite would be a worse lie than an old
+spelling. The pre-A27 spelling is documented where it can be met.
+
+**A27.4 — No backfill, ever (D3).** The column is additive and nullable
+with no data migration. A pre-A6-3 proposal has no authoritative
+provenance and projects as `unknown`; it is never manufactured into
+`evaluator`. Unknown is not a default — it is the honest answer, the same
+rule A17.4 and A19.9 already apply to capability reach and activation
+provenance.
+
+**A27.5 — Provenance is written transactionally with the proposal.** It
+is set inside the existing `admit_proposal()` transaction, from the
+`origin` that function already receives, so a proposal cannot exist
+without the provenance of its own creation. No second write path, no
+reconciliation job, no inference from the audit log.
+
+**A27.6 — Provenance is projected where the DECISION is made.** The
+approvals queue item, approvals history and the human proposal views
+carry a structured block:
+
+    provenance: { type, submission_id }
+
+`submission_id` appears only for `external_ingress`, only because A6-1
+already persisted it as authoritative, and only to let an operator
+correlate a decision with the submission that asked for it. Nothing else
+travels: no credential, no client id, no secret, no token, no realm
+subject, no identity material beyond what the surface already carried.
+
+**A27.7 — Machine projections are unchanged.** A machine already knows
+it submitted — it holds the submission id A6-1 returned. Adding
+provenance to the A25 machine projections would widen a payload to tell a
+runtime something it supplied, so it is not added. A25.3 and A25.9 stand
+untouched.
+
+**A27.8 — Ingress health is agent-anchored and governed like every other
+agent read (D4).** `GET /api/operational-agents/{agent_id}/ingress`, at
+`fleet.view`, through the canonical `get_scope` resolver and
+`_require_visible_agent`, declared READ_SCOPED because its answer varies
+with the resolved scope. Ingress health is OPERATIONAL STATE, not
+approval authority: `action.approve` is not required to see whether a
+runtime is healthy. A machine principal reads its OWN and no other, via
+the existing A25.5 mechanism — no new self rule is invented. There is no
+tenant-wide roll-up in A6-3.
+
+**A27.9 — Bounded by construction (D3).** Counts come from the existing
+one-hour `cc_agent_ingress_attempts` window and the current
+`cc_agent_read_windows` counter; recent refusals are the most recent 20
+`cc_agent_submissions` rows by `created_at DESC` under a deterministic
+`LIMIT`. No unbounded historical scan, no new retention, no second
+telemetry or accounting subsystem. Refusal `code` and `reason` are
+projected bounded and sanitized.
+
+**A27.10 — Observed activity, never invented connectivity (D5).**
+HarkenIQ holds no heartbeat, session or connection signal for an external
+runtime, so A6-3 claims none. `AgentIdentityRepo.touch()` is called on
+every authenticated machine request, which makes
+`cc_agent_identities.last_seen_at` a real persisted observation; it is
+projected as `last_authenticated_at`, meaning exactly *the last
+authoritative persisted authentication observation* and never "connected".
+`last_seen_source` is caller-supplied and is NOT exposed.
+
+**A27.11 — `activity_state` has deterministic precedence, defined before
+the code (D5).** A derived summary must never be ambiguous, and it is a
+convenience over the raw observations, never an authority. The raw
+counts and timestamps are authoritative and are always returned beside
+it. Precedence, first match wins, evaluated in this order:
+
+    1. never_authenticated   no last_authenticated_at, no attempt ever
+    2. throttled             throttled_count > 0 in the current window
+    3. repeatedly_refused    refused_count > 0 and accepted_count == 0
+                             within the attempt window
+    4. active_recently       any attempt or authentication within 1 hour
+    5. idle                  last observation within 24 hours
+    6. no_recent_activity    otherwise
+
+**A27.12 — What A6-3 does not build.** No events, webhooks, streaming or
+subscriptions. No MCP. No SDK. No capability or parameter discovery API.
+No tenant-wide ingress roll-up. No heartbeat protocol or connectivity
+subsystem. No evidence ingress or trust model. No cursor pagination and
+no `/api/v1`. No machine-ceiling change, no new permission, and no
+change to RBAC, scope semantics, autonomy, approval authority, capability
+authority, execution, Site Manager coordination or Harken Node final
+authority. The observation that a machine principal reaches 45 of 97
+routes because `fleet.view` is one broad key is RECORDED here and belongs
+to A6-4's deliberate External Agent API Plane; it is not solved in A6-3.
+
+**A27.13 — Pre-merge remediation: a real 429 must be observable.**
+Independent review found the ingress attempt vocabulary carries no
+`throttled` outcome — A24.13 refuses an over-limit submission WITHOUT
+writing, deliberately, so the traffic a rate limit exists to bound
+cannot grow the table that bounds it. A27.8's projection nevertheless
+read `throttled` out of that same ledger, so the field was zero for
+every agent forever, A27.11's `throttled` state was unreachable by any
+amount of real traffic, and an operator could not distinguish a silent
+runtime from one being refused at the door.
+
+Both facts stand. A rejection still never enters
+`cc_agent_ingress_attempts` — a rejection counted as an attempt would
+consume the allowance it was just refused for, and the limit would eat
+itself. The refusal is instead counted in `cc_agent_throttle_windows`
+(CC migration **0025**, additive, no backfill): one row per (tenant,
+agent, aligned minute), incremented in place, so the bound is TIME and
+not request count — a flood of a million requests in one minute writes
+one row and increments it. Only an ACTUAL rejection marks it; the
+request that merely consumes the last slot was SERVED and is not
+throttling, because a state meaning "at the limit" is a different and
+far commoner fact. Atomicity comes from the same single-statement UPDATE
+plus unique-constraint-guarded insert that `cc_agent_read_windows`
+stands on, inside a SAVEPOINT so a lost open race costs one statement
+and never the caller's transaction (A25.12). `/ingress` reports the
+count and `last_throttled_at` on the SAME window as the attempt counts,
+so an operator reads one horizon rather than two that disagree.
+
+Nothing else moves: the attempt vocabulary, `ATTEMPT_WINDOW_S`,
+`ATTEMPT_MAX`, the 20-row refusal sample, machine-self behaviour,
+`fleet.view` + `READ_SCOPED`, and `MACHINE_PRINCIPAL_CEILING` are all
+unchanged.
+
+**A27.14 — Pre-merge remediation: provenance is consumed by a human.**
+A27.6 put provenance on both human payloads and the Console rendered
+neither, so the fact existed and no operator could see it. The Console
+now carries a typed, allow-listed presentation module applying the
+SERVER's own reading rule — `evaluator` → "HarkenIQ evaluator",
+`external_ingress` → "External agent runtime", and anything absent,
+empty or unrecognised → "Unknown historical source", never inferred into
+`evaluator` (A27.4). It is rendered on both intended surfaces: the
+approval-queue agent-proposal card, where the decision is made, and the
+Operational Agent proposal history. The queue's `origin` LANE is
+untouched and provenance is never merged into it (A27.2); the submission
+id is shown only for `external_ingress`, as bounded correlation detail
+that confers nothing (A25.2). No authorization internal is exposed.

@@ -59,11 +59,39 @@ logger = logging.getLogger("harkeniq.cc.proposal_admission")
 #: not actually serialize it.
 _ADMISSION_LOCK = "cc.proposal_admission.{tenant_id}"
 
-#: How a proposal came to exist. Provenance for the audit trail and the
-#: Console, never an authorization input: an externally submitted
-#: proposal is governed identically to an internally derived one.
+#: A27.2: PROPOSAL PROVENANCE -- who caused this proposal to exist. A
+#: first-class persisted fact from A6-3, and never an authorization
+#: input: an externally submitted proposal is governed identically to an
+#: internally derived one.
+#:
+#: DELIBERATELY NOT the approvals `origin`, which answers a different
+#: question -- which QUEUE LANE a subject belongs to (`node`, `agent`,
+#: `agent_activation`, `campaign_wave`). Overloading one word for two
+#: questions is exactly how the approvals surface came to say "agent"
+#: for both a proposal HarkenIQ reasoned itself and one an external
+#: runtime asked for.
+#:
+#: A27.3: `external_ingress` is the canonical spelling and is what both
+#: the column and NEW audit entries carry. Historical audit entries
+#: carry the pre-A27 `"ingress"` and are never rewritten -- the chain is
+#: immutable, and rewriting it would be a worse lie than an old spelling.
+#:
+#: A27.2: the vocabulary is closed and designed to be EXTENDED without
+#: reinterpreting today's values. A later ratified source (skill, event,
+#: MCP, operator, campaign) becomes a new member; none is implemented.
 ORIGIN_EVALUATOR = "evaluator"
-ORIGIN_INGRESS = "ingress"
+ORIGIN_INGRESS = "external_ingress"
+
+#: A27.4: no authoritative provenance exists for this row. Pre-A6-3
+#: proposals project as this and are NEVER manufactured into
+#: `evaluator` -- unknown is the honest answer, not a default (A17.4).
+PROVENANCE_UNKNOWN = "unknown"
+
+#: The closed vocabulary, named so a test can assert it rather than
+#: trusting that every producer spells it the same way.
+PROVENANCE_TYPES: frozenset[str] = frozenset({
+    ORIGIN_EVALUATOR, ORIGIN_INGRESS, PROVENANCE_UNKNOWN,
+})
 
 #: The refusal code a logical duplicate is reported under. Deliberately
 #: the SAME code `govern_proposal` uses, because it is the same finding:
@@ -120,9 +148,10 @@ async def admit_proposal(
     the committed dedupe keys, and refuse if the candidate was admitted
     while this caller was deciding.
 
-    `origin` records HOW the proposal came to exist -- `evaluator` or
-    `ingress`. It is provenance for the audit trail and the Console, and
-    is deliberately NOT an authorization input: an externally submitted
+    `origin` records HOW the proposal came to exist -- one of
+    `PROVENANCE_TYPES`, today `evaluator` or `external_ingress`. It is
+    provenance for the audit trail, the column and the Console, and is
+    deliberately NOT an authorization input: an externally submitted
     proposal is governed identically to an internally derived one.
 
     Returns ``(row_or_None, code, reason)``.
@@ -155,6 +184,11 @@ async def admit_proposal(
     if conflict is not None:
         return None, CODE_OPERATION_IN_FLIGHT, REASON_OPERATION_IN_FLIGHT
 
+    # A27.5: provenance is written WITH the proposal, in this
+    # transaction, from the `origin` this function already receives --
+    # so a proposal cannot exist without the provenance of its own
+    # creation. No second write path and no inference from the audit log.
+    payload["provenance_type"] = origin
     row = await repo.create(**payload)
 
     detail = {
@@ -164,9 +198,10 @@ async def admit_proposal(
         "disposition": row.disposition,
         "status": row.status,
         "reason": (row.disposition_reason or "")[:200],
-        # A24: provenance travels with the record from the first moment,
-        # so an approver is never left guessing whether HarkenIQ's own
-        # loop proposed this or an external runtime asked for it.
+        # A24/A27.3: provenance travels with the record from the first
+        # moment. It is now ALSO a column (`provenance_type`), which is
+        # what makes the claim true where an approver actually reads --
+        # the audit entry was the only carrier until A6-3.
         "origin": origin,
     }
     if note:

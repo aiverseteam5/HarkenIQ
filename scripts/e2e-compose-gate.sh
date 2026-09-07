@@ -3895,6 +3895,334 @@ assert set(item['approval']) == {
 print('list item and receipt agree on all four blocks; approval names no one')
 "
 
+# ---------------------------------------------------------------------------
+# A6-3 / A27: provenance + ingress operability (the HUMAN side of A6)
+# ---------------------------------------------------------------------------
+
+step "A6-3/V: an approver can tell WHO asked, in the ONE queue (A27.6)"
+# The defect: `origin` reached admission and was written ONLY into audit
+# detail, while `/api/approvals/` already spends the word `origin` on the
+# queue LANE. So an approver saw "agent" for a proposal HarkenIQ reasoned
+# itself AND for one an external runtime asked for. Both words are
+# asserted here, because A27.2's whole claim is that they answer
+# different questions and neither was overloaded to answer the other.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/" > /tmp/a63_queue.json
+A6_SRC="$_REPO_ROOT/services/central_command/src" \
+A6_PROP="$A6_PROP" A6_SUB="$A6_SUB" python3 - <<'A63PY'
+import json, os, sys
+sys.path.insert(0, os.environ["A6_SRC"])
+from harkeniq_cc.proposal_admission import ORIGIN_INGRESS, PROVENANCE_TYPES
+
+items = json.load(open("/tmp/a63_queue.json"))["actions"]
+item = next(i for i in items if i["action_id"] == os.environ["A6_PROP"])
+assert item["origin"] == "agent", ("the queue LANE changed", item["origin"])
+assert item["provenance"] == {
+    "type": ORIGIN_INGRESS, "submission_id": os.environ["A6_SUB"],
+}, item["provenance"]
+# Every proposal in the queue carries a value from the CLOSED vocabulary.
+for i in items:
+    if "provenance" in i:
+        assert i["provenance"]["type"] in PROVENANCE_TYPES, i["provenance"]
+# And provenance carries no identity material, ever.
+blob = json.dumps([i.get("provenance") for i in items])
+for banned in ("client_id", "secret", "token", "realm", "keycloak"):
+    assert banned not in blob.lower(), banned
+print("queue lane 'agent'; provenance '%s' naming submission %s"
+      % (item["provenance"]["type"], os.environ["A6_SUB"][:12]))
+A63PY
+
+step "A6-3/W: provenance is written WITH the proposal, in one transaction"
+# A27.5. On a stack whose every proposal was created after 0024, a NULL
+# would mean a proposal reached the database without the provenance of
+# its own creation -- i.e. a second write path.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT coalesce(provenance_type,'<NULL>')||'='||count(*)
+     FROM cc_agent_proposals
+    GROUP BY coalesce(provenance_type,'<NULL>') ORDER BY 1" \
+  | tr -d ' \r' | grep -v '^$' > /tmp/a63_prov_counts.txt
+cat /tmp/a63_prov_counts.txt
+python3 -c "
+rows = dict(l.split('=') for l in open('/tmp/a63_prov_counts.txt').read().split())
+assert '<NULL>' not in rows, 'a proposal exists with no provenance: ' + str(rows)
+assert int(rows.get('evaluator', 0)) > 0, rows
+assert int(rows.get('external_ingress', 0)) > 0, rows
+print('both origins present, no proposal without provenance')
+"
+
+step "A6-3/X: ingress health is observed activity, never a connection claim"
+# A27.8/A27.10. HarkenIQ holds no heartbeat, session or connection signal
+# for an external runtime, so it claims none: `last_authenticated_at` is
+# the last PERSISTED authentication observation. Judged on the FIELDS,
+# recursively -- the disclaimer prose deliberately says the word.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" \
+  > /tmp/a63_ingress.json
+A6_SRC="$_REPO_ROOT/services/central_command/src" python3 - <<'A63PY'
+import json, os, sys
+sys.path.insert(0, os.environ["A6_SRC"])
+from harkeniq_cc.ingress_limits import (
+    ATTEMPT_WINDOW_S, READ_MAX_PER_WINDOW, READ_WINDOW_S,
+)
+from harkeniq_cc.provenance import ACTIVITY_STATES, REFUSAL_SAMPLE
+
+d = json.load(open("/tmp/a63_ingress.json"))
+keys = set()
+
+
+def walk(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            keys.add(k)
+            walk(v)
+    elif isinstance(node, list):
+        for item in node:
+            walk(item)
+
+
+walk(d)
+banned = {"connected", "online", "connection", "session", "heartbeat",
+          "reachable", "last_seen_source", "last_seen_at"}
+assert not (keys & banned), sorted(keys & banned)
+
+assert d["credentialed"] is True, d["credentialed"]
+assert d["identity_status"] == "active", d["identity_status"]
+assert d["last_authenticated_at"], "the agent has authenticated repeatedly"
+assert d["activity_state"] in ACTIVITY_STATES, d["activity_state"]
+
+sub = d["submission_activity"]
+assert sub["window_seconds"] == ATTEMPT_WINDOW_S, sub
+assert sub["attempts"] >= 1, sub
+assert sub["attempts"] >= sub["accepted"], sub
+assert sub["last_attempt_at"], sub
+# `last_accepted_at` comes from the DURABLE submission ledger, which is
+# never pruned and never windowed, so it is the assertion that cannot go
+# stale on a slow gate.
+assert sub["last_accepted_at"], "no acceptance in the durable ledger"
+
+# The throttle is a CURRENT-window projection, so a quiet minute reads
+# zero. What must always hold is that it is internally consistent and
+# that reading it did not exhaust anybody.
+rt = d["read_throttle"]
+assert (rt["window_seconds"], rt["limit"]) == (READ_WINDOW_S, READ_MAX_PER_WINDOW), rt
+assert 0 <= rt["used"] <= rt["limit"], rt
+assert rt["exhausted"] == (rt["used"] >= rt["limit"]), rt
+
+# A27.9: bounded sample, fixed shape, nothing unbounded on an operator's
+# screen and nothing that scans the durable ledger.
+assert d["recent_refusal_limit"] == REFUSAL_SAMPLE, d["recent_refusal_limit"]
+assert len(d["recent_refusals"]) <= REFUSAL_SAMPLE, len(d["recent_refusals"])
+for r in d["recent_refusals"]:
+    assert set(r) == {"submission_id", "code", "reason", "at"}, sorted(r)
+    assert len(r["reason"]) <= 256, len(r["reason"])
+print("ingress health: state=%s attempts=%d accepted=%d reads=%d/%d refusals=%d"
+      % (d["activity_state"], sub["attempts"], sub["accepted"], rt["used"],
+         rt["limit"], len(d["recent_refusals"])))
+A63PY
+
+step "A6-3/Y: an agent reads its OWN ingress, and an operator's read is free"
+# D4: no new self rule -- the same A25.5 helper, so machine-self cannot
+# drift between routes. And an operator inspecting a runtime's throttle
+# must not consume that runtime's allowance, which is why the projection
+# READS the window and `admit_read` stays the only writer.
+a63_reads() {
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$1'" \
+    | tr -d ' \r'
+}
+A63_A_BEFORE=$(a63_reads "$A6_AGENT")
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" > /dev/null
+[ "$(a63_reads "$A6_AGENT")" = "$A63_A_BEFORE" ] || {
+  echo "an operator's ingress read spent the agent's own allowance" >&2; exit 1; }
+
+curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" \
+  > /tmp/a63_self.json || { echo "the agent could not read its own ingress" >&2; exit 1; }
+A63_A_SELF=$(a63_reads "$A6_AGENT")
+[ "$((A63_A_SELF - A63_A_BEFORE))" = "1" ] || {
+  echo "the agent's own ingress read was charged \
+$((A63_A_SELF - A63_A_BEFORE)), want 1" >&2; exit 1; }
+
+A63_B_BEFORE=$(a63_reads "$A6_B")
+A63_CROSS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress")
+[ "$A63_CROSS" = "403" ] || {
+  echo "agent B read agent A's ingress health ($A63_CROSS), want 403" >&2; exit 1; }
+[ "$((`a63_reads "$A6_B"` - A63_B_BEFORE))" = "1" ] || {
+  echo "a cross-agent ingress refusal was free" >&2; exit 1; }
+echo "operator read free to the agent; self read charged 1; cross-agent 403 charged to B"
+
+step "A6-3/AA: a REAL 429 is observable, and does not amplify (A27.13)"
+# The defect independent review found: A24.13 refuses an over-limit
+# submission WITHOUT writing -- correctly, because a rejection recorded
+# as an attempt would consume the allowance it was just refused for --
+# but the projection then read `throttled` out of that same ledger,
+# where the word is not in the vocabulary. Zero forever, so A27.11's
+# `throttled` state could never be reached by real traffic.
+#
+# Proven here with REAL requests against the REAL route: fill the
+# window, get a real 429, and read the operator surface.
+A63_FILL=$(docker compose exec -T central-command python -c "
+import os, sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.ingress_limits import ATTEMPT_MAX
+print(ATTEMPT_MAX)" | tr -d ' \r')
+[ -n "$A63_FILL" ] || { echo "could not read ATTEMPT_MAX" >&2; exit 1; }
+
+# Spend the allowance directly in the ledger. The point of the step is
+# the REJECTION path, and driving $A63_FILL real submissions through
+# Keycloak would add minutes to the gate to prove nothing extra.
+# Tagged ids so the filler can be removed again EXACTLY, leaving the
+# real attempts this gate produced earlier intact.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c "
+  INSERT INTO cc_agent_ingress_attempts (id, tenant_id, agent_id, outcome, created_at)
+  SELECT 'gatefill' || lpad(g::text, 24, '0'), 'tenant-demo', '$A6_AGENT',
+         'accepted', now()
+    FROM generate_series(1, $A63_FILL) g;" > /dev/null
+
+A63_THROTTLE_ROWS_BEFORE=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_throttle_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+
+# Ten real rejected requests. Storage must not grow with them.
+for N in 1 2 3 4 5 6 7 8 9 10; do
+  A63_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $A6_TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"candidate_ref\":\"$A6_REF\",\"idempotency_key\":\"gate-a63-throttle-$N\"}" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT/proposals")
+  [ "$A63_CODE" = "429" ] || {
+    echo "request $N over the limit returned $A63_CODE, want 429" >&2; exit 1; }
+done
+
+A63_THROTTLE_ROWS=$(docker compose exec -T postgres psql -U harkeniq \
+  -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_throttle_windows WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$((A63_THROTTLE_ROWS - A63_THROTTLE_ROWS_BEFORE))" -le 1 ] || {
+  echo "10 rejections created $((A63_THROTTLE_ROWS - A63_THROTTLE_ROWS_BEFORE)) \
+rows: storage grows with the traffic it bounds" >&2; exit 1; }
+
+# And the attempt ledger did NOT grow: a rejection must never consume
+# the allowance it was refused for.
+A63_LEDGER=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts
+    WHERE agent_id='$A6_AGENT' AND id LIKE 'gatefill%'" | tr -d ' \r')
+[ "$A63_LEDGER" = "$A63_FILL" ] || {
+  echo "the attempt ledger moved from $A63_FILL to $A63_LEDGER: a refused \
+request entered the record it is refused against" >&2; exit 1; }
+
+# The operator surface, which is the whole point.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/ingress" \
+  > /tmp/a63_throttled.json
+python3 -c "
+import json
+d = json.load(open('/tmp/a63_throttled.json'))
+sub = d['submission_activity']
+assert sub['throttled'] >= 10, ('the operator cannot see the refusals', sub)
+assert sub['last_throttled_at'], 'no time for the refusal'
+assert d['activity_state'] == 'throttled', d['activity_state']
+print('real 429 x10 -> throttled=%d, state=%s, %d throttle row(s)'
+      % (sub['throttled'], d['activity_state'], $A63_THROTTLE_ROWS))
+"
+
+# Remove ONLY the filler, so the agent can submit again and the real
+# attempts this gate recorded earlier are left exactly as they were.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c "
+  DELETE FROM cc_agent_ingress_attempts WHERE id LIKE 'gatefill%';" > /dev/null
+A63_REAL=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_agent_ingress_attempts WHERE agent_id='$A6_AGENT'" \
+  | tr -d ' \r')
+[ "$A63_REAL" -ge 6 ] || {
+  echo "the cleanup removed real attempts too ($A63_REAL left)" >&2; exit 1; }
+
+step "A6-3/Z: a real 0023 -> head upgrade backfills nothing (A27.4)"
+# The promise is about EXISTING customer data, so it is proven against a
+# database that already holds proposals: drop the column, rewind, let
+# Central Command bring it forward, and confirm every row comes back with
+# NO provenance rather than a manufactured `evaluator`. The same proposal
+# that read `external_ingress` a moment ago then reads `unknown` through
+# the same API -- the FACT was lost, and the platform says so instead of
+# guessing it back from the submission still sitting beside it.
+#
+# Central Command is STOPPED across the window. Its agent evaluator runs
+# every 20s in this stack and reads `cc_agent_proposals`, so a column
+# that briefly does not exist would raise inside a background loop --
+# an ERROR log the last gate step correctly refuses, roughly one run in
+# four. The upgrade then rides the service's OWN entrypoint (`alembic
+# upgrade head`), which is the production upgrade path rather than a
+# hand-invoked one.
+#
+# The gate restores what it deliberately destroyed (the A26 rule), from a
+# snapshot taken here, and re-asserts the original answer afterwards.
+CC_HEAD=$(ls "$_REPO_ROOT"/services/central_command/src/harkeniq_cc/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT id||'|'||coalesce(provenance_type,'') FROM cc_agent_proposals" \
+  | tr -d ' \r' | grep -v '^$' > /tmp/a63_snapshot.txt
+A63_TOTAL=$(wc -l < /tmp/a63_snapshot.txt | tr -d ' ')
+[ "$A63_TOTAL" -gt 0 ] || { echo "no proposals to prove the upgrade against" >&2; exit 1; }
+
+docker compose stop central-command > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  alter table cc_agent_proposals drop column provenance_type;
+  update alembic_version set version_num='0023';" > /dev/null
+docker compose start central-command > /dev/null
+A63_UP=""
+for _ in $(seq 90); do
+  if curl -sf http://localhost:8090/healthz > /dev/null 2>&1; then A63_UP=yes; break; fi
+  sleep 1
+done
+[ -n "$A63_UP" ] || {
+  echo "central-command did not come back after the 0023 rewind" >&2; exit 1; }
+A63_VERSION=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "select version_num from alembic_version" | tr -d ' \r')
+[ "$A63_VERSION" = "$CC_HEAD" ] || {
+  echo "alembic head is $A63_VERSION, want $CC_HEAD" >&2; exit 1; }
+A63_NULLS=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "select count(*) from cc_agent_proposals where provenance_type is null" | tr -d ' \r')
+[ "$A63_NULLS" = "$A63_TOTAL" ] || {
+  echo "0024 backfilled $((A63_TOTAL - A63_NULLS)) of $A63_TOTAL rows: \
+A27.4 forbids manufacturing historical certainty" >&2; exit 1; }
+
+# The projection, on a genuinely historical row, through the same API.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/" > /tmp/a63_queue_after.json
+A6_PROP="$A6_PROP" python3 -c "
+import json, os
+item = next(i for i in json.load(open('/tmp/a63_queue_after.json'))['actions']
+            if i['action_id'] == os.environ['A6_PROP'])
+assert item['provenance'] == {'type': 'unknown'}, item['provenance']
+assert item['origin'] == 'agent', item['origin']
+print('a pre-A6-3 row reads unknown -- and is NOT inferred from its submission')
+"
+
+# Put back exactly what was there. The gate broke it; the gate repairs it.
+python3 -c "
+import re
+for line in open('/tmp/a63_snapshot.txt'):
+    pid, _, prov = line.strip().partition('|')
+    if not prov:
+        continue
+    assert re.fullmatch(r'[A-Za-z0-9_-]+', pid), pid
+    assert re.fullmatch(r'[a-z_]+', prov), prov
+    print(\"update cc_agent_proposals set provenance_type='%s' where id='%s';\"
+          % (prov, pid))
+" | docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/" > /tmp/a63_queue_restored.json
+A6_PROP="$A6_PROP" A6_SUB="$A6_SUB" python3 -c "
+import json, os
+item = next(i for i in json.load(open('/tmp/a63_queue_restored.json'))['actions']
+            if i['action_id'] == os.environ['A6_PROP'])
+assert item['provenance'] == {
+    'type': 'external_ingress', 'submission_id': os.environ['A6_SUB']}, item
+print('restored:', item['provenance']['type'])
+"
+echo "0023 -> $CC_HEAD with $A63_TOTAL rows present: column re-added, zero backfilled"
+
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \
@@ -3917,9 +4245,10 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT detail->>'origin' FROM cc_audit_log
     WHERE action='agent_proposal.created' AND subject='$A6_PROP'" \
-  | tr -d ' \r' | grep -q '^ingress$' \
-  || { echo "the proposal's origin was not recorded as ingress" >&2; exit 1; }
-echo "submission audited; proposal provenance recorded as ingress"
+  | tr -d ' \r' | grep -q '^external_ingress$' \
+  || { echo "the proposal's origin was not recorded as external_ingress" >&2
+       exit 1; }
+echo "submission audited; proposal provenance recorded as external_ingress"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

@@ -51,6 +51,7 @@ from harkeniq_cc.db.repos import (
 )
 from harkeniq_cc.governance import load_agent_scope, load_autonomy_contract
 from harkeniq_cc.scope import SCOPE_DEVICE, SCOPE_ORG_UNIT, SCOPE_SITE
+from harkeniq_cc.provenance import provenance_block
 from harkeniq_cc.operational_agent import (
     AGENT_STATUSES,
     SCOPE_ORG_UNIT as AGENT_SCOPE_ORG_UNIT,
@@ -220,7 +221,27 @@ def proposal_dict(p) -> dict:
         "outcome": p.outcome,
         "outcome_at": p.outcome_at.isoformat() if p.outcome_at else None,
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        # A27.6: WHO CAUSED THIS TO EXIST -- deliberately its own block
+        # and not the approvals `origin`, which answers a different
+        # question (which queue lane). `submission_id` is filled in by
+        # the caller where it has already fetched the page's submissions
+        # in one query; absent here means "not looked up", never
+        # "not external".
+        "provenance": provenance_block(p),
     }
+
+
+def proposal_dict_with_provenance(p, submission_id: str = "") -> dict:
+    """`proposal_dict`, with the submission id resolved (A27.6).
+
+    A separate entry point rather than an optional argument threaded
+    through every existing call site: the queue and the agent view fetch
+    the page's submissions in ONE query and pass the id in, and nothing
+    else has to change or pay for a lookup it does not want.
+    """
+    out = proposal_dict(p)
+    out["provenance"] = provenance_block(p, submission_id)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -974,7 +995,19 @@ async def get_agent(
             proposals=proposals[:50],
             authority_for=lambda p: _authority_for_proposal(scope, p),
         )
-    view["proposals"] = [proposal_dict(p) for p in proposals[:50]]
+    # A27.6: one query for the page, never one per row.
+    from harkeniq_cc.db.repos import AgentSubmissionRepo
+    from harkeniq_cc.provenance import submission_ids_for
+
+    page = proposals[:50]
+    by_proposal = submission_ids_for(
+        await AgentSubmissionRepo(session).for_proposals(
+            user.tenant_id, [p.id for p in page],
+        )
+    )
+    view["proposals"] = [
+        proposal_dict_with_provenance(p, by_proposal.get(p.id, "")) for p in page
+    ]
     return view
 
 
@@ -1269,6 +1302,44 @@ async def get_agent_preflight(
 
         return machine_preflight_view(payload)
     return payload
+
+
+@router.get("/{agent_id}/ingress",
+            dependencies=[Depends(require_permission("fleet.view"))])
+async def agent_ingress_health(
+    agent_id: str,
+    request: Request,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """How this Operational Agent's external ingress is actually doing.
+
+    A27.8. `cc_agent_submissions`, `cc_agent_ingress_attempts` and
+    `cc_agent_read_windows` were written by the submit route and the
+    meter and read by NOTHING else, so no human could say whether a
+    runtime was submitting, being refused, throttled or silent -- though
+    A25.6 collected the data for exactly that purpose.
+
+    Governed as every other agent read: `fleet.view`, the canonical
+    resolver, `_require_visible_agent`. Ingress health is OPERATIONAL
+    STATE, not approval authority, so `action.approve` is deliberately
+    not required to see whether a runtime is healthy.
+
+    A machine principal reads its OWN and no other, through the existing
+    A25.5 helper -- no new self rule is invented here.
+    """
+    from harkeniq_cc.db.repos import AgentIdentityRepo
+    from harkeniq_cc.provenance import build_ingress_health
+
+    await _machine_self_read(request, user, agent_id)
+    agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
+    identity = await AgentIdentityRepo(session).get_for_agent(
+        user.tenant_id, agent.id,
+    )
+    return await build_ingress_health(
+        session, tenant_id=user.tenant_id, agent=agent, identity=identity,
+    )
 
 
 @router.get("/{agent_id}/runtime",
@@ -1987,7 +2058,7 @@ async def submit_proposal(
     from harkeniq_cc.ingress_limits import (
         ATTEMPT_WINDOW_S, OUTCOME_ACCEPTED, OUTCOME_CONFLICT,
         OUTCOME_REFUSED, OUTCOME_REJECTED, OUTCOME_REPLAYED, admit_attempt,
-        lock_agent_ingress,
+        lock_agent_ingress, record_throttled,
     )
     from harkeniq_cc.governance import (
         load_agent_scope, load_attention, load_autonomy_contract,
@@ -2043,8 +2114,20 @@ async def submit_proposal(
         session, tenant_id=tenant_id, agent_id=self_agent,
     )
     if not permitted:
-        # Refused without writing: a record that grew on every refusal
-        # would amplify the traffic it exists to bound.
+        # Refused without writing to the ATTEMPT ledger: a record that
+        # grew on every refusal would amplify the traffic it exists to
+        # bound, and a rejection counted as an attempt would consume the
+        # allowance it was just refused for.
+        #
+        # A27.13: but the refusal IS observed, in a counter bounded by
+        # time rather than by request count -- otherwise `throttled`
+        # stays zero forever and an operator cannot tell a silent
+        # runtime from one being refused at the door. Inside the same
+        # transaction and under the ingress lock already held, so the
+        # 429 and its observation commit together or not at all.
+        await record_throttled(
+            session, tenant_id=tenant_id, agent_id=self_agent,
+        )
         await session.commit()
         raise HTTPException(
             status_code=429,

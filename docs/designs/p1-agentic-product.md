@@ -3044,3 +3044,137 @@ missing call site cannot pass.
 `site_admin` losing tenant-wide topology when its grant is site-scoped is
 the intended outcome, not a regression. Its ROLE still holds the
 permission; its GRANT decides where.
+
+---
+
+## §31 — A6-3 / Amendment A27: provenance and ingress operability
+
+A6-1 built the external runtime's write path and A6-2 built its read
+path. Both work. What neither built is the **operator's** side of the
+same interaction: HarkenIQ now accepts governed work from an external
+runtime that a human cannot distinguish, diagnose or supervise.
+
+Approving work whose provenance you cannot see is a governance defect,
+not a missing convenience. That is why this comes before events, MCP and
+SDKs — all of which are throughput and ergonomics, all of which are
+cheaper afterwards, and all of which are (A22.1) thin adapters over a
+contract that should first be supervisable.
+
+### The two findings, and why they are the same finding
+
+`origin` reaches `admit_proposal()` and lands in the audit-entry detail —
+a hash-chained store you query by subject id. There is no column and no
+API payload. `cc_agent_submissions`, `cc_agent_ingress_attempts` and
+`cc_agent_read_windows` are written by the submit route and the meter and
+read by nothing else.
+
+Both are the house pattern this ledger keeps recording: **declared,
+written, and unreadable at the point where somebody must act on it.**
+A24's comment says provenance travels "so an approver is never left
+guessing"; it travels on the audit entry, not on the record the approver
+reads. A25.6 justified a separate read bucket so quotas and abuse
+detection could "later distinguish them"; later has no reader.
+
+### Why a new field and not the existing `origin`
+
+`/api/approvals/` already returns `origin` — with values `node`,
+`agent`, `agent_activation`, `campaign_wave`. That is the **queue lane**:
+which kind of subject this is. Provenance is a different question: *who
+caused this to exist*. Overloading one word for two questions is how the
+approvals surface came to say `"agent"` for both an internally-reasoned
+and an externally-submitted proposal. Renaming the shipped field would be
+a breaking Console change for no gain, so provenance gets its own
+explicit name and its own block.
+
+### Truthfulness rules this slice is built on
+
+**No backfill.** A proposal created before this column existed has no
+authoritative provenance. It projects `unknown`. Defaulting it to
+`evaluator` would assert a fact nobody checked — the same error A19.9
+refused when it would have shouted DRIFT at every pre-A2 agent.
+
+**No invented connectivity.** HarkenIQ has no heartbeat for an external
+runtime. It does have `AgentIdentityRepo.touch()`, called on every
+authenticated machine request, so `last_seen_at` is a genuine persisted
+observation — and it means *this credential authenticated*, not *this
+runtime is connected*. It is projected as `last_authenticated_at` and the
+UI never says "connected". `last_seen_source` is caller-supplied text and
+is not exposed at all.
+
+**A derived state is never an authority.** `activity_state` exists
+because an operator scanning a list needs one word, and its precedence is
+defined in A27.11 before the code and pinned by tests, so two overlapping
+conditions cannot produce two answers. The raw counts and timestamps ride
+beside it and are what anything else should read.
+
+### Bounded by construction
+
+Counts come from the one-hour attempt window that already prunes itself
+and the current read-throttle counter. Refusal detail is the most recent
+20 submission rows under a deterministic `LIMIT` — `cc_agent_submissions`
+is the durable idempotency ledger and is deliberately not pruned, so it
+is the one structure that must never be scanned whole.
+
+### What this slice deliberately leaves alone
+
+Events, MCP, SDKs, capability and parameter discovery, a tenant-wide
+roll-up, cursor pagination, `/api/v1`, and every authority boundary. The
+sweep that produced this slice also measured that a machine principal
+reaches 45 of 97 routes because `fleet.view` is one broad key opening
+campaigns, learning, predictive, warranty and policy posture. That is a
+real architectural observation and it is recorded, not solved: it belongs
+to A6-4's deliberate External Agent API Plane, where the surface can be
+designed rather than inherited.
+
+## §31b — A6-3 pre-merge remediation (A27.13, A27.14)
+
+Two HIGH findings from independent review. Both are the same shape as
+the two the slice itself was written to fix: **a fact that exists and
+nobody can act on.**
+
+### The throttled state was unreachable (A27.13)
+
+A24.13 refuses an over-limit submission without writing. That is right,
+and it is right for two reasons rather than one: a record that grew on
+every refusal would amplify the traffic it bounds, and a rejection
+recorded as an *attempt* would consume the allowance it was just refused
+for — the limit eating itself.
+
+What was wrong is that A27.8 then read `throttled` out of that ledger,
+where the word does not appear in the vocabulary at all. The projection
+was asking a table a question it structurally could not answer, so the
+number was zero forever and A27.11's second precedence rung could never
+be reached by real traffic.
+
+The fix keeps both properties by changing the SHAPE of the observation
+rather than the rule. Attempts are counted row-per-request because they
+are rare and individually meaningful. Rejections are the opposite —
+unbounded by definition, individually uninteresting, and interesting
+only in aggregate — so they are counted the way A25.6 already counts
+polling: a windowed counter, one row per aligned minute, incremented in
+place. Storage is bounded by TIME, not by traffic. A million requests in
+a minute write one row.
+
+The distinction the tests exist to hold is that **reaching the limit is
+not being throttled.** The request that consumes the last slot was
+served. Marking it would make the state mean "at the limit", which is a
+different fact, a much commoner one, and not what an operator is asking.
+
+### Provenance had no reader (A27.14)
+
+The slice put provenance on both human payloads and stopped there. The
+Console rendered neither, which is the house pattern one layer up: the
+column is correct, the API is correct, and the human still cannot see
+who asked.
+
+The presentation rule is a module rather than two pieces of page code
+on purpose. Two surfaces deciding independently is how they come to
+disagree, and the rule they have to share is the server's: an
+unrecognised value is exactly as unknown as an absent one. A page that
+rendered whatever arrived would put an unvetted string in front of an
+approver, and a page that defaulted to `evaluator` would assert the one
+thing A27.4 refuses to assert.
+
+The queue's `origin` lane is deliberately untouched, and there is a test
+whose only job is to fail if a later change merges the two words back
+together.

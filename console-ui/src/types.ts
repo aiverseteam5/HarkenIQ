@@ -1,3 +1,5 @@
+import type { ProposalProvenance } from "./proposalProvenance";
+
 /** Paginated API response wrapper. */
 export interface PaginatedResponse<T> {
   items: T[];
@@ -266,6 +268,12 @@ export interface AgentProposal {
   outcome: string;
   outcome_at: string | null;
   created_at: string | null;
+  /** A27.6: WHO CAUSED this proposal to exist -- deliberately its own
+   *  field and not the queue's `origin`, which answers which lane a
+   *  subject belongs to. Optional because a Central Command predating
+   *  A6-3 does not send it, and absent reads `unknown` rather than
+   *  being guessed at. Render it through `provenanceView`. */
+  provenance?: ProposalProvenance;
 }
 
 /** How many humans this subject needs, and how many it has (E0.1).

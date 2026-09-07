@@ -11,6 +11,7 @@ import { useToast } from "../components/useToast";
 import { getJson, patchJson, postJson } from "../api";
 import { useAuth } from "../useAuth";
 import type { AgentProposal } from "../types";
+import { provenanceView } from "../proposalProvenance";
 
 /* A0+A1 — Operational Agents: the product noun, under existing governance.
  *
@@ -187,6 +188,54 @@ interface Preflight {
   activation_approval?: ActivationApproval | null;
   contract?: { authority: string; unknown: string; versioning: string };
 }
+
+/** A27 (A6-3): observed ingress activity for an external runtime.
+ *
+ *  HarkenIQ holds no heartbeat, session or connection signal for an
+ *  external agent and therefore claims none. `last_authenticated_at` is
+ *  the last persisted authentication observation -- NOT a connection --
+ *  and this page never renders the word "connected".
+ *
+ *  `activity_state` is a summary Central Command derives under a fixed
+ *  precedence (A27.11); the counts and timestamps beside it are the
+ *  authority, and the page renders what the server said rather than
+ *  deriving a second opinion. */
+interface IngressHealth {
+  agent_id: string;
+  last_authenticated_at: string | null;
+  credentialed: boolean;
+  identity_status: string;
+  submission_activity: {
+    window_seconds: number;
+    attempts: number;
+    accepted: number;
+    refused: number;
+    throttled: number;
+    last_attempt_at: string | null;
+    last_accepted_at: string | null;
+  };
+  read_throttle: { window_seconds: number; used: number; limit: number; exhausted: boolean };
+  recent_refusals: { submission_id: string; code: string; reason: string; at: string | null }[];
+  recent_refusal_limit: number;
+  activity_state:
+    | "never_authenticated"
+    | "throttled"
+    | "repeatedly_refused"
+    | "active_recently"
+    | "idle"
+    | "no_recent_activity";
+}
+
+/** The server's word, rendered as a person reads it. No second
+ *  derivation: if Central Command says `idle`, the page says Idle. */
+const ACTIVITY_LABEL: Record<IngressHealth["activity_state"], string> = {
+  never_authenticated: "Never authenticated",
+  throttled: "Throttled",
+  repeatedly_refused: "Repeatedly refused",
+  active_recently: "Active recently",
+  idle: "Idle",
+  no_recent_activity: "No recent activity",
+};
 
 /** What the runtime can HONESTLY say. Only signals the platform
  *  actually produces; a dimension it cannot observe reads unknown
@@ -448,6 +497,7 @@ export default function OperationalAgents() {
   const [view, setView] = useState<AgentView | null>(null);
   const [preflight, setPreflight] = useState<Preflight | null>(null);
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  const [ingress, setIngress] = useState<IngressHealth | null>(null);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [budgetDraft, setBudgetDraft] = useState<{ limit: string; period: string }>({
@@ -493,14 +543,19 @@ export default function OperationalAgents() {
   const loadAgent = useCallback(
     async (agentId: string) => {
       const base = `/api/t/${tenantId}/operational-agents/${agentId}`;
-      const [detail, pre, run] = await Promise.all([
+      const [detail, pre, run, ing] = await Promise.all([
         getJson<AgentView>(base),
         getJson<Preflight>(`${base}/preflight`),
         getJson<RuntimeState>(`${base}/runtime`),
+        // A27.8: governed at fleet.view like the three above, so an
+        // operator who can see the agent can see how its ingress is
+        // doing without needing approval authority.
+        getJson<IngressHealth>(`${base}/ingress`),
       ]);
       setView(detail);
       setPreflight(pre);
       setRuntime(run);
+      setIngress(ing);
       setBudgetDraft({
         limit: String(run.budget.limit ?? 0),
         period: run.budget.period || "daily",
@@ -972,6 +1027,7 @@ export default function OperationalAgents() {
           setView(null);
           setPreflight(null);
           setRuntime(null);
+          setIngress(null);
           setDryRun(null);
         }}
         title={view?.agent.name ?? ""}
@@ -1282,6 +1338,73 @@ export default function OperationalAgents() {
             {/* ── Budget and safety: configuration, not a status read ── */}
             {runtime ? (
               <div style={sectionStyle}>
+                {/* ── A6-3: how this runtime's ingress is actually doing.
+                       Rendered from the contract Central Command composes;
+                       the page derives nothing. HarkenIQ holds no
+                       heartbeat for an external runtime, so nothing here
+                       says "connected" (A27.10). ── */}
+                {ingress ? (
+                  <>
+                    <div style={sectionTitle}>External ingress</div>
+                    <div style={rowStyle}>
+                      <span>Observed activity</span>
+                      <span>{ACTIVITY_LABEL[ingress.activity_state]}</span>
+                    </div>
+                    <div style={rowStyle}>
+                      <span>Last authenticated</span>
+                      <span>
+                        {ingress.last_authenticated_at
+                          ? new Date(ingress.last_authenticated_at).toLocaleString()
+                          : ingress.credentialed
+                            ? "never"
+                            : "no machine identity"}
+                      </span>
+                    </div>
+                    <div style={rowStyle}>
+                      <span>
+                        Submissions (last{" "}
+                        {Math.round(ingress.submission_activity.window_seconds / 60)} min)
+                      </span>
+                      <span>
+                        {ingress.submission_activity.accepted} accepted ·{" "}
+                        {ingress.submission_activity.refused} refused
+                        {ingress.submission_activity.throttled > 0
+                          ? ` · ${ingress.submission_activity.throttled} throttled`
+                          : ""}
+                      </span>
+                    </div>
+                    <div style={rowStyle}>
+                      <span>Status polling</span>
+                      <span>
+                        {ingress.read_throttle.used} / {ingress.read_throttle.limit} in{" "}
+                        {ingress.read_throttle.window_seconds}s
+                        {ingress.read_throttle.exhausted ? " · at the limit" : ""}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "0 0 0.5rem" }}>
+                      Observed ingress activity. HarkenIQ holds no heartbeat or
+                      session for an external runtime: this is the last
+                      authentication it recorded, not a live connection.
+                    </div>
+                    {ingress.recent_refusals.length > 0 ? (
+                      <>
+                        <div style={{ fontSize: "0.8125rem", fontWeight: 600, padding: "0.25rem 0" }}>
+                          Why submissions were refused (latest{" "}
+                          {ingress.recent_refusals.length})
+                        </div>
+                        {ingress.recent_refusals.map((r) => (
+                          <div key={r.submission_id} style={rowStyle}>
+                            <span>{r.code || "refused"}</span>
+                            <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                              {r.reason}
+                            </span>
+                          </div>
+                        ))}
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
+
                 <div style={sectionTitle}>Budget and safety</div>
                 <div style={rowStyle}>
                   <span>Unattended executions used</span>
@@ -1659,6 +1782,17 @@ export default function OperationalAgents() {
                         variant={PROPOSAL_VARIANT[p.status] ?? "neutral"}
                         size="sm"
                       />
+                    </div>
+                    {/* A27.6: the second human surface. The same
+                        reading rule as the approval queue, from the same
+                        module -- a page that decided provenance for
+                        itself could disagree with the one where the
+                        decision is actually made. */}
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      {provenanceView(p.provenance).label}
+                      {provenanceView(p.provenance).submissionId
+                        ? ` \u00b7 submission ${provenanceView(p.provenance).submissionId}`
+                        : ""}
                     </div>
                     <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                       {p.rationale}

@@ -11,6 +11,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
 import type { ApprovalAction } from "../types";
+import { provenanceView } from "../proposalProvenance";
 
 /* ── Constants ────────────────────────────────────── */
 
@@ -62,7 +63,7 @@ const cardsGrid: CSSProperties = {
 /* A1/A2: one queue, three requesters. `origin` says who asked; the
  * permission, the ledger, the completion rule and the audit trail are
  * identical for all three. Nothing here is an agent-only review path. */
-const ORIGIN_LABEL: Record<string, string> = {
+export const ORIGIN_LABEL: Record<string, string> = {
   node: "node",
   agent: "agent",
   agent_activation: "agent activation",
@@ -675,6 +676,26 @@ export default function ApprovalQueue() {
                         evidence and anything blocking it. */}
                     {action.proposal ? (
                       <div style={agentBlockStyle}>
+                        {/* A27.6: WHO CAUSED THIS. Beside the lane badge
+                            above, never merged into it -- an approver
+                            deciding an action needs to know whether
+                            HarkenIQ reasoned it or an external runtime
+                            asked for it, and the lane says "agent" for
+                            both. */}
+                        <div style={cardDetailRow}>
+                          <span>Proposed by</span>
+                          <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>
+                            {provenanceView(action.proposal.provenance).label}
+                          </span>
+                        </div>
+                        {provenanceView(action.proposal.provenance).submissionId ? (
+                          <div style={cardDetailRow}>
+                            <span>Submission</span>
+                            <code style={{ fontSize: "0.75rem" }}>
+                              {provenanceView(action.proposal.provenance).submissionId}
+                            </code>
+                          </div>
+                        ) : null}
                         <div style={{ fontSize: "0.8125rem", color: "var(--text-primary)" }}>
                           {action.proposal.rationale}
                         </div>

@@ -222,6 +222,13 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
         ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/operational-agents/{agent_id}/runtime"):
         ("fleet.view", READ_SCOPED, False),
+    # A27.8 (A6-3): ingress health is OPERATIONAL STATE, not approval
+    # authority -- `action.approve` is deliberately not required to see
+    # whether a runtime is healthy. READ_SCOPED because the answer
+    # depends on whether the caller may see this agent at all, and a
+    # machine principal reads only itself (A25.5).
+    ("GET", "/api/operational-agents/{agent_id}/ingress"):
+        ("fleet.view", READ_SCOPED, False),
     # A5 (A22.7/A22.8): it writes NOTHING, so it is a GET and governed as
     # a read at `fleet.view`. "Its own and no other" is an object-level
     # gate inside the handler, not a permission.
