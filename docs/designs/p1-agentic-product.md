@@ -3484,3 +3484,176 @@ those is a new surface with a new leak risk, and each deserves the A25.9
 recursive sweep as its own review rather than sharing one with a
 narrowing. Ordering them the other way would mean building projections
 onto a plane still open at 46 routes.
+
+## §34 — A6-4B / Amendment A30: canonical reach, then governed discovery
+
+### What A6-4A left
+
+A6-4A answered which routes an external runtime may reach, and narrowed
+46 to 13. A6-4B was scoped as the additive half — discovery, and the
+projections A29.11 separated out. Building it first would have meant
+publishing reach.
+
+So the pre-implementation inspection asked the prior question: does
+Central Command have ONE answer to give about what a principal reaches?
+
+It has two, and they disagree in opposite directions.
+
+### The reach map
+
+| Reader | Lifecycle-correct | Type-complete |
+|---|---|---|
+| `resolve()` / `Grant.covers_*` / `permits()` | yes | yes |
+| `load_scope` / `load_agent_scope` | yes | yes |
+| `ResolvedScope.site_ids` | yes | **no — lossy by construction** |
+| `scope_sites()` / `apply_scope()` | yes | **no** |
+| `_audit_scoped()` | yes | **no — a separate copy** |
+| `narrow_to_sites()` | yes | **no** |
+| `list_scopes()` | **no — no `expires_at`** | yes |
+| `resolve_scope()` | **no — trusts the caller's rows** | yes |
+
+The canonical answer is lifecycle-correct and type-incomplete. The raw
+answer is type-complete and lifecycle-blind.
+
+`agent_runtime.run_once` uses both at once:
+
+```python
+scopes = await repo.list_scopes(agent.id)          # all five types, no lifecycle
+agent_scope = await load_agent_scope(...)          # lifecycle-correct, site-only
+proposals = evaluate(
+    scopes=scopes,
+    resolved_site_ids=agent_scope.site_ids,
+    ...
+)
+```
+
+`resolve_scope` unions them. The runtime is compensating for the
+type-incompleteness of one path by importing the lifecycle-blindness of
+the other, and it takes the union of both errors.
+
+That is why this is one finding and not two, and why it cannot be fixed
+by adding a `WHERE` clause. Adding `expires_at` to `list_scopes()` would
+make the second path lifecycle-correct and leave it a second path.
+
+### The direction of a defect decides its priority
+
+The two halves fail in opposite directions, and that is what the slicing
+turns on.
+
+**F1 under-reaches.** A device-scoped principal reads nothing. Nobody
+sees data they should not. It is a correctness and truthfulness defect,
+and it is HIGH because `/api/scope-grants/me` already publishes the
+device reach as an authority field — the platform tells a principal it
+reaches devices every read then refuses to show it. Publishing that shape
+as `discovery.scope` would be a knowingly-wrong contract, which is the
+one thing the program says is worse than having no endpoint.
+
+**F2 over-reaches.** An expired grant still yields devices, to the
+evaluator and to four machine-reachable reads. A3 identity is independent
+of scope grants, so an agent whose grant expired still holds a valid
+credential and CC's status row still says active. It proposes on devices
+it no longer reaches, and a dry-run shows them.
+
+Fail-closed and fail-open do not belong in one pull request. F1 changes
+human reads and needs a ratified product decision; F2 changes neither and
+needs none — `is_active` already says what expired means. Bundling them
+would hold a security fix behind a decision queue and hand a reviewer two
+directions to hold at once.
+
+Hence B0a alone, first.
+
+### Administrative access is not an authorization source
+
+The fix is not a filter. It is a separation the codebase never made:
+
+**Administrative grant-row access** returns what is configured, expired
+rows included, because a row nobody can see is a row nobody can retire —
+`clear_scopes()` is exactly that case, and it must keep working.
+
+**Effective authorization reach** answers what a principal may operate on
+now, and resolves through `resolve()`.
+
+Two names, two jobs, one operational answer. `ResolvedScope.effective_grants`
+already carries `scope_type` and `scope_ref` on every surviving grant, so
+it is a drop-in for the raw rows `resolve_scope` reads — lifecycle-filtered
+and inert-filtered, and type-complete in a way `site_ids` is not.
+
+Verified before the change, across every scope type:
+
+```
+case               RAW rows (today)       effective_grants (new)   match
+site               ['dev-1']              ['dev-1']                OK
+org_unit           ['dev-1']              ['dev-1']                OK
+device             ['dev-2']              ['dev-2']                OK
+device_class       ['dev-2']              ['dev-2']                OK
+mixed              ['dev-1', 'dev-3']     ['dev-1', 'dev-3']       OK
+future-expiring    ['dev-1']              ['dev-1']                OK
+vanished site      []                     []                       OK
+```
+
+Active-grant behaviour is preserved exactly. What changes is that an
+expired grant stops contributing, which is the whole slice.
+
+### What B0a does not fix, deliberately
+
+Removing the raw path makes F1 more visible, not less: the device and
+device_class reach that raw rows were carrying into `resolve_scope` now
+depends on `effective_grants` carrying it, and the repository read filter
+still cannot express it at all.
+
+That is expected, and it is not compensated for. Reaching back for raw
+grant rows to keep a device-scoped agent working would reintroduce
+precisely the path this slice exists to remove. B0b corrects the
+under-reach properly, by deriving the filter from grants.
+
+### Context is not authority
+
+B0b's product decision, ratified: a device-scoped principal may see the
+site containing its devices, because a principal who cannot see where its
+device lives cannot use the product.
+
+> Object authority may expose bounded ancestor context for
+> comprehension; ancestor context never implies ancestor authority.
+
+E1.2 already established this shape once, on `contextual_unit_ids`:
+visible for navigation, read by no decision method, and kept in a
+separate field so that confusing the two is a deletion rather than an
+oversight. The same discipline applies here, and it is structurally
+tested rather than documented — `covers_site()` stays false for a
+device-only grant, and contextual visibility grants no sibling device, no
+site-wide action, no administration, no governance topology, no complete
+audit stream and no widened mutation.
+
+### Discovery informs; it does not authorize
+
+B1 publishes reach only after reach is trustworthy. The temptation there
+is a single `allowed` boolean, because that is what a runtime wants. It
+would be a second authority, and it would be wrong the moment any of its
+eight inputs changed independently:
+
+    CAPABILITY EXISTS · IMPLEMENTED · REACHABLE · BOUND ·
+    IN EFFECTIVE SCOPE · GOVERNANCE CONCLUSION · APPROVAL REQUIRED ·
+    CURRENTLY OPERABLE
+
+A17 already proved these come apart: a class can exist, be unimplemented,
+be bound anyway, and be permitted nowhere, and the platform reports all
+three block reasons separately because they are different problems. They
+stay eight fields.
+
+The autonomy job A6-4A deferred is published as a **conclusion**, never
+as topology. A runtime learns the posture it operates under; it learns
+nothing about who approves, which groups exist, or how policy is
+assembled. A26 drew that line for humans holding `fleet.view`; the same
+line holds for a machine, and for the same reason.
+
+### Trust semantics survive projection
+
+The incident contract already carries `origin`, `trust` and a `generated`
+block, written in S4 for a consumer that did not exist yet. B2 keeps
+them, and fixes the one place the envelope leaks: `recommended_next.summary`
+assigns raw generated `suggested_action` text into an imperative-named
+field outside the block its trust marker governs. The comment says quoted,
+not executed — but the quoting is what the relocation loses.
+
+`correlation_meta` is withheld until it has a bounded contract, rather
+than shipped as an open dict a consumer must guess at.

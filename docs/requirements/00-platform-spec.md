@@ -3147,3 +3147,261 @@ shape follows existing convention — 404 where confirming the object would
 itself leak, 403 for a species refusal on a route whose existence is not
 sensitive, matching how `/api/operational-agents/catalogue` already
 answers a machine.
+
+### A30 — 2026-09-08 — A6-4B: canonical reach before published reach (decided: Vinod)
+
+A6-4A narrowed which routes an external runtime may reach. A6-4B was
+scoped as the additive half: discovery, and the machine projections
+A29.11 separated out. The pre-implementation inspection found that the
+platform cannot yet publish reach truthfully, because it does not have
+one answer to give. Ratified after independent reproduction from merged
+`main` at `6f822f7`; recorded BEFORE the code, per change control.
+
+**A30.1 — Six findings, reproduced by execution, with corrected
+severity.** Every finding below was reproduced from merged `main`, not
+accepted from a prior report.
+
+* **F1 — HIGH, fail-CLOSED.** `ResolvedScope.site_ids` is built from
+  SITE grants, org-unit-expanded sites and tenant-wide reach; `device`
+  and `device_class` grants contribute nothing to it **by
+  construction**. `scope_sites()` builds the entire repository read
+  filter from that one field, and an empty set yields `sa_false()`. A
+  device-scoped or device_class-scoped principal therefore reads ZERO
+  rows from all fourteen `apply_scope` sites, from `_audit_scoped` and
+  from `narrow_to_sites()`, while `covers_device()`, `permits()` and
+  `resolve_scope()` all say those devices are in scope. The reported
+  severity was fail-open; it is **fail-closed**, and the correction is
+  recorded because the direction of a defect decides its priority. It is
+  HIGH for one reason: `/api/scope-grants/me` already publishes
+  `device_ids` and `device_classes` as authority fields, so the platform
+  **already tells a principal it reaches devices it cannot read**. Both
+  principal types are affected: `scope_grants.py` validates against all
+  five scope types for `user` and `agent` alike.
+* **F2 — BLOCKER, fail-OPEN.** `OperationalAgentRepo.list_scopes()`
+  filters `revoked_at` and **not** `expires_at`. An EXPIRED grant of type
+  `site`, `device` or `device_class` still yields devices to
+  `resolve_scope()`. Revoked is correctly closed; expired is not.
+* **F3 — HIGH.** `enforce_route_surface` charges only on refusal; a
+  served machine read is metered by its handler, and
+  `_charge_machine_read` is called only from handlers inside
+  `api/operational_agents.py`. `GET /api/attention/`,
+  `GET /api/incidents/` and `GET /api/incidents/{id}` joined the machine
+  plane in A6-4A from two other routers and are served unmetered,
+  unbounded and unattributable. The A25 completeness guard filters
+  `path.startswith(PREFIX)` and is complete for one router only.
+* **F4 — HIGH, one sub-finding newly reproduced.** The incident contract
+  is already the most machine-aware payload in the codebase and neither
+  payload carries operator identity, so the reported identity hazard does
+  not exist. What does: `correlation` serializes `correlation_meta`
+  verbatim as an open dict, and on `GET /api/incidents/{id}`
+  `recommended_next.summary` is assigned **raw generated
+  `suggested_action` text, promoted out of the `generated` block and out
+  from under its `trust` marker**, into an imperative-named field. For a
+  model consumer that is the highest-risk field in either payload.
+* **F5 — PRODUCT DECISION.** `REQUIRED_READS` injects an `autonomy`
+  binding at creation and no route declares an `autonomy` job after
+  A6-4A, so every agent is issued a mandatory binding that reaches
+  nothing and the catalogue reports it `"required": true`. `learning` and
+  `fleet` are unreachable **by ratified decision** (A29.7) and are not a
+  defect; `autonomy` is the only mandatory one, and A29.12 deferred its
+  surface rather than withdrawing the promise.
+* **F6 — MEDIUM, B1 prerequisite.** `actor_species` carries three
+  undeclared values (`human`, `agent`, `campaign`) with no canonical
+  constant. It is **projection-only** — it influences no decision in
+  `build_autonomy` — and `/api/autonomy/` is HUMAN after A6-4A, so the
+  hardcoded `"human"` is correct today. The reported framing of a live
+  machine-facing defect is corrected: it becomes wrong only when B1
+  publishes an autonomy conclusion to a machine.
+
+**A30.2 — Two reach paths, opposite errors, cancelling by accident.**
+The canonical path is lifecycle-correct and its `site_ids` projection is
+type-incomplete. The raw path (`list_scopes()` → `resolve_scope()`) is
+type-complete and lifecycle-blind. Neither is canonical alone, and
+`agent_runtime.run_once` passes **both at once** — raw rows as `scopes`,
+canonical sites as `resolved_site_ids` — so `resolve_scope` unions them
+and the runtime compensates for F1 by importing F2. F1 and F2 are one
+defect seen from two sides. `load_agent_scope`'s own docstring already
+named half of it: *"It was latent only because all four call sites read
+`.site_ids`."*
+
+**A30.3 — The canonical owner.** `harkeniq_cc.scope`:
+`resolve()` produces a `ResolvedScope`; `Grant.covers_site` /
+`covers_org_unit` / `covers_device` / `covers_tenant` are the coverage
+primitives; `ResolvedScope.permits()` is the only decision method. It is
+the only place lifecycle, inertness, realm, subset, recorded-role ceiling
+and synthesis are applied together. `ResolvedScope.site_ids` is a
+**convenience projection, never a reach answer** — and this amendment
+records that distinction because building a filter from it is what
+produced F1.
+
+**A30.4 — AD-1 RATIFIED: administrative grant-row access is not an
+authorization source.** `list_scopes()` must cease being an operational
+authorization or reach source, and F2 must NOT be solved by adding
+`expires_at` filtering to a second reach path — that would leave two
+paths and repeat the pattern. The two concerns are separated by name:
+
+* **ADMINISTRATIVE GRANT ROW ACCESS** — the configured rows, including
+  expired-but-unrevoked ones. A clearly named repository operation may
+  retain it where lifecycle management requires it, `clear_scopes()`
+  being the case that must keep working: rows that cannot be seen cannot
+  be retired.
+* **EFFECTIVE AUTHORIZATION REACH** — what a principal may operate on
+  now. Operational runtime, read and proposal reach resolve through the
+  canonical loader and resolver.
+
+**There must be one operational reach answer.**
+
+**A30.5 — PD-1 RATIFIED, option (a) with an explicit constraint:
+context is not authority.** A device-scoped or device_class-scoped
+principal may receive the MINIMAL containing-site context required to
+understand and navigate the objects it canonically covers. The
+invariant, recorded verbatim:
+
+> Object authority may expose bounded ancestor context for
+> comprehension; ancestor context never implies ancestor authority.
+
+Therefore: `covers_site()` MUST remain false for a device-only or
+device_class-only grant; contextual site visibility MUST NOT grant access
+to sibling devices, site-wide actions, site administration, site
+policy or governance topology, the complete site audit stream, or any
+widening of approvals or mutations. `/api/sites` may expose only the
+containing sites, as explicitly contextual read-only projections. Audit
+visibility remains object-authority-derived; the site is context only.
+The distinction is recorded here and **structurally tested**, not left to
+review.
+
+**A30.6 — PD-2 RATIFIED, option (a): publish the conclusion, not the
+topology.** The machine autonomy **governance conclusion** is published
+and `autonomy` is NOT withdrawn from `REQUIRED_READS`: a runtime must be
+able to understand the governance conclusion under which it operates.
+The projection exposes the conclusion only. It MUST NOT expose approver
+identities, approval group membership or topology, role assignments,
+internal governance topology, or protected policy internals. **No new
+authority results from reading the conclusion.** This is A29.8/B8 applied
+to the one job A6-4A deferred, and it is consistent with A26: posture a
+principal lives under is readable; the people and structures that decide
+it are not.
+
+**A30.7 — PD-3 RATIFIED: withhold `correlation_meta`.** It is not
+published to machine consumers until HarkenIQ has a bounded canonical
+contract for it. F4's newly reproduced trust-boundary finding is accepted
+with it: `recommended_next.summary` MUST NOT promote raw generated
+`suggested_action` text outside its generated/untrusted trust envelope.
+Both are addressed in B2 and nowhere earlier.
+
+**A30.8 — PD-4 RATIFIED: A6-4B0a ships alone.** F2 is a live fail-open
+authorization-integrity defect and outranks the feature sequence. A
+security correction is not bundled into a slice that also changes human
+reads, and it is not held behind a product decision it does not need:
+expired means expired is already this platform's ratified rule
+(`is_active`, A23-3), so B0a requires no ratification that B0b does.
+
+**A30.9 — The five-slice sequence, LOCKED.** The corrected program
+replaces the three-slice sketch. Each slice merges and main-verifies
+before the next begins; **the slices are not combined.**
+
+| Slice | Name | Direction |
+|---|---|---|
+| A6-4B0a | Grant lifecycle integrity | corrects an over-reach (narrows) |
+| A6-4B0b | Canonical reach convergence | corrects an under-reach |
+| A6-4B0c | Machine read metering completion | narrows |
+| A6-4B1 | Governed discovery | additive |
+| A6-4B2 | Operational context projection | additive |
+
+**A30.10 — A6-4B0a scope.** Objective: **expired means expired
+everywhere operational reach is evaluated.** IN: eliminate
+`list_scopes()` as an operational reach source; preserve a clearly
+separated administrative raw-row read where lifecycle management such as
+`clear_scopes()` requires it; `resolve_scope()` must not accept inactive
+grant rows as effective reach; the evaluator, dry-run, runtime,
+agent-view and preflight consume canonical lifecycle-correct reach;
+structural proof that no operational reach path consumes unfiltered
+grants; a lifecycle regression matrix over active, revoked, expired,
+future-expiring, inert, vanished-target where applicable and other-realm;
+proof `clear_scopes` still retires expired-but-unrevoked grants; a real
+PostgreSQL expiry proof; a live Keycloak and PostgreSQL proof; proof an
+expired agent stops proposing; proof no stale candidate or proposal path
+reintroduces expired reach; preserved audit integrity; full regression
+and compose gate. OUT: F1 and the device/device_class projection
+correction; ancestor contextual visibility; F3 metering; F4 payload
+changes; F5 autonomy discovery; F6 species work; discovery;
+attention/incident projection changes; any new endpoint, permission,
+ceiling change, schema or migration; and any B0b/B0c/B1/B2 code.
+
+**B0a is a security correction, not product capability work.** If
+removing `list_scopes()` as a reach source exposes F1 more visibly, that
+is expected and it is NOT compensated for with raw grant rows. B0b
+exists to correct that under-reach properly.
+
+**A30.11 — A6-4B0b scope.** IN: the repository read filter derives from
+GRANTS rather than from `site_ids` alone — site ∪ org-expanded ∪
+`device_ids` ∪ `device_classes`, per table, on columns that already
+exist; `_audit_scoped` and `narrow_to_sites` converge on the same
+construction; A30.5's context-is-not-authority invariant implemented and
+structurally tested; a regression proving every existing human persona
+reads byte-identically, so only device and device_class principals
+change; a test that fails if a new reader builds a filter from
+`.site_ids`. OUT: F2; metering; discovery; any ceiling, permission or
+route change. This slice **changes human reads** and says so.
+
+**A30.12 — A6-4B0c scope.** IN: served-read metering on the three
+off-router machine routes; the completeness guard re-anchored from one
+router prefix onto `MACHINE_SURFACE` itself, so it fails when any future
+machine route lacks a decided meter answer. OUT: payload changes; new
+limits for human callers. Compatibility: a correctly-bound runtime can
+receive 429 for the first time, so the window is set against real gate
+traffic before it lands.
+
+**A30.13 — A6-4B1 scope, and the eight facts.** IN: capability discovery
+composing `load_capability_registry`, `capabilities.parameter_contract`,
+`catalogue_view`, `ACTION_RISK` and `ACTION_REVERSIBILITY`; the canonical
+A5 parameter projection including `unavailable`; the self-scope
+projection (A29.9/B7 — reach only, never grant construction); the
+autonomy governance conclusion per A30.6; the species declaration (F6).
+OUT: attention and incident projections; any ceiling change; `learning`
+and `fleet` route reach, since A29.7 stands.
+
+**Discovery informs; it does not authorize.** Eight facts remain eight
+separate fields and are never collapsed into a synthetic `allowed`:
+
+    CAPABILITY EXISTS
+    IMPLEMENTED
+    REACHABLE
+    BOUND
+    IN EFFECTIVE SCOPE
+    GOVERNANCE CONCLUSION
+    APPROVAL REQUIRED
+    CURRENTLY OPERABLE
+
+No second capability catalogue and no second scope resolver, per A17 and
+E1.2 respectively.
+
+**A30.14 — A6-4B2 scope, and trust semantics.** IN: allow-list
+projections for attention and incidents, built by naming what may pass
+and never by serializing then stripping (A25.9); bounded evidence;
+`correlation_meta` withheld per A30.7 until it has a contract;
+`recommended_next.summary` corrected so generated text never leaves its
+trust envelope. **Generated and evidence trust semantics survive machine
+projection**: `origin` and `trust` are mandatory on any projected
+diagnosis, generated text stays inside the block its trust marker
+governs, and a consumer must be able to tell platform-produced references
+from model-produced text without inspecting the values. OUT: raw human
+DTO reuse; new permission; ceiling change; human payload changes beyond
+additive provenance.
+
+**A30.15 — No permission change, no ceiling change, no migration in
+B0.** B0a, B0b and B0c introduce no new permission; the canonical
+vocabulary stays at 25. `MACHINE_PRINCIPAL_CEILING` is **unchanged** at
+`{fleet.view, incident.view, proposal.submit}` across the whole program;
+changing it is a spec amendment, per A20.3. No new column, backfill or
+schema change anywhere in B0 — CC head remains `0026` through B0c. B1 and
+B2 are expected to need none either, and any that proves necessary is
+declared before its code.
+
+**A30.16 — What B0a changes that a human can see.** Reach that resolves
+through an expired grant stops resolving, and an agent whose grants have
+all expired becomes visible only to a tenant-wide reader — which is the
+behaviour an agent with no rules already has, so no new lockout shape is
+created and a tenant owner can always administer it. Refused reach is
+reported rather than left silent, so an operator learns why an agent
+stopped acting instead of watching it go quiet.
