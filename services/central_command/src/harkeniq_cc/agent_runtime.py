@@ -44,6 +44,7 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
 )
 from harkeniq_cc.governance import (
+    load_agent_reach,
     load_agent_scope,
     load_attention,
     load_autonomy_contract,
@@ -142,15 +143,21 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
         )
 
         for agent in agents:
-            scopes = await repo.list_scopes(agent.id)
             caps = await repo.list_capabilities(agent.id)
             # E1.2: the agent's reach comes from the SAME resolver a
             # human's does. An org_unit scope has to be expanded through
             # the tree, and doing that here rather than in the composer
             # is what keeps one resolver instead of two.
-            agent_scope = await load_agent_scope(
+            #
+            # A30.4: it now comes from there ONLY. This loop used to read
+            # the raw scope rows as well and hand both to `evaluate` --
+            # `scopes=` unfiltered, `resolved_site_ids=` canonical -- so
+            # an EXPIRED grant kept producing proposals for devices the
+            # resolver had already ruled out of reach.
+            reach = await load_agent_reach(
                 session, tenant_id=tenant_id, agent_id=agent.id
             )
+            agent_scope = reach.scope
             attention = {
                 item["agent_id"]: item
                 for item in (await load_attention(
@@ -168,8 +175,8 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             proposals = evaluate(
                 catalogue=catalogue,
                 agent=agent,
-                scopes=scopes,
-                resolved_site_ids=agent_scope.site_ids,
+                scopes=reach.rules,
+                resolved_site_ids=reach.site_ids,
                 capabilities=caps,
                 devices=devices,
                 incidents_by_device=incidents,

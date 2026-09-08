@@ -49,7 +49,10 @@ from harkeniq_cc.db.repos import (
     OperationalAgentRepo,
     SiteRepo,
 )
-from harkeniq_cc.governance import load_agent_scope, load_autonomy_contract
+from harkeniq_cc.governance import (
+    load_agent_reach,
+    load_autonomy_contract,
+)
 from harkeniq_cc.scope import SCOPE_DEVICE, SCOPE_ORG_UNIT, SCOPE_SITE
 from harkeniq_cc.provenance import provenance_block
 from harkeniq_cc.operational_agent import (
@@ -400,7 +403,7 @@ async def _refuse_zero_reach(
     evaluator will never act on. Two notions of "in scope" is exactly the
     divergence this codebase keeps paying for, so there is one.
 
-    Org-unit scopes still expand through `load_agent_scope` -- the ONE
+    Org-unit scopes still expand through `load_agent_reach` -- the ONE
     scope resolver -- before `resolve_scope` flattens them, which is how
     the runtime does it too. Nothing is committed yet, so raising here
     leaves no agent behind.
@@ -429,16 +432,15 @@ async def _refuse_zero_reach(
     ]
     if not wanted:
         return
-    agent_scope = await load_agent_scope(
-        session, tenant_id=tenant_id, agent_id=agent_id
+    # A30.10: the zero-reach refusal is a reach question, so it asks the
+    # canonical reach. A17's own lesson applied once more -- the check
+    # must stand on the same notion of "in scope" the evaluator uses, or
+    # a binding is waved through that the evaluator will never act on.
+    agent_reach = await load_agent_reach(
+        session, tenant_id=tenant_id, agent_id=agent_id,
+        devices=await FleetCacheRepo(session).list_all(tenant_id),
     )
-    scope_rules = await OperationalAgentRepo(session).list_scopes(agent_id)
-    devices = resolve_scope(
-        scope_rules,
-        await FleetCacheRepo(session).list_all(tenant_id),
-        agent_scope.site_ids,
-    )
-    reach = reachable_action_classes(devices)
+    reach = reachable_action_classes(agent_reach.devices)
     if reach["devices"] == 0 or reach["unknown"]:
         # No devices in scope yet, or some have not declared. An agent
         # built before its fleet arrives is legitimate; refusing it
@@ -534,9 +536,18 @@ def _agent_visible(scope, rules) -> bool:
 
 
 async def _require_visible_agent(session, tenant_id: str, agent_id: str, scope):
-    """The agent, or 404 if it does not exist OR the caller cannot see it."""
+    """The agent, or 404 if it does not exist OR the caller cannot see it.
+
+    A30.4: visibility of the agent OBJECT is administrative, so it asks
+    the CONFIGURED rows. Resolving it through effective reach would make
+    an agent whose grants have all lapsed invisible to the site
+    administrator who owns it -- leaving only a tenant-wide reader able
+    to see the thing that needs renewing, which is a lockout this slice
+    would have introduced rather than a leak it closes. No device reach
+    flows from this answer; it decides which agent rows a human may read.
+    """
     agent = await _require_agent(session, tenant_id, agent_id)
-    rules = await OperationalAgentRepo(session).list_scopes(agent.id)
+    rules = await OperationalAgentRepo(session).list_administrative_scope_rows(agent.id)
     if not _agent_visible(scope, rules):
         raise HTTPException(404, "operational agent not found")
     return agent
@@ -578,11 +589,52 @@ def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> 
     return creator_scope.permits(permission, tenant_object=True)
 
 
+async def _refuse_preview_outside_caller_scope(session, agent_id: str, scope):
+    """May this caller preview this agent? (A5's dry-run ceiling.)
+
+    A preview shows what the agent would do across ITS OWN reach, which
+    may span sites this caller cannot operate. Narrowing the answer to
+    the caller would be worse than refusing it -- a partial preview is
+    not what the agent would do -- so the caller must be able to reach
+    every scope rule the agent NAMES. Asked explicitly rather than
+    falling through to the tenant question on an empty site id (the A2
+    completion-slice finding).
+
+    A30.4: it asks the CONFIGURED rows, and it lives in its own function
+    so that it can. Resolving this through effective reach would WIDEN
+    who may preview -- a lapsed rule would stop being a rule the caller
+    has to reach -- and holding the configured rows in the same function
+    that resolves operational reach is one edit away from passing the
+    first into the second, which is how the A30 defect was built.
+    """
+    rows = await OperationalAgentRepo(session).list_administrative_scope_rows(
+        agent_id
+    )
+    for row in rows:
+        if not _scope_rule_within(scope, row, "fleet.view"):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"this agent reaches {row.scope_type} "
+                    f"{row.scope_ref!r}, which is outside your authorized "
+                    "scope; a preview shows what the agent would do "
+                    "across its whole reach, and narrowing it would not "
+                    "be what the agent would do"
+                ),
+            )
+
+
 async def _agent_scope_rules(repo, agent_id):
+    # A30.4: the delegation ceiling (A23-3) asks what a caller must have
+    # authority over to ADMINISTER this agent, so it reads CONFIGURED
+    # rows. A lapsed rule is still something the agent is configured
+    # with, and counting it can only refuse more -- resolving this
+    # through effective reach would WIDEN who may edit the agent, which
+    # is the opposite of what this slice is for.
     """The agent's CURRENT scope rows, as rule-shaped objects."""
     return [
         ScopeRule(scope_type=row.scope_type, scope_ref=row.scope_ref)
-        for row in await repo.list_scopes(agent_id)
+        for row in await repo.list_administrative_scope_rows(agent_id)
     ]
 
 
@@ -808,7 +860,7 @@ async def list_agents(
             # A25.5: an agent inspects itself and no other. Absent, not
             # refused: a list is not the place to confirm what exists.
             continue
-        scopes = await repo.list_scopes(agent.id)
+        scopes = await repo.list_administrative_scope_rows(agent.id)
         # A23 (READ_SCOPED, made true): an agent the caller cannot reach
         # is absent from the list, and proposal counts cover the
         # caller's sites only.
@@ -902,7 +954,7 @@ async def create_agent(
     await session.commit()
     return _agent_dict(
         agent,
-        await repo.list_scopes(agent.id),
+        await repo.list_administrative_scope_rows(agent.id),
         await repo.list_capabilities(agent.id),
     )
 
@@ -945,7 +997,12 @@ async def get_agent(
     machine = await _machine_self_read(request, user, agent_id)
     agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     repo = OperationalAgentRepo(session)
-    scopes = await repo.list_scopes(agent.id)
+    # A30.4: two questions, two reads. `configured` is what an operator
+    # set up (expired rows included, so a lapsed grant is still visible
+    # as configuration); `reach` is what the agent may operate on now,
+    # and it is the only one the view's "what can it see" block resolves
+    # devices from.
+    configured = await repo.list_administrative_scope_rows(agent.id)
     caps = await repo.list_capabilities(agent.id)
     # A23: a scoped reader sees the agent's reach WITHIN their own scope.
     # The agent may reach further; what it reaches beyond the caller is
@@ -968,17 +1025,17 @@ async def get_agent(
             user.tenant_id, agent.id,
         )
     )
+    agent_reach = await load_agent_reach(
+        session, tenant_id=user.tenant_id, agent_id=agent.id
+    )
     view = agent_view(
         agent=agent,
-        scopes=scopes,
+        scopes=agent_reach.rules,
         capabilities=caps,
         devices=devices,
         autonomy_contract=contract,
-        resolved_site_ids=(
-            await load_agent_scope(
-                session, tenant_id=user.tenant_id, agent_id=agent.id
-            )
-        ).site_ids,
+        resolved_site_ids=agent_reach.site_ids,
+        configured_rule_count=len(configured),
         proposals=proposals,
     )
     view["posture"] = {
@@ -1094,7 +1151,7 @@ async def update_agent(
     await session.commit()
     return _agent_dict(
         agent,
-        await repo.list_scopes(agent.id),
+        await repo.list_administrative_scope_rows(agent.id),
         await repo.list_capabilities(agent.id),
     )
 
@@ -1149,7 +1206,7 @@ async def replace_bindings(
     await session.commit()
     return _agent_dict(
         agent,
-        await repo.list_scopes(agent.id),
+        await repo.list_administrative_scope_rows(agent.id),
         await repo.list_capabilities(agent.id),
     )
 
@@ -1800,7 +1857,7 @@ async def dry_run_agent(
         AgentProposalRepo, CapabilityCatalogueRepo, FleetCacheRepo,
     )
     from harkeniq_cc.governance import (
-        load_agent_scope, load_attention, load_autonomy_contract,
+        load_agent_reach, load_attention, load_autonomy_contract,
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
@@ -1820,14 +1877,18 @@ async def dry_run_agent(
     if is_machine(user):
         await _charge_machine_read(request, user)
 
-    agent = await _require_agent(session, tenant_id, agent_id)
     # A23 (READ_SCOPED): a human who cannot see this agent gets 404
-    # before the reach check below could 403 and confirm it exists.
-    if not is_machine(user):
-        if not _agent_visible(
-            scope, await OperationalAgentRepo(session).list_scopes(agent_id)
-        ):
-            raise HTTPException(404, "operational agent not found")
+    # before the reach check below could 403 and confirm it exists. A
+    # machine is answered by the self rule immediately after, so it does
+    # not ask the visibility question at all.
+    #
+    # A30.4: through the ONE visibility helper rather than a second copy
+    # inlined here -- which also keeps the CONFIGURED rows out of a
+    # function that resolves operational reach.
+    if is_machine(user):
+        agent = await _require_agent(session, tenant_id, agent_id)
+    else:
+        agent = await _require_visible_agent(session, tenant_id, agent_id, scope)
 
     # A22.8: an agent reasons about ITSELF and nothing else. `user_id` is
     # the agent id for a machine principal, which is what makes this one
@@ -1841,35 +1902,19 @@ async def dry_run_agent(
         )
 
     repo = OperationalAgentRepo(session)
-    scopes = await repo.list_scopes(agent_id)
-
-    # A preview shows what the agent would do across ITS OWN reach, which
-    # may span sites this caller cannot operate. Narrowing the answer to
-    # the caller would be worse than refusing it -- a partial preview is
-    # not what the agent would do -- so the caller must be able to reach
-    # every site the agent's scope names. Same rule activation applies,
-    # and asked explicitly rather than falling through to the tenant
-    # question on an empty site id (the A2 completion-slice finding).
     if not is_machine(user):
-        for row in scopes:
-            if not _scope_rule_within(scope, row, "fleet.view"):
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        f"this agent reaches {row.scope_type} "
-                        f"{row.scope_ref!r}, which is outside your authorized "
-                        "scope; a preview shows what the agent would do "
-                        "across its whole reach, and narrowing it would not "
-                        "be what the agent would do"
-                    ),
-                )
+        await _refuse_preview_outside_caller_scope(session, agent_id, scope)
 
     devices = await FleetCacheRepo(session).list_all(tenant_id)
     incidents = await _incidents_by_device(session, tenant_id)
     caps = await repo.list_capabilities(agent_id)
-    agent_scope = await load_agent_scope(
+    # A30.10: what the agent WOULD do resolves through canonical reach.
+    # A dry-run that previewed devices an expired grant reached would be
+    # previewing work the evaluator can no longer produce.
+    agent_reach = await load_agent_reach(
         session, tenant_id=tenant_id, agent_id=agent_id,
     )
+    agent_scope = agent_reach.scope
     attention = {
         item["agent_id"]: item
         for item in (await load_attention(
@@ -1897,14 +1942,14 @@ async def dry_run_agent(
 
     # The SAME resolver the evaluator uses, so "in scope" here and "in
     # scope" there cannot drift (the A17 lesson, applied to the preview).
-    in_scope = resolve_scope(scopes, devices, agent_scope.site_ids)
+    in_scope = resolve_scope(agent_reach.rules, devices, agent_reach.site_ids)
 
     withheld: list[dict] = []
     would_propose = evaluate(
         catalogue=catalogue,
         agent=agent,
-        scopes=scopes,
-        resolved_site_ids=agent_scope.site_ids,
+        scopes=agent_reach.rules,
+        resolved_site_ids=agent_reach.site_ids,
         capabilities=caps,
         devices=devices,
         incidents_by_device=incidents,
@@ -2065,7 +2110,7 @@ async def submit_proposal(
         lock_agent_ingress, record_throttled,
     )
     from harkeniq_cc.governance import (
-        load_agent_scope, load_attention, load_autonomy_contract,
+        load_agent_reach, load_attention, load_autonomy_contract,
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
@@ -2239,9 +2284,14 @@ async def submit_proposal(
     # to still be there, on the same condition, for the same component,
     # under the current contract, catalogue, capabilities and safety
     # state. No second reasoning path exists to disagree with.
-    agent_scope = await load_agent_scope(
+    # A30.10: the ingress re-derivation runs on canonical reach. This is
+    # the A6-1 propose-by-reference path -- CC re-runs the SAME evaluate()
+    # before it writes -- so reach that resolved through an expired grant
+    # would have admitted a submission the evaluator could not produce.
+    agent_reach = await load_agent_reach(
         session, tenant_id=tenant_id, agent_id=agent_id
     )
+    agent_scope = agent_reach.scope
     devices = await FleetCacheRepo(session).list_all(tenant_id)
     catalogue_rows = await CapabilityCatalogueRepo(session).list_for_tenant(
         tenant_id
@@ -2258,8 +2308,8 @@ async def submit_proposal(
     would_propose = evaluate(
         catalogue=catalogue,
         agent=agent,
-        scopes=await repo.list_scopes(agent_id),
-        resolved_site_ids=agent_scope.site_ids,
+        scopes=agent_reach.rules,
+        resolved_site_ids=agent_reach.site_ids,
         capabilities=await repo.list_capabilities(agent_id),
         devices=devices,
         incidents_by_device=await _incidents_by_device(session, tenant_id),
@@ -2909,7 +2959,7 @@ async def transition_agent(
     await session.commit()
     payload = _agent_dict(
         agent,
-        await repo.list_scopes(agent.id),
+        await repo.list_administrative_scope_rows(agent.id),
         await repo.list_capabilities(agent.id),
     )
     if target == STATUS_ACTIVE:
