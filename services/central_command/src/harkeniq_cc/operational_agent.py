@@ -65,6 +65,9 @@ from harkeniq_cc.autonomy import (
     REQUIRES_APPROVAL,
     SCOPE_TENANT,
 )
+# A30.4: the ONE lifecycle rule. `scope.is_active` is what `resolve()`
+# applies, so a reach path that filters differently is a second answer.
+from harkeniq_cc.scope import is_active
 
 #: Bump when a consumer would have to change to read an agent payload.
 AGENT_CONTRACT_VERSION = "1"
@@ -264,8 +267,22 @@ def resolve_scope(
     The three scope types UNION (a site plus one out-of-site device is a
     legitimate assignment). What they never do is widen: a device outside
     every scope row is invisible to the agent even if the tenant owns it.
+
+    A30.4/A30.10: an INACTIVE row is not reach. Callers supply
+    `ResolvedScope.effective_grants` -- already lifecycle-filtered and
+    inert-filtered by the canonical resolver -- so this filter should
+    never have anything to do. It is here because it used to have
+    everything to do: the raw repository read filtered `revoked_at` and
+    not `expires_at`, and an expired grant kept yielding devices to the
+    evaluator, dry-run, runtime, agent-view and preflight.
+
+    `is_active` reads attributes that a `Grant` and a campaign scope rule
+    do not carry, and answers True for both -- a lifecycle-filtered
+    object stays lifecycle-filtered, and a campaign rule has no lifecycle
+    of its own. So this narrows exactly one thing: a raw grant row that
+    has lapsed.
     """
-    scopes = list(scopes)
+    scopes = [s for s in scopes if is_active(s)]
     if not scopes:
         return []
     site_ids = {s.scope_ref for s in scopes if s.scope_type == SCOPE_SITE}
@@ -1009,6 +1026,12 @@ def agent_view(
     #: E1.2: sites an `org_unit` scope expands to, resolved by the ONE
     #: scope resolver before this pure function is called.
     resolved_site_ids: Iterable[str] = (),
+    #: A30.4: how many rows the agent is CONFIGURED with, which is not
+    #: how many are effective. `scopes` carries effective reach only, so
+    #: without this an agent whose every grant has lapsed would report
+    #: "No scope assigned" -- an answer that sends an operator to bind a
+    #: scope that is already bound. Reported, never resolved from.
+    configured_rule_count: Optional[int] = None,
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """One agent, answered the way an operator asks it.
@@ -1155,9 +1178,24 @@ def agent_view(
             ],
             "reads": sorted(bound_reads(capabilities)),
             "explicit": bool(scopes),
+            # A30.4: configured is not effective. A lapsed grant is still
+            # configuration, and an operator told "nothing is bound" when
+            # something is would go and bind it again.
+            "configured_rule_count": (
+                len(scopes) if configured_rule_count is None
+                else int(configured_rule_count)
+            ),
+            "ineffective_rule_count": (
+                0 if configured_rule_count is None
+                else max(0, int(configured_rule_count) - len(scopes))
+            ),
             "statement": (
                 f"{len(in_scope)} device(s) in scope"
                 if scopes else
+                f"No scope in effect: this agent's {configured_rule_count} "
+                "scope rule(s) have lapsed or name a target that no longer "
+                "exists, so it can see nothing until one is renewed."
+                if configured_rule_count else
                 "No scope assigned: this agent can see nothing until a site, "
                 "device class or device is bound to it."
             ),
