@@ -45,7 +45,6 @@ from harkeniq_cc.db.repos import (
 )
 from harkeniq_cc.governance import (
     load_agent_reach,
-    load_agent_scope,
     load_attention,
     load_autonomy_contract,
 )
@@ -274,87 +273,139 @@ def _record_correlation(correlation: str) -> None:
         pass
 
 
-async def _dispatch_permitted(session, tenant_id: str, proposal) -> tuple[bool, str]:
-    """May this proposal be dispatched AT ALL, right now? (A22.12.)
+async def revalidate_dispatch(session, tenant_id: str, proposal) -> tuple[bool, str]:
+    """May this approved proposal cross CC -> SM RIGHT NOW? (A30.17.)
 
-    Runs on BOTH bases. The autonomous path asked `_unattended_allowed`
-    and the human-approved path asked nothing, so a proposal approved
-    yesterday still dispatched today for an agent that had since been
-    PAUSED, RETIRED, or whose credential had been REVOKED. A19's D3 says
-    an approved proposal is not a guarantee of execution; that was
-    reported and not enforced.
+    THE one Central Command dispatch decision for an Operational Agent's
+    proposal. BOTH dispatch paths call it -- the synchronous one inside a
+    human's approval request (`api/approvals._decide_agent_proposal`) and
+    the background pass (`dispatch_decided`) -- and nothing else assembles
+    the `dispatch_permitted` inputs.
 
-    Current state is authoritative over a stored decision. This adds no
-    new authority and grants nothing -- it can only withhold.
+    Why one function: there used to be two, and they asked different
+    questions. The synchronous path asked identity, activation, tenant,
+    the stop switch and pause, and never asked REACH or the capability
+    binding, so an approved proposal whose grant had since EXPIRED or been
+    REVOKED was dispatched with HTTP 200. The background path asked reach
+    and binding (A24.15) and never asked the tenant stop switch. Approval
+    is an approval fact; it is not perpetual execution authority, and the
+    answer to "is this still authorized now" cannot depend on which path
+    happened to deliver it.
+
+    Every input is CURRENT state, read now, through the objects the rest
+    of the platform uses:
+
+      identity / activation / pause   the agent row and its A3 credential
+      tenant stop switch              `StopSwitchRepo`
+      effective scope                 `load_agent_reach` -- the SAME reach
+                                      answer admission used (A30.4), asked
+                                      of the proposal's ACTUAL target, not
+                                      "does the agent have some scope"
+      capability binding              the agent's own A0 bindings
+
+    It grants nothing and can only withhold. The per-agent unattended
+    budget is NOT here: it caps delegated work only (A19 D2) and stays on
+    the autonomous branch of `dispatch_decided`.
+
+    What it does not claim: it runs in CC's transaction immediately before
+    the SM call and takes no lock on grant rows, so a grant lapsing in the
+    interval between this read and the Site Manager queueing the directive
+    is not caught here. The Site Manager's lease, preconditions and blast
+    radius, and the node's own allow list, remain the final authority.
     """
-    from harkeniq_cc.machine_identity import STATUS_REVOKED
+    from harkeniq_cc.agent_activation import (
+        dispatch_permitted,
+        proposal_version_is_honoured,
+    )
+    from harkeniq_cc.db.repos import AgentIdentityRepo, StopSwitchRepo
+    from harkeniq_cc.machine_identity import STATUS_ACTIVE as IDENTITY_ACTIVE
     from harkeniq_cc.operational_agent import (
-        STATUS_ACTIVE, STATUS_RETIRED, parse_attribution,
+        STATUS_ACTIVE,
+        bound_action_classes,
+        parse_attribution,
     )
 
     parsed = parse_attribution(getattr(proposal, "actor", "") or "")
     if parsed is None:
-        # Not an Operational Agent's proposal. The node funnel and the
-        # existing approval path own it; there is no agent to re-check.
+        # Not an Operational Agent's proposal (a campaign's, say). Its own
+        # path governs it; there is no agent to re-check.
         return True, ""
     agent_id, _version = parsed
     agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
     if agent is None:
         return False, "the agent that made this proposal no longer exists"
-    status = getattr(agent, "status", "")
-    if status == STATUS_RETIRED:
-        return False, "the agent that made this proposal has been retired"
-    if status != STATUS_ACTIVE:
-        return False, f"the agent that made this proposal is {status or 'inactive'}"
-    if getattr(agent, "paused_reason", ""):
-        return False, f"the agent that made this proposal is paused: {agent.paused_reason}"
 
-    # A3: a revoked credential stops already-approved work. The identity
-    # is optional -- an agent that never had one is governed by its row
-    # alone -- but a REVOKED one is an explicit withdrawal.
-    from harkeniq_cc.db.repos import AgentIdentityRepo
-
-    identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent_id)
-    if identity is not None and identity.status == STATUS_REVOKED:
-        return False, "this agent's machine identity has been revoked"
-
-    # A24.15: proposal-time authorization is not permanent execution
-    # authority. Status, pause, retirement and the credential were already
-    # re-asked above; REACH was not. An operator who withdraws a scope
-    # grant or unbinds a class expects that to stop work that has not run
-    # yet, and until now it did not -- the proposal carried its own
-    # historical authority all the way to the node.
-    #
-    # Both questions are asked of the CURRENT configuration through the
-    # same objects the rest of the platform uses: the ONE scope resolver,
-    # and the agent's own capability bindings. Neither grants anything;
-    # they can only withhold. The node remains the final authority.
-    from harkeniq_cc.governance import load_agent_scope
-    from harkeniq_cc.operational_agent import bound_action_classes
-
-    site_id = getattr(proposal, "site_id", "") or ""
-    if site_id:
-        agent_scope = await load_agent_scope(
-            session, tenant_id=tenant_id, agent_id=agent_id
+    honoured, why = proposal_version_is_honoured(proposal, agent)
+    # A3/A20.8: a withdrawn machine identity refuses already-approved
+    # work. An agent that never had one is not refused: the CC-resident
+    # evaluator holds no credential, and that is a different fact from a
+    # credential that was taken away.
+    identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent.id)
+    if identity is not None and identity.status != IDENTITY_ACTIVE:
+        honoured, why = False, (
+            f"this agent's machine identity is {identity.status}"
+            + (f": {identity.revoke_reason}" if identity.revoke_reason else "")
         )
-        if not (
-            getattr(agent_scope, "tenant_wide", False)
-            or site_id in set(getattr(agent_scope, "site_ids", ()) or ())
-        ):
-            return False, (
-                "this agent's scope no longer reaches the site this "
-                "proposal targets"
-            )
+
+    stop = await StopSwitchRepo(session).get(tenant_id)
+
+    # Effective scope, of THIS target. Reach is resolved over the target
+    # as it will be dispatched -- the device, at the site the directive is
+    # addressed to, with its current class from the fleet -- through the
+    # one function admission resolved it with. A device that has left the
+    # site's fleet cannot be placed in scope, exactly as at admission.
+    site_id = getattr(proposal, "site_id", "") or ""
+    device_agent_id = getattr(proposal, "device_agent_id", "") or ""
+    target = [
+        row for row in (
+            await FleetCacheRepo(session).list_by_site(site_id) if site_id else ()
+        )
+        if row.agent_id == device_agent_id
+    ]
+    reach = await load_agent_reach(
+        session, tenant_id=tenant_id, agent_id=agent.id, devices=target,
+    )
 
     action_type = getattr(proposal, "action_type", "") or ""
     bound = bound_action_classes(
-        await OperationalAgentRepo(session).list_capabilities(agent_id)
+        await OperationalAgentRepo(session).list_capabilities(agent.id)
     )
-    if action_type and action_type not in bound:
-        return False, (
-            f"{action_type} is no longer bound to the agent that proposed it"
-        )
-    return True, ""
+
+    return dispatch_permitted(
+        agent_identity=(True if honoured else why),
+        agent_active=(
+            True if agent.status == STATUS_ACTIVE
+            else f"the agent is {agent.status!r}, not active"
+        ),
+        tenant_scope=(
+            True if agent.tenant_id == tenant_id
+            else "the agent belongs to another tenant"
+        ),
+        stop_switch=(
+            "the tenant stop switch is active"
+            if stop is not None and getattr(stop, "active", False) else True
+        ),
+        # A human's approval is not refused by the EXECUTION budget -- that
+        # caps unattended work (D2) and is asked on the autonomous branch.
+        # A paused agent is a different matter: pausing is an explicit
+        # safety act, and it refuses on either basis.
+        budget=(
+            f"the agent is paused: {agent.paused_reason}"
+            if agent.paused_reason else True
+        ),
+        effective_scope=(
+            True if reach.devices else (
+                "this agent's scope no longer reaches the device this "
+                "proposal targets"
+            )
+        ),
+        capability_binding=(
+            True if action_type and action_type.upper() in bound else (
+                f"{action_type or 'this action'} is no longer bound to the "
+                "agent that proposed it"
+            )
+        ),
+    )
 
 
 async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, str]:
@@ -411,10 +462,11 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
         audit = AuditRepo(session)
         client = SMClient(state.config.sm_tls_ca)
         for proposal in pending:
-            # A22.12: current lifecycle and identity, on BOTH bases,
-            # BEFORE the basis is even consulted. An approved proposal
-            # keeps its version and is never a guarantee of execution.
-            ok, why = await _dispatch_permitted(session, tenant_id, proposal)
+            # A22.12 / A30.17: current authority, on BOTH bases, BEFORE
+            # the basis is even consulted -- through the same gate the
+            # synchronous approval path calls. An approved proposal keeps
+            # its version and is never a guarantee of execution.
+            ok, why = await revalidate_dispatch(session, tenant_id, proposal)
             if not ok:
                 # The DECISION is left exactly as it stands. `withhold_
                 # unattended` clears `decided_by`/`decided_at`, which is

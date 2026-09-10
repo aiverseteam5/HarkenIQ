@@ -3657,3 +3657,63 @@ not executed — but the quoting is what the relocation loses.
 
 `correlation_meta` is withheld until it has a bounded contract, rather
 than shipped as an open dict a consumer must guess at.
+
+## §34b — A6-4B0a pre-merge remediation (A30.17–A30.20)
+
+### Two dispatch gates, one answer
+
+Independent review found a HIGH that predates B0a and that B0a could not
+ship around: the synchronous human-approval path assembled its own
+dispatch gate and never asked reach. An approved proposal whose grant had
+expired or been revoked since admission crossed CC → SM with HTTP 200.
+The background pass asked reach, and in exchange never asked the tenant
+stop switch. Neither path was wrong about everything; they were wrong
+about different things, which is the A30.2 shape again — two answers to
+one question — one layer later in the lifecycle.
+
+The correction is not a new check bolted onto the synchronous path.
+`agent_runtime.revalidate_dispatch` is the one function that assembles
+the inputs to the existing fail-closed `dispatch_permitted` algebra, both
+paths call it, and the algebra's gate list grows the two questions the
+synchronous path skipped. A structural test pins that `dispatch_permitted`
+has exactly one production caller and that every agent-proposal sender of
+`dispatch_action` goes through the gate — the campaign runner being the
+declared exception, because a wave is not an agent proposal.
+
+### Approval is a fact, not a licence
+
+What each stage decides, as ratified:
+
+    ADMISSION   may this work enter governance?
+    APPROVAL    were the approval requirements satisfied?
+    DISPATCH    is it STILL authorized, now, for this target?
+    NODE        is execution finally safe?
+
+A refusal at dispatch leaves the approval standing — the ledger row, the
+`approval.approved` chain entry, `decided_by` and `decided_at` all
+survive — and records the refusal beside it. Nothing is rewritten and no
+second decision is invented. Each path keeps the lifecycle it already
+had: the synchronous path fails the proposal in the request; the
+background path withholds it and retries, which is what A22.12 chose so a
+paused agent's approved work is not destroyed.
+
+### Target, not "some scope"
+
+Reach at dispatch is asked through `load_agent_reach`, of the target as
+it will be dispatched. That is the answer admission used, so admission
+and dispatch cannot disagree about what is in scope — and a surviving
+grant on another site or another device carries nothing to a target that
+left scope. Asking `site_ids` instead would have been the A30.3 mistake:
+it is why the background path withheld device-scoped agents' approved
+work forever while the synchronous path dispatched it. That consequence
+is recorded as A30.18 and is deliberately distinguished from F1, which is
+the read filter and remains B0b's.
+
+### What the gate cannot promise
+
+It reads current state in CC's transaction and then calls the Site
+Manager. It takes no lock on grant rows, so the interval between that
+read and the directive being queued is not covered in CC. That is stated
+rather than implied away: the Site Manager's lease, preconditions and
+blast radius and the node's own allow list remain the final execution
+authority, unchanged by this slice.

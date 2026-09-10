@@ -400,8 +400,18 @@ class TestAgentOriginSharesTheContract:
         because this file tests the APPROVAL ledger, not the activation
         lifecycle -- but its state is the state a real activation
         produces: active, at the version the attribution key names.
+
+        A30.17: it also holds what a real proposing agent holds -- a scope
+        grant reaching the target site and a binding for the class. The
+        synchronous dispatch path used to ask neither, which is why an
+        agent with no reach at all could have its proposal dispatched.
         """
-        from harkeniq_cc.db.models import CCAgentProposal, CCOperationalAgent
+        from harkeniq_cc.db.models import (
+            CCAgentCapability,
+            CCAgentProposal,
+            CCOperationalAgent,
+            CCScopeGrant,
+        )
 
         async with stack.sessionmaker() as session:
             agent = CCOperationalAgent(
@@ -412,6 +422,14 @@ class TestAgentOriginSharesTheContract:
                 created_by="fixture", updated_by="fixture",
             )
             session.add(agent)
+            session.add(CCScopeGrant(
+                tenant_id=TENANT, principal_type="agent", principal_ref="ag1",
+                scope_type="site", scope_ref=site_id, granted_by="fixture",
+            ))
+            session.add(CCAgentCapability(
+                agent_id="ag1", tenant_id=TENANT, kind="action_class",
+                capability_ref=action_type,
+            ))
             row = CCAgentProposal(
                 tenant_id=TENANT, agent_id="ag1", actor="op-agent:ag1@v1",
                 agent_version=1, site_id=site_id, device_agent_id="node-1",

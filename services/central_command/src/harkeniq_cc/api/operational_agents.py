@@ -624,6 +624,20 @@ async def _refuse_preview_outside_caller_scope(session, agent_id: str, scope):
             )
 
 
+async def _configured_rule_count(repo, agent_id: str) -> int:
+    """How many scope rules an operator CONFIGURED, lapsed ones included.
+
+    A30.4: the agent view reports configured beside effective, so an
+    operator told "nothing in scope" can see a rule exists and lapsed
+    rather than being sent to re-bind. It lives in its own function and
+    returns a NUMBER so that `get_agent`, which resolves operational reach
+    through `agent_view`, never holds the configured rows -- holding both
+    in one function is one edit away from passing the first into the
+    second (A30.17, the indirect-path finding).
+    """
+    return len(await repo.list_administrative_scope_rows(agent_id))
+
+
 async def _agent_scope_rules(repo, agent_id):
     # A30.4: the delegation ceiling (A23-3) asks what a caller must have
     # authority over to ADMINISTER this agent, so it reads CONFIGURED
@@ -997,12 +1011,13 @@ async def get_agent(
     machine = await _machine_self_read(request, user, agent_id)
     agent = await _require_visible_agent(session, user.tenant_id, agent_id, scope)
     repo = OperationalAgentRepo(session)
-    # A30.4: two questions, two reads. `configured` is what an operator
-    # set up (expired rows included, so a lapsed grant is still visible
-    # as configuration); `reach` is what the agent may operate on now,
-    # and it is the only one the view's "what can it see" block resolves
-    # devices from.
-    configured = await repo.list_administrative_scope_rows(agent.id)
+    # A30.4: two questions, two reads. The configured COUNT is what an
+    # operator set up (expired rows included, so a lapsed grant is still
+    # visible as configuration); `agent_reach` is what the agent may
+    # operate on now, and it is the only one the view's "what can it see"
+    # block resolves devices from. Only the count is held here, never the
+    # rows (A30.17).
+    configured_rule_count = await _configured_rule_count(repo, agent.id)
     caps = await repo.list_capabilities(agent.id)
     # A23: a scoped reader sees the agent's reach WITHIN their own scope.
     # The agent may reach further; what it reaches beyond the caller is
@@ -1035,7 +1050,7 @@ async def get_agent(
         devices=devices,
         autonomy_contract=contract,
         resolved_site_ids=agent_reach.site_ids,
-        configured_rule_count=len(configured),
+        configured_rule_count=configured_rule_count,
         proposals=proposals,
     )
     view["posture"] = {

@@ -128,6 +128,47 @@ def _functions_calling(name: str) -> set[str]:
     return found
 
 
+REACH_SINKS = ("resolve_scope", "evaluate")
+
+
+def _row_accepting_reach_functions() -> set[str]:
+    """Functions that take grant rows as a PARAMETER and resolve from them.
+
+    `agent_view(scopes=...)` hands its own `scopes` argument straight to
+    `resolve_scope`, so a caller holding configured rows can pass them to
+    `agent_view` and resolve reach from them without ever naming
+    `resolve_scope` (A30.17, the indirect-path finding). One rule, not a
+    call-graph closure: a function whose `resolve_scope`/`evaluate` call
+    is fed by one of its own parameters is itself a sink. `load_agent_reach`
+    is NOT one -- it takes no rows, it resolves them -- which is why
+    calling it while holding configured rows cannot reopen the defect.
+    """
+    found: set[str] = set()
+    for path in CC_SRC.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            params = {
+                a.arg for a in node.args.args + node.args.kwonlyargs
+            }
+            for call in ast.walk(node):
+                if not isinstance(call, ast.Call):
+                    continue
+                func = call.func
+                called = (
+                    func.attr if isinstance(func, ast.Attribute)
+                    else func.id if isinstance(func, ast.Name) else ""
+                )
+                if called not in REACH_SINKS:
+                    continue
+                fed = list(call.args[:1]) + [
+                    k.value for k in call.keywords if k.arg == "scopes"
+                ]
+                if any(isinstance(a, ast.Name) and a.id in params for a in fed):
+                    found.add(node.name)
+    return found
+
+
 class TestAdministrativeAccessIsNotAReachSource:
     def test_the_old_name_is_gone(self):
         """`list_scopes` must not exist. A rename is the audit.
@@ -147,7 +188,10 @@ class TestAdministrativeAccessIsNotAReachSource:
         defect was built.
         """
         admin = _functions_calling("list_administrative_scope_rows")
-        reach = _functions_calling("resolve_scope") | _functions_calling("evaluate")
+        sinks = set(REACH_SINKS) | _row_accepting_reach_functions()
+        reach: set[str] = set()
+        for sink in sinks:
+            reach |= _functions_calling(sink)
         both = admin & reach
         assert both == set(), (
             "these functions read CONFIGURED grant rows and resolve "
@@ -156,10 +200,25 @@ class TestAdministrativeAccessIsNotAReachSource:
             "(A30.4)."
         )
 
+    def test_the_indirect_path_is_covered(self):
+        """The extension above is not vacuous: `agent_view` is a sink, and
+        `get_agent` -- which calls it -- is therefore a reach resolver, so
+        it may hold a configured COUNT and never the configured rows."""
+        sinks = _row_accepting_reach_functions()
+        assert "agent_view" in sinks
+        assert "load_agent_reach" not in sinks
+        assert "operational_agents.py:get_agent" in _functions_calling("agent_view")
+        assert "operational_agents.py:get_agent" not in _functions_calling(
+            "list_administrative_scope_rows"
+        )
+
     def test_every_operational_reach_path_goes_through_one_function(self):
         """`load_agent_reach` is the only way to ask an agent's reach."""
         callers = _functions_calling("load_agent_reach")
         expected = {
+            # A30.17: dispatch asks the reach admission asked, of the
+            # proposal's actual target, on both dispatch paths.
+            "agent_runtime.py:revalidate_dispatch",
             "agent_runtime.py:evaluate_agents",
             "agent_lifecycle.py:run_preflight",
             "agent_lifecycle.py:runtime_state",
@@ -420,14 +479,13 @@ class TestAnExpiredAgentReachesNothing:
         assert reach.devices == ()
         assert reach.rules == ()
 
-    async def test_expired_agent_produces_no_proposal(self):
-        """The write path. This is what the fail-open actually cost."""
-        _client, state = await _stack()
-        await _seed_agent(state, expires=PAST)
-        created = await agent_runtime.evaluate_agents(state, TENANT)
-        assert created == [], (
-            "an agent whose grant has lapsed proposed work anyway"
-        )
+    # The write-path proof ("an expired agent stops proposing") lives in
+    # test_a30_execution_time_authority.py::TestTheEvaluatorProofIsNotVacuous.
+    # The version that stood here seeded no capability binding and no
+    # incident, so ACTIVE and EXPIRED both produced zero proposals and it
+    # could not fail (independent review, MEDIUM). Its replacement shows
+    # the SAME configuration proposing while live, proposing nothing once
+    # lapsed, and proposing again once renewed.
 
     async def test_runtime_state_reports_no_devices(self):
         _client, state = await _stack()

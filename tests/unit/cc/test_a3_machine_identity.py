@@ -687,7 +687,7 @@ class TestRevocationRefusesApprovedWork:
         different fact from never having had one — refusing the latter
         would break every existing proposal.
         """
-        from harkeniq_cc.api.approvals import _agent_dispatch_gates
+        from harkeniq_cc.agent_runtime import revalidate_dispatch
 
         stack = await _stack()
         site_id = await _seed(stack)
@@ -698,11 +698,18 @@ class TestRevocationRefusesApprovedWork:
                 agent.status = "active"
                 await session.commit()
 
-        class P:
-            actor = f"op-agent:{agent_id}@v1"
+        # A30.17: the one dispatch gate also asks reach and binding of the
+        # proposal's ACTUAL target, so the stand-in names one -- the
+        # agent's own in-scope device and bound class. The subject here
+        # is still only the identity question.
+        from types import SimpleNamespace
 
+        proposal = SimpleNamespace(
+            actor=f"op-agent:{agent_id}@v1", site_id=site_id,
+            device_agent_id="node-1", action_type="SEL_CLEAR",
+        )
         async with stack.sessionmaker() as session:
-            allowed, why = await _agent_dispatch_gates(session, TENANT, P())
+            allowed, why = await revalidate_dispatch(session, TENANT, proposal)
         assert allowed is True, why
 
 

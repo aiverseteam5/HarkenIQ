@@ -3405,3 +3405,90 @@ behaviour an agent with no rules already has, so no new lockout shape is
 created and a tenant owner can always administer it. Refused reach is
 reported rather than left silent, so an operator learns why an agent
 stopped acting instead of watching it go quiet.
+
+**A30.17 — Pre-merge remediation (independent review, HIGH): approval is
+not perpetual execution authority.** Found by independent review of
+`356c4c3` and reproduced by execution before any code changed. Central
+Command had TWO places deciding whether an approved Operational Agent
+proposal may cross CC → SM, and they asked different questions:
+
+| gate | synchronous human approval | background runtime |
+|---|---|---|
+| current effective scope | **never asked** | asked, as `site_id ∈ site_ids` |
+| capability still bound | **never asked** | asked (A24.15) |
+| tenant stop switch | asked | **never asked** |
+| identity | refuses `status ≠ active` | refused only `revoked` |
+
+So on the synchronous path an ACTIVE, an EXPIRED and a REVOKED grant all
+produced HTTP 200, an SM call and a dispatched directive; a site grant
+that lapsed while another survived still carried the approved target; and
+a dual approval begun under live authority and completed after expiry
+dispatched. The background path refused those and dispatched past an
+asserted stop switch. A slice whose objective is "expired means expired
+everywhere operational reach is evaluated" cannot ship while a production
+dispatch path executes after expiry, so this is B0a's to close; it does
+not redesign admission, approval, autonomy, capabilities or execution.
+
+Ruling, applied: ADMISSION decides whether work may enter governance;
+APPROVAL decides whether approval requirements were satisfied; DISPATCH
+decides whether the work is STILL AUTHORIZED NOW; the NODE decides whether
+execution is finally safe. `agent_runtime.revalidate_dispatch` is the ONE
+Central Command dispatch decision for an agent proposal and both paths
+call it; it is the only caller of the fail-closed `dispatch_permitted`
+algebra, whose `DISPATCH_GATES` gain `effective_scope` and
+`capability_binding` so an input nobody evaluated refuses on either path.
+Reach is asked through `load_agent_reach` — the answer admission used
+(A30.4) — of the proposal's ACTUAL target (the device, at the site the
+directive is addressed to, with its current class from the fleet), never
+"does the agent have some scope". The per-agent unattended budget stays on
+the autonomous branch (A19 D2). Each path keeps its existing refusal
+semantics: synchronous → `failed` + `agent_proposal.refused_at_dispatch`;
+background → left `approved` with `dispatch_reason` +
+`agent_proposal.dispatch_withheld` (A22.12). No proposal or approval
+record is rewritten and no decision is fabricated.
+
+What is NOT claimed: the gate runs in CC's transaction immediately before
+the SM call and takes no lock on grant rows, so a grant lapsing between
+that read and the Site Manager queueing the directive is not caught in
+CC. The Site Manager's lease, preconditions and blast radius and the
+node's allow list remain the final authority, unchanged.
+
+**A30.18 — A consequence recorded rather than hidden.** The background
+gate judged reach by `site_ids`, the projection A30.3 says is never a
+reach answer, so an approved proposal from a `device`- or
+`device_class`-scoped agent was withheld at dispatch indefinitely although
+admission admitted it and the synchronous path dispatched it. Converging
+on the admission answer means such a proposal now dispatches on BOTH
+paths while its target is covered, and on neither once it is not. This
+is **not** F1: F1 is the repository read filter and the
+`/api/scope-grants/me` projection; neither changed, `site_ids` is
+unchanged, and the test asserting F1 open still passes. B0b still owns
+it.
+
+**A30.19 — The review's other findings.** MEDIUM: the evaluator expiry
+proof was vacuous (no binding, no incident, so ACTIVE and EXPIRED both
+yielded zero); replaced by one configuration shown proposing while live,
+nothing once lapsed and again once renewed, and shown RED against the
+pre-B0a lifecycle code. MEDIUM: the live proof is now repeatable — compose
+gate steps A6-4B0a/AE–AH (active reach, expired reach on runtime/dry-run
+with the configured-versus-effective statement, approval after expiry
+reaching no Site Manager directive with history intact, renewal restoring
+reach without resurrecting the refused work), and the existing A5/H source
+scan follows the gate to its one home and now also asserts the
+synchronous path consults it before the SM call. LOW: the structural
+invariant covers the indirect path — a function feeding its own parameter
+into `resolve_scope`/`evaluate` (`agent_view`) is a reach sink, so
+`get_agent` now holds a configured COUNT and never the configured rows.
+INFO (configured-scope annotation) deferred.
+
+**A30.20 — Unchanged by the remediation.** No permission, no
+`MACHINE_PRINCIPAL_CEILING` change, no route, no migration (CC head
+`0026`). F1 open; B0b, B0c, B1 and B2 not started. Campaign wave dispatch
+(A18) is not an agent proposal, carries its own stop-switch check and
+plan-bound target set, and was not re-examined here. Observed on the live
+stack and deliberately left unchanged: a machine whose every grant has
+lapsed is refused its OWN agent and runtime records (404 — object
+visibility follows the caller's effective scope, as A30.16 records),
+while its dry-run is answered by the self rule alone (200, zero devices).
+Both are "no reach"; aligning machine self-visibility is B1's self-scope
+projection (A29.9/B7), not B0a's.
