@@ -3717,3 +3717,106 @@ read and the directive being queued is not covered in CC. That is stated
 rather than implied away: the Site Manager's lease, preconditions and
 blast radius and the node's own allow list remain the final execution
 authority, unchanged by this slice.
+
+## §34c — A6-4B0b-S1: multi-target authorization integrity (A30.22)
+
+### One device authorizing many
+
+A campaign site-wave is the platform's one first-class MULTI-target
+authorization subject: an immutable device set, bound to a plan hash,
+raised as one E0.1 subject and dispatched as one unit. Its approval gate
+was written with the single-target shape every other origin has —
+`_record_and_evaluate(device_agent_id=...)` — and the caller satisfied that
+signature with `wave.device_agent_ids[0]`. Three things then followed from
+one device: the scope question (`permits` over A alone), the policy
+question (`governing_policy` from A's class alone), and the evidence
+(`target_device_agent_id: A`). The parallel `campaign_wave.approved` audit
+entry listed every device, so the truth existed once, on the wrong row.
+
+The inventory that found it also found what it does NOT resemble. Agent
+proposals are single-target by construction (a scalar `device_agent_id`
+on the payload, the row and the RPC) and `revalidate_dispatch` resolves
+reach over exactly that target. Campaign create, preflight, submit,
+cancel and advance are ALL-rule ceilings: one rule outside the caller's
+scope is a 403. The Site Manager plans by fault domain, dispatches per
+device against that device's own site row, and re-checks nothing about CC
+scope — correctly, because CC owns `permission`. The node runs one device
+per playbook. Nowhere else does one decision reach many devices except
+skill delivery at activation, which is the temporal half of the same
+defect: the device set is the one the preflight stored, fanned out
+without asking whether the agent still reaches each device.
+
+### Every target, current authority, three boundaries
+
+`target_authority.py` holds the rule where it can be read as a rule. The
+wave's target set is built from `wave.device_agent_ids` against ONE
+site-indexed fleet read (`FleetCacheRepo.list_by_site(wave.site_id)`),
+and it refuses before any authority question is asked when the set is
+empty, carries a duplicate, names a device Central Command cannot identify
+at that site, or when `wave_subject_ref(...)` recomputed from the stored
+row no longer equals the row's own `subject_ref`. That last check makes
+the digest a verified binding rather than a lookup key: no code path
+updates `device_agent_ids`, and now no out-of-band write to it survives
+either. Coverage is then asked of EVERY target through the canonical
+`ResolvedScope.permits(..., device_agent_id=d, device_class=cls)`; the
+first uncovered target refuses the whole set and names how many were
+uncovered. There is no `any`, no `[0]`, no `next(iter(...))`, and a
+structural test says so about the three authorization modules.
+
+Supplying `device_class` per target is what lets a `device_class` grant
+satisfy a uniform wave and refuse a mixed one. It also surfaces the
+policy question honestly: the governing policy is resolved per distinct
+class, and a wave whose classes resolve to DIFFERENT policies is refused
+with the reason named. The alternative — picking the strictest, or
+requiring membership in every named group — invents approval arithmetic
+the platform has never had, for a case that today arises only when an
+undeclared device (applicability `unknown`, which is dispatchable) shares
+a wave with a declared one. Refusing is deterministic, fail-closed, and
+tells the operator to split the campaign by class.
+
+At dispatch the position is the one `revalidate_dispatch` holds for
+proposals — inside `_advance_site`, after the plan-hash check and before
+`revalidate_wave` narrows for capability — but the function is not
+reused: its inputs are an AGENT's (identity, activation, binding), and a
+wave has none of those. A human-approved wave instead re-reads its own
+ledger: for each `cc_approval_records` row on the subject, the approver's
+CURRENT scope is resolved through `governance.load_scope` with no bearer
+token, using the role the approval recorded (`authority_snapshot.role`) as
+the permission basis — the grant-recorded role ceiling of A23-3 still
+narrows inside `resolve()` — and asked `permits` over every target. E0.1's
+`evaluate_completion` is then re-run counting only the approvers who still
+cover the set. If completion no longer holds, the wave is WITHHELD: status
+stays `approved`, the approval records stay exactly as written, each
+target's `revalidation` reads `authority_lost` with the reason, and one
+audit entry is written per distinct cause rather than one per pass. A
+later pass dispatches it if authority returns — the B0a shape, on a
+different subject. Composition does not rescue it: X covering [A] and Y
+covering [B, C] under a two-approver policy is two approvers who each
+fail the all-target rule, not one approval of [A, B, C].
+
+Skill delivery re-resolves `load_agent_reach` at activation and
+intersects the stored preflight list with the devices the agent reaches
+NOW. Narrow-only by construction — a device the preflight did not report
+is never added, because the preflight is the contract the operator
+acknowledged — and every device removed is recorded in the install
+ledger as skipped, with the reason.
+
+### What it does not promise
+
+The dispatch-time check reads grants in Central Command's transaction and
+then calls the Site Manager; it holds no lock on grant rows, so a grant
+lapsing in that interval is caught downstream, not here. A Keycloak
+realm-role demotion after approval is invisible to a token-less
+resolution; the approval-time gate saw the live token, and scope
+revocation, expiry, subset narrowing and role-ceiling narrowing are all
+seen at dispatch. Autonomous waves carry no human authority and are
+unchanged. None of this changes the Site Manager's lease, preconditions,
+blast radius, error-budget drop-back or the node's allow list, which
+remain the final execution authority — the check can only withhold.
+
+The device-identity inventory the slice ran alongside (every column,
+type, width, constraint, writer and comparison) concludes S2 is not
+required: real ids are sixteen hex characters, every operand S1 compares
+is wider and written verbatim, PostgreSQL raises on overlength and sqlite
+stores in full, so no stored id can differ from the one sent. That the
+identity-width invariant guards no device column is recorded, not fixed.
