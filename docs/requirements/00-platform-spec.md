@@ -3492,3 +3492,63 @@ visibility follows the caller's effective scope, as A30.16 records),
 while its dry-run is answered by the self rule alone (200, zero devices).
 Both are "no reach"; aligning machine self-visibility is B1's self-scope
 projection (A29.9/B7), not B0a's.
+
+**A30.21 — Second independent re-review (of `d8d6c17`): the revocation
+half of the live proof.** Verdict REMEDIATE, narrowly. The one dispatch
+gate, target-specific revalidation and both dispatch lifecycles were
+accepted as implemented, and A30.18's consequence (device and
+device_class work dispatching) was confirmed as correct target-aware
+authorization rather than accidental B0b work. The one open MEDIUM:
+A30.19's repeatable live proof covered EXPIRY (AE–AH, the lapse set by
+SQL because no route expires a grant in place), and nothing at the
+production boundary revoked a SCOPE GRANT under approved work. A6/K does
+revoke a machine identity, but it belongs to A6-1 and proves a 401 on
+SUBMISSION — the dispatch-side identity gate has no live coverage, and
+this slice does not add any. Compose gate steps A6-4B0a/AI–AL now do,
+on both paths, with a fresh agent that owns its state: a real machine
+identity, COLLECT_DIAGNOSTICS bound, and two site grants — G_T on the
+target's site and G_O on another device-bearing site that is never
+touched, so the agent keeps real reach and a refusal has to be about the
+target. The sync half's second approver is created and granted there too,
+for a reason the first full run found: A23-3 has two administrators revoke
+each other CONCURRENTLY and asserts only that exactly one wins, restoring
+the owner when the owner is the loser — so `gate-a23-admin2` ends that
+race revoked about half the time, and borrowing it made the step pass on
+a coin flip. A step's identities are part of the state it must own.
+Synchronous: approval 1 of 2 is recorded while authorized, G_T is
+revoked through `DELETE /api/scope-grants/{id}`, approval 2 completes →
+refused on `effective_scope`, zero matching SM directives, both approvals
+on the ledger. Background: the approval completes while authorized with
+the site briefly unreachable (injected on Central Command's route to that
+one site, timed after a fleet poll — the case the approval route leaves
+`approved` for the background pass), G_T is
+revoked, and the real operational-agent loop withholds the still-approved
+proposal on `effective_scope` with zero matching SM directives; restoring
+ONLY G_T then lets the same approved proposal dispatch — the causal
+control. The outage is a direct write to `cc_sites.sm_endpoint`, the one
+state change here not made through a production route, because none
+exists to take a site offline; its window is bounded by the poll interval
+read from the running service and the poller's own failure count is
+compared across it, so a poll that landed fails the step by name instead
+of surfacing later as an unattributed ERROR line.
+
+Attribution follows `DISPATCH_GATES` order — the sixth gate's message
+means the first five passed — with the binding, identity, activation,
+pause, stop switch and the target's fleet membership asserted unchanged
+on both sides of each refusal, and reach asserted still non-empty at
+G_O's site so a refusal cannot be "this agent has no scope at all".
+Emptied reach has three causes that share one message — revoked, expired,
+or inert because the target vanished — so each refusal names which rather
+than leaving a reader to chain inferences: the production grant read must
+show G_T **revoked**, not expired, with its site still present, while G_O
+stays effective.
+
+The synchronous path has its positive control in the same steps, on the
+same agent and target: AK's approval is taken while G_T is LIVE, and on
+that path `revalidate_dispatch` runs before anything else and a refusal
+marks the proposal `failed`, so P2 arriving at `approved` can only mean
+the gate passed. AJ and that approval are therefore a matched pair
+differing in one variable. One limit is stated rather than implied: the
+live proof exercises `site`-type grants only, and `device`,
+`device_class` and `org_unit` revocation stay covered by A30's unit tests
+rather than on a stack. No production code changed.
