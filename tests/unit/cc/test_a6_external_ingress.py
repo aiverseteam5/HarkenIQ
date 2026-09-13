@@ -1140,7 +1140,7 @@ class TestExecutionTimeAuthority:
             return row.id
 
     async def test_a_withdrawn_scope_stops_an_approved_proposal(self):
-        from harkeniq_cc.agent_runtime import _dispatch_permitted
+        from harkeniq_cc.agent_runtime import revalidate_dispatch
         from harkeniq_cc.db.models import CCAgentProposal, CCScopeGrant
 
         stack = await _stack()
@@ -1149,7 +1149,7 @@ class TestExecutionTimeAuthority:
 
         async with stack.sessionmaker() as session:
             proposal = await session.get(CCAgentProposal, pid)
-            ok, _ = await _dispatch_permitted(session, TENANT, proposal)
+            ok, _ = await revalidate_dispatch(session, TENANT, proposal)
             assert ok is True, "the fixture could not dispatch to begin with"
 
         # The operator withdraws the agent's reach. E1.2 moved agent scope
@@ -1159,12 +1159,12 @@ class TestExecutionTimeAuthority:
 
         async with stack.sessionmaker() as session:
             proposal = await session.get(CCAgentProposal, pid)
-            ok, why = await _dispatch_permitted(session, TENANT, proposal)
+            ok, why = await revalidate_dispatch(session, TENANT, proposal)
         assert ok is False, "a proposal dispatched after its scope was withdrawn"
         assert "no longer reaches" in why
 
     async def test_a_withdrawn_capability_stops_an_approved_proposal(self):
-        from harkeniq_cc.agent_runtime import _dispatch_permitted
+        from harkeniq_cc.agent_runtime import revalidate_dispatch
         from harkeniq_cc.db.models import CCAgentCapability, CCAgentProposal
 
         stack = await _stack()
@@ -1180,7 +1180,7 @@ class TestExecutionTimeAuthority:
 
         async with stack.sessionmaker() as session:
             proposal = await session.get(CCAgentProposal, pid)
-            ok, why = await _dispatch_permitted(session, TENANT, proposal)
+            ok, why = await revalidate_dispatch(session, TENANT, proposal)
         assert ok is False, "a proposal dispatched for an unbound class"
         assert "no longer bound" in why
 

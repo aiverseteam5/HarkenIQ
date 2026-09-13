@@ -833,12 +833,20 @@ def activation_subject_ref(
 #: The gates re-evaluated at dispatch, whatever version the proposal
 #: carries. Ordered cheapest and most absolute first, like
 #: DECISION_INPUTS at the Site Manager.
+#:
+#: A30.17: `effective_scope` and `capability_binding` were asked by the
+#: background dispatch pass (A24.15) and by NOTHING on the synchronous
+#: human-approval path, while `stop_switch` was asked there and not in
+#: the background. Two paths, two answers. They are gates in this one
+#: algebra now, so an input nobody evaluated refuses on either path.
 DISPATCH_GATES = (
     "agent_identity",
     "agent_active",
     "tenant_scope",
     "stop_switch",
     "budget",
+    "effective_scope",
+    "capability_binding",
 )
 
 
@@ -855,6 +863,11 @@ def dispatch_permitted(**gates) -> tuple[bool, str]:
     These are Central Command's gates only. The Site Manager's lease,
     preconditions and blast radius, and the node's own allow list, run
     afterwards and independently. Nothing here can substitute for them.
+
+    The inputs are assembled in exactly one place,
+    `agent_runtime.revalidate_dispatch`, which both dispatch paths call
+    (A30.17). A second caller assembling its own subset is how the paths
+    came to disagree.
     """
     for name in DISPATCH_GATES:
         if name not in gates:

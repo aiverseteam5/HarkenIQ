@@ -3390,24 +3390,46 @@ step "A5/H: dispatch re-checks CURRENT lifecycle, on both bases (D4)"
 # agent since paused, retired or revoked. Asserted on the shipped source
 # BEFORE the basis is consulted -- staging a stale approval against a
 # live stack would prove one status, and the gate needs the rule.
+#
+# A30.17: the two paths used to assemble two different gates -- the
+# synchronous human-approval path never asked reach or the binding, the
+# background pass never asked the stop switch. Both now call ONE gate,
+# `revalidate_dispatch`, so the scan follows it there, and asserts the
+# synchronous path consults it BEFORE it calls the Site Manager. The
+# checks are read from the gate's CODE, not its docstring, so prose that
+# merely names a check cannot satisfy this step. (A6-4B0a/AG below proves
+# the same rule live.)
 A5_ROOT="$_REPO_ROOT" python3 - <<'A5PY'
 import os
 import pathlib
 
 root = pathlib.Path(os.environ["A5_ROOT"])
-rt = (root / "services/central_command/src/harkeniq_cc/agent_runtime.py").read_text()
+cc = root / "services/central_command/src/harkeniq_cc"
+rt = (cc / "agent_runtime.py").read_text()
+ap = (cc / "api/approvals.py").read_text()
 
 body = rt.split("async def dispatch_decided(")[1]
 loop = body.split("for proposal in pending:")[1]
-gate = loop.index("_dispatch_permitted(")
+gate = loop.index("revalidate_dispatch(")
 basis = loop.index("BASIS_AUTONOMOUS")
 assert gate < basis, "the lifecycle gate must run BEFORE the basis is consulted"
 
-check = rt.split("async def _dispatch_permitted(")[1].split("\nasync def ")[0]
-for expected in ("STATUS_RETIRED", "paused_reason", "STATUS_ACTIVE",
-                 "AgentIdentityRepo", "STATUS_REVOKED"):
-    assert expected in check, expected
-print("dispatch re-checks lifecycle and identity on both bases, before the basis")
+sync = ap.split("async def _decide_agent_proposal(")[1].split("\nasync def ")[0]
+assert sync.index("revalidate_dispatch(") < sync.index("dispatch_action("), (
+    "the synchronous approval path must ask the ONE gate before the SM call")
+
+check = rt.split("async def revalidate_dispatch(")[1].split("\nasync def ")[0]
+code = check.split('"""', 2)[2]
+# Retirement and pause refuse through `status != STATUS_ACTIVE` and
+# `paused_reason`; ANY non-active machine identity (revoked or retired)
+# refuses through `!= IDENTITY_ACTIVE`; reach, binding and the stop switch
+# are the three inputs the paths used to disagree about.
+for expected in ("STATUS_ACTIVE", "paused_reason", "AgentIdentityRepo",
+                 "IDENTITY_ACTIVE", "StopSwitchRepo", "load_agent_reach",
+                 "bound_action_classes", "dispatch_permitted("):
+    assert expected in code, expected
+print("ONE dispatch gate: lifecycle, identity, stop switch, reach and binding,"
+      " asked on both paths before the basis and before the SM call")
 A5PY
 
 # And the credential really does stop the moment the agent is retired.
@@ -4482,6 +4504,184 @@ assert b['total'] >= 5, b
 print('machine self-read sees its own refusals:', b['total'])
 "
 
+# ===========================================================================
+# A6-4B0a (A30.10 + A30.17), live: expired means expired -- at REACH and at
+# DISPATCH. A real Keycloak machine token, a real tenant-realm approver, a
+# real PostgreSQL `timestamptz` comparison and a real Site Manager.
+#
+# The dispatch half is the independent-review HIGH: the synchronous human-
+# approval path assembled its own gate and never asked reach, so an
+# approved proposal whose grant had EXPIRED crossed CC -> SM with HTTP 200.
+# Built on the A6 agent and its human-gated proposal $A6_PROP, whose last
+# queue use is A6-3/Z above. Time passing is simulated the way the A23-4
+# step simulates it: the row's expires_at is moved into the past.
+# ===========================================================================
+
+b0a_live_grants() {
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "SELECT count(*) FROM cc_scope_grants
+      WHERE principal_type='agent' AND principal_ref='$A6_AGENT'
+        AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())" \
+    | tr -d ' \r'
+}
+
+step "A6-4B0a/AE: an ACTIVE grant -> the agent reaches its device"
+A6_TOKEN=$(a6_token)
+B0A_CONFIGURED=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT count(*) FROM cc_scope_grants
+    WHERE principal_type='agent' AND principal_ref='$A6_AGENT'
+      AND revoked_at IS NULL AND expires_at IS NULL" | tr -d ' \r')
+[ "$B0A_CONFIGURED" -ge 1 ] && [ "$(b0a_live_grants)" = "$B0A_CONFIGURED" ] || {
+  echo "the A6 agent must hold only unexpiring live grants here \
+(configured=$B0A_CONFIGURED live=$(b0a_live_grants))" >&2; exit 1; }
+for B0A_ROUTE in runtime dry-run; do
+  curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+    "http://localhost:8090/api/operational-agents/$A6_AGENT/$B0A_ROUTE" \
+    | B0A_ROUTE=$B0A_ROUTE python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+n = d['devices']['in_scope'] if os.environ['B0A_ROUTE'] == 'runtime' \
+    else d['devices_in_scope']
+assert n >= 1, ('an ACTIVE grant reached no device', os.environ['B0A_ROUTE'], d)
+print('ACTIVE: machine %s reaches %d device(s)' % (os.environ['B0A_ROUTE'], n))
+"
+done
+
+step "A6-4B0a/AF: the grant EXPIRES -> operational reach disappears"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c \
+  "UPDATE cc_scope_grants SET expires_at = now() - interval '1 second'
+    WHERE principal_type='agent' AND principal_ref='$A6_AGENT'
+      AND revoked_at IS NULL" > /dev/null
+[ "$(b0a_live_grants)" = "0" ] || { echo "the grant did not lapse" >&2; exit 1; }
+# The machine's own preview: answered by the self rule alone, so it is
+# still served -- and it reaches nothing and would propose nothing.
+curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/dry-run" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['devices_in_scope'] == 0, ('an EXPIRED grant still reached devices', d)
+assert d['would_propose'] == [], d['would_propose']
+print('EXPIRED: machine dry-run reaches 0 devices, would propose nothing')
+"
+# The machine's own runtime record also asks object visibility through the
+# caller's OWN effective scope, and a principal with no effective reach is
+# not a tenant-wide reader (A30.16) -- so the record may be withheld
+# outright. Either shape is "no reach"; a 200 that still counts a device
+# is the only failure.
+B0A_RT=$(curl -s -o /tmp/b0a_rt.json -w '%{http_code}' \
+  -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/runtime")
+case "$B0A_RT" in
+  404) echo "EXPIRED: machine runtime -> 404, its record is not visible to a principal with no reach" ;;
+  200) python3 -c "
+import json
+n = json.load(open('/tmp/b0a_rt.json'))['devices']['in_scope']
+assert n == 0, ('an EXPIRED grant still reached devices on runtime', n)
+print('EXPIRED: machine runtime reaches 0 devices')
+" ;;
+  *) echo "machine runtime after expiry -> $B0A_RT, want 404 or 200/0" >&2
+     cat /tmp/b0a_rt.json >&2; exit 1 ;;
+esac
+# The operator's runtime read of the same agent: served, and truthful.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/runtime" | python3 -c "
+import sys, json
+n = json.load(sys.stdin)['devices']['in_scope']
+assert n == 0, ('the operator is told an EXPIRED agent still reaches devices', n)
+print('EXPIRED: operator runtime reports 0 devices in scope')
+"
+# CONFIGURED != EFFECTIVE: the operator is told the rule exists and
+# lapsed, not that nothing was ever assigned.
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT" | python3 -c "
+import sys, json
+s = json.load(sys.stdin)['scope']
+assert s['device_count'] == 0, s
+assert s['configured_rule_count'] >= 1 and s['ineffective_rule_count'] >= 1, s
+assert 'lapsed' in s['statement'], s['statement']
+print('operator view: %d configured, %d ineffective, 0 devices -- \"%s\"'
+      % (s['configured_rule_count'], s['ineffective_rule_count'], s['statement'][:60]))
+"
+
+step "A6-4B0a/AG: APPROVED after expiry -> nothing crosses CC -> SM (A30.17)"
+# The tenant carries A26.7's dual group policy by now, so a single-approver
+# policy for this class is created for the step and removed after it --
+# most-specific wins, and the subject here is dispatch, not the ledger.
+B0A_POLICY=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"gate-b0a-single","action_type":"IDENTIFY_LED","required_approvers":1}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+[ -n "$B0A_POLICY" ] || { echo "could not create the B0a policy" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$A6_PROP/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+# The approval is a fact and is recorded as one...
+assert d.get("decision") == "approved", ("approval did not complete", d)
+assert d["decided_by"], d
+# ...and it is not execution authority. Before A30.17 this was
+# delivered=True with a directive id.
+assert d["delivery"]["delivered"] is False, d["delivery"]
+assert "no longer reaches" in d["delivery"]["reason"], d["delivery"]
+print("approved by", d["decided_by"], "-> NOT dispatched:", d["delivery"]["reason"])
+'
+# Keyed on the proposal, never a total: other agents' background passes may
+# legitimately queue directives while this step runs.
+B0A_SM_PROP=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT count(*) FROM sm_directives WHERE proposal_id='$A6_PROP'" | tr -d ' \r')
+[ "$B0A_SM_PROP" = "0" ] || {
+  echo "$B0A_SM_PROP directive(s) for $A6_PROP reached the Site Manager" >&2
+  exit 1; }
+echo "Site Manager: 0 directives for $A6_PROP"
+# History is intact: the proposal keeps its attribution and its approver,
+# the ONE human decision is on the ledger, and the refusal is on the chain.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT p.status || '|' || coalesce(p.directive_id,'') || '|' || p.actor || '|' ||
+          coalesce(p.decided_by,'') || '|' ||
+          (SELECT count(*) FROM cc_approval_records r WHERE r.subject_ref = p.id) || '|' ||
+          (SELECT count(*) FROM cc_audit_log a WHERE a.subject = p.id
+             AND a.action = 'agent_proposal.refused_at_dispatch') || '|' ||
+          (SELECT count(*) FROM cc_audit_log a WHERE a.subject = p.id
+             AND a.action = 'agent_proposal.dispatched')
+     FROM cc_agent_proposals p WHERE p.id = '$A6_PROP'" | tr -d ' \r' \
+  | A6_AGENT=$A6_AGENT python3 -c "
+import sys, os
+status, directive, actor, decided_by, records, refused, dispatched = \
+    sys.stdin.read().strip().split('|')
+assert status == 'failed' and directive == '', (status, directive)
+assert actor.startswith('op-agent:%s@v' % os.environ['A6_AGENT']), actor
+assert decided_by, 'the approver was erased from the proposal'
+assert records == '1', ('exactly one human decision on the ledger', records)
+assert refused == '1' and dispatched == '0', (refused, dispatched)
+print('history intact: %s, attributed %s, approved by %s, %s ledger record, '
+      'refused_at_dispatch on the chain' % (status, actor, decided_by, records))
+"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$B0A_POLICY" > /dev/null
+
+step "A6-4B0a/AH: the grant is RENEWED -> reach returns; the refusal stands"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c \
+  "UPDATE cc_scope_grants SET expires_at = NULL
+    WHERE principal_type='agent' AND principal_ref='$A6_AGENT'
+      AND revoked_at IS NULL" > /dev/null
+[ "$(b0a_live_grants)" = "$B0A_CONFIGURED" ] || {
+  echo "the grant was not restored" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $A6_TOKEN" \
+  "http://localhost:8090/api/operational-agents/$A6_AGENT/runtime" | python3 -c "
+import sys, json
+n = json.load(sys.stdin)['devices']['in_scope']
+assert n >= 1, ('renewal did not restore reach', n)
+print('RENEWED: machine runtime reaches', n, 'device(s) again')
+"
+# Renewing authority does not resurrect work refused while it was absent:
+# the refused proposal is not re-dispatched by the background pass.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT status FROM cc_agent_proposals WHERE id='$A6_PROP'" \
+  | tr -d ' \r' | grep -qx failed \
+  || { echo "the refused proposal changed state after renewal" >&2; exit 1; }
+echo "the refused proposal stays refused"
+
 step "A6/K: a revoked identity cannot submit, immediately"
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"reason":"gate A6/K"}' \
@@ -4508,6 +4708,534 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   || { echo "the proposal's origin was not recorded as external_ingress" >&2
        exit 1; }
 echo "submission audited; proposal provenance recorded as external_ingress"
+
+# ===========================================================================
+# A6-4B0a (A30.17), live, the REVOCATION half: approved while authorized +
+# the target's scope GRANT revoked before dispatch = no execution -- on the
+# synchronous approval path AND on the background runtime path.
+#
+# AE-AH above prove EXPIRY live (set by SQL), and A6/K revokes a machine
+# IDENTITY and proves a 401 on SUBMISSION -- not a dispatch refusal.
+# Nothing revokes a SCOPE GRANT under approved work, which is what the
+# independent re-review of d8d6c17 asked the production boundary to show.
+# A fresh agent owns this state, so nothing earlier in the gate can
+# satisfy or break it:
+#
+#   * a real machine identity, active, bound to COLLECT_DIAGNOSTICS, and
+#     TWO site grants: G_T covers the target device, G_O covers a device
+#     at a different site and is never touched -- so the agent keeps real
+#     reach throughout and a refusal has to be about the TARGET;
+#   * work is admitted by the CC-resident evaluator and decided through
+#     the one approval route; the grant is revoked, and later restored,
+#     through the production grant routes -- never by SQL;
+#   * refusal attribution follows DISPATCH_GATES order: `effective_scope`
+#     is the SIXTH gate, so its message means identity, activation,
+#     tenant, stop switch and pause all passed at that moment. The one
+#     gate after it (the binding) is shown intact, and the target is shown
+#     still in the fleet -- the only other way reach can vanish.
+# ===========================================================================
+
+b0r_cc() {  # one scalar from the CC database
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "$1" \
+    | tr -d ' \r'
+}
+b0r_cc_text() {  # a row whose text must keep its spaces
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "$1" \
+    | tr -d '\r'
+}
+b0r_sm_directives() {  # directives the Site Manager holds for one proposal
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "SELECT count(*) FROM sm_directives WHERE proposal_id='$1'" | tr -d ' \r'
+}
+b0r_view() {  # the operator's agent view, as the human Console reads it
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$B0R_AGENT" > /tmp/b0r_view.json
+}
+b0r_prereqs() {  # the dispatch inputs this proof must hold still, re-read
+  # Gates 1, 2, 4, 5 and 7 of DISPATCH_GATES, plus the one input to gate 6
+  # that is NOT scope: the target's fleet membership, which is the only
+  # other way `reach.devices` can empty. Gate 3 (`tenant_scope`) is left
+  # out deliberately -- it has no reachable failing path from here, since
+  # `OperationalAgentRepo.get` is tenant-filtered and a mismatch refuses
+  # earlier with a different message. Gate 5 is NAMED `budget` and carries
+  # the PAUSE verdict on a human-approved proposal; the execution budget
+  # caps unattended work and is asked on the autonomous branch, not here.
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$B0R_AGENT/identity" \
+    > /tmp/b0r_identity.json
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    http://localhost:8090/api/policies/stop-switch > /tmp/b0r_stop.json
+  b0r_view
+  B0R_FLEET=$(b0r_cc "SELECT count(*) FROM cc_fleet_cache
+    WHERE site_id='$A5_SITE' AND agent_id='$B0R_TARGET'")
+  B0R_BOUND=$(b0r_cc "SELECT count(*) FROM cc_agent_capabilities
+    WHERE agent_id='$B0R_AGENT' AND kind='action_class'
+      AND capability_ref='COLLECT_DIAGNOSTICS'")
+  B0R_FLEET=$B0R_FLEET B0R_BOUND=$B0R_BOUND python3 -c "
+import json, os
+ident = json.load(open('/tmp/b0r_identity.json'))
+stop = json.load(open('/tmp/b0r_stop.json'))
+view = json.load(open('/tmp/b0r_view.json'))
+assert ident['status'] == 'active', ('identity', ident['status'])
+agent = view['agent']
+assert agent['status'] == 'active', ('agent', agent['status'])
+assert not agent.get('paused_reason'), ('paused', agent.get('paused_reason'))
+assert stop['stop_switch'] is False, stop
+assert int(os.environ['B0R_BOUND']) == 1, 'COLLECT_DIAGNOSTICS is no longer bound'
+assert int(os.environ['B0R_FLEET']) == 1, 'the target left the fleet'
+print('  unchanged: identity active, agent active, not paused, stop switch off,'
+      ' COLLECT_DIAGNOSTICS bound, target still in the fleet')
+"
+}
+b0r_revocation_is_the_cause() {  # WHICH lifecycle fact emptied the reach
+  # A site grant stops conferring reach three ways, and all three produce
+  # the byte-identical refusal string: it was REVOKED, it EXPIRED, or its
+  # target vanished and A23-3's resolver made it inert. Only one of those
+  # is what this proof claims, so each refusal names which -- read from
+  # the production projection (`include_revoked` is what lets a revoked
+  # row still be read; `target_status` and `effective` are A23-3's).
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/scope-grants/?principal_ref=$B0R_AGENT&principal_type=agent&include_revoked=true" \
+    | B0R_G_T=$B0R_G_T B0R_G_O=$B0R_G_O python3 -c "
+import sys, json, os
+rows = {r['id']: r for r in json.load(sys.stdin)['grants']}
+gt, go = rows[os.environ['B0R_G_T']], rows[os.environ['B0R_G_O']]
+assert gt['revoked_at'], ('G_T is not revoked', gt)
+assert gt['expires_at'] is None, ('G_T lapsed; this proof is about revocation', gt)
+assert gt['target_status'] == 'present', ('G_T went inert: its site vanished', gt)
+assert gt['effective'] is False, gt
+assert go['revoked_at'] is None and go['expires_at'] is None, ('G_O was touched', go)
+assert go['target_status'] == 'present' and go['effective'] is True, go
+print('  cause: G_T REVOKED -- not expired, target still present;'
+      ' G_O untouched and still effective')
+"
+}
+
+step "A6-4B0a/AI: an agent authorized on the target, with a second, unrelated grant"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+# The sync half needs a SECOND approver, and it makes its own rather than
+# borrowing one. `gate-a23-admin2` is the obvious candidate and is the
+# wrong one: A23-3 has the owner and admin2 revoke each other CONCURRENTLY
+# and asserts only that exactly one wins, restoring the owner when the
+# owner is the loser -- so admin2 ends the race revoked about half the
+# time, and a step that leaned on it would pass on a coin flip. This
+# identity is created here, granted here, and used nowhere else.
+tenant_realm_user gate-b0r-approver@demo gate-b0r-approver tenant_owner
+B0R_APPROVER_TOKEN=$(tenant_token gate-b0r-approver@demo gate-b0r-approver)
+B0R_APPROVER_SUB=$(python3 -c "
+import base64, json
+t = '$B0R_APPROVER_TOKEN'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])")
+[ -n "$B0R_APPROVER_SUB" ] || { echo "the B0a approver has no subject" >&2; exit 1; }
+B0R_APPROVER_GRANT=$(grant "$B0R_APPROVER_SUB" tenant "" tenant_owner)
+[ "$B0R_APPROVER_GRANT" = "201" ] || {
+  echo "the B0a approver could not be granted ($B0R_APPROVER_GRANT)" >&2; exit 1; }
+echo "second approver gate-b0r-approver@demo granted tenant_owner (its own, not A23-3's)"
+B0R_TARGET=$(b0r_cc "SELECT agent_id FROM cc_fleet_cache
+  WHERE site_id='$A5_SITE' ORDER BY agent_id LIMIT 1")
+B0R_OTHER_SITE=$(b0r_cc "SELECT f.site_id FROM cc_fleet_cache f
+  JOIN cc_sites s ON s.id = f.site_id
+  WHERE s.tenant_id='tenant-demo' AND f.site_id <> '$A5_SITE'
+  ORDER BY f.site_id LIMIT 1")
+[ -n "$B0R_TARGET" ] && [ -n "$B0R_OTHER_SITE" ] || {
+  echo "no target at $A5_SITE or no second device-bearing site" >&2; exit 1; }
+B0R_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"b0a-revoke $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"},
+                   {\"scope_type\":\"site\",\"scope_ref\":\"$B0R_OTHER_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+B0R_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0R_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+b0r_token() {
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=client_credentials&client_id=op-agent-$B0R_AGENT&client_secret=$B0R_SECRET" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+B0R_MTOKEN=$(b0r_token)
+[ -n "$B0R_MTOKEN" ] || { echo "the B0a agent's identity did not mint" >&2; exit 1; }
+B0R_ACK=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0R_AGENT/preflight" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['requires_acknowledgement'])")
+if [ "$B0R_ACK" = "True" ]; then
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$B0R_AGENT/acknowledge" > /dev/null
+fi
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0R_AGENT/activate" \
+  | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active', a
+print('B0a agent active at v%d, machine identity issued' % a['activated_version'])
+"
+# The two grants, by id, through the production read -- and which one
+# covers the target: G_T is the site grant whose scope_ref IS the target's
+# fleet site; G_O names a site the target is not at.
+B0R_GRANTS=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/?principal_ref=$B0R_AGENT&principal_type=agent" \
+  | A5_SITE=$A5_SITE B0R_OTHER_SITE=$B0R_OTHER_SITE python3 -c "
+import sys, json, os
+rows = json.load(sys.stdin)['grants']
+by_ref = {r['scope_ref']: r for r in rows if r['scope_type'] == 'site'}
+gt, go = by_ref[os.environ['A5_SITE']], by_ref[os.environ['B0R_OTHER_SITE']]
+assert gt['id'] != go['id']
+print(gt['id'], go['id'])
+")
+B0R_G_T=${B0R_GRANTS% *}
+B0R_G_O=${B0R_GRANTS#* }
+B0R_TARGET_SITE=$(b0r_cc "SELECT site_id FROM cc_fleet_cache WHERE agent_id='$B0R_TARGET'")
+[ "$B0R_TARGET_SITE" = "$A5_SITE" ] && [ "$B0R_OTHER_SITE" != "$A5_SITE" ] || {
+  echo "grant/target geometry is not what the proof needs" >&2; exit 1; }
+echo "target $B0R_TARGET at site $B0R_TARGET_SITE"
+echo "  G_T $B0R_G_T = site $A5_SITE      (covers the target)"
+echo "  G_O $B0R_G_O = site $B0R_OTHER_SITE (a different site; never touched)"
+
+wait_for "the evaluator admits work on the target" 120 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$B0R_AGENT'
+      AND device_agent_id='$B0R_TARGET' AND status='awaiting_approval'\" \
+   | grep -qv '^ *0 *$'"
+B0R_P1=$(b0r_cc "SELECT id FROM cc_agent_proposals WHERE agent_id='$B0R_AGENT'
+  AND device_agent_id='$B0R_TARGET' AND status='awaiting_approval'
+  ORDER BY created_at LIMIT 1")
+[ "$(b0r_cc "SELECT site_id || '|' || action_type || '|' || authorization_basis
+    FROM cc_agent_proposals WHERE id='$B0R_P1'")" \
+  = "$A5_SITE|COLLECT_DIAGNOSTICS|human_approval" ] || {
+  echo "P1 is not the human-gated target proposal the proof needs" >&2; exit 1; }
+echo "P1 $B0R_P1 admitted by the evaluator: COLLECT_DIAGNOSTICS on the target, awaiting a human"
+
+# ACTIVE control: with both grants live the agent reaches the target AND
+# the other site's device, every other dispatch input is in order, and
+# nothing has executed.
+b0r_prereqs
+B0R_TARGET=$B0R_TARGET A5_SITE=$A5_SITE B0R_OTHER_SITE=$B0R_OTHER_SITE python3 -c "
+import json, os
+s = json.load(open('/tmp/b0r_view.json'))['scope']
+reach = {(d['agent_id'], d['site_id']) for d in s['devices']}
+assert (os.environ['B0R_TARGET'], os.environ['A5_SITE']) in reach, reach
+assert any(site == os.environ['B0R_OTHER_SITE'] for _, site in reach), reach
+print('ACTIVE control: effective reach = %s' % sorted(reach))
+"
+curl -sf -H "Authorization: Bearer $B0R_MTOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0R_AGENT/dry-run" | python3 -c "
+import sys, json
+n = json.load(sys.stdin)['devices_in_scope']
+assert n >= 2, n
+print('ACTIVE control: the agent\'s own machine token previews %d devices in scope' % n)
+"
+[ "$(b0r_sm_directives "$B0R_P1")" = "0" ] || {
+  echo "P1 executed before anyone approved it" >&2; exit 1; }
+
+step "A6-4B0a/AJ: SYNC -- approval begun while authorized, target grant REVOKED, approval completed -> nothing crosses CC -> SM"
+# A complete approval dispatches in the same request, so on this path the
+# approval must BEGIN under live authority and COMPLETE after revocation:
+# a two-approver policy for the class (most specific wins over A26.7's
+# wildcard, and it is removed after the step).
+# Human tokens are re-minted per step: a slow runner must not turn this
+# into a token-expiry failure.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+B0R_APPROVER_TOKEN=$(tenant_token gate-b0r-approver@demo gate-b0r-approver)
+B0R_POLICY=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"gate-b0r-dual","action_type":"COLLECT_DIAGNOSTICS","required_approvers":2}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+curl -sf -X POST -H "Authorization: Bearer $B0R_APPROVER_TOKEN" \
+  "http://localhost:8090/api/approvals/$B0R_P1/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("recorded") is True, d
+assert d.get("decision") is None, d
+assert d["approval"]["required"] == 2 and d["approval"]["received"] == 1, d["approval"]
+print("approval 1 of 2 recorded by a tenant owner WHILE AUTHORIZED; nothing executed")
+'
+[ "$(b0r_sm_directives "$B0R_P1")" = "0" ] || { echo "a partial approval executed" >&2; exit 1; }
+
+# Revoke THE grant that covers the target -- the scope grant, not the
+# identity -- through the production revocation route.
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$B0R_G_T" | A5_SITE=$A5_SITE python3 -c "
+import sys, json, os
+g = json.load(sys.stdin)
+assert g['revoked_at'], g
+assert g['principal_type'] == 'agent' and g['scope_ref'] == os.environ['A5_SITE'], g
+print('revoked G_T (scope grant on the target\'s site); the identity was not touched')
+"
+b0r_revocation_is_the_cause
+# CURRENT target reach is gone -- and only the target's: G_O still reaches
+# its device, so "the agent has some scope" stays true.
+b0r_prereqs
+B0R_TARGET=$B0R_TARGET B0R_OTHER_SITE=$B0R_OTHER_SITE python3 -c "
+import json, os
+s = json.load(open('/tmp/b0r_view.json'))['scope']
+reach = {(d['agent_id'], d['site_id']) for d in s['devices']}
+assert all(dev != os.environ['B0R_TARGET'] for dev, _ in reach), reach
+assert reach and all(site == os.environ['B0R_OTHER_SITE'] for _, site in reach), reach
+assert [r['scope_ref'] for r in s['rules']] == [os.environ['B0R_OTHER_SITE']], s['rules']
+print('REVOKED: effective reach = %s -- the target is gone, G_O still reaches' % sorted(reach))
+"
+# The second approver completes the approval. Its record is written; the
+# dispatch is refused by current authority.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$B0R_P1/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("decision") == "approved", ("the approval did not complete", d)
+assert d["delivery"]["delivered"] is False, d["delivery"]
+assert d["delivery"]["reason"] == (
+    "this agent'"'"'s scope no longer reaches the device this proposal targets"
+), d["delivery"]
+print("approval 2 of 2 completed by", d["decided_by"], "-> NOT dispatched:",
+      d["delivery"]["reason"])
+'
+# Read the other six inputs AGAIN, on the far side of the refusal: taken
+# only beforehand they would say what was true one HTTP call earlier, and
+# the claim is that nothing but scope changed ACROSS it. (AK snapshots
+# after its refusal for the same reason; the two paths now match.)
+b0r_prereqs
+B0R_SM=$(b0r_sm_directives "$B0R_P1")
+[ "$B0R_SM" = "0" ] || { echo "$B0R_SM directive(s) for P1 reached the SM" >&2; exit 1; }
+echo "SYNC: SM directives for P1 = $B0R_SM"
+b0r_cc_text "SELECT status || '|' || coalesce(directive_id,'') || '|' || coalesce(decided_by,'') || '|' ||
+    (SELECT count(*) FROM cc_approval_records r WHERE r.subject_ref = p.id) || '|' ||
+    (SELECT count(*) FROM cc_audit_log a WHERE a.subject = p.id
+       AND a.action = 'agent_proposal.refused_at_dispatch') || '|' ||
+    (SELECT count(*) FROM cc_audit_log a WHERE a.subject = p.id
+       AND a.action = 'agent_proposal.dispatched')
+  FROM cc_agent_proposals p WHERE p.id = '$B0R_P1'" | python3 -c "
+import sys
+status, directive, decided_by, records, refused, dispatched = sys.stdin.read().strip().split('|')
+assert status == 'failed' and directive == '', (status, directive)
+assert decided_by and records == '2', (decided_by, records)
+assert refused == '1' and dispatched == '0', (refused, dispatched)
+print('history intact: both approvals on the ledger, refused_at_dispatch on the chain, never dispatched')
+"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$B0R_POLICY" > /dev/null
+
+step "A6-4B0a/AK: BACKGROUND -- approved while authorized, target grant REVOKED, the runtime pass dispatches nothing"
+# Restore G_T through the production grant route, so the agent may be
+# authorized on the target again, and let the evaluator admit P2 -- the
+# target's other open condition, which P1's refusal left unclaimed.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+B0R_G_T=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$B0R_AGENT\",
+       \"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}" \
+  http://localhost:8090/api/scope-grants/ \
+  | python3 -c "import sys,json; g=json.load(sys.stdin); assert not g['revoked_at'], g; print(g['id'])")
+wait_for "the evaluator admits P2 on the target" 120 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$B0R_AGENT'
+      AND device_agent_id='$B0R_TARGET' AND status='awaiting_approval'
+      AND id <> '$B0R_P1'\" | grep -qv '^ *0 *$'"
+B0R_P2=$(b0r_cc "SELECT id FROM cc_agent_proposals WHERE agent_id='$B0R_AGENT'
+  AND device_agent_id='$B0R_TARGET' AND status='awaiting_approval' AND id <> '$B0R_P1'
+  ORDER BY created_at LIMIT 1")
+# Characterise P2 before it becomes the subject, exactly as AI does P1. An
+# EMPTY site_id on a proposal is by itself enough to empty the reach and
+# produce the same refusal string (`revalidate_dispatch` resolves the
+# target from `list_by_site(site_id) if site_id else ()`), so the step
+# must establish its own subject rather than assume it.
+[ "$(b0r_cc "SELECT site_id || '|' || action_type || '|' || authorization_basis
+    FROM cc_agent_proposals WHERE id='$B0R_P2'")" \
+  = "$A5_SITE|COLLECT_DIAGNOSTICS|human_approval" ] || {
+  echo "P2 is not the human-gated target proposal the proof needs" >&2; exit 1; }
+echo "P2 $B0R_P2 admitted by the evaluator on the target, under the restored G_T"
+B0R_POLICY=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"gate-b0r-single","action_type":"COLLECT_DIAGNOSTICS","required_approvers":1}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+
+# APPROVED WHILE AUTHORIZED, delivery pending: the approval completes with
+# G_T live, and the site is briefly unreachable from Central Command, which
+# is exactly the case the approval route leaves `approved` for the
+# background pass (a site outage never discards a human's decision). The
+# outage is a direct write to `cc_sites.sm_endpoint` -- the ONE state
+# change here that is not made through a production route, because no
+# route exists to take a site offline; the revocation this step is about
+# goes through `DELETE /api/scope-grants/{id}`.
+#
+# It is timed straight after a fleet poll so no poll can land in it: a
+# failed poll logs at ERROR and the gate forbids ERROR lines. Two things
+# enforce that rather than hope for it -- the window is bounded by the
+# CONFIGURED poll interval read from the running service (not a literal,
+# which would silently stop being safe if the interval were lowered), and
+# the poller's own failure count is compared across the window, so a poll
+# that did land fails HERE by name instead of seventy steps later as an
+# unattributed ERROR line.
+B0R_INTERVAL=$(docker compose exec -T central-command \
+  printenv HARKEN_CC_SITE_POLL_INTERVAL_S | tr -d ' \r')
+case "$B0R_INTERVAL" in ''|*[!0-9]*)
+  echo "could not read HARKEN_CC_SITE_POLL_INTERVAL_S ('$B0R_INTERVAL')" >&2; exit 1;;
+esac
+# Two thirds of the interval, leaving a third for detection lag; never
+# below 5s, so a short interval cannot make the bound unachievable.
+B0R_BUDGET=$((B0R_INTERVAL * 2 / 3))
+[ "$B0R_BUDGET" -ge 5 ] || B0R_BUDGET=5
+B0R_SNAP=$(b0r_cc "SELECT coalesce(max(snapshot_at)::text,'') FROM cc_fleet_cache WHERE site_id='$A5_SITE'")
+B0R_WAITED=0
+until [ "$(b0r_cc "SELECT coalesce(max(snapshot_at)::text,'') FROM cc_fleet_cache WHERE site_id='$A5_SITE'")" != "$B0R_SNAP" ]; do
+  sleep 1; B0R_WAITED=$((B0R_WAITED + 1))
+  [ "$B0R_WAITED" -lt 90 ] || { echo "no fleet poll of the target site in 90s" >&2; exit 1; }
+done
+# Baseline the poll failures AFTER the wait, not before it: taken earlier,
+# an unrelated failure during the wait would be blamed on a window that
+# had not opened yet.
+B0R_POLLFAIL_0=$(docker compose logs central-command 2>&1 \
+  | grep -c "Fleet poll failed" || true)
+B0R_EP=$(b0r_cc "SELECT sm_endpoint FROM cc_sites WHERE id='$A5_SITE'")
+B0R_T0=$SECONDS
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c \
+  "UPDATE cc_sites SET sm_endpoint='127.0.0.1:9' WHERE id='$A5_SITE'" > /dev/null
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$B0R_P2/approve" > /tmp/b0r_p2.json || true
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$B0R_G_T" > /tmp/b0r_revoke2.json || true
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c \
+  "UPDATE cc_sites SET sm_endpoint='$B0R_EP' WHERE id='$A5_SITE'" > /dev/null
+B0R_WINDOW=$((SECONDS - B0R_T0))
+[ "$(b0r_cc "SELECT sm_endpoint FROM cc_sites WHERE id='$A5_SITE'")" = "$B0R_EP" ] || {
+  echo "the site route was not restored" >&2; exit 1; }
+[ "$B0R_WINDOW" -lt "$B0R_BUDGET" ] || {
+  echo "outage window ${B0R_WINDOW}s exceeded ${B0R_BUDGET}s of a \
+${B0R_INTERVAL}s poll interval -- a poll may have landed in it" >&2; exit 1; }
+B0R_POLLFAIL_1=$(docker compose logs central-command 2>&1 \
+  | grep -c "Fleet poll failed" || true)
+[ "$B0R_POLLFAIL_1" = "$B0R_POLLFAIL_0" ] || {
+  echo "a fleet poll landed inside the injected outage \
+($B0R_POLLFAIL_0 -> $B0R_POLLFAIL_1 failures); the ERROR is this step's, \
+not a platform regression" >&2; exit 1; }
+A5_SITE=$A5_SITE python3 -c "
+import json, os
+d = json.load(open('/tmp/b0r_p2.json'))
+assert d.get('decision') == 'approved', ('the approval did not complete', d)
+assert d['delivery']['delivered'] is False, d['delivery']
+g = json.load(open('/tmp/b0r_revoke2.json'))
+assert g['revoked_at'] and g['scope_ref'] == os.environ['A5_SITE'], g
+print('P2 approved by %s WHILE AUTHORIZED; delivery pending (site unreachable);'
+      ' then G_T revoked' % d['decided_by'])
+"
+echo "outage window ${B0R_WINDOW}s (budget ${B0R_BUDGET}s of a ${B0R_INTERVAL}s \
+poll interval), site route restored to $B0R_EP"
+[ "$(b0r_cc "SELECT status FROM cc_agent_proposals WHERE id='$B0R_P2'")" = "approved" ] || {
+  echo "P2 is not approved-and-pending; the background proof has no subject" >&2; exit 1; }
+b0r_revocation_is_the_cause
+
+# The REAL background pass (the CC operational-agent loop, every 20s) now
+# revalidates the approved proposal against current authority.
+wait_for "the background pass withholds P2" 90 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_audit_log WHERE subject='$B0R_P2'
+      AND action='agent_proposal.dispatch_withheld'\" | grep -qv '^ *0 *$'"
+b0r_cc_text "SELECT p.status || '|' || coalesce(p.directive_id,'') || '|' || coalesce(p.dispatch_reason,'') || '|' ||
+    (SELECT a.detail->>'reason' FROM cc_audit_log a WHERE a.subject = p.id
+       AND a.action = 'agent_proposal.dispatch_withheld' ORDER BY a.seq LIMIT 1)
+  FROM cc_agent_proposals p WHERE p.id = '$B0R_P2'" | python3 -c "
+import sys
+status, directive, reason, audited = sys.stdin.read().strip().split('|')
+want = \"this agent's scope no longer reaches the device this proposal targets\"
+assert status == 'approved' and directive == '', (status, directive)
+assert reason == want and audited == want, (reason, audited)
+print('BACKGROUND: the runtime pass refused P2 ->', reason)
+print('  P2 stays approved (the human decision stands); withheld on the chain')
+"
+b0r_prereqs
+# ...and, as on the sync path, that the agent still REACHES somewhere:
+# without this the background half would inherit target-specificity from
+# AJ rather than assert it, and a refusal caused by losing all scope would
+# wear the same message.
+B0R_TARGET=$B0R_TARGET B0R_OTHER_SITE=$B0R_OTHER_SITE python3 -c "
+import json, os
+s = json.load(open('/tmp/b0r_view.json'))['scope']
+reach = {(d['agent_id'], d['site_id']) for d in s['devices']}
+assert all(dev != os.environ['B0R_TARGET'] for dev, _ in reach), reach
+assert reach and all(site == os.environ['B0R_OTHER_SITE'] for _, site in reach), reach
+print('  still target-specific: reach = %s' % sorted(reach))
+"
+B0R_SM=$(b0r_sm_directives "$B0R_P2")
+[ "$B0R_SM" = "0" ] || { echo "$B0R_SM directive(s) for P2 reached the SM" >&2; exit 1; }
+echo "BACKGROUND: SM directives for P2 = $B0R_SM"
+
+# Causal control: restore ONLY G_T. Same proposal, same approval, same
+# agent, identity, binding and site route -- if scope was the only thing
+# refusing, the next pass now delivers it.
+#
+# "The same grant" means the same (principal, scope_type, scope_ref):
+# `ScopeGrantRepo.grant()` revives the row in place and rewrites its
+# realm, granted_by and granted_at, so the row's metadata is NOT what it
+# was. Reach depends on none of that, but the control asserts what it
+# restored rather than discarding the response -- it is the single
+# mutation the whole causal argument rests on.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$B0R_AGENT\",
+       \"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}" \
+  http://localhost:8090/api/scope-grants/ \
+  | B0R_G_T=$B0R_G_T A5_SITE=$A5_SITE python3 -c "
+import sys, json, os
+g = json.load(sys.stdin)
+assert g['id'] == os.environ['B0R_G_T'], ('a new row, not the revived G_T', g)
+assert not g['revoked_at'] and not g['expires_at'], g
+assert g['scope_type'] == 'site' and g['scope_ref'] == os.environ['A5_SITE'], g
+assert g['principal_type'] == 'agent', g
+print('CONTROL: G_T revived in place, live and unexpiring')
+"
+# Wait on the DIRECTIVE ID, not on `status='dispatched'`. That status is
+# transient -- the settle pass moves it to `completed`, which can never
+# match `dispatched` -- and `wait_for` samples every 5s, so a settle
+# landing between two samples would time this control out AFTER it had in
+# fact succeeded. A directive id, once written, is never cleared.
+wait_for "P2 dispatched once current authority returned" 90 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_agent_proposals WHERE id='$B0R_P2'
+      AND directive_id <> ''\" | grep -qv '^ *0 *$'"
+b0r_cc_text "SELECT status || '|' || directive_id
+  FROM cc_agent_proposals WHERE id='$B0R_P2'" | python3 -c "
+import sys
+status, directive = sys.stdin.read().strip().split('|')
+assert status in ('dispatched', 'completed'), ('unexpected terminal status', status)
+assert directive, 'the proposal dispatched with no directive id'
+print('CONTROL: P2 is %s, directive %s' % (status, directive))
+"
+B0R_SM=$(b0r_sm_directives "$B0R_P2")
+[ "$B0R_SM" = "1" ] || { echo "restored authority delivered $B0R_SM directives" >&2; exit 1; }
+echo "CONTROL: G_T restored -> the same approved P2 dispatched, SM directives = $B0R_SM"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$B0R_POLICY" > /dev/null
+
+step "A6-4B0a/AL: both revocations this proof made are on the chain, and the chain verifies"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+# The two G_T revocations exist ONLY here: `grant()` revives the row in
+# place, so `cc_scope_grants` can show just the latest `revoked_at` and
+# the lifecycle this proof turns on is unreadable from the table alone.
+#
+# Scoped to the revocations this proof MADE, deliberately: retiring the
+# agent below revokes both remaining grants through `clear_scopes`, which
+# writes no `scope.revoked` entry of its own -- the record is the
+# aggregate `scopes_revoked` on `operational_agent.retired`. The count is
+# taken before the retire and is a claim about these two DELETEs, not
+# about every revocation in the tenant's history.
+[ "$(b0r_cc "SELECT count(*) FROM cc_audit_log WHERE action='scope.revoked'
+    AND subject='$B0R_AGENT' AND detail->>'scope_ref' = '$A5_SITE'")" = "2" ] || {
+  echo "the two G_T revocations are not both on the chain" >&2; exit 1; }
+# Leave the tenant as the gate found it: a live agent would keep proposing.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0R_AGENT/retire" > /dev/null
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/audit/verify \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['valid'] is True, d
+print('CC audit chain valid (%d entries); both G_T revocations recorded' % d['length'])
+"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

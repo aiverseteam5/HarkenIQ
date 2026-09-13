@@ -43,13 +43,15 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
     StopSwitchRepo,
 )
-from harkeniq_cc.governance import load_agent_scope, load_autonomy_contract
+from harkeniq_cc.governance import (
+    load_agent_reach,
+    load_autonomy_contract,
+)
 from harkeniq_cc.operational_agent import (
     KIND_ACTION_CLASS,
     KIND_SKILL,
     attribution_key,
     bound_action_classes,
-    resolve_scope,
 )
 
 logger = logging.getLogger("harkeniq.cc.agent_lifecycle")
@@ -182,7 +184,10 @@ async def run_preflight(
     repo = OperationalAgentRepo(session)
     pre_repo = AgentPreflightRepo(session)
 
-    scope_rows = await repo.list_scopes(agent.id)
+    # A30.4: the CONFIGURED rows, for the "was this agent ever
+    # administered" question below. They are NOT the reach input any
+    # more -- `load_agent_reach` is.
+    scope_rows = await repo.list_administrative_scope_rows(agent.id)
     caps = await repo.list_capabilities(agent.id)
     bound = bound_action_classes(caps)
     skill_refs = sorted(
@@ -191,21 +196,22 @@ async def run_preflight(
 
     # E1.2: the agent's reach comes from the SAME resolver a human's
     # does, expanded through the org tree, then flattened by the one
-    # `resolve_scope` the evaluator uses. No second scope model.
+    # reach the evaluator resolves. No second scope model.
+    # A30.10: reach is the canonical answer, never the raw rows. An
+    # expired grant used to pass this preflight, so an agent could be
+    # activated on reach it no longer had.
     realm_ok: Optional[bool] = None
-    resolved_site_ids: list[str] = []
+    devices = await FleetCacheRepo(session).list_all(tenant_id)
+    in_scope: list = []
     try:
-        agent_scope = await load_agent_scope(
-            session, tenant_id=tenant_id, agent_id=agent.id
+        reach = await load_agent_reach(
+            session, tenant_id=tenant_id, agent_id=agent.id, devices=devices,
         )
-        resolved_site_ids = list(agent_scope.site_ids)
+        in_scope = list(reach.devices)
         realm_ok = True
     except Exception:  # noqa: BLE001 -- an unresolvable identity is UNKNOWN
         logger.warning("could not resolve scope for agent %s", agent.id)
         realm_ok = None
-
-    devices = await FleetCacheRepo(session).list_all(tenant_id)
-    in_scope = resolve_scope(scope_rows, devices, resolved_site_ids)
     if realm_ok is True and scope_rows and not in_scope and devices:
         # Grants that resolve to nothing while the tenant HAS devices is
         # the E1.4 orphaned-grant shape. Reported, not guessed at.
@@ -459,19 +465,19 @@ async def runtime_state(session, *, tenant_id: str, agent) -> dict:
         tenant_id, agent.id, window_start,
     )
 
-    scope_rows = await repo.list_scopes(agent.id)
-    resolved: list[str] = []
+    # A30.10: the machine-readable `/runtime` answer resolves through the
+    # canonical reach. It used to combine raw rows with canonical sites,
+    # so an expired grant still reported device counts and freshness for
+    # devices the agent could no longer reach.
+    devices: list = []
     try:
-        resolved = list(
-            (await load_agent_scope(
-                session, tenant_id=tenant_id, agent_id=agent.id
-            )).site_ids
+        reach = await load_agent_reach(
+            session, tenant_id=tenant_id, agent_id=agent.id,
+            devices=await FleetCacheRepo(session).list_all(tenant_id),
         )
+        devices = list(reach.devices)
     except Exception:  # noqa: BLE001
-        resolved = []
-    devices = resolve_scope(
-        scope_rows, await FleetCacheRepo(session).list_all(tenant_id), resolved
-    )
+        devices = []
     now = _utcnow()
     fresh, stale, unknown_seen = 0, 0, 0
     for device in devices:

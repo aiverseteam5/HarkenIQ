@@ -423,82 +423,6 @@ async def _record_and_evaluate(
     return block
 
 
-async def _agent_dispatch_gates(session, tenant_id: str, proposal) -> tuple:
-    """Central Command's hard gates, re-evaluated at dispatch (A2 D3).
-
-    An approved proposal names the configuration it was authorized
-    against; it does not carry that configuration's permissions forward
-    in time. So identity, activation state, scope and safety are asked
-    again HERE, against the world as it is now.
-
-    These are CC's gates only. The Site Manager's lease, preconditions
-    and blast radius, and the node's own allow list, run afterwards and
-    independently — this never substitutes for them.
-    """
-    from harkeniq_cc.agent_activation import (
-        dispatch_permitted,
-        proposal_version_is_honoured,
-    )
-    from harkeniq_cc.db.repos import OperationalAgentRepo, StopSwitchRepo
-    from harkeniq_cc.operational_agent import parse_attribution
-
-    parsed = parse_attribution(getattr(proposal, "actor", "") or "")
-    if parsed is None:
-        # Not an Operational Agent proposal (a campaign, say). Its own
-        # path governs it; there is nothing agent-shaped to re-check.
-        return True, ""
-    agent_id, _version = parsed
-
-    agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
-    if agent is None:
-        return False, "the agent that made this proposal no longer exists"
-
-    honoured, why = proposal_version_is_honoured(proposal, agent)
-    stop = await StopSwitchRepo(session).get(tenant_id)
-
-    # A3/A20.8: a REVOKED machine identity refuses work that was already
-    # approved. It rides the `agent_identity` gate that already exists
-    # rather than adding a new one -- identity validity and attribution
-    # coherence are the same question asked of the same principal.
-    #
-    # An agent with NO identity is not refused: today's Central
-    # Command-resident evaluator holds no credential at all, and refusing
-    # it would break every existing proposal. The gate refuses a
-    # credential that was WITHDRAWN, which is a different fact.
-    from harkeniq_cc.db.repos import AgentIdentityRepo
-
-    identity = await AgentIdentityRepo(session).get_for_agent(tenant_id, agent.id)
-    if identity is not None and identity.status != "active":
-        honoured, why = False, (
-            f"this agent's machine identity is {identity.status}"
-            + (f": {identity.revoke_reason}" if identity.revoke_reason else "")
-        )
-
-    return dispatch_permitted(
-        agent_identity=(True if honoured else why),
-        agent_active=(
-            True if agent.status == "active"
-            else f"the agent is {agent.status!r}, not active"
-        ),
-        tenant_scope=(
-            True if agent.tenant_id == tenant_id
-            else "the agent belongs to another tenant"
-        ),
-        stop_switch=(
-            "the tenant stop switch is active"
-            if stop is not None and getattr(stop, "active", False) else True
-        ),
-        # D2: a human approved this one, so the EXECUTION budget does not
-        # refuse it -- the budget caps unattended work, not what a person
-        # decided. A paused agent is a different matter: pausing is an
-        # explicit safety act.
-        budget=(
-            f"the agent is paused: {agent.paused_reason}"
-            if agent.paused_reason else True
-        ),
-    )
-
-
 async def _decide_agent_proposal(
     proposal_id: str,
     decision: str,
@@ -553,10 +477,18 @@ async def _decide_agent_proposal(
         # A2 (D3): approved is not guaranteed. The proposal keeps the
         # configuration version it was made under and is NEVER silently
         # reinterpreted as the current one -- and it is never silently
-        # executed just because somebody once approved it. The hard gates
-        # are re-evaluated here, now, and a revoked scope, a retired
-        # agent, an active stop switch or a spent budget still refuses.
-        allowed, gate_reason = await _agent_dispatch_gates(
+        # executed just because somebody once approved it.
+        #
+        # A30.17: this path used to assemble its own gate, and it never
+        # asked REACH or the capability binding -- so a proposal whose
+        # grant had expired or been revoked since admission dispatched
+        # with HTTP 200 while the background pass refused it. It now asks
+        # the ONE gate the background pass asks: current identity,
+        # activation, tenant, stop switch, pause, effective scope over
+        # this proposal's actual target, and binding.
+        from harkeniq_cc.agent_runtime import revalidate_dispatch
+
+        allowed, gate_reason = await revalidate_dispatch(
             session, user.tenant_id, proposal
         )
         if not allowed:

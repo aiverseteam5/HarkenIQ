@@ -2425,14 +2425,41 @@ class OperationalAgentRepo:
         agent.last_evaluated_at = utcnow()
 
     # -- scope -----------------------------------------------------------
-    async def list_scopes(self, agent_id: str) -> Sequence[CCScopeGrant]:
-        """An agent's scope rows -- from the ONE grant table (E1.2).
+    async def list_administrative_scope_rows(
+        self, agent_id: str
+    ) -> Sequence[CCScopeGrant]:
+        """The agent's CONFIGURED scope rows. **NOT an authorization source.**
+
+        A30.4 (AD-1). This used to be `list_scopes()` and it was both
+        things at once: the administrative row read AND the input every
+        operational reach path resolved from. It filters `revoked_at` and
+        it does NOT filter `expires_at`, so an EXPIRED grant of type
+        `site`, `device` or `device_class` still yielded devices to
+        `resolve_scope()` -- the evaluator, dry-run, runtime, agent-view
+        and preflight all reached through a grant that had lapsed, while
+        the canonical resolver said it was dead.
+
+        The name is long on purpose. A method that returns rows a
+        lifecycle filter has not been applied to cannot be called in a
+        reach path by accident, and a reviewer reading a call site can
+        see which of the two questions is being asked:
+
+        * ADMINISTRATIVE GRANT ROW ACCESS -- what is configured, expired
+          rows included. `clear_scopes()` is the case that must keep it:
+          a row nobody can see is a row nobody can retire. Display of the
+          configured scope and the A23-3 delegation ceiling also belong
+          here -- the ceiling asks what a caller must have authority over
+          to ADMINISTER the agent, and an expired row is still something
+          the agent is configured with, so counting it can only refuse
+          more.
+        * EFFECTIVE AUTHORIZATION REACH -- what the agent may operate on
+          now. That question has exactly one answer,
+          `governance.load_agent_reach`, and it resolves through
+          `scope.resolve()` like every other principal.
 
         `cc_agent_scopes` migrated into `cc_scope_grants` as
-        `principal_type="agent"`. Callers are unchanged because a grant
-        row carries the same `scope_type` / `scope_ref` the agent rows
-        did; what changed is that humans and agents now resolve through
-        the same resolver over the same table.
+        `principal_type="agent"` (E1.2); a grant row carries the same
+        `scope_type` / `scope_ref` the agent rows did.
         """
         return (
             await self.session.execute(
@@ -2478,8 +2505,12 @@ class OperationalAgentRepo:
         A timestamp, never a delete (A23-3): a retired agent's rows are
         history, and a deleted row is a row the impact census and an
         approval's scope snapshot can no longer explain.
+
+        A30.4: this is the administrative read's reason to exist. An
+        expired-but-unrevoked row must still be retired, and a
+        lifecycle-filtered read cannot see it to revoke it.
         """
-        rows = await self.list_scopes(agent_id)
+        rows = await self.list_administrative_scope_rows(agent_id)
         for row in rows:
             row.revoked_at = utcnow()
             row.revoked_by = revoked_by

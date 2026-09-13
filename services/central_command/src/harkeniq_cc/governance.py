@@ -13,6 +13,7 @@ So the fetch lives here once. The composition still lives in
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,6 +133,67 @@ async def load_agent_scope(
         # An agent is not a realm principal: its id is a CC row id, so
         # its grants carry no realm and are never narrowed by one.
         realm="",
+    )
+
+
+@dataclass(frozen=True)
+class AgentReach:
+    """What one Operational Agent may operate on, right now.
+
+    A30.4/A30.10: THE operational reach answer. Central Command used to
+    have two and they disagreed in opposite directions -- the canonical
+    resolver was lifecycle-correct and its `site_ids` projection could
+    not represent a `device` or `device_class` grant, while the raw
+    repository read was type-complete and filtered `revoked_at` without
+    `expires_at`. `agent_runtime` passed BOTH into `resolve_scope`, so
+    the runtime compensated for the first defect by importing the second
+    and took the union of their errors.
+
+    `rules` is `ResolvedScope.effective_grants`: lifecycle-filtered and
+    inert-filtered by `resolve()`, and still carrying `scope_type` and
+    `scope_ref` on every surviving grant, so it is what `resolve_scope`
+    always wanted and never got.
+
+    F1 is deliberately NOT fixed here. `site_ids` remains lossy and the
+    repository read filter still cannot express device reach; reaching
+    back for raw grant rows to paper over that would reintroduce the
+    exact path this type exists to remove. A6-4B0b corrects it properly.
+    """
+
+    scope: ResolvedScope
+    rules: tuple
+    devices: tuple
+
+    @property
+    def site_ids(self) -> frozenset[str]:
+        return self.scope.site_ids
+
+
+async def load_agent_reach(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    devices: Optional[Iterable] = None,
+) -> AgentReach:
+    """Resolve one agent's operational reach. The only way to ask.
+
+    `devices` is the fleet to intersect against; omit it and the caller
+    gets the resolved rules without a device read, which is what a
+    caller composing its own `evaluate()` call needs.
+    """
+    from harkeniq_cc.operational_agent import resolve_scope
+
+    scope = await load_agent_scope(
+        session, tenant_id=tenant_id, agent_id=agent_id
+    )
+    rules = scope.effective_grants
+    if devices is None:
+        return AgentReach(scope=scope, rules=rules, devices=())
+    return AgentReach(
+        scope=scope,
+        rules=rules,
+        devices=tuple(resolve_scope(rules, devices, scope.site_ids)),
     )
 
 
