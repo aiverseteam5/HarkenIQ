@@ -5237,6 +5237,208 @@ assert d['valid'] is True, d
 print('CC audit chain valid (%d entries); both G_T revocations recorded' % d['length'])
 "
 
+# ===========================================================================
+# A6-4B0b-S1 (A30.22), live: a SET of devices is authorized only when EVERY
+# device in it is -- at approval, and again immediately before dispatch.
+#
+# The defect: `_decide_campaign_wave` handed the gate `device_agent_ids[0]`,
+# so a principal whose grant reached ONE device approved a site-wave over
+# all of them. Here: three declared devices at site B in ONE wave, a
+# two-approver policy for the class, and three approvers of widening reach.
+#   [A]      -> refused, nothing recorded
+#   [A, B]   -> refused, nothing recorded
+#   [A, B, C]-> recorded, 1 of 2
+# then the exact grant on B is revoked THROUGH THE PRODUCTION ROUTE, the
+# tenant owner completes the approval, and the completed approval does not
+# execute: the runner withholds the whole wave on current authority, nothing
+# crosses CC -> SM, and restoring ONLY that grant lets the same approved
+# wave dispatch. The target set is never narrowed to fit anybody.
+# ===========================================================================
+
+s1_cc() { docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "$1" | tr -d ' \r'; }
+s1_sm() { docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc "$1" | tr -d ' \r'; }
+s1_sub() {  # Keycloak subject from a bearer token
+  python3 -c "
+import base64, json
+t = '$1'.split('.')[1]; t += '=' * (-len(t) % 4)
+print(json.loads(base64.urlsafe_b64decode(t))['sub'])"
+}
+
+step "A6-4B0b-S1/AM: three declared devices at one site plan into ONE wave"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S1_CAPS='{"version": 1, "protocol": "redfish", "device_class": "server", "allow_list": ["COLLECT_DIAGNOSTICS", "IDENTIFY_LED"], "implemented": ["BMC_RESET", "COLLECT_DIAGNOSTICS", "CONFIG_RESTORE", "FAN_RESET", "FIRMWARE_ROLLBACK", "FIRMWARE_UPDATE", "IDENTIFY_LED", "POWER_CAP_ADJUST", "POWER_CYCLE", "SEL_CLEAR"], "effective": ["COLLECT_DIAGNOSTICS", "IDENTIFY_LED"], "reach_known": true}'
+# Two more synthetic devices beside gate-agent-b, and a declaration on all
+# three so preflight finds them ELIGIBLE (not unknown) and the Site Manager
+# knows what they can do. No fault domains: the planner puts all three in
+# one wave, which is the shape the all-target rule is about.
+for S1_DEV in c d; do
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                        service_tag, device_class, first_seen_at, last_seen_at)
+   SELECT 'gatedev${S1_DEV}00000000000000000000000', s.id, 'gate-agent-${S1_DEV}', '${S1_DEV}1',
+          'Dell', 'R750', 'GATE${S1_DEV}1', 'server', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING" > /dev/null
+done
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE devices SET capabilities = '$S1_CAPS'
+   WHERE agent_id IN ('gate-agent-b', 'gate-agent-c', 'gate-agent-d')" > /dev/null
+wait_for "three declared devices at site B visible at Central Command" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_fleet_cache WHERE site_id='$SITE_B' AND capabilities IS NOT NULL\" \
+   | grep -qx ' *3 *'"
+S1_CAMP=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"s1-multi-target\",\"description\":\"A30.22\",
+       \"action_type\":\"COLLECT_DIAGNOSTICS\",\"params\":{},\"max_wave_size\":5,
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_B\"}]}" \
+  http://localhost:8090/api/campaigns/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1_CAMP/preflight" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+targets = {t['device_agent_id']: t['applicability'] for t in d['targets']}
+assert set(targets) == {'gate-agent-b', 'gate-agent-c', 'gate-agent-d'}, targets
+assert set(targets.values()) == {'eligible'}, targets
+print('preflight: three eligible targets at site B')
+"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1_CAMP/submit" > /dev/null
+S1_SUBJECT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1_CAMP/waves" | python3 -c "
+import sys, json
+waves = json.load(sys.stdin)['waves']
+assert len(waves) == 1, ('the flat estate must plan ONE wave', waves)
+(w,) = waves
+assert sorted(w['device_agent_ids']) == ['gate-agent-b', 'gate-agent-c', 'gate-agent-d'], w
+assert w['status'] == 'pending_approval' and w['subject_ref'], w
+print(w['subject_ref'])")
+echo "one wave over [b, c, d]; subject $S1_SUBJECT"
+S1_POLICY=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"gate-s1-dual","action_type":"COLLECT_DIAGNOSTICS","required_approvers":2}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+# Three approvers, each holding action.approve (operator) over a WIDENING
+# set of the wave's devices, granted through the production route.
+for S1_P in a ab abc; do
+  tenant_realm_user "gate-s1-$S1_P@demo" "gate-s1-$S1_P" operator
+done
+S1_A_TOKEN=$(tenant_token gate-s1-a@demo gate-s1-a)
+S1_AB_TOKEN=$(tenant_token gate-s1-ab@demo gate-s1-ab)
+S1_ABC_TOKEN=$(tenant_token gate-s1-abc@demo gate-s1-abc)
+S1_A_SUB=$(s1_sub "$S1_A_TOKEN"); S1_AB_SUB=$(s1_sub "$S1_AB_TOKEN"); S1_ABC_SUB=$(s1_sub "$S1_ABC_TOKEN")
+[ "$(grant "$S1_A_SUB" device gate-agent-b operator)" = "201" ] || { echo "grant A/b refused" >&2; exit 1; }
+for S1_DEV in b c; do
+  [ "$(grant "$S1_AB_SUB" device gate-agent-$S1_DEV operator)" = "201" ] || { echo "grant AB/$S1_DEV refused" >&2; exit 1; }
+done
+for S1_DEV in b c d; do
+  [ "$(grant "$S1_ABC_SUB" device gate-agent-$S1_DEV operator)" = "201" ] || { echo "grant ABC/$S1_DEV refused" >&2; exit 1; }
+done
+echo "approvers: A covers [b]; AB covers [b,c]; ABC covers [b,c,d]"
+
+step "A6-4B0b-S1/AN: [A] and [A,B] are refused and record nothing; [A,B,C] is recorded"
+for S1_CASE in "A:$S1_A_TOKEN:2 of the 3" "AB:$S1_AB_TOKEN:1 of the 3"; do
+  S1_NAME=${S1_CASE%%:*}; S1_REST=${S1_CASE#*:}; S1_TOK=${S1_REST%%:*}; S1_WANT=${S1_REST#*:}
+  S1_CODE=$(curl -s -o /tmp/s1_deny.json -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $S1_TOK" "http://localhost:8090/api/approvals/$S1_SUBJECT/approve")
+  [ "$S1_CODE" = "403" ] || { echo "approver $S1_NAME got $S1_CODE, expected 403: $(cat /tmp/s1_deny.json)" >&2; exit 1; }
+  grep -q "$S1_WANT devices" /tmp/s1_deny.json || { echo "refusal did not name the uncovered count: $(cat /tmp/s1_deny.json)" >&2; exit 1; }
+  echo "  $S1_NAME -> 403 ($S1_WANT devices uncovered)"
+done
+[ "$(s1_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='$S1_SUBJECT'")" = "0" ] || {
+  echo "a refused approver was recorded on the ledger" >&2; exit 1; }
+echo "  refused, not recorded: 0 ledger rows"
+curl -sf -X POST -H "Authorization: Bearer $S1_ABC_TOKEN" \
+  "http://localhost:8090/api/approvals/$S1_SUBJECT/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("recorded") is True and d.get("decision") is None, d
+assert d["approval"]["required"] == 2 and d["approval"]["received"] == 1, d["approval"]
+print("  ABC -> recorded, 1 of 2 WHILE AUTHORIZED over every device; nothing executed")
+'
+s1_cc "SELECT authority_snapshot->>'target_device_agent_ids' FROM cc_approval_records
+       WHERE subject_ref='$S1_SUBJECT'" | python3 -c "
+import sys, json
+ids = json.loads(sys.stdin.read())
+assert ids == ['gate-agent-b', 'gate-agent-c', 'gate-agent-d'], ids
+print('  the ledger names the SET:', ids)"
+S1_ACTOR="campaign:$S1_CAMP@v1"
+[ "$(s1_sm "SELECT count(*) FROM sm_directives WHERE actor='$S1_ACTOR'")" = "0" ] || {
+  echo "a directive reached the Site Manager before the decision completed" >&2; exit 1; }
+
+step "A6-4B0b-S1/AO: authority over ONE device revoked after approval -> the completed approval does not execute"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S1_GRANT_C=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/?principal_ref=$S1_ABC_SUB&principal_type=user" \
+  | python3 -c "
+import sys, json
+rows = [g for g in json.load(sys.stdin)['grants'] if g['scope_type'] == 'device' and g['scope_ref'] == 'gate-agent-c']
+assert len(rows) == 1, rows
+print(rows[0]['id'])")
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$S1_GRANT_C" | python3 -c "
+import sys, json
+g = json.load(sys.stdin)
+assert g['revoked_at'] and g['scope_ref'] == 'gate-agent-c', g
+print('  revoked ABC\'s grant on gate-agent-c (b and d untouched)')"
+# The tenant owner completes the two-approver decision. The APPROVAL is
+# valid -- two named humans -- and it is now historical truth.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$S1_SUBJECT/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("decision") == "approved", d
+print("  owner -> 2 of 2; the wave is APPROVED")
+'
+# Explicit advance (the durable loop calls the same function). The gate
+# re-asks every approver about every device and refuses the SET.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1_CAMP/advance" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert not d["advanced"], d
+reasons = [b.get("reason", "") for b in d["blocked"]]
+assert any("no longer hold" in r for r in reasons), reasons
+print("  advance -> WITHHELD:", [r for r in reasons if "no longer hold" in r][0])
+'
+[ "$(s1_cc "SELECT count(*) FROM cc_campaign_dispatches WHERE campaign_id='$S1_CAMP'")" = "0" ] || {
+  echo "the withheld wave wrote dispatch rows" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_directives WHERE actor='$S1_ACTOR'")" = "0" ] || {
+  echo "the withheld wave reached the Site Manager" >&2; exit 1; }
+[ "$(s1_cc "SELECT status FROM cc_campaign_waves WHERE subject_ref='$S1_SUBJECT'")" = "approved" ] || {
+  echo "the historical decision was rewritten" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='$S1_SUBJECT'")" = "2" ] || {
+  echo "the ledger lost a record" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(DISTINCT revalidation) || '|' || min(revalidation) FROM cc_campaign_targets WHERE campaign_id='$S1_CAMP'")" = "1|authority_lost" ] || {
+  echo "targets do not all read authority_lost" >&2; exit 1; }
+S1_WITHHELD=$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE action='campaign.wave_withheld' AND subject='$S1_CAMP'")
+[ "$S1_WITHHELD" = "1" ] || { echo "expected exactly one withheld audit entry, got $S1_WITHHELD" >&2; exit 1; }
+echo "  zero dispatch rows, zero SM directives, wave still approved, 2 ledger rows, targets authority_lost, 1 audit entry"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1_CAMP/advance" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE action='campaign.wave_withheld' AND subject='$S1_CAMP'")" = "1" ] || {
+  echo "a second pass wrote a second audit entry" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_campaign_dispatches WHERE campaign_id='$S1_CAMP'")" = "0" ] || {
+  echo "a second pass dispatched" >&2; exit 1; }
+echo "  a second pass: still withheld, still one audit entry"
+
+step "A6-4B0b-S1/AP: restoring ONLY the revoked grant lets the same approved wave dispatch"
+[ "$(grant "$S1_ABC_SUB" device gate-agent-c operator)" = "201" ] || { echo "restore refused" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1_CAMP/advance" > /dev/null || true
+wait_for "the same approved wave dispatched once authority returned" 120 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT status FROM cc_campaign_waves WHERE subject_ref='$S1_SUBJECT'\" | grep -q dispatched"
+[ "$(s1_cc "SELECT count(*) FROM cc_campaign_dispatches WHERE campaign_id='$S1_CAMP'")" = "3" ] || {
+  echo "expected three dispatch rows for the wave" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE action='campaign.wave_dispatched' AND subject='$S1_CAMP'")" = "1" ] || {
+  echo "wave_dispatched not audited" >&2; exit 1; }
+echo "  CONTROL: 3 dispatch rows for [b, c, d]; SM directives for the campaign actor: $(s1_sm "SELECT count(*) FROM sm_directives WHERE actor='$S1_ACTOR'")"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$S1_POLICY" > /dev/null
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

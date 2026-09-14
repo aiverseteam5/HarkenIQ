@@ -130,6 +130,47 @@ def resolve_policy(
     return best
 
 
+def resolve_policy_for_classes(
+    policies: Iterable[Any],
+    *,
+    action_type: str,
+    device_classes: Iterable[str],
+    risk: str = "",
+) -> tuple[Optional[Any], tuple[str, ...]]:
+    """The one policy governing a target SET, or the DISTINCT policies that
+    would govern its classes.
+
+    A6-4B0b-S1 (A30.22). `resolve_policy` answers for one device's class;
+    a site-wave may hold several. Resolving from the first device let a
+    tenant's "switch: two approvers" be signed once whenever a server
+    sorted first. Here the policy is resolved per distinct class present
+    (an empty class matches only wildcard `device_type`, exactly as an
+    unknown device does), and:
+
+    * every class resolves to the SAME policy  -> ``(policy, ())``
+    * the classes resolve to DIFFERENT policies -> ``(None, ids)``
+
+    "Different" includes one class governed by a policy and another by
+    none, because "no policy" is the single-approver default and a policy
+    may demand more. The caller refuses on a non-empty second element:
+    a wave two policies govern differently cannot be signed under one of
+    them. Deterministic (classes sorted, `resolve_policy` tie-breaks on
+    id), fail-closed, and no multi-policy arithmetic is invented.
+    """
+    policies = list(policies)
+    classes = sorted({(c or "").strip().lower() for c in device_classes}) or [""]
+    chosen: dict[str, Optional[Any]] = {}
+    for cls in classes:
+        policy = resolve_policy(
+            policies, action_type=action_type, device_type=cls, risk=risk,
+        )
+        key = str(getattr(policy, "id", "")) if policy is not None else ""
+        chosen[key] = policy
+    if len(chosen) == 1:
+        return next(iter(chosen.values())), ()
+    return None, tuple(sorted(chosen))
+
+
 def required_approvers(policy: Any, group: Any = None) -> int:
     """How many distinct approvals this subject needs.
 

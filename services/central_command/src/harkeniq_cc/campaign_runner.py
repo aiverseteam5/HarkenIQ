@@ -31,6 +31,7 @@ from typing import Any, Optional
 from harkeniq.capabilities import action_facts
 
 from harkeniq_cc.campaigns import (
+    WAVE_APPROVED,
     WAVE_AUTONOMOUS,
     WAVE_PENDING_APPROVAL,
     WAVE_RUNNABLE,
@@ -42,6 +43,7 @@ from harkeniq_cc.campaigns import (
     APPLICABILITY_WARN,
     DISPATCHABLE,
     NEEDS_ACKNOWLEDGEMENT,
+    REVAL_AUTHORITY_LOST,
     REVAL_OK,
     STATUS_ACKNOWLEDGED,
     STATUS_AWAITING_APPROVAL,
@@ -66,6 +68,7 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
 )
 from harkeniq_cc.operational_agent import resolve_scope
+from harkeniq_cc.target_authority import wave_dispatch_authority
 from harkeniq_cc.sm_client import SMClient
 
 logger = logging.getLogger("harkeniq.cc.campaigns")
@@ -882,6 +885,61 @@ async def _advance_site(session, state, *, tenant_id: str, campaign, site_row) -
             "site_id": site_row.site_id, "wave": wave.wave_index,
             "reason": "plan changed after approval; new approval required",
         }}
+
+    # -- 3b. CURRENT authority over EVERY approved device (A30.22) ---------
+    # Approval is historical truth; execution needs current authority.
+    # `revalidate_dispatch`'s position, for a wave: after the plan is
+    # known to be the approved plan and before capability narrows the
+    # set. Every approver who completed the decision must STILL hold
+    # action.approve over every device in the wave, resolved token-lessly
+    # through the one scope loader. A wave that fails is WITHHELD -- the
+    # decision stands, nothing crosses CC -> SM, and a later pass delivers
+    # it if authority returns. An autonomous wave carries no human
+    # authority to revalidate and is unchanged.
+    if wave.status == WAVE_APPROVED:
+        authority = await wave_dispatch_authority(
+            session,
+            tenant_id=tenant_id,
+            realm=getattr(state.config, "keycloak_realm", "") or "",
+            campaign=campaign,
+            wave=wave,
+            fleet_rows=await FleetCacheRepo(session).list_by_site(site_row.site_id),
+        )
+        if not authority["ok"]:
+            reason = authority["reason"][:512]
+            changed = False
+            for target in await repo.targets(campaign.id, site_id=site_row.site_id):
+                if target.device_agent_id not in set(wave.device_agent_ids or []):
+                    continue
+                if (target.revalidation, target.revalidation_reason) != (
+                    REVAL_AUTHORITY_LOST, reason,
+                ):
+                    changed = True
+                target.revalidation = REVAL_AUTHORITY_LOST
+                target.revalidation_reason = reason
+                target.updated_at = _utcnow()
+            await session.flush()
+            if changed:
+                # One entry per distinct cause, not one per pass: the
+                # reconciler runs continuously and a lapsed approver
+                # would otherwise flood the chain.
+                await AuditRepo(session).append(
+                    actor=campaign_actor(campaign.id, campaign.version),
+                    action="campaign.wave_withheld",
+                    subject=campaign.id,
+                    tenant_id=tenant_id,
+                    detail={
+                        "site_id": site_row.site_id,
+                        "wave": wave.wave_index,
+                        "subject_ref": wave.subject_ref,
+                        "reason": authority["reason"][:200],
+                        **authority["detail"],
+                    },
+                )
+            return {"bucket": "blocked", "detail": {
+                "site_id": site_row.site_id, "wave": wave.wave_index,
+                "reason": authority["reason"],
+            }}
 
     # -- 4. capability and policy, which may only narrow -------------------
     reval = await revalidate_wave(

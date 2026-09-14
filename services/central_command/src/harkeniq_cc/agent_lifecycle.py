@@ -351,7 +351,28 @@ async def install_bound_skills(
 
     pre_repo = AgentPreflightRepo(session)
     per_device = {d["device_agent_id"]: d for d in (preflight.get("devices") or [])}
-    out = {"installed": 0, "skipped": 0, "skills": []}
+
+    # A30.22: the preflight's device list is the CONTRACT the operator
+    # acknowledged; it is not current reach. A grant can expire or be
+    # revoked with no version bump, and `activate` is reachable from
+    # `paused`, so the set is re-resolved through the one reach loader
+    # and INTERSECTED -- narrow-only: a device the preflight did not
+    # report is never added, and every device removed is recorded as
+    # skipped with the reason rather than silently omitted.
+    current = await load_agent_reach(
+        session, tenant_id=tenant_id, agent_id=agent.id,
+        devices=await FleetCacheRepo(session).list_all(tenant_id),
+    )
+    reachable = {d.agent_id for d in current.devices}
+    authority_lost = sorted(d for d in per_device if d not in reachable)
+    per_device = {d: row for d, row in per_device.items() if d in reachable}
+    lost_skips = [
+        {"device_agent_id": d,
+         "reason": "no longer in the agent's current reach at activation"}
+        for d in authority_lost
+    ]
+    out = {"installed": 0, "skipped": 0, "skills": [],
+           "authority_narrowed": authority_lost}
 
     for skill in preflight.get("skills") or []:
         if skill.get("usable") is False:
@@ -374,6 +395,9 @@ async def install_bound_skills(
         targets = skill_install_targets(
             skill.get("recommended") or [], list(per_device.values())
         )
+        # The devices current reach removed are reported per skill, in the
+        # same ledger and the same shape a capability skip uses.
+        targets["skip"] = list(targets["skip"]) + list(lost_skips)
         by_site: dict[str, list[str]] = {}
         for device_id in targets["install"]:
             row = per_device.get(device_id) or {}
