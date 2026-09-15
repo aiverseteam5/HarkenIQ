@@ -17,6 +17,7 @@ import logging
 import time
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -373,6 +374,42 @@ class KeycloakAdminClient:
         )
         return resp.json()
 
+    async def get_user_authority(self, realm: str, user_id: str) -> dict | None:
+        """A30.23: one user's CURRENT identity facts -- or None if absent.
+
+        The user record for `enabled`, and the COMPOSITE realm-role
+        mapping for the effective realm roles -- the same set a token's
+        `realm_access.roles` would carry, composites expanded. Central
+        Command turns these into a permission basis with the request
+        path's own role rule; nothing here interprets them.
+
+        A subject the realm does not hold is None, distinct from a
+        transport or admin failure, which raises: the caller must be
+        able to tell "gone" from "could not ask".
+        """
+        safe_user = quote(user_id, safe="")
+        try:
+            user_resp = await self._request(
+                "GET", f"/admin/realms/{realm}/users/{safe_user}",
+                context=f"get user '{user_id}' in '{realm}'",
+            )
+        except KeycloakError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        user = user_resp.json()
+        roles_resp = await self._request(
+            "GET",
+            f"/admin/realms/{realm}/users/{safe_user}/role-mappings/realm/composite",
+            context=f"get effective realm roles of '{user_id}' in '{realm}'",
+        )
+        return {
+            "enabled": bool(user.get("enabled", False)),
+            "realm_roles": sorted(
+                str(r.get("name")) for r in roles_resp.json() if r.get("name")
+            ),
+        }
+
     # -- machine identity (A3 / spec A20) ------------------------------------
 
     async def create_service_account_client(
@@ -632,6 +669,17 @@ class MockKeycloakAdminClient:
         if realm not in self._realms:
             raise KeycloakError(f"realm '{realm}' not found", status_code=404)
         return list(self._users[realm].values())
+
+    async def get_user_authority(self, realm: str, user_id: str) -> dict | None:  # noqa: D102
+        if realm not in self._realms:
+            raise KeycloakError(f"realm '{realm}' not found", status_code=404)
+        user = self._users.get(realm, {}).get(user_id)
+        if user is None:
+            return None
+        return {
+            "enabled": bool(user.get("enabled", False)),
+            "realm_roles": sorted(self._role_mappings.get((realm, user_id), [])),
+        }
 
     async def delete_realm(self, realm: str) -> None:  # noqa: D102
         if realm not in self._realms:

@@ -39,14 +39,23 @@ from harkeniq_sm.db.base import (
 from harkeniq_sm.db.models import Device, DomainMembership, FaultDomain, Site
 from harkeniq_sm.grpc_server import SiteManagerServiceServicer
 
+from tests.unit.cc.conftest import ConsoleRealm
+
 TENANT = "t1"
+OWNER = ("kc-owner", "owner@example.com")
 CC_SITE_ID = "cc-site-1"
 SERVER = declare("redfish", ["IDENTIFY_LED", "COLLECT_DIAGNOSTICS"], "server")
 
 
 @pytest.fixture
-async def stack():
-    """A real SM on a real port, and a CC pointed at it."""
+async def stack(monkeypatch):
+    """A real SM on a real port, and a CC pointed at it -- and, since
+    A30.23, an identity plane that vouches for the approving owner's
+    CURRENT realm role, because a wave whose approver cannot be shown to
+    hold `action.approve` NOW is withheld."""
+    realm = await ConsoleRealm(TENANT).start()
+    realm.person(OWNER[0], "tenant_owner")
+    realm.wire(monkeypatch)
     sm_db_engine = sm_engine("sqlite+aiosqlite:///:memory:")
     await sm_create_all(sm_db_engine)
     sm_db = sm_sessionmaker(sm_db_engine)
@@ -101,8 +110,10 @@ async def stack():
         config=CCConfig(tenant_id=TENANT, insecure=True),
         engine=cc_db_engine, sessionmaker=cc_db,
     )
+    realm.attach(state)
     yield state, cc_db, sm_db
     await server.stop(grace=None)
+    await realm.stop()
     await sm_db_engine.dispose()
     await cc_db_engine.dispose()
 
@@ -126,7 +137,6 @@ async def _preflight(state, session, campaign):
     )
 
 
-OWNER = ("kc-owner", "owner@example.com")
 
 
 async def _approve_all_waves(session, campaign):

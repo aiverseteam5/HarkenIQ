@@ -68,7 +68,10 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
 )
 from harkeniq_cc.operational_agent import resolve_scope
-from harkeniq_cc.target_authority import wave_dispatch_authority
+from harkeniq_cc.target_authority import (
+    current_authority_source,
+    wave_dispatch_authority,
+)
 from harkeniq_cc.sm_client import SMClient
 
 logger = logging.getLogger("harkeniq.cc.campaigns")
@@ -892,18 +895,23 @@ async def _advance_site(session, state, *, tenant_id: str, campaign, site_row) -
     # known to be the approved plan and before capability narrows the
     # set. Every approver who completed the decision must STILL hold
     # action.approve over every device in the wave, resolved token-lessly
-    # through the one scope loader. A wave that fails is WITHHELD -- the
-    # decision stands, nothing crosses CC -> SM, and a later pass delivers
-    # it if authority returns. An autonomous wave carries no human
-    # authority to revalidate and is unchanged.
+    # through the one scope loader -- with the permission basis derived
+    # from the realm roles they hold NOW (A30.23), fetched from the
+    # identity plane, never from the role the approval recorded. A wave
+    # that fails is WITHHELD -- the decision stands, nothing crosses
+    # CC -> SM, and a later pass delivers it if authority returns. An
+    # autonomous wave carries no human authority to revalidate and is
+    # unchanged.
     if wave.status == WAVE_APPROVED:
+        realm = getattr(state.config, "keycloak_realm", "") or ""
         authority = await wave_dispatch_authority(
             session,
             tenant_id=tenant_id,
-            realm=getattr(state.config, "keycloak_realm", "") or "",
+            realm=realm,
             campaign=campaign,
             wave=wave,
             fleet_rows=await FleetCacheRepo(session).list_by_site(site_row.site_id),
+            authority_source=current_authority_source(state, realm),
         )
         if not authority["ok"]:
             reason = authority["reason"][:512]

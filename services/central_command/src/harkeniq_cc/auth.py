@@ -156,6 +156,24 @@ def configure_auth(
     )
 
 
+def role_basis(roles) -> tuple[str, list[str]]:
+    """The ONE rule turning a principal's realm roles into a permission basis.
+
+    `pick_role` over the ranked roles, then `ROLE_PERMISSIONS`. This is
+    exactly what the request path computed inline for a validated token;
+    it is a function because A30.23 needs the same answer WITHOUT a
+    token -- the campaign runner re-derives each wave approver's CURRENT
+    basis from their current realm roles at dispatch -- and two copies of
+    "which role wins and what it carries" would be two authorization
+    answers. A structural test pins both callers to this function.
+
+    A principal with no ranked realm role resolves to `viewer`, the
+    request path's own rule; `viewer` carries no `action.approve`.
+    """
+    role = pick_role(list(roles or []), _RANKED_ROLES, default="viewer")
+    return role, list(ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS["viewer"]))
+
+
 async def get_current_user(request: Request) -> UserContext:
     """FastAPI dependency: extract Bearer token, validate, return UserContext."""
     if _insecure:
@@ -195,13 +213,13 @@ async def get_current_user(request: Request) -> UserContext:
     if is_machine_client_id(validated.client_id):
         return await _machine_principal(request, validated)
 
-    role = pick_role(validated.roles, _RANKED_ROLES, default="viewer")
+    role, permissions = role_basis(validated.roles)
     return UserContext(
         user_id=validated.subject,
         email=validated.email,
         tenant_id=request.app.state.cc.config.tenant_id,
         role=role,
-        permissions=list(ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS["viewer"])),
+        permissions=permissions,
         is_platform_user=role == "platform_super_admin",
         species="user",
     )

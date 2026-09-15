@@ -25,6 +25,11 @@ canonical question, `permits(...)`, once per target. Nothing here reads a
 grant row as authority, and nothing here is a second scope model: the
 helpers are loops over the one resolver's answer, kept small enough that
 the security semantics are visible in the code rather than in a comment.
+
+At dispatch (A30.23) the permission basis each approver is resolved with
+is their CURRENT realm role, fetched from the identity plane and turned
+into permissions by the request path's own `auth.role_basis` -- never the
+role their approval recorded, which is evidence and stays untouched.
 """
 
 from __future__ import annotations
@@ -244,36 +249,132 @@ async def governing_policy_for_targets(
 # Current authority at dispatch
 # ---------------------------------------------------------------------------
 
+#: `CurrentBasis.status` vocabulary. Closed: the withheld audit entry
+#: names one of these per lost approver, so a demotion is distinguishable
+#: from a revocation and from an outage without opening Keycloak.
+BASIS_RESOLVED = "resolved"
+BASIS_PRINCIPAL_NOT_FOUND = "principal_not_found"
+BASIS_PRINCIPAL_DISABLED = "principal_disabled"
+BASIS_UNRESOLVABLE = "unresolvable"
+BASIS_STATUSES = frozenset({
+    BASIS_RESOLVED, BASIS_PRINCIPAL_NOT_FOUND, BASIS_PRINCIPAL_DISABLED,
+    BASIS_UNRESOLVABLE,
+})
+
+#: Why one approver no longer counts. `current_role` and `scope` are the
+#: two halves of authority (A30.23); the rest are identity statuses.
+CAUSE_CURRENT_ROLE = "current_role"
+CAUSE_SCOPE = "scope"
+LOSS_CAUSES = frozenset({CAUSE_CURRENT_ROLE, CAUSE_SCOPE}) | (BASIS_STATUSES - {BASIS_RESOLVED})
+
+
+@dataclass(frozen=True)
+class CurrentBasis:
+    """One principal's CURRENT permission basis, or why there is none.
+
+    Produced from the realm roles the identity plane reports NOW and the
+    ONE role rule the request path uses (`auth.role_basis`). Only
+    `resolved` carries a role; every other status is a refusal with the
+    reason, and none of them ever fall back to a recorded role.
+    """
+
+    status: str
+    role: str = ""
+    permissions: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def resolved(self) -> bool:
+        return self.status == BASIS_RESOLVED
+
+
+async def approver_current_basis(state: Any, *, realm: str, subject: str) -> CurrentBasis:
+    """The CURRENT permission basis of one principal, WITHOUT a token.
+
+    A30.23. The approval recorded the role its approver's token carried
+    when they decided; that is evidence, not a basis. The basis comes
+    from the realm roles Keycloak holds for the subject NOW, read over
+    the existing CC->Console internal channel (Central Command holds no
+    Keycloak admin credential, A20) and turned into permissions by the
+    same `role_basis` the request path calls for a live token.
+
+    Fail closed, with the cause named: no configured realm, no subject,
+    an unreachable Console, a realm the Console cannot bind to a tenant,
+    a malformed answer, a subject the realm does not hold, or a disabled
+    account each yield a basis that carries nothing.
+    """
+    from harkeniq_cc import identity_client
+    from harkeniq_cc.auth import role_basis
+
+    if not realm:
+        return CurrentBasis(
+            BASIS_UNRESOLVABLE,
+            reason="no tenant realm is configured, so current authority cannot be resolved",
+        )
+    if not subject:
+        return CurrentBasis(BASIS_UNRESOLVABLE, reason="the approval names no principal")
+    body, reason = await identity_client.current_authority(
+        state, realm=realm, subject=subject,
+    )
+    if body is None:
+        return CurrentBasis(BASIS_UNRESOLVABLE, reason=reason or "no answer from the identity plane")
+    if not isinstance(body, dict) or body.get("realm") != realm or body.get("subject") != subject:
+        return CurrentBasis(
+            BASIS_UNRESOLVABLE,
+            reason="the identity plane answered for a different realm or principal",
+        )
+    if not body.get("found"):
+        return CurrentBasis(
+            BASIS_PRINCIPAL_NOT_FOUND,
+            reason=f"realm {realm!r} no longer holds this principal",
+        )
+    if not body.get("enabled"):
+        return CurrentBasis(BASIS_PRINCIPAL_DISABLED, reason="the principal's account is disabled")
+    roles = body.get("realm_roles")
+    if not isinstance(roles, list):
+        return CurrentBasis(
+            BASIS_UNRESOLVABLE, reason="the identity plane reported no role list",
+        )
+    role, permissions = role_basis([str(r) for r in roles])
+    return CurrentBasis(BASIS_RESOLVED, role=role, permissions=tuple(permissions))
+
+
+def current_authority_source(state: Any, realm: str):
+    """The production `authority_source`: subject -> `CurrentBasis`, from
+    the application state's identity-plane channel and the configured
+    tenant realm. Built by the runner and handed in; there is no default
+    inside the gate, because a default would be the historical role
+    surviving as a fallback."""
+
+    async def _source(subject: str) -> CurrentBasis:
+        return await approver_current_basis(state, realm=realm, subject=subject)
+
+    return _source
+
 
 async def approver_current_scope(
-    session: Any, *, tenant_id: str, realm: str, record: Any
+    session: Any, *, tenant_id: str, realm: str, record: Any, basis: CurrentBasis
 ) -> Any:
     """The CURRENT scope of one ledger approver, resolved WITHOUT a token.
 
-    The background reconciler has no bearer token, so the permission basis
-    is the role the approval RECORDED (`authority_snapshot.role`) -- the
-    token they held when they decided -- applied to the grants they hold
-    NOW, through the one loader every principal resolves through. Inside
-    `resolve()` the grant-recorded role ceiling (A23-3) still narrows.
+    The permission basis is the one `approver_current_basis` resolved
+    from the approver's CURRENT realm roles (A30.23) -- never the role the
+    approval recorded -- applied to the grants they hold NOW, through the
+    one loader every principal resolves through. Inside `resolve()` the
+    grant-recorded role ceiling (A23-3) still narrows.
 
-    What this sees: revocation, expiry, subset narrowing, role-ceiling
-    narrowing. What it cannot see: a Keycloak realm-role demotion after
-    approval, which is stated rather than implied away. A record with no
-    recorded role gets an EMPTY basis, every grant drops, and the approver
-    covers nothing -- fail closed.
+    A basis that is not `resolved` carries no permissions: every grant
+    drops and the approver covers nothing. Callers refuse before reaching
+    here in that case; this function simply cannot be made to widen.
     """
-    from harkeniq_cc.auth import ROLE_PERMISSIONS
     from harkeniq_cc.governance import PRINCIPAL_USER, load_scope
 
-    snapshot = getattr(record, "authority_snapshot", None) or {}
-    role = str(snapshot.get("role") or "").strip()
-    basis = list(ROLE_PERMISSIONS.get(role, []))
     email = (getattr(record, "approver_email", "") or "").strip()
     return await load_scope(
         session,
         tenant_id=tenant_id,
         principal_ref=record.approver_ref,
-        role_permissions=basis,
+        role_permissions=list(basis.permissions) if basis.resolved else [],
         principal_type=PRINCIPAL_USER,
         realm=realm,
         aliases=(email,) if email else (),
@@ -288,18 +389,23 @@ async def revalidate_wave_authority(
     targets: Sequence[AuthorizedTarget],
     records: Sequence[Any],
     needed: int,
+    authority_source: Any,
 ) -> dict:
     """Does this wave's approval STILL stand on current authority?
 
-    Each APPROVED ledger record is re-asked, with its approver's current
-    scope, whether it holds `action.approve` over EVERY target. E0.1's own
+    Each APPROVED ledger record is re-asked, with its approver's CURRENT
+    permission basis (`authority_source`, A30.23) and current scope,
+    whether it holds `action.approve` over EVERY target. E0.1's own
     completion rule is then re-run over the approvals that still do. The
     records themselves are not touched: approval is historical truth, and
     this decides only whether it is ALSO current execution authority.
 
-    Denials are carried through unchanged so a terminal denial stays
-    terminal (D16). Composition does not rescue a wave: two approvers who
-    each cover part of the set are two approvers who each fail.
+    Each lost approver carries a cause from `LOSS_CAUSES`: the identity
+    plane could not vouch for them, their current role lacks the
+    permission, or their grants no longer cover the set. Denials are
+    carried through unchanged so a terminal denial stays terminal (D16).
+    Composition does not rescue a wave: two approvers who each cover part
+    of the set are two approvers who each fail.
     """
     from harkeniq_cc.approval_policy import (
         DECISION_APPROVED,
@@ -313,13 +419,32 @@ async def revalidate_wave_authority(
         if record.decision != DECISION_APPROVED:
             standing.append(record)
             continue
+        basis = await authority_source(record.approver_ref)
+        if not isinstance(basis, CurrentBasis) or not basis.resolved:
+            status = getattr(basis, "status", BASIS_UNRESOLVABLE)
+            lost.append({
+                "approver_ref": record.approver_ref,
+                "cause": status if status in LOSS_CAUSES else BASIS_UNRESOLVABLE,
+                "current_role": "",
+                "reason": (getattr(basis, "reason", "") or "")[:200],
+                "uncovered": len(targets),
+                "of": len(targets),
+            })
+            continue
         scope = await approver_current_scope(
-            session, tenant_id=tenant_id, realm=realm, record=record,
+            session, tenant_id=tenant_id, realm=realm, record=record, basis=basis,
         )
         missing = uncovered_targets(scope, WAVE_PERMISSION, targets)
         if missing:
             lost.append({
                 "approver_ref": record.approver_ref,
+                "cause": (
+                    CAUSE_CURRENT_ROLE
+                    if WAVE_PERMISSION not in basis.permissions
+                    else CAUSE_SCOPE
+                ),
+                "current_role": basis.role,
+                "reason": "",
                 "uncovered": len(missing),
                 "of": len(targets),
             })
@@ -330,10 +455,11 @@ async def revalidate_wave_authority(
     ok = block["state"] == STATE_APPROVED
     reason = ""
     if not ok:
+        causes = ",".join(sorted({entry["cause"] for entry in lost})) or "none"
         reason = (
             f"{len(lost)} approver(s) no longer hold {WAVE_PERMISSION!r} over "
             f"every device in this wave; {block['received']} of "
-            f"{block['required']} approvals still stand"
+            f"{block['required']} approvals still stand (causes: {causes})"
         )
     return {
         "ok": ok,
@@ -352,6 +478,7 @@ async def wave_dispatch_authority(
     campaign: Any,
     wave: Any,
     fleet_rows: Iterable[Any],
+    authority_source: Any,
 ) -> dict:
     """The dispatch-time authority verdict for one human-approved wave.
 
@@ -360,9 +487,10 @@ async def wave_dispatch_authority(
     that function: its inputs are an agent's. Order of questions, each
     fail-closed on its own: the stored wave still hashes to its subject;
     the target set is identifiable at the wave's site; ONE policy governs
-    the set; and every approver who completed the decision still covers
-    every target. Returns ``{"ok", "reason", "detail"}`` and writes
-    nothing; the caller owns what a refusal does to the wave.
+    the set; and every approver who completed the decision still holds
+    the permission on their CURRENT role (`authority_source`, A30.23) and
+    still covers every target. Returns ``{"ok", "reason", "detail"}`` and
+    writes nothing; the caller owns what a refusal does to the wave.
     """
     from harkeniq_cc.approval_policy import SUBJECT_CAMPAIGN_WAVE, required_approvers
     from harkeniq_cc.db.repos import ApprovalRecordRepo
@@ -406,6 +534,7 @@ async def wave_dispatch_authority(
         targets=targets,
         records=records,
         needed=required_approvers(policy, group),
+        authority_source=authority_source,
     )
     return {
         "ok": verdict["ok"],

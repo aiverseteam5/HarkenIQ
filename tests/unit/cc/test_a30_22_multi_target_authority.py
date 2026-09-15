@@ -91,7 +91,7 @@ from harkeniq_sm.db.base import (
 from harkeniq_sm.db.models import Device, Site
 from harkeniq_sm.grpc_server import SiteManagerServiceServicer
 
-from tests.unit.cc.conftest import seed_tenant_admin
+from tests.unit.cc.conftest import ConsoleRealm, seed_tenant_admin
 
 TENANT = "t-s1"
 OPERATOR = list(ROLE_PERMISSIONS["operator"])
@@ -734,7 +734,22 @@ CC_SITE_ID = "cc-site-flat"
 
 
 @pytest.fixture
-async def flat_stack():
+async def console_realm(monkeypatch):
+    """A30.23: the identity plane the runner asks for each approver's
+    CURRENT realm roles. Every subject Part C names is a real, enabled
+    person here with the role their ledger row records -- so a test that
+    changes ONE thing about them changes exactly one thing."""
+    realm = await ConsoleRealm(TENANT).start()
+    realm.person("kc-owner", "tenant_owner")
+    for sub in ("kc-abc", "kc-x", "kc-y"):
+        realm.person(sub, "operator")
+    realm.wire(monkeypatch)
+    yield realm
+    await realm.stop()
+
+
+@pytest.fixture
+async def flat_stack(console_realm):
     """A real Site Manager with THREE devices sharing no fault domain, so
     the planner puts all three in ONE wave -- the shape the all-target
     rule is about."""
@@ -781,6 +796,7 @@ async def flat_stack():
         config=CCConfig(tenant_id=TENANT, insecure=True),
         engine=cc_db_engine, sessionmaker=cc_db,
     )
+    console_realm.attach(state)
     yield state, cc_db
     await server.stop(grace=None)
     await sm_db_engine.dispose()
@@ -1221,3 +1237,399 @@ class TestAdversarialTargets:
         principal granted elsewhere resolves here to nothing."""
         scope = _scope()  # no rows in THIS tenant
         assert uncovered_targets(scope, WAVE_PERMISSION, _abc()) == ("a", "b", "c")
+
+
+# ---------------------------------------------------------------------------
+# Part C2 -- the basis is the CURRENT realm role, never the recorded one
+# (A30.23, the review's HIGH on 494432b)
+# ---------------------------------------------------------------------------
+#
+# Every test in this part runs the PRODUCTION dispatch path -- `advance_
+# campaign` -> `_advance_site` -> `wave_dispatch_authority` -> `approver_
+# current_basis` -> `identity_client.current_authority` -> the real Console
+# internal router in secure mode -> the Keycloak double -> `auth.role_basis`
+# -> `governance.load_scope` -> `permits` over every target. Only the HTTP
+# socket between Central Command and the Console is replaced.
+#
+# The demotion is a change to the REALM, never to the ledger: the approval
+# record, its `authority_snapshot.role`, and every scope grant are asserted
+# untouched, so a refusal here can only be about the current role.
+
+
+async def _snapshot_role(session, subject_ref):
+    (record,) = await ApprovalRecordRepo(session).list_for_subject(
+        SUBJECT_CAMPAIGN_WAVE, subject_ref,
+    )
+    return record.authority_snapshot["role"]
+
+
+async def _live_grant_count(session, sub):
+    rows = await ScopeGrantRepo(session).list_for_principal(TENANT, sub)
+    return len([g for g in rows if g.revoked_at is None])
+
+
+async def _withheld_detail(session, campaign_id):
+    row = (await session.execute(
+        sa.select(CCAuditLog).where(
+            CCAuditLog.action == "campaign.wave_withheld",
+            CCAuditLog.subject == campaign_id,
+        ).order_by(CCAuditLog.ts.desc())
+    )).scalars().first()
+    assert row is not None, "no withheld audit entry"
+    return row.detail
+
+
+class TestDispatchDemandsTheCurrentRole:
+    @pytest.mark.asyncio
+    async def test_a_demoted_approver_withholds_and_a_restored_one_counts_again(
+        self, flat_stack, console_realm,
+    ):
+        """The review's scenario, on the production path. Immutable wave
+        [1, 2, 3]; the approver holds `operator` in the realm and grants
+        covering every target; they approve; the realm demotes them --
+        grants and ledger untouched -- and the same approved wave is
+        WITHHELD with the cause named. Restoring the role lets the SAME
+        historical approval count again and the wave dispatches.
+        """
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+            subject = wave.subject_ref
+            assert await _snapshot_role(session, subject) == "operator"
+
+            # 4. demoted in the REALM. `viewer` carries no action.approve.
+            console_realm.demote("kc-abc", "operator")
+            console_realm.promote("kc-abc", "viewer")
+            assert console_realm.roles_of("kc-abc") == ["viewer"]
+
+            # 6. the actual dispatch path
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            (blocked,) = result["blocked"]
+            assert "no longer hold 'action.approve' over every device" in blocked["reason"]
+            assert "causes: current_role" in blocked["reason"], blocked["reason"]
+
+            repo = CampaignRepo(session)
+            assert await repo.dispatches(campaign.id) == [], "nothing crossed CC -> SM"
+            (wave,) = await repo.waves(campaign.id)
+            assert wave.status == WAVE_APPROVED, "the historical decision is untouched"
+            assert wave.decided_by == "abc@example.com"
+            # The ledger is evidence and stays exactly as written.
+            assert await _snapshot_role(session, subject) == "operator"
+            assert len(await ApprovalRecordRepo(session).list_for_subject(
+                SUBJECT_CAMPAIGN_WAVE, subject)) == 1
+            # The grants are intact: this refusal is NOT a scope refusal.
+            assert await _live_grant_count(session, "kc-abc") == 3
+            for target in await repo.targets(campaign.id):
+                assert target.revalidation == REVAL_AUTHORITY_LOST
+            detail = await _withheld_detail(session, campaign.id)
+            (lost,) = detail["lost"]
+            assert lost["approver_ref"] == "kc-abc"
+            assert lost["cause"] == "current_role"
+            assert lost["current_role"] == "viewer"
+            assert lost["uncovered"] == 3 and lost["of"] == 3
+            assert await _withheld_audits(session, campaign.id) == 1
+
+            # A second pass: still withheld, still one entry.
+            await _advance(state, session, campaign)
+            assert await _withheld_audits(session, campaign.id) == 1
+            assert await repo.dispatches(campaign.id) == []
+
+            # 7. the role is restored in the realm and NOTHING else changes.
+            console_realm.promote("kc-abc", "operator")
+            # 8. the SAME approved wave, the SAME single ledger row, dispatches.
+            result = await _advance(state, session, campaign)
+            assert result["advanced"], result
+            (wave,) = await repo.waves(campaign.id)
+            assert wave.status == WAVE_DISPATCHED
+            assert len(await repo.dispatches(campaign.id)) == 3
+            assert len(await ApprovalRecordRepo(session).list_for_subject(
+                SUBJECT_CAMPAIGN_WAVE, subject)) == 1, "nobody approved twice"
+            assert await _snapshot_role(session, subject) == "operator"
+
+    @pytest.mark.asyncio
+    async def test_the_recorded_role_is_evidence_in_both_directions(
+        self, flat_stack, console_realm,
+    ):
+        """Non-vacuous in BOTH directions. A snapshot that overstates the
+        approver (`tenant_owner` on record, `viewer` in the realm) does
+        not dispatch; a snapshot that understates them (`viewer` on
+        record, `operator` in the realm) does. If the gate read the
+        snapshot, both outcomes would invert."""
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com", role="tenant_owner")
+            await session.commit()
+            console_realm.demote("kc-abc", "operator")
+            console_realm.promote("kc-abc", "viewer")
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            assert "causes: current_role" in result["blocked"][0]["reason"]
+
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-x", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-x", "x@example.com", role="viewer")
+            await session.commit()
+            assert console_realm.roles_of("kc-x") == ["operator"]
+            result = await _advance(state, session, campaign)
+            assert result["advanced"], result
+            (wave,) = await CampaignRepo(session).waves(campaign.id)
+            assert wave.status == WAVE_DISPATCHED
+
+    @pytest.mark.asyncio
+    async def test_one_of_two_approvers_demoted_leaves_one_standing(
+        self, flat_stack, console_realm,
+    ):
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            await ApprovalPolicyRepo(session).create(
+                tenant_id=TENANT, name="dual", created_by="kc-owner",
+                action_type="*", required_approvers=2,
+            )
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-x", "node-1", "node-2", "node-3")
+            await _device_grants(session, "kc-y", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-x", "x@example.com")
+            await ApprovalRecordRepo(session).record(
+                tenant_id=TENANT, subject_type=SUBJECT_CAMPAIGN_WAVE,
+                subject_ref=wave.subject_ref, approver_ref="kc-y",
+                approver_email="y@example.com", decision="approved",
+                authority_snapshot={"role": "operator"},
+            )
+            await session.commit()
+            console_realm.demote("kc-y", "operator")
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            assert "1 of 2 approvals still stand" in result["blocked"][0]["reason"]
+            (lost,) = (await _withheld_detail(session, campaign.id))["lost"]
+            assert lost["approver_ref"] == "kc-y" and lost["cause"] == "current_role"
+            assert lost["current_role"] == "viewer", "no ranked role resolves to viewer"
+
+    @pytest.mark.asyncio
+    async def test_an_approver_the_realm_no_longer_holds_withholds(
+        self, flat_stack, console_realm,
+    ):
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+            console_realm.delete("kc-abc")
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            assert "causes: principal_not_found" in result["blocked"][0]["reason"]
+            (lost,) = (await _withheld_detail(session, campaign.id))["lost"]
+            assert lost["cause"] == "principal_not_found" and lost["current_role"] == ""
+            assert await CampaignRepo(session).dispatches(campaign.id) == []
+            assert await _snapshot_role(session, wave.subject_ref) == "operator"
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_approver_withholds(self, flat_stack, console_realm):
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+            console_realm.set_enabled("kc-abc", False)
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            assert "causes: principal_disabled" in result["blocked"][0]["reason"]
+            # Re-enabled: the same approval counts again.
+            console_realm.set_enabled("kc-abc", True)
+            result = await _advance(state, session, campaign)
+            assert result["advanced"], result
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_identity_plane_withholds(self, flat_stack, monkeypatch):
+        """Cannot ask != allowed. A transport failure is `unresolvable`,
+        with the reason carried, and never the recorded role."""
+        import types
+
+        from harkeniq_cc import identity_client
+
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+
+            def _down(request):
+                raise httpx.ConnectError("identity plane down")
+
+            real = httpx.AsyncClient
+
+            def _client(*a, **kw):
+                kw["transport"] = httpx.MockTransport(_down)
+                return real(*a, **kw)
+
+            monkeypatch.setattr(
+                identity_client, "httpx", types.SimpleNamespace(AsyncClient=_client),
+            )
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            assert "causes: unresolvable" in result["blocked"][0]["reason"]
+            (lost,) = (await _withheld_detail(session, campaign.id))["lost"]
+            assert lost["cause"] == "unresolvable"
+            assert "could not be reached" in lost["reason"]
+            assert await CampaignRepo(session).dispatches(campaign.id) == []
+
+    @pytest.mark.asyncio
+    async def test_a_realm_the_console_cannot_bind_to_a_tenant_withholds(self, flat_stack):
+        """Tenant mismatch: Central Command configured for a realm the
+        identity plane does not recognise as a tenant's -> 404 -> withheld."""
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+            state.config.keycloak_realm = "some-other-tenant"
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            (lost,) = (await _withheld_detail(session, campaign.id))["lost"]
+            assert lost["cause"] == "unresolvable" and "404" in lost["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_configured_realm_withholds(self, flat_stack):
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+            state.config.keycloak_realm = ""
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            (lost,) = (await _withheld_detail(session, campaign.id))["lost"]
+            assert lost["cause"] == "unresolvable" and "no tenant realm" in lost["reason"]
+
+    @pytest.mark.asyncio
+    async def test_the_shared_key_is_enforced_on_the_channel(self, flat_stack):
+        """The Console runs in secure mode here: a Central Command that
+        presents the wrong key is refused, and refusal withholds."""
+        state, cc_db = flat_stack
+        async with cc_db() as session:
+            campaign, wave = await _planned_campaign(state, session)
+            await _device_grants(session, "kc-abc", "node-1", "node-2", "node-3")
+            await _ledger_approve(session, wave, "kc-abc", "abc@example.com")
+            await session.commit()
+            state.config.console_api_key = "not-the-key"
+            result = await _advance(state, session, campaign)
+            assert not result["advanced"], result
+            (lost,) = (await _withheld_detail(session, campaign.id))["lost"]
+            assert lost["cause"] == "unresolvable" and "401" in lost["reason"]
+
+    @pytest.mark.asyncio
+    async def test_an_answer_about_another_principal_or_realm_is_unresolvable(self, monkeypatch):
+        """The basis checks that the identity plane answered the question
+        it was asked. A body for a different realm or subject confers
+        nothing, whatever roles it lists."""
+        from harkeniq_cc import identity_client
+        from harkeniq_cc.target_authority import approver_current_basis
+
+        async def _other(state, *, realm, subject):
+            return {"realm": "elsewhere", "subject": subject, "found": True,
+                    "enabled": True, "realm_roles": ["tenant_owner"]}, ""
+
+        monkeypatch.setattr(identity_client, "current_authority", _other)
+        basis = await approver_current_basis(object(), realm=TENANT, subject="kc-abc")
+        assert basis.status == "unresolvable" and not basis.resolved
+        assert basis.permissions == ()
+
+        async def _no_roles(state, *, realm, subject):
+            return {"realm": realm, "subject": subject, "found": True, "enabled": True}, ""
+
+        monkeypatch.setattr(identity_client, "current_authority", _no_roles)
+        basis = await approver_current_basis(object(), realm=TENANT, subject="kc-abc")
+        assert basis.status == "unresolvable"
+
+    @pytest.mark.asyncio
+    async def test_a_resolved_basis_is_the_request_paths_answer(self, monkeypatch):
+        from harkeniq_cc import identity_client
+        from harkeniq_cc.auth import role_basis
+        from harkeniq_cc.target_authority import approver_current_basis
+
+        async def _ok(state, *, realm, subject):
+            return {"realm": realm, "subject": subject, "found": True, "enabled": True,
+                    "realm_roles": ["default-roles-t", "operator", "auditor"]}, ""
+
+        monkeypatch.setattr(identity_client, "current_authority", _ok)
+        basis = await approver_current_basis(object(), realm=TENANT, subject="kc-abc")
+        role, permissions = role_basis(["default-roles-t", "operator", "auditor"])
+        assert basis.resolved and basis.role == role == "operator"
+        assert list(basis.permissions) == permissions
+        assert WAVE_PERMISSION in basis.permissions
+
+
+class TestOneRoleRuleNoRecordedBasis:
+    """Structural pins for A30.23: the request path and the dispatch gate
+    resolve a role through ONE function, the gate never reads the ledger's
+    recorded role, and the authority source has no default."""
+
+    def test_both_callers_resolve_roles_through_role_basis(self):
+        auth_src = (SRC / "auth.py").read_text()
+        ta_src = (SRC / "target_authority.py").read_text()
+
+        def _calls(src, fn_name):
+            tree = ast.parse(src)
+            fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                      and n.name == fn_name)
+            return {
+                (c.func.attr if isinstance(c.func, ast.Attribute) else
+                 c.func.id if isinstance(c.func, ast.Name) else "")
+                for c in ast.walk(fn) if isinstance(c, ast.Call)
+            }
+
+        assert "role_basis" in _calls(auth_src, "get_current_user")
+        assert "role_basis" in _calls(ta_src, "approver_current_basis")
+        # ...and `get_current_user` no longer computes a role inline.
+        assert "pick_role" not in _calls(auth_src, "get_current_user")
+        assert "ROLE_PERMISSIONS" not in _calls(auth_src, "get_current_user")
+
+    def test_the_dispatch_gate_never_reads_the_recorded_role(self):
+        src = (SRC / "target_authority.py").read_text()
+        assert "authority_snapshot" not in src, (
+            "the ledger's recorded role is evidence; the gate must not read it"
+        )
+        assert "ROLE_PERMISSIONS" not in src, (
+            "roles become permissions through auth.role_basis only"
+        )
+
+    def test_the_authority_source_is_required_not_defaulted(self):
+        import inspect
+
+        from harkeniq_cc.target_authority import (
+            revalidate_wave_authority,
+            wave_dispatch_authority,
+        )
+
+        for fn in (wave_dispatch_authority, revalidate_wave_authority):
+            param = inspect.signature(fn).parameters["authority_source"]
+            assert param.kind is inspect.Parameter.KEYWORD_ONLY
+            assert param.default is inspect.Parameter.empty, fn.__name__
+
+    def test_the_runner_supplies_the_production_source(self):
+        assert "campaign_runner.py:_advance_site" in _calls_by_function(
+            "current_authority_source"
+        )
+
+    def test_the_loss_causes_are_a_closed_set(self):
+        from harkeniq_cc.target_authority import BASIS_STATUSES, LOSS_CAUSES
+
+        assert LOSS_CAUSES == {
+            "current_role", "scope", "principal_not_found",
+            "principal_disabled", "unresolvable",
+        }
+        assert BASIS_STATUSES == {
+            "resolved", "principal_not_found", "principal_disabled", "unresolvable",
+        }

@@ -49,7 +49,7 @@ from harkeniq_cc.db.repos import ApprovalRecordRepo, CampaignRepo, ScopeGrantRep
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.scope import SCOPE_DEVICE
 
-from tests.unit.cc.conftest import seed_tenant_admin
+from tests.unit.cc.conftest import ConsoleRealm, seed_tenant_admin
 
 DSN = os.environ.get("HARKEN_TEST_CC_PG_DSN", "")
 PLAN = "pg-plan-hash"
@@ -86,6 +86,24 @@ def _fake_sm(monkeypatch):
     yield
 
 
+#: A30.23: the identity plane each test's Central Command asks, at
+#: dispatch, for every approver's CURRENT realm roles. One per test; the
+#: real Console internal router in secure mode over the Keycloak double.
+_REALM: dict = {}
+
+
+@pytest.fixture(autouse=True)
+async def _identity_plane(monkeypatch):
+    realm = await ConsoleRealm(f"s1-realm-{uuid.uuid4().hex[:8]}").start()
+    realm.person("kc-owner", "tenant_owner")
+    realm.person("kc-abc", "operator")
+    realm.wire(monkeypatch)
+    _REALM["current"] = realm
+    yield realm
+    _REALM.pop("current", None)
+    await realm.stop()
+
+
 class Stack:
     def __init__(self, app, state, tenant):
         self.app, self.state, self.tenant = app, state, tenant
@@ -113,6 +131,7 @@ async def _stack() -> Stack:
     )
     app = create_app(state)
     await seed_tenant_admin(sessionmaker, tenant, "kc-owner")
+    _REALM["current"].attach(state)
     stack = Stack(app, state, tenant)
 
     async def _fake():
@@ -319,3 +338,55 @@ async def test_the_timestamptz_expiry_boundary_holds_for_one_target():
         await session.commit()
     r = await _approve(stack.as_person("kc-lapsed"), estate["subject"])
     assert r.status_code == 200 and r.json()["decision"] == "approved", r.text
+
+
+@pytest.mark.asyncio
+async def test_a_realm_role_demotion_after_approval_withholds_until_restored(_identity_plane):
+    """A30.23 on the production engine. The approver holds `operator` in
+    the realm and grants over every device; they approve the immutable
+    wave; the realm demotes them -- grants and JSONB ledger untouched --
+    and the same approved wave is withheld with `current_role` named on
+    the audit entry. Restoring the role lets the SAME approval count."""
+    realm = _identity_plane
+    stack = await _stack()
+    estate = await _estate(stack)
+    a, b, c = estate["devices"]
+    await _grant(stack, "kc-abc", a, b, c)
+    r = await _approve(stack.as_person("kc-abc"), estate["subject"])
+    assert r.status_code == 200 and r.json()["decision"] == "approved", r.text
+    (record,) = await _records(stack, estate["subject"])
+    assert record.authority_snapshot["role"] == "operator"
+
+    realm.demote("kc-abc", "operator")
+    realm.promote("kc-abc", "viewer")
+    result = await _advance(stack, estate["campaign_id"])
+    assert not result["advanced"], result
+    assert "causes: current_role" in result["blocked"][0]["reason"]
+    assert FakeSM.dispatches == [], "nothing crossed CC -> SM"
+    assert (await _wave(stack, estate["campaign_id"])).status == WAVE_APPROVED
+    (record,) = await _records(stack, estate["subject"])
+    assert record.authority_snapshot["role"] == "operator", "the JSONB ledger is untouched"
+    async with stack.sessionmaker() as session:
+        live = [g for g in await ScopeGrantRepo(session).list_for_principal(stack.tenant, "kc-abc")
+                if g.revoked_at is None]
+        assert len(live) == 3, "the grants are intact: this is not a scope refusal"
+        row = (await session.execute(
+            sa.select(CCAuditLog).where(
+                CCAuditLog.action == "campaign.wave_withheld",
+                CCAuditLog.subject == estate["campaign_id"],
+            )
+        )).scalars().one()
+        (lost,) = row.detail["lost"]
+        assert lost == {
+            "approver_ref": "kc-abc", "cause": "current_role", "current_role": "viewer",
+            "reason": "", "uncovered": 3, "of": 3,
+        }
+        for target in await CampaignRepo(session).targets(estate["campaign_id"]):
+            assert target.revalidation == REVAL_AUTHORITY_LOST
+
+    realm.promote("kc-abc", "operator")
+    result = await _advance(stack, estate["campaign_id"])
+    assert result["advanced"], result
+    assert (await _wave(stack, estate["campaign_id"])).status == WAVE_DISPATCHED
+    assert sorted(d["device_agent_id"] for d in FakeSM.dispatches) == [a, b, c]
+    assert len(await _records(stack, estate["subject"])) == 1, "nobody approved twice"

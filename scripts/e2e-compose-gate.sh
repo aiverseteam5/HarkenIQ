@@ -5439,6 +5439,159 @@ echo "  CONTROL: 3 dispatch rows for [b, c, d]; SM directives for the campaign a
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/policies/$S1_POLICY" > /dev/null
 
+# ===========================================================================
+# A6-4B0b-S1 remediation (A30.23), live: the approver's permission basis at
+# dispatch is their CURRENT Keycloak realm role, never the role the approval
+# recorded. The review's HIGH on 494432b: an operator approves an immutable
+# wave, is then DEMOTED IN KEYCLOAK to a role without action.approve, keeps
+# every scope grant -- and the historical approval still counted. Here, on
+# the real identity plane: the demotion is a realm role-mapping DELETE
+# through the Keycloak admin API, nothing at Central Command changes, the
+# completed approval does not execute, the cause on the audit entry is
+# `current_role` (not scope), and putting the mapping back lets the SAME
+# two ledger rows dispatch the wave.
+# ===========================================================================
+
+step "A6-4B0b-S1/AQ (A30.23): an approver demoted in Keycloak after approving -> the completed approval does not execute"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S1D_POLICY=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"gate-s1-demotion-dual","action_type":"COLLECT_DIAGNOSTICS","required_approvers":2}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+tenant_realm_user gate-s1-demote@demo gate-s1-demote operator
+S1D_TOKEN=$(tenant_token gate-s1-demote@demo gate-s1-demote)
+S1D_SUB=$(s1_sub "$S1D_TOKEN")
+for S1_DEV in b c d; do
+  [ "$(grant "$S1D_SUB" device gate-agent-$S1_DEV operator)" = "201" ] || { echo "grant demote/$S1_DEV refused" >&2; exit 1; }
+done
+S1D_CAMP=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"s1-demotion\",\"description\":\"A30.23\",
+       \"action_type\":\"COLLECT_DIAGNOSTICS\",\"params\":{},\"max_wave_size\":5,
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_B\"}]}" \
+  http://localhost:8090/api/campaigns/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1D_CAMP/preflight" > /dev/null
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1D_CAMP/submit" > /dev/null
+S1D_SUBJECT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1D_CAMP/waves" | python3 -c "
+import sys, json
+waves = json.load(sys.stdin)['waves']
+assert len(waves) == 1, waves
+(w,) = waves
+assert sorted(w['device_agent_ids']) == ['gate-agent-b', 'gate-agent-c', 'gate-agent-d'], w
+print(w['subject_ref'])")
+S1D_ACTOR="campaign:$S1D_CAMP@v1"
+# 3. the operator approves the whole wave WHILE holding action.approve.
+curl -sf -X POST -H "Authorization: Bearer $S1D_TOKEN" \
+  "http://localhost:8090/api/approvals/$S1D_SUBJECT/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("recorded") is True and d["approval"]["received"] == 1, d
+print("  operator -> recorded, 1 of 2 while holding operator over [b, c, d]")
+'
+[ "$(s1_cc "SELECT authority_snapshot->>'role' FROM cc_approval_records WHERE subject_ref='$S1D_SUBJECT'")" = "operator" ] || {
+  echo "the ledger did not record the operator role" >&2; exit 1; }
+# 4. DEMOTED IN KEYCLOAK: the realm role mapping is deleted through the
+# admin API. Nothing at Central Command is touched -- no grant, no ledger
+# row, no wave.
+KC_ADMIN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+S1D_ROLE=$(curl -sf "http://localhost:8180/admin/realms/tenant-demo/roles/operator" \
+  -H "Authorization: Bearer $KC_ADMIN")
+curl -sf -X DELETE \
+  "http://localhost:8180/admin/realms/tenant-demo/users/$S1D_SUB/role-mappings/realm" \
+  -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+  -d "[$S1D_ROLE]" > /dev/null
+curl -sf "http://localhost:8180/admin/realms/tenant-demo/users/$S1D_SUB/role-mappings/realm/composite" \
+  -H "Authorization: Bearer $KC_ADMIN" | python3 -c "
+import sys, json
+names = sorted(r['name'] for r in json.load(sys.stdin))
+assert 'operator' not in names, names
+print('  Keycloak: operator mapping deleted; effective realm roles now', names)"
+# The identity plane reports it through the read Central Command uses.
+curl -sf -H "Authorization: Bearer ${HARKENIQ_INTERNAL_API_KEY:-demo-console-cc-key}" \
+  "http://localhost:8100/api/internal/tenants/by-realm/tenant-demo/principals/$S1D_SUB/authority" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['found'] is True and d['enabled'] is True and 'operator' not in d['realm_roles'], d
+print('  Console internal read: found, enabled, realm_roles =', d['realm_roles'])"
+# The request path agrees: a FRESH token for the demoted user no longer
+# satisfies action.approve.
+S1D_FRESH=$(tenant_token gate-s1-demote@demo gate-s1-demote)
+S1D_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $S1D_FRESH" \
+  "http://localhost:8090/api/approvals/$S1D_SUBJECT/approve")
+[ "$S1D_CODE" = "403" ] || { echo "a fresh token for the demoted user was not refused ($S1D_CODE)" >&2; exit 1; }
+echo "  a fresh token for the demoted user -> 403 on approve (the request path and the dispatch gate share one role rule)"
+# 5. grants otherwise valid: three live device grants, none revoked.
+[ "$(s1_cc "SELECT count(*) FROM cc_scope_grants WHERE principal_ref='$S1D_SUB' AND revoked_at IS NULL")" = "3" ] || {
+  echo "the demoted approver's grants were not left intact" >&2; exit 1; }
+# The owner completes the two-approver decision; the wave is APPROVED.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$S1D_SUBJECT/approve" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d.get("decision") == "approved", d
+print("  owner -> 2 of 2; the wave is APPROVED")
+'
+# 6. the actual dispatch path: WITHHELD, and the cause is the CURRENT ROLE.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1D_CAMP/advance" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert not d["advanced"], d
+reasons = [b.get("reason", "") for b in d["blocked"]]
+assert any("no longer hold" in r and "causes: current_role" in r for r in reasons), reasons
+print("  advance -> WITHHELD:", [r for r in reasons if "no longer hold" in r][0])
+'
+[ "$(s1_cc "SELECT count(*) FROM cc_campaign_dispatches WHERE campaign_id='$S1D_CAMP'")" = "0" ] || {
+  echo "the withheld wave wrote dispatch rows" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_directives WHERE actor='$S1D_ACTOR'")" = "0" ] || {
+  echo "the withheld wave reached the Site Manager" >&2; exit 1; }
+[ "$(s1_cc "SELECT status FROM cc_campaign_waves WHERE subject_ref='$S1D_SUBJECT'")" = "approved" ] || {
+  echo "the historical decision was rewritten" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='$S1D_SUBJECT'")" = "2" ] || {
+  echo "the ledger lost a record" >&2; exit 1; }
+[ "$(s1_cc "SELECT authority_snapshot->>'role' FROM cc_approval_records WHERE subject_ref='$S1D_SUBJECT' AND approver_ref='$S1D_SUB'")" = "operator" ] || {
+  echo "the recorded role was rewritten -- the ledger is evidence and must not change" >&2; exit 1; }
+s1_cc "SELECT detail->'lost' FROM cc_audit_log WHERE action='campaign.wave_withheld' AND subject='$S1D_CAMP'" | python3 -c "
+import sys, json
+(lost,) = json.loads(sys.stdin.read())
+assert lost['approver_ref'] == '$S1D_SUB', lost
+assert lost['cause'] == 'current_role' and lost['current_role'] == 'viewer', lost
+assert lost['uncovered'] == 3 and lost['of'] == 3, lost
+print('  audit names the cause: current_role (now viewer), 3 of 3 targets -- not scope, not identity, not an outage')"
+echo "  zero dispatch rows, zero SM directives, wave still approved, 2 ledger rows, recorded role still 'operator', 3 live grants"
+
+step "A6-4B0b-S1/AR (A30.23): restoring the realm role lets the SAME approval count again"
+# A fresh master token: the admin token minted in AQ is short-lived.
+KC_ADMIN=$(curl -sf -X POST \
+  "http://localhost:8180/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+curl -sf -X POST \
+  "http://localhost:8180/admin/realms/tenant-demo/users/$S1D_SUB/role-mappings/realm" \
+  -H "Authorization: Bearer $KC_ADMIN" -H "Content-Type: application/json" \
+  -d "[$S1D_ROLE]" > /dev/null
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/campaigns/$S1D_CAMP/advance" > /dev/null || true
+wait_for "the same approved wave dispatched once the role returned" 120 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT status FROM cc_campaign_waves WHERE subject_ref='$S1D_SUBJECT'\" | grep -q dispatched"
+[ "$(s1_cc "SELECT count(*) FROM cc_campaign_dispatches WHERE campaign_id='$S1D_CAMP'")" = "3" ] || {
+  echo "expected three dispatch rows for the wave" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='$S1D_SUBJECT'")" = "2" ] || {
+  echo "a restore must not produce a new approval" >&2; exit 1; }
+echo "  CONTROL: 3 dispatch rows for [b, c, d] on the SAME 2 ledger rows; SM directives for the campaign actor: $(s1_sm "SELECT count(*) FROM sm_directives WHERE actor='$S1D_ACTOR'")"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$S1D_POLICY" > /dev/null
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

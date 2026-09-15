@@ -352,3 +352,55 @@ async def tenant_owners_by_realm(
             if u.keycloak_user_id
         ],
     }
+
+
+@router.get("/tenants/by-realm/{realm}/principals/{subject}/authority")
+async def principal_authority_by_realm(
+    realm: str, subject: str, request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A30.23: one principal's CURRENT identity facts in a tenant realm.
+
+    Central Command re-derives a wave approver's permission basis at
+    dispatch from the realm roles they hold NOW -- not the role their
+    approval recorded -- and holds no Keycloak admin credential of its
+    own (A20). So it asks here, over the channel it already uses, and
+    this endpoint answers identity FACTS only: whether the realm holds
+    the subject, whether the account is enabled, and its effective realm
+    roles. Turning those into permissions is CC's `auth.role_basis`;
+    deciding what they authorize is CC's scope resolver. Nothing about
+    scope or the ledger crosses this boundary.
+
+    Resolved by REALM, as the owner read above is: the realm must be a
+    tenant's (404 otherwise), which is what keeps a subject from another
+    realm from being asked about under this tenant's name. An absent
+    subject is `found: false` with 200 -- a fact -- while a Keycloak
+    failure is 502, so the caller can tell "gone" from "could not ask"
+    and fails closed on both for different stated reasons.
+    """
+    from harkeniq_console.keycloak_admin import KeycloakError
+
+    tenant = await TenantRepo(session).get_by_realm(realm)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="unknown realm")
+    keycloak = getattr(request.app.state.console, "keycloak_admin", None)
+    if keycloak is None:
+        raise HTTPException(
+            status_code=503, detail="keycloak admin is not configured",
+        )
+    try:
+        authority = await keycloak.get_user_authority(realm, subject)
+    except KeycloakError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"keycloak: {exc.message}",
+        ) from exc
+    if authority is None:
+        return {
+            "realm": realm, "subject": subject,
+            "found": False, "enabled": False, "realm_roles": [],
+        }
+    return {
+        "realm": realm, "subject": subject, "found": True,
+        "enabled": bool(authority.get("enabled", False)),
+        "realm_roles": list(authority.get("realm_roles") or []),
+    }
