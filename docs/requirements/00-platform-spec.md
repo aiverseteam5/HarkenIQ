@@ -3655,3 +3655,58 @@ evaluated input; `InstallSkill` keeps a pre-E0.2 unresolved-site
 fallback; `_scope_rule_within` never resolves a `device` rule's site (a
 site administrator is refused on a device at their own site —
 over-restrictive, never fail-open).
+
+**A30.23 — A6-4B0b-S1 pre-merge remediation (independent review, HIGH):
+the approver's permission basis at dispatch is CURRENT, never the role
+the approval recorded (recorded 2026-09-15, BEFORE the code).** A30.22
+stated a limit rather than hiding it: the dispatch-time re-resolution
+took `authority_snapshot.role` — the role the approver's token carried
+WHEN they decided — as the permission basis and applied it to the grants
+they hold NOW, so a Keycloak realm-role demotion after approval was
+invisible to the gate. The review ruled the stated limit a HIGH, and it is
+right: a principal's authority has two halves, the scope grants Central
+Command holds and the realm role Keycloak holds, and A30.17's rule —
+approval is historical governance evidence; execution permission is
+CURRENT authority — admits no half. An operator who held `action.approve`
+when they approved an immutable wave over [A, B, C] and was then demoted
+to a role without it, their grants untouched, still counted toward that
+wave's dispatch. **Ratified.** (1) The permission basis at dispatch is
+derived from the approver's CURRENT effective realm roles in the tenant
+realm, turned into permissions by the SAME rule the request path uses —
+`auth.role_basis`, `pick_role` over the ranked roles then
+`ROLE_PERMISSIONS`, ONE function that `get_current_user` and the dispatch
+gate both call, pinned structurally — and then resolved through the ONE
+scope loader exactly as before, so the grant-recorded role ceiling of
+A23-3 still narrows inside `resolve()`. No second RBAC, no second role
+resolver, no route-specific permission logic, no new permission;
+`MACHINE_PRINCIPAL_CEILING` unchanged. (2) Central Command holds no
+Keycloak admin credential (A20) and asks the Console over the EXISTING
+CC→Console internal channel, which gains one READ —
+`GET /api/internal/tenants/by-realm/{realm}/principals/{subject}/authority`,
+answering found / enabled / effective realm roles, resolved by realm
+exactly as A23-5's owner read is. It is an identity-plane read on the
+shared-key channel, not a tenant-plane route: `ROUTE_CONTRACT` and
+`MACHINE_SURFACE` are unchanged and no human or machine principal can
+reach it. (3) FAIL CLOSED, with the cause named. An approver the realm no
+longer holds, a disabled account, a realm the Console cannot bind to a
+tenant, an unreachable Console and an unconfigured realm each mean that
+approval does NOT stand — never "the recorded role", never a silent
+default. Each lost approver on the withheld audit entry carries a cause
+from a closed set (`current_role`, `principal_not_found`,
+`principal_disabled`, `unresolvable`, `scope`) and the current role where
+one was resolved, so a demotion is distinguishable from a revocation and
+from an outage. (4) The ledger is not touched. `authority_snapshot.role`
+stays exactly as written — evidence of the authority held at decision
+time — and a restored role lets the SAME historical approval count again:
+the approval is re-established as current authority, not re-made, and
+nobody approves twice. **Stated rather than promised:** no lock is held
+between the current-authority read and the CC→SM call (the interval
+A30.22 already named); `pick_role`'s `viewer` default for a principal
+with no ranked realm role is the request path's own rule, kept identical
+here so the two paths cannot disagree, and `viewer` carries no
+`action.approve`. **Unchanged:** the permission vocabulary (25),
+`ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE`, every
+Central Command route, the schema (CC head `0026`; the Console schema is
+untouched), autonomy, proposal admission and dispatch, SM and node
+authority, and every S1 boundary A30.22 ratified. General B0b, B0c, B1,
+B2 and the taxonomy remain not started.
