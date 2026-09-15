@@ -99,3 +99,64 @@ class TestMockKeycloakAdmin:
         with pytest.raises(KeycloakError) as exc_info:
             await kc.delete_realm("missing")
         assert exc_info.value.status_code == 404
+
+
+class TestGetUserAuthority:
+    """A30.23: the read Central Command's dispatch gate stands on."""
+
+    async def test_mock_reports_enabled_and_sorted_roles(self, kc):
+        await kc.create_realm("acme")
+        uid = await kc.create_user("acme", "op@acme.com")
+        await kc.assign_realm_role("acme", uid, "operator")
+        await kc.assign_realm_role("acme", uid, "auditor")
+        assert await kc.get_user_authority("acme", uid) == {
+            "enabled": True, "realm_roles": ["auditor", "operator"],
+        }
+
+    async def test_mock_absent_user_is_none(self, kc):
+        await kc.create_realm("acme")
+        assert await kc.get_user_authority("acme", "nobody") is None
+
+    async def test_mock_unknown_realm_raises(self, kc):
+        with pytest.raises(KeycloakError):
+            await kc.get_user_authority("nope", "x")
+
+    async def test_real_client_asks_the_user_record_and_the_composite_mapping(self):
+        """The real client's two admin calls and how it reads them: the
+        user record for `enabled`, the COMPOSITE realm mapping for the
+        effective roles (what a token's realm_access.roles carries), an
+        absent user as None, and any other failure re-raised."""
+        from harkeniq_console.keycloak_admin import KeycloakAdminClient
+
+        client = KeycloakAdminClient("http://kc", "admin", "pw")
+        calls: list[str] = []
+
+        class _Resp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        async def _request(method, path, *, json=None, context=""):
+            calls.append(f"{method} {path}")
+            if path.endswith("/role-mappings/realm/composite"):
+                return _Resp([{"id": "1", "name": "operator"}, {"id": "2", "name": "auditor"},
+                              {"id": "3"}])
+            if path.endswith("/users/gone"):
+                raise KeycloakError("get user 'gone' not found", status_code=404)
+            if path.endswith("/users/broken"):
+                raise KeycloakError("admin authentication failed", status_code=401)
+            return _Resp({"id": "u1", "enabled": True})
+
+        client._request = _request  # type: ignore[method-assign]
+        assert await client.get_user_authority("acme", "u 1") == {
+            "enabled": True, "realm_roles": ["auditor", "operator"],
+        }
+        assert calls == [
+            "GET /admin/realms/acme/users/u%201",
+            "GET /admin/realms/acme/users/u%201/role-mappings/realm/composite",
+        ]
+        assert await client.get_user_authority("acme", "gone") is None
+        with pytest.raises(KeycloakError):
+            await client.get_user_authority("acme", "broken")

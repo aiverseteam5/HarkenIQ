@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -64,7 +65,7 @@ async def get(state, path: str) -> tuple[Optional[dict], str]:
     """
     console_url = getattr(state.config, "console_url", "") or ""
     if not console_url:
-        return None, "no Console URL is configured, so the owner cannot be resolved"
+        return None, "no Console URL is configured, so the identity plane cannot be asked"
     url, headers = _endpoint(state, path)
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -122,3 +123,28 @@ async def report_summary(state, *, tenant_id: str, summary: dict) -> str:
         {"tenant_id": tenant_id, **summary},
     )
     return reason
+
+
+async def current_authority(
+    state, *, realm: str, subject: str
+) -> tuple[Optional[dict], str]:
+    """A30.23: one principal's CURRENT identity facts in the tenant realm.
+
+    The campaign runner re-derives each wave approver's permission basis
+    at dispatch from the realm roles they hold NOW, not the role their
+    approval recorded. Keycloak holds that answer and the Console holds
+    the only admin credential, so this is the read half of the channel
+    again -- the same shape as A23-5's owner read, resolved by realm.
+
+    The answer is identity facts only (`found`, `enabled`,
+    `realm_roles`); turning them into permissions is Central Command's
+    `auth.role_basis`, and deciding what they authorize is the scope
+    resolver's. Any failure returns a reason, and the caller treats a
+    reason as "cannot be shown to hold authority" -- never as the role on
+    record.
+    """
+    return await get(
+        state,
+        f"/api/internal/tenants/by-realm/{quote(realm, safe='')}"
+        f"/principals/{quote(subject, safe='')}/authority",
+    )

@@ -106,3 +106,136 @@ async def seed_tenant_people(sessionmaker, tenant: str, people):
                 granted_by="test fixture",
             )
         await session.commit()
+
+
+class ConsoleRealm:
+    """A30.23: the identity plane, as the campaign runner reaches it at dispatch.
+
+    The REAL Console internal router in SECURE mode (the shared key is
+    enforced, so a Central Command that stopped sending it would be
+    refused), over a real Console database with the tenant bound to
+    `realm`, and the in-memory Keycloak double behind it. `wire()` routes
+    Central Command's `identity_client` through this application
+    in-process, so the production read -- URL, key, realm binding, the
+    `found`/`enabled`/`realm_roles` answer and the role rule that turns it
+    into a basis -- runs end to end. Only the HTTP socket is replaced.
+
+    Subjects are CHOSEN here rather than minted, because the ledger
+    names them: a test writes `approver_ref="kc-abc"` and this realm must
+    hold exactly that subject. The double's storage is seeded directly
+    for that reason, the way its own `create_user` seeds it.
+    """
+
+    KEY = "shared-cc-key"
+
+    def __init__(self, realm: str) -> None:
+        self.realm = realm
+        self.app = None
+        self.keycloak = None
+        self._engine = None
+
+    async def start(self) -> "ConsoleRealm":
+        from fastapi import FastAPI
+
+        from harkeniq_console.api.deps import get_session
+        from harkeniq_console.api.internal import router
+        from harkeniq_console.config import ConsoleConfig
+        from harkeniq_console.db.base import create_all, make_engine, make_sessionmaker
+        from harkeniq_console.db.repos import TenantRepo
+        from harkeniq_console.keycloak_admin import MockKeycloakAdminClient
+        from harkeniq_console.runtime import AppState
+
+        self._engine = make_engine("sqlite+aiosqlite:///:memory:")
+        await create_all(self._engine)
+        sessionmaker = make_sessionmaker(self._engine)
+        async with sessionmaker() as session:
+            repo = TenantRepo(session)
+            tenant = await repo.create(
+                name=self.realm, slug=self.realm, billing_country="US", currency="USD",
+            )
+            await repo.update(tenant, keycloak_realm=self.realm)
+            await session.commit()
+        self.keycloak = MockKeycloakAdminClient()
+        await self.keycloak.create_realm(self.realm)
+
+        app = FastAPI()
+        app.state.console = AppState(
+            config=ConsoleConfig(insecure=False, internal_api_key=self.KEY),
+        )
+        app.state.console.keycloak_admin = self.keycloak
+
+        async def _session():
+            async with sessionmaker() as s:
+                yield s
+
+        app.dependency_overrides[get_session] = _session
+        app.include_router(router)
+        self.app = app
+        return self
+
+    async def stop(self) -> None:
+        if self._engine is not None:
+            await self._engine.dispose()
+
+    # -- the people the realm holds ------------------------------------------
+
+    def person(self, subject: str, *roles: str, enabled: bool = True) -> str:
+        self.keycloak._users[self.realm][subject] = {
+            "id": subject, "username": f"{subject}@example.com",
+            "email": f"{subject}@example.com", "firstName": subject,
+            "lastName": "Person", "emailVerified": True, "enabled": enabled,
+        }
+        self.keycloak._role_mappings[(self.realm, subject)] = list(roles)
+        return subject
+
+    def roles_of(self, subject: str) -> list[str]:
+        return list(self.keycloak._role_mappings.get((self.realm, subject), []))
+
+    def demote(self, subject: str, role: str) -> None:
+        """Remove ONE realm-role mapping -- what an administrator does in
+        Keycloak. The subject, its grants and its ledger rows are untouched."""
+        mapping = self.keycloak._role_mappings[(self.realm, subject)]
+        assert role in mapping, f"{subject} does not hold {role}"
+        mapping.remove(role)
+
+    def promote(self, subject: str, role: str) -> None:
+        self.keycloak._role_mappings[(self.realm, subject)].append(role)
+
+    def set_enabled(self, subject: str, enabled: bool) -> None:
+        self.keycloak._users[self.realm][subject]["enabled"] = enabled
+
+    def delete(self, subject: str) -> None:
+        del self.keycloak._users[self.realm][subject]
+        self.keycloak._role_mappings.pop((self.realm, subject), None)
+
+    # -- wiring Central Command to it ----------------------------------------
+
+    def wire(self, monkeypatch) -> None:
+        """Route `identity_client`'s HTTP through this application.
+
+        Only `identity_client`'s view of httpx is replaced, and only the
+        transport is injected: the URL it builds, the key it sends and
+        the answer it parses are the production ones.
+        """
+        import types
+
+        import httpx
+
+        from harkeniq_cc import identity_client
+
+        real = httpx.AsyncClient
+        app = self.app
+
+        def _client(*args, **kwargs):
+            kwargs.setdefault("transport", httpx.ASGITransport(app=app))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(
+            identity_client, "httpx", types.SimpleNamespace(AsyncClient=_client),
+        )
+
+    def attach(self, state) -> None:
+        """Point one Central Command at this realm and this Console."""
+        state.config.keycloak_realm = self.realm
+        state.config.console_url = "http://console.test"
+        state.config.console_api_key = self.KEY

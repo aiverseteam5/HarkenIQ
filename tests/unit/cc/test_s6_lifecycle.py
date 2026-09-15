@@ -22,11 +22,12 @@ from harkeniq_cc.campaign_runner import (
     plan_sites,
     preflight,
 )
+from harkeniq_cc.approval_policy import SUBJECT_CAMPAIGN_WAVE
 from harkeniq_cc.campaigns import WAVE_APPROVED, WAVE_PENDING_APPROVAL, WAVE_VOIDED
 from harkeniq_cc.config import CCConfig
 from harkeniq_cc.db.base import create_all, make_engine, make_sessionmaker
 from harkeniq_cc.db.models import CCFleetCache, CCSite
-from harkeniq_cc.db.repos import CampaignRepo
+from harkeniq_cc.db.repos import ApprovalRecordRepo, CampaignRepo, ScopeGrantRepo
 from harkeniq_cc.runtime import AppState
 from harkeniq_sm.approvals import ApprovalService
 from harkeniq_sm.config import SMConfig
@@ -38,14 +39,23 @@ from harkeniq_sm.db.base import (
 from harkeniq_sm.db.models import Device, DomainMembership, FaultDomain, Site
 from harkeniq_sm.grpc_server import SiteManagerServiceServicer
 
+from tests.unit.cc.conftest import ConsoleRealm
+
 TENANT = "t1"
+OWNER = ("kc-owner", "owner@example.com")
 CC_SITE_ID = "cc-site-1"
 SERVER = declare("redfish", ["IDENTIFY_LED", "COLLECT_DIAGNOSTICS"], "server")
 
 
 @pytest.fixture
-async def stack():
-    """A real SM on a real port, and a CC pointed at it."""
+async def stack(monkeypatch):
+    """A real SM on a real port, and a CC pointed at it -- and, since
+    A30.23, an identity plane that vouches for the approving owner's
+    CURRENT realm role, because a wave whose approver cannot be shown to
+    hold `action.approve` NOW is withheld."""
+    realm = await ConsoleRealm(TENANT).start()
+    realm.person(OWNER[0], "tenant_owner")
+    realm.wire(monkeypatch)
     sm_db_engine = sm_engine("sqlite+aiosqlite:///:memory:")
     await sm_create_all(sm_db_engine)
     sm_db = sm_sessionmaker(sm_db_engine)
@@ -100,8 +110,10 @@ async def stack():
         config=CCConfig(tenant_id=TENANT, insecure=True),
         engine=cc_db_engine, sessionmaker=cc_db,
     )
+    realm.attach(state)
     yield state, cc_db, sm_db
     await server.stop(grace=None)
+    await realm.stop()
     await sm_db_engine.dispose()
     await cc_db_engine.dispose()
 
@@ -123,6 +135,44 @@ async def _preflight(state, session, campaign):
         scope_rules=await CampaignRepo(session).scopes(campaign.id),
         resolved_site_ids=[], actor="ops@example.com",
     )
+
+
+
+
+async def _approve_all_waves(session, campaign):
+    """Approve every wave the way production does: a named, GRANTED human
+    with a ledger record -- not a bare status write.
+
+    A30.22 (A6-4B0b-S1): the runner now re-asks, immediately before
+    dispatch, whether every approver who completed the decision STILL
+    holds action.approve over every device in the wave. A wave whose
+    status says `approved` with nobody on the ledger is exactly what that
+    gate must refuse, so this fixture has to approve for real.
+    """
+    grants = ScopeGrantRepo(session)
+    if not await grants.list_all(TENANT):
+        await grants.seed_first_grant(
+            tenant_id=TENANT, principal_ref=OWNER[0], role="tenant_owner",
+            realm="", granted_by="system:tenant_birth",
+            note="test fixture: the tenant's founding administrator",
+        )
+    repo = CampaignRepo(session)
+    ledger = ApprovalRecordRepo(session)
+    for wave in await repo.waves(campaign.id):
+        if wave.status != WAVE_PENDING_APPROVAL:
+            continue
+        wave.status = WAVE_APPROVED
+        wave.decided_by = OWNER[1]
+        await ledger.record(
+            tenant_id=TENANT, subject_type=SUBJECT_CAMPAIGN_WAVE,
+            subject_ref=wave.subject_ref, approver_ref=OWNER[0],
+            approver_email=OWNER[1], decision="approved",
+            authority_snapshot={"role": "tenant_owner",
+                                "permission": "action.approve",
+                                "target_site_id": wave.site_id,
+                                "target_device_agent_ids":
+                                    list(wave.device_agent_ids or [])},
+        )
 
 
 class TestPlanningOverTheWire:
@@ -260,9 +310,7 @@ class TestPlanChangeRefusesTheWave:
             await build_waves(
                 session, tenant_id=TENANT, campaign=campaign, autonomous=False,
             )
-            repo = CampaignRepo(session)
-            for wave in await repo.waves(campaign.id):
-                wave.status = WAVE_APPROVED
+            await _approve_all_waves(session, campaign)
             campaign.status = "running"
             await session.commit()
 
@@ -293,12 +341,11 @@ class TestIdempotency:
             await build_waves(
                 session, tenant_id=TENANT, campaign=campaign, autonomous=False,
             )
-            repo = CampaignRepo(session)
-            for wave in await repo.waves(campaign.id):
-                wave.status = WAVE_APPROVED
+            await _approve_all_waves(session, campaign)
             campaign.status = "running"
             await session.commit()
 
+            repo = CampaignRepo(session)
             await advance_campaign(session, state, tenant_id=TENANT, campaign=campaign)
             await session.commit()
             first = len(await repo.dispatches(campaign.id))
@@ -336,9 +383,7 @@ class TestWaveSettlement:
             await build_waves(
                 session, tenant_id=TENANT, campaign=campaign, autonomous=False,
             )
-            repo = CampaignRepo(session)
-            for wave in await repo.waves(campaign.id):
-                wave.status = WAVE_APPROVED
+            await _approve_all_waves(session, campaign)
             campaign.status = "running"
             await session.commit()
 
@@ -369,9 +414,7 @@ class TestWaveSettlement:
             await build_waves(
                 session, tenant_id=TENANT, campaign=campaign, autonomous=False,
             )
-            repo = CampaignRepo(session)
-            for wave in await repo.waves(campaign.id):
-                wave.status = WAVE_APPROVED
+            await _approve_all_waves(session, campaign)
             campaign.status = "running"
             await session.commit()
 

@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -60,6 +60,15 @@ from harkeniq_cc.approval_policy import (
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.campaigns import WAVE_PENDING_APPROVAL
+from harkeniq_cc.target_authority import (
+    WAVE_PERMISSION,
+    AuthorizedTarget,
+    TargetIntegrityError,
+    governing_policy_for_targets,
+    uncovered_targets,
+    wave_subject_matches,
+    wave_targets,
+)
 from harkeniq_cc.autonomy import action_risk_map
 from harkeniq_cc.db.repos import (
     AgentProposalRepo,
@@ -301,16 +310,37 @@ async def _record_and_evaluate(
     site_id: str,
     decision: str,
     scope,
+    targets: Optional[Sequence[AuthorizedTarget]] = None,
 ) -> dict:
     """Apply the policy to one approver's decision. Returns the progress block.
 
     Raises HTTPException for a refusal the approver must see (duplicate,
     out of scope, not in the required group) and ApprovalIncomplete when
     the decision was validly recorded but the subject still needs more.
+
+    A30.22: a subject over a SET of devices passes `targets` and an empty
+    `device_agent_id` -- there is no representative device. The policy is
+    then resolved over every class in the set and the scope gate asks
+    EVERY target; a single-target subject passes `device_agent_id` as
+    before and nothing about its path changes.
     """
-    policy, group, members = await governing_policy(
-        session, tenant_id, action_type, device_agent_id,
-    )
+    if targets is not None:
+        policy, group, members, conflict = await governing_policy_for_targets(
+            session, tenant_id, action_type, targets,
+        )
+        if conflict:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "the devices in this site-wave are governed by different "
+                    "approval policies, so no single decision can sign it; "
+                    "split the campaign by device class"
+                ),
+            )
+    else:
+        policy, group, members = await governing_policy(
+            session, tenant_id, action_type, device_agent_id,
+        )
     records_repo = ApprovalRecordRepo(session)
 
     # An approver decides a subject once. The unique constraint is the
@@ -351,7 +381,25 @@ async def _record_and_evaluate(
     # anyway, and relying on that left the refusal saying "the site it
     # targets" about a subject that targets no site.
     tenant_level = subject_type == SUBJECT_AGENT_ACTIVATION
-    if not scope.permits(
+    if targets is not None:
+        # A30.22: a SET is authorized only when EVERY device in it is. Not
+        # the first, not any, not the site as a proxy -- each target is
+        # asked with its own id and CURRENT class, so a `device` grant
+        # reaches one device, a `device_class` grant reaches the targets
+        # of that class and no other, and one uncovered device refuses
+        # the whole wave. Refused, not recorded, for the same reason as
+        # the single-target case below.
+        missing = uncovered_targets(scope, WAVE_PERMISSION, targets)
+        if missing:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"this {action_type} is outside your authorized scope: "
+                    f"you do not hold {WAVE_PERMISSION!r} over {len(missing)} "
+                    f"of the {len(targets)} devices this site-wave targets"
+                ),
+            )
+    elif not scope.permits(
         "action.approve",
         site_id=site_id,
         device_agent_id=device_agent_id,
@@ -388,6 +436,15 @@ async def _record_and_evaluate(
             "permission": "action.approve",
             "target_site_id": site_id,
             "target_device_agent_id": device_agent_id,
+            # A30.22: for a SET, the evidence names the whole set the
+            # decision authorized. Recording one device of N would leave
+            # the ledger saying less than the decision did.
+            "target_device_agent_ids": (
+                [t.device_agent_id for t in targets] if targets is not None else []
+            ),
+            "target_device_classes": (
+                sorted({t.device_class for t in targets}) if targets is not None else []
+            ),
             "enforcement": scope.enforcement,
         },
     )
@@ -403,6 +460,9 @@ async def _record_and_evaluate(
             "subject_type": subject_type,
             "action_type": action_type,
             "device_agent_id": device_agent_id,
+            "device_agent_ids": (
+                [t.device_agent_id for t in targets] if targets is not None else []
+            ),
             "site_id": site_id,
             "policy_id": getattr(policy, "id", None),
             "group_id": getattr(group, "id", None),
@@ -771,6 +831,32 @@ async def _decide_campaign_wave(
         )
     decided_by = user.email or user.user_id
 
+    # A30.22: the subject IS the exact device set. Before any authority
+    # question, the stored wave must still hash to the subject the ledger
+    # records against (the digest is a verified binding, not a lookup
+    # key), and every device must be identifiable at the wave's site from
+    # ONE fleet read. A set that cannot be stated cannot be authorized.
+    if not wave_subject_matches(wave):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this site-wave's device set no longer matches its approved "
+                "subject; re-preflight and re-submit to raise a current subject"
+            ),
+        )
+    fleet_rows = await FleetCacheRepo(session).list_by_site(wave.site_id)
+    try:
+        targets = wave_targets(wave, fleet_rows)
+    except TargetIntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"this site-wave cannot be authorized as stated ({exc.reason}); "
+                "re-preflight so the plan describes devices Central Command "
+                "can identify at this site"
+            ),
+        )
+
     block = await _record_and_evaluate(
         session,
         user=user,
@@ -778,10 +864,13 @@ async def _decide_campaign_wave(
         subject_type=SUBJECT_CAMPAIGN_WAVE,
         subject_ref=subject_ref,
         action_type=campaign.action_type,
-        device_agent_id=(list(wave.device_agent_ids or []) or [""])[0],
+        # No representative device: the set is passed whole, and the gate
+        # asks every member of it.
+        device_agent_id="",
         site_id=wave.site_id,
         decision=decision,
         scope=scope,
+        targets=targets,
     )
     if block["state"] == STATE_DENIED:
         decision = DECISION_DENIED

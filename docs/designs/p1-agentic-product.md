@@ -3717,3 +3717,189 @@ read and the directive being queued is not covered in CC. That is stated
 rather than implied away: the Site Manager's lease, preconditions and
 blast radius and the node's own allow list remain the final execution
 authority, unchanged by this slice.
+
+## §34c — A6-4B0b-S1: multi-target authorization integrity (A30.22)
+
+### One device authorizing many
+
+A campaign site-wave is the platform's one first-class MULTI-target
+authorization subject: an immutable device set, bound to a plan hash,
+raised as one E0.1 subject and dispatched as one unit. Its approval gate
+was written with the single-target shape every other origin has —
+`_record_and_evaluate(device_agent_id=...)` — and the caller satisfied that
+signature with `wave.device_agent_ids[0]`. Three things then followed from
+one device: the scope question (`permits` over A alone), the policy
+question (`governing_policy` from A's class alone), and the evidence
+(`target_device_agent_id: A`). The parallel `campaign_wave.approved` audit
+entry listed every device, so the truth existed once, on the wrong row.
+
+The inventory that found it also found what it does NOT resemble. Agent
+proposals are single-target by construction (a scalar `device_agent_id`
+on the payload, the row and the RPC) and `revalidate_dispatch` resolves
+reach over exactly that target. Campaign create, preflight, submit,
+cancel and advance are ALL-rule ceilings: one rule outside the caller's
+scope is a 403. The Site Manager plans by fault domain, dispatches per
+device against that device's own site row, and re-checks nothing about CC
+scope — correctly, because CC owns `permission`. The node runs one device
+per playbook. Nowhere else does one decision reach many devices except
+skill delivery at activation, which is the temporal half of the same
+defect: the device set is the one the preflight stored, fanned out
+without asking whether the agent still reaches each device.
+
+### Every target, current authority, three boundaries
+
+`target_authority.py` holds the rule where it can be read as a rule. The
+wave's target set is built from `wave.device_agent_ids` against ONE
+site-indexed fleet read (`FleetCacheRepo.list_by_site(wave.site_id)`),
+and it refuses before any authority question is asked when the set is
+empty, carries a duplicate, names a device Central Command cannot identify
+at that site, or when `wave_subject_ref(...)` recomputed from the stored
+row no longer equals the row's own `subject_ref`. That last check makes
+the digest a verified binding rather than a lookup key: no code path
+updates `device_agent_ids`, and now no out-of-band write to it survives
+either. Coverage is then asked of EVERY target through the canonical
+`ResolvedScope.permits(..., device_agent_id=d, device_class=cls)`; the
+first uncovered target refuses the whole set and names how many were
+uncovered. There is no `any`, no `[0]`, no `next(iter(...))`, and a
+structural test says so about the three authorization modules.
+
+Supplying `device_class` per target is what lets a `device_class` grant
+satisfy a uniform wave and refuse a mixed one. It also surfaces the
+policy question honestly: the governing policy is resolved per distinct
+class, and a wave whose classes resolve to DIFFERENT policies is refused
+with the reason named. The alternative — picking the strictest, or
+requiring membership in every named group — invents approval arithmetic
+the platform has never had, for a case that today arises only when an
+undeclared device (applicability `unknown`, which is dispatchable) shares
+a wave with a declared one. Refusing is deterministic, fail-closed, and
+tells the operator to split the campaign by class.
+
+At dispatch the position is the one `revalidate_dispatch` holds for
+proposals — inside `_advance_site`, after the plan-hash check and before
+`revalidate_wave` narrows for capability — but the function is not
+reused: its inputs are an AGENT's (identity, activation, binding), and a
+wave has none of those. A human-approved wave instead re-reads its own
+ledger: for each `cc_approval_records` row on the subject, the approver's
+CURRENT scope is resolved through `governance.load_scope` with no bearer
+token, using the role the approval recorded (`authority_snapshot.role`) as
+the permission basis — the grant-recorded role ceiling of A23-3 still
+narrows inside `resolve()` — and asked `permits` over every target. E0.1's
+`evaluate_completion` is then re-run counting only the approvers who still
+cover the set. If completion no longer holds, the wave is WITHHELD: status
+stays `approved`, the approval records stay exactly as written, each
+target's `revalidation` reads `authority_lost` with the reason, and one
+audit entry is written per distinct cause rather than one per pass. A
+later pass dispatches it if authority returns — the B0a shape, on a
+different subject. Composition does not rescue it: X covering [A] and Y
+covering [B, C] under a two-approver policy is two approvers who each
+fail the all-target rule, not one approval of [A, B, C].
+
+Skill delivery re-resolves `load_agent_reach` at activation and
+intersects the stored preflight list with the devices the agent reaches
+NOW. Narrow-only by construction — a device the preflight did not report
+is never added, because the preflight is the contract the operator
+acknowledged — and every device removed is recorded in the install
+ledger as skipped, with the reason.
+
+### What it does not promise
+
+The dispatch-time check reads grants in Central Command's transaction and
+then calls the Site Manager; it holds no lock on grant rows, so a grant
+lapsing in that interval is caught downstream, not here. A Keycloak
+realm-role demotion after approval is invisible to a token-less
+resolution; the approval-time gate saw the live token, and scope
+revocation, expiry, subset narrowing and role-ceiling narrowing are all
+seen at dispatch. Autonomous waves carry no human authority and are
+unchanged. None of this changes the Site Manager's lease, preconditions,
+blast radius, error-budget drop-back or the node's allow list, which
+remain the final execution authority — the check can only withhold.
+
+The device-identity inventory the slice ran alongside (every column,
+type, width, constraint, writer and comparison) concludes S2 is not
+required: real ids are sixteen hex characters, every operand S1 compares
+is wider and written verbatim, PostgreSQL raises on overlength and sqlite
+stores in full, so no stored id can differ from the one sent. That the
+identity-width invariant guards no device column is recorded, not fixed.
+
+## §34d — A6-4B0b-S1 pre-merge remediation: current role, not recorded role (A30.23)
+
+### The half that was still historical
+
+§34c re-resolved each ledger approver at dispatch through the one scope
+loader and called the result "current". It was current in one half. The
+scope grants were read from `cc_scope_grants` as they stand NOW; the
+permission basis those grants were narrowed by was
+`ROLE_PERMISSIONS[authority_snapshot.role]` — the role the approver's token
+carried when they decided. The design said so ("a Keycloak realm-role
+demotion after approval is invisible to a token-less resolution") and the
+independent review ruled the stated limit a HIGH, correctly: an operator
+demoted in Keycloak after approving keeps their grants, and grants alone
+were enough to keep their approval counting. A30.17 draws no line between
+the two halves of a principal's authority, so neither may the gate.
+
+### Where the current role lives, and who may ask
+
+The role a token carries is Keycloak's answer for the subject's effective
+realm roles in the tenant realm. Central Command deliberately holds no
+Keycloak admin credential (A20: a tenant-plane service with realm-admin
+power would be a second identity plane), so the current answer is fetched
+the way A3 provisions identities and A23-5 finds the founding owner —
+over the existing CC→Console internal channel, shared-key authenticated,
+resolved by realm because the realm is the one identifier both services
+agree on. The Console gains one read,
+`GET /api/internal/tenants/by-realm/{realm}/principals/{subject}/authority`,
+which binds the realm to a tenant (404 otherwise), asks
+`KeycloakAdminClient.get_user_authority` for the user record and the
+composite realm-role mapping, and answers `found`, `enabled` and
+`realm_roles`. Nothing about scope, nothing about Central Command's
+ledger: the identity plane reports identity facts and the tenant plane
+decides.
+
+### One rule for roles, two callers
+
+`harkeniq_cc.auth.role_basis(roles)` is `pick_role` over the ranked roles
+followed by `ROLE_PERMISSIONS` — the exact computation `get_current_user`
+performed inline — and both the request path and
+`target_authority.approver_current_basis` now call it. A structural test
+asserts both call sites, so the dispatch gate cannot resolve a role the
+request path would have resolved differently. The `viewer` default for a
+principal with no ranked realm role is kept identical for the same reason;
+it confers no `action.approve`, so it withholds.
+
+`approver_current_basis` produces a `CurrentBasis` with a status from a
+closed set: `resolved` (role and permissions in hand),
+`principal_not_found` (the realm does not hold the subject),
+`principal_disabled`, and `unresolvable` (no realm configured, the Console
+unreachable, the realm not a tenant's, a malformed answer). Only
+`resolved` proceeds to the scope loader, which is called exactly as
+before with `role_permissions=basis.permissions`. Everything else is a
+lost approver with the cause named. `revalidate_wave_authority` records
+per approver whether the loss was `current_role` (the resolved role no
+longer carries the permission), `scope` (it does, and the grants no longer
+cover every target), or one of the identity statuses above; the withheld
+audit entry carries the list, so an operator reading
+`campaign.wave_withheld` can tell a demotion from a revocation from an
+outage without opening Keycloak.
+
+The `authority_source` is a required input to `wave_dispatch_authority`
+rather than an import it reaches for: `_advance_site` builds it from the
+application state and the configured tenant realm, and a test that wants
+a different identity plane supplies a different source. There is no
+default, because a default would be the historical role surviving as a
+fallback.
+
+### What is not touched, and what a restore means
+
+`cc_approval_records` is read and never written here. The snapshot's
+`role` remains what it was: evidence of the authority the approver held at
+decision time, the L2 ruling. A demoted approver's approval is not deleted,
+not rewritten, not annotated — it is simply not counted toward dispatch
+while the current role lacks the permission, and counted again the moment
+the role is restored, because the question is "is this historical approval
+ALSO current authority", asked fresh on every pass. The gate proves the
+positive control both ways: the same two ledger rows, zero dispatches under
+demotion, three dispatches after the role mapping is put back, no second
+approval anywhere.
+
+Still stated rather than promised: the interval between the current-role
+read and the CC→SM call holds no lock, as §34c already recorded.

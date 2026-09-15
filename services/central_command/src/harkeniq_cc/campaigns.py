@@ -99,6 +99,14 @@ REVAL_LOST_CAPABILITY = "lost_capability"
 REVAL_NEWLY_DENIED = "newly_policy_denied"
 #: The device is gone from the fleet entirely.
 REVAL_ABSENT = "absent"
+#: A30.22 (A6-4B0b-S1): the wave's approval no longer stands on CURRENT
+#: authority -- an approver's scope lapsed over at least one device, or
+#: the set can no longer be identified as approved. The wave is WITHHELD,
+#: not skipped: the whole set waits, because authority never narrows what
+#: was approved. Written on every target of the wave so an operator can
+#: see it where they look, and so the audit entry is written once per
+#: distinct cause rather than once per reconciliation pass.
+REVAL_AUTHORITY_LOST = "authority_lost"
 
 
 def target_applicability(
