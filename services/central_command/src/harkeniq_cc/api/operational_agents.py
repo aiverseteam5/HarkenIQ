@@ -53,7 +53,13 @@ from harkeniq_cc.governance import (
     load_agent_reach,
     load_autonomy_contract,
 )
-from harkeniq_cc.scope import SCOPE_DEVICE, SCOPE_ORG_UNIT, SCOPE_SITE
+from harkeniq_cc.scope import (
+    SCOPE_DEVICE,
+    SCOPE_ORG_UNIT,
+    SCOPE_SITE,
+    read_reach,
+    where_reach,
+)
 from harkeniq_cc.provenance import provenance_block
 from harkeniq_cc.operational_agent import (
     AGENT_STATUSES,
@@ -521,6 +527,13 @@ def _enforce_machine_self(user: UserContext, agent_id: str) -> None:
         )
 
 
+#: Reading an Operational Agent, its proposals and its receipts is a
+#: `fleet.view` read (A30.24). Every helper below derives the caller's
+#: reach from the grants that themselves carry it; the bare
+#: `scope.site_ids` / `scope.tenant_wide` are permission-neutral.
+AGENT_READ = "fleet.view"
+
+
 def _agent_visible(scope, rules) -> bool:
     """May this caller READ this agent? (A23, READ_SCOPED made true.)
 
@@ -530,9 +543,9 @@ def _agent_visible(scope, rules) -> bool:
     tenant-wide reader only. Out of scope is absent (404), never 403 --
     a 403 confirms the agent exists.
     """
-    if getattr(scope, "tenant_wide", False):
+    if read_reach(scope, AGENT_READ).tenant_wide:
         return True
-    return any(_scope_rule_within(scope, r, "fleet.view") for r in rules)
+    return any(_scope_rule_within(scope, r, AGENT_READ) for r in rules)
 
 
 async def _require_visible_agent(session, tenant_id: str, agent_id: str, scope):
@@ -555,10 +568,10 @@ async def _require_visible_agent(session, tenant_id: str, agent_id: str, scope):
 
 def _narrow_proposals(scope, proposals):
     """A scoped reader sees the proposals made at THEIR sites."""
-    if getattr(scope, "tenant_wide", False):
+    reach = read_reach(scope, AGENT_READ)
+    if reach.tenant_wide:
         return list(proposals)
-    visible = set(getattr(scope, "site_ids", ()) or ())
-    return [p for p in proposals if p.site_id and p.site_id in visible]
+    return [p for p in proposals if p.site_id and p.site_id in reach.site_ids]
 
 
 def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> bool:
@@ -757,8 +770,9 @@ async def catalogue(
     risks = action_risk_map()
     # A23: the scope options are what THIS caller may bind -- their own
     # sites and devices, not the tenant's inventory.
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=scope)
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
+    reach = read_reach(scope, "fleet.view")
+    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
 
     # Which conditions THIS TENANT has a remediation mapped for. A4: read
     # from the catalogue, not a module constant, so the answer to "why
@@ -1022,7 +1036,8 @@ async def get_agent(
     # A23: a scoped reader sees the agent's reach WITHIN their own scope.
     # The agent may reach further; what it reaches beyond the caller is
     # not the caller's to read.
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
+    reach = read_reach(scope, "fleet.view")
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
     contract = await load_autonomy_contract(
         session,
         tenant_id=user.tenant_id,
@@ -1033,7 +1048,7 @@ async def get_agent(
     from harkeniq_cc.autonomy import narrow_to_sites
 
     contract = narrow_to_sites(
-        contract, None if getattr(scope, "tenant_wide", False) else set(scope.site_ids)
+        contract, None if reach.tenant_wide else set(reach.site_ids)
     )
     proposals = _narrow_proposals(
         scope, await AgentProposalRepo(session).list_for_agent(
@@ -1933,7 +1948,7 @@ async def dry_run_agent(
     attention = {
         item["agent_id"]: item
         for item in (await load_attention(
-            session, tenant_id=tenant_id, scope=agent_scope,
+            session, tenant_id=tenant_id, scope=where_reach(agent_scope),
         ))["items"]
     }
     contract = await load_autonomy_contract(
@@ -2338,7 +2353,7 @@ async def submit_proposal(
         attention_by_device={
             item["agent_id"]: item
             for item in (await load_attention(
-                session, tenant_id=tenant_id, scope=agent_scope,
+                session, tenant_id=tenant_id, scope=where_reach(agent_scope),
             ))["items"]
         },
         open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
@@ -2611,9 +2626,8 @@ def _authority_for_proposal(scope, proposal) -> bool:
     """
     if proposal is None or not getattr(proposal, "site_id", ""):
         return True
-    if getattr(scope, "tenant_wide", False):
-        return True
-    return proposal.site_id in set(getattr(scope, "site_ids", ()) or ())
+    reach = read_reach(scope, AGENT_READ)
+    return reach.tenant_wide or proposal.site_id in reach.site_ids
 
 
 async def _charge_machine_read(

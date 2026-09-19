@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import WarrantyRepo
 from harkeniq_cc.warranty.base import WarrantyRecord, warranty_status
@@ -48,14 +49,15 @@ async def list_warranty(
     tenant-wide caller reads every record, including tags imported for
     devices the fleet has not reported yet.
     """
+    reach = read_reach(scope, "fleet.view")
     rows = await WarrantyRepo(session).list_all(tenant_id=user.tenant_id)
-    if not getattr(scope, "tenant_wide", False):
+    if not reach.tenant_wide:
         from harkeniq_cc.db.repos import FleetCacheRepo
 
         tags = {
             d.service_tag
             for d in await FleetCacheRepo(session).list_all(
-                user.tenant_id, scope=scope
+                user.tenant_id, scope=reach
             )
             if d.service_tag
         }

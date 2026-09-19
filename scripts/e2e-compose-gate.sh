@@ -5592,6 +5592,121 @@ echo "  CONTROL: 3 dispatch rows for [b, c, d] on the SAME 2 ledger rows; SM dir
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/policies/$S1D_POLICY" > /dev/null
 
+# ===========================================================================
+# A6-4B0b-S2 (A30.24), live: a read takes its REACH from the grants that carry
+# the permission it requires. Two auditors, the SAME two site grants through
+# the production route. CONTROL holds both in full. MIXED holds site A in full
+# and site B narrowed to `incident.view`. Before S2 MIXED read site B's fleet,
+# sites and audit, because `site_ids` is permission-neutral and the route
+# guard is the role. Every absence below is paired with CONTROL seeing the
+# same thing, so an empty answer cannot pass as a correct one.
+# ===========================================================================
+s2_get() {  # $1 token, $2 path -> body on stdout
+  curl -s -H "Authorization: Bearer $1" "http://localhost:8090$2"
+}
+s2_code() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "http://localhost:8090$2"; }
+
+step "A6-4B0b-S2/AS: two auditors, one narrowed grant -- and the control reads BOTH sites"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+for S2_P in mixed control; do
+  tenant_realm_user "gate-s2-$S2_P@demo" "gate-s2-$S2_P" auditor
+done
+S2_MIXED=$(tenant_token gate-s2-mixed@demo gate-s2-mixed)
+S2_CONTROL=$(tenant_token gate-s2-control@demo gate-s2-control)
+S2_MIXED_SUB=$(s1_sub "$S2_MIXED"); S2_CONTROL_SUB=$(s1_sub "$S2_CONTROL")
+s2_grant() {  # $1 principal, $2 site, $3 JSON subset or null
+  curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"site\",\"scope_ref\":\"$2\",
+         \"role\":\"auditor\",\"permission_subset\":$3}" \
+    http://localhost:8090/api/scope-grants/
+}
+[ "$(s2_grant "$S2_CONTROL_SUB" "$SITE_A" null)" = "201" ] || { echo "control/A refused" >&2; exit 1; }
+[ "$(s2_grant "$S2_CONTROL_SUB" "$SITE_B" null)" = "201" ] || { echo "control/B refused" >&2; exit 1; }
+[ "$(s2_grant "$S2_MIXED_SUB" "$SITE_A" null)" = "201" ] || { echo "mixed/A refused" >&2; exit 1; }
+[ "$(s2_grant "$S2_MIXED_SUB" "$SITE_B" '["incident.view"]')" = "201" ] || { echo "mixed/B refused" >&2; exit 1; }
+# This step OWNS its state (the A30.21 lesson). One incident at EACH site,
+# RESOLVED so the poller never touches it (it only resolves OPEN incidents
+# it no longer sees) and opened now so it sorts first. The audit half needs
+# nothing extra: creating a site-scoped grant writes an audit entry tagged
+# with that site, so the four grants above are the audit evidence.
+S2_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_B'")
+for S2_PAIR in "a:$SITE_A" "b:$SITE_B"; do
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
+         device_agent_id, subsystem, confidence, inferred, opened_at,
+         first_seen_at, last_seen_at)
+     VALUES ('gate-s2-inc-${S2_PAIR%%:*}', '$S2_TENANT', '${S2_PAIR#*:}', 'device',
+             'resolved', 'S2 gate incident', 'gate-s2-device-${S2_PAIR%%:*}', 'psu',
+             0, false, now(), now(), now())
+     ON CONFLICT (incident_id) DO NOTHING" > /dev/null
+done
+s2_sites_seen() {  # $1 token -> "fleet=<sites> sites=<sites> audit=<sites> incident=<code>"
+  python3 - "$SITE_A" "$SITE_B" <<PY
+import json, sys, subprocess
+A, B = sys.argv[1], sys.argv[2]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", "Authorization: Bearer $1",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+def label(ids):
+    return "".join(n for n, i in (("A", A), ("B", B)) if i in ids) or "-"
+fleet = {d["site_id"] for d in get("/api/fleet/?page_size=200")["devices"]}
+sites = {s["id"] for s in get("/api/sites/")["sites"]}
+audit, page = set(), 1
+while True:  # the whole scoped log, not its newest page
+    entries = get(f"/api/audit/?page_size=200&page={page}")["entries"]
+    audit |= {e["site_id"] for e in entries}
+    if len(entries) < 200:
+        break
+    page += 1
+incidents = {i["site_id"] for i in get("/api/incidents/?status=all&limit=1000")["incidents"]}
+print(f"fleet={label(fleet)} sites={label(sites)} audit={label(audit)} incidents={label(incidents)}")
+PY
+}
+S2_SEEN=$(s2_sites_seen "$S2_CONTROL")
+echo "  CONTROL (both grants full): $S2_SEEN"
+[ "$S2_SEEN" = "fleet=AB sites=AB audit=AB incidents=AB" ] || {
+  echo "the control must read both sites on every read, or the narrowing below proves nothing" >&2; exit 1; }
+[ "$(s2_code "$S2_CONTROL" "/api/sites/$SITE_B")" = "200" ] || { echo "control cannot read site B" >&2; exit 1; }
+[ "$(s2_code "$S2_CONTROL" "/api/agents/gate-agent-b")" = "200" ] || { echo "control cannot read gate-agent-b" >&2; exit 1; }
+
+step "A6-4B0b-S2/AT: the narrowed grant reads site B under incident.view and under NOTHING else"
+S2_SEEN=$(s2_sites_seen "$S2_MIXED")
+echo "  MIXED (site B narrowed to incident.view): $S2_SEEN"
+[ "$S2_SEEN" = "fleet=A sites=A audit=A incidents=AB" ] || {
+  echo "permission from one grant combined with reach from another (P1)" >&2; exit 1; }
+[ "$(s2_code "$S2_MIXED" "/api/sites/$SITE_B")" = "404" ] || { echo "site B detail readable without fleet.view there" >&2; exit 1; }
+[ "$(s2_code "$S2_MIXED" "/api/agents/gate-agent-b")" = "404" ] || { echo "gate-agent-b readable without fleet.view there" >&2; exit 1; }
+[ "$(s2_code "$S2_MIXED" "/api/incidents/gate-s2-inc-b")" = "200" ] || { echo "the incident the grant DOES carry is unreadable" >&2; exit 1; }
+s2_get "$S2_MIXED" "/api/fleet/summary" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['sites_count'] == 1, d
+print('  summary counts', d['total_nodes'], 'node(s) at', d['sites_count'], 'site: no leak of site B through a total')"
+# The permission-NEUTRAL projection keeps its meaning (A30.24): the
+# self-description still names both sites. It is no longer a read filter.
+s2_get "$S2_MIXED" "/api/scope-grants/me" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert {'$SITE_A', '$SITE_B'} <= set(d['site_ids']), d['site_ids']
+print('  /me still describes both grants:', len(d['site_ids']), 'site ids')"
+
+step "A6-4B0b-S2/AU: a TENANT grant narrowed to incident.view does not unfilter the fleet"
+tenant_realm_user "gate-s2-tenant@demo" "gate-s2-tenant" auditor
+S2_TEN=$(tenant_token gate-s2-tenant@demo gate-s2-tenant)
+S2_TEN_SUB=$(s1_sub "$S2_TEN")
+S2_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$S2_TEN_SUB\",\"scope_type\":\"tenant\",\"scope_ref\":\"\",
+       \"role\":\"auditor\",\"permission_subset\":[\"incident.view\"]}" \
+  http://localhost:8090/api/scope-grants/)
+[ "$S2_CODE" = "201" ] || { echo "narrowed tenant grant refused ($S2_CODE)" >&2; exit 1; }
+S2_SEEN=$(s2_sites_seen "$S2_TEN")
+echo "  TENANT grant, subset [incident.view]: $S2_SEEN"
+[ "$S2_SEEN" = "fleet=- sites=- audit=- incidents=AB" ] || {
+  echo "a narrowed tenant grant still read tenant-wide (the tenant_wide shortcut)" >&2; exit 1; }
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

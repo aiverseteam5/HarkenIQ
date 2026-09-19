@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import FleetPatternRepo, OutcomeHistoryRepo
 from harkeniq_cc.outcome_aggregator import OutcomeAggregator
@@ -32,8 +33,9 @@ async def outcome_metrics(
     """Aggregated action-outcome metrics grouped by (action_type, vendor,
     model), with per-site attribution. Backing data for the Console's
     vendor reliability comparison."""
+    reach = read_reach(scope, "fleet.view")
     outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(
-        user.tenant_id, scope=scope
+        user.tenant_id, scope=reach
     )
     aggregator = OutcomeAggregator()
     aggregator.ingest(outcomes)
@@ -82,6 +84,7 @@ async def list_patterns(
     reads the pattern with the site evidence narrowed to their own sites;
     a pattern whose named sites are all outside their scope is absent.
     """
+    reach = read_reach(scope, "fleet.view")
     rows = await FleetPatternRepo(session).list_patterns(
         pattern_type=pattern_type, status=status or None, limit=limit,
         tenant_id=user.tenant_id,
@@ -92,14 +95,14 @@ async def list_patterns(
                 "pattern_id": r.id,
                 "pattern_type": r.pattern_type,
                 "description": r.description,
-                "affected_scope": _narrow_sites(r.affected_scope or {}, scope),
+                "affected_scope": _narrow_sites(r.affected_scope or {}, reach),
                 "confidence": r.confidence,
-                "evidence": _narrow_sites(r.evidence or {}, scope),
+                "evidence": _narrow_sites(r.evidence or {}, reach),
                 "status": r.status,
                 "detected_at": r.detected_at.isoformat() if r.detected_at else None,
             }
             for r in rows
-            if _pattern_visible(r, scope)
+            if _pattern_visible(r, reach)
         ],
         "tenant_id": user.tenant_id,
     }
@@ -108,15 +111,16 @@ async def list_patterns(
 _SITE_KEYS = ("sites", "site_failure_counts")
 
 
-def _visible_sites(scope) -> set[str] | None:
-    if scope is None or getattr(scope, "tenant_wide", False):
+def _visible_sites(reach) -> set[str] | None:
+    """`reach` is the caller's `fleet.view` ReadReach (A30.24)."""
+    if reach is None or reach.tenant_wide:
         return None
-    return set(getattr(scope, "site_ids", ()) or ())
+    return set(reach.site_ids)
 
 
-def _narrow_sites(payload: dict, scope) -> dict:
+def _narrow_sites(payload: dict, reach) -> dict:
     """Drop site identifiers the caller may not see from a JSON blob."""
-    visible = _visible_sites(scope)
+    visible = _visible_sites(reach)
     if visible is None:
         return payload
     out = dict(payload)
@@ -129,10 +133,10 @@ def _narrow_sites(payload: dict, scope) -> dict:
     return out
 
 
-def _pattern_visible(row, scope) -> bool:
+def _pattern_visible(row, reach) -> bool:
     """A pattern that names sites is visible when at least one is the
     caller's; one that names no site is cohort knowledge and visible."""
-    visible = _visible_sites(scope)
+    visible = _visible_sites(reach)
     if visible is None:
         return True
     named: set[str] = set()

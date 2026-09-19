@@ -84,6 +84,7 @@ from harkeniq_cc.scope import (
     SCOPE_TYPES,
     is_active,
     preflight_strict,
+    read_reach,
 )
 
 logger = logging.getLogger("harkeniq.cc.api.scope_grants")
@@ -200,14 +201,19 @@ async def _resolve_scope_ref(session, tenant_id: str, scope_type: str, ref: str)
     raise HTTPException(status_code=400, detail=f"unknown scope_type {scope_type!r}")
 
 
-def _grant_visible(scope, row) -> bool:
-    """Could this caller have made this grant? Then they may read it."""
-    if getattr(scope, "tenant_wide", False):
+def _grant_visible(reach, row) -> bool:
+    """Could this caller have made this grant? Then they may read it.
+
+    `reach` is the caller's ReadReach for this list's own guard
+    (`user.view` or `audit.view`, A30.24): a grant narrowed to some other
+    permission at a site does not open that site's authorization map.
+    """
+    if reach.tenant_wide:
         return True
     if row.scope_type == SCOPE_SITE:
-        return row.scope_ref in scope.site_ids
+        return row.scope_ref in reach.site_ids
     if row.scope_type == SCOPE_ORG_UNIT:
-        return scope.covers_org_unit_id(row.scope_ref)
+        return reach.covers_org_unit_id(row.scope_ref)
     # tenant, device_class and device grants are handed out only by a
     # tenant-wide grantor, so only a tenant-wide reader sees them.
     return False
@@ -250,7 +256,8 @@ async def list_grants(
     # as its delegation ceiling. A cluster administrator reads the
     # cluster's delegations; the tenant's whole authorization map is a
     # tenant-scope read. Out-of-scope grants are absent, never 403.
-    rows = [r for r in rows if _grant_visible(scope, r)]
+    reach = read_reach(scope, "user.view", "audit.view")
+    rows = [r for r in rows if _grant_visible(reach, r)]
     unit_ids = {u.id for u in await OrgUnitRepo(session).list_all(user.tenant_id)}
     site_ids = {s.id for s in await SiteRepo(session).list_all(user.tenant_id)}
     device_ids = None

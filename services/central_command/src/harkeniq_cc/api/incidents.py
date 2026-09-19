@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     ApprovalRouteRepo,
@@ -107,6 +108,7 @@ async def list_incidents(
     under one parent, and flattening that here would show N incidents for
     one root cause — exactly what consolidation exists to prevent.
     """
+    reach = read_reach(scope, "incident.view")
     repo = IncidentRepo(session)
     rows = await repo.list_incidents(
         user.tenant_id,
@@ -114,9 +116,9 @@ async def list_incidents(
         site_id=site_id,
         device_agent_id=device_agent_id,
         limit=limit,
-        scope=scope,
+        scope=reach,
     )
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=scope)
+    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
     site_names = {s.id: s.site_name for s in sites}
 
     by_id = {r.incident_id: r for r in rows}
@@ -167,16 +169,17 @@ async def get_incident(
     scope=Depends(get_scope),
 ) -> dict:
     """One incident with its children, prior learning, and what comes next."""
+    reach = read_reach(scope, "incident.view")
     repo = IncidentRepo(session)
     row = await repo.get(user.tenant_id, incident_id)
     if row is None:
         raise HTTPException(status_code=404, detail="incident not found")
     # E1.2: an incident at a site outside the caller's scope reads as
     # absent. 403 would confirm it exists.
-    if row.site_id and not scope.covers_site(row.site_id):
+    if row.site_id and not reach.covers_site(row.site_id):
         raise HTTPException(status_code=404, detail="incident not found")
 
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=scope)
+    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
     site_names = {s.id: s.site_name for s in sites}
     entry = _incident_dict(row, site_names)
     children = await repo.children_of(user.tenant_id, incident_id)
@@ -203,7 +206,7 @@ async def get_incident(
     # names the governed next step; it never performs one.
     pending = [
         {"action_id": r.action_id, "action_type": r.action_type}
-        for r in await ApprovalRouteRepo(session).list_pending(user.tenant_id, scope=scope)
+        for r in await ApprovalRouteRepo(session).list_pending(user.tenant_id, scope=reach)
         if r.device_agent_id == row.device_agent_id
     ]
     entry["current_state"] = {

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import FleetCacheRepo, OutcomeHistoryRepo, WarrantyRepo
 from harkeniq_cc.predictive import cohort_failure_rates, score_device
@@ -38,7 +39,8 @@ async def device_risk(
     (E1.2 layer 2), not the tenant's. The cohort prior is still computed
     over the tenant's outcomes -- an aggregate rate names no device.
     """
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
+    reach = read_reach(scope, "fleet.view")
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
     outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
         user.tenant_id
     )

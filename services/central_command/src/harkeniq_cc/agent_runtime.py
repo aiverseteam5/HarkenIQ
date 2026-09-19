@@ -48,6 +48,7 @@ from harkeniq_cc.governance import (
     load_attention,
     load_autonomy_contract,
 )
+from harkeniq_cc.scope import where_reach
 from harkeniq_cc.proposal_admission import ORIGIN_EVALUATOR, admit_proposal
 from harkeniq_cc.operational_agent import (
     BASIS_AUTONOMOUS,
@@ -160,7 +161,7 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             attention = {
                 item["agent_id"]: item
                 for item in (await load_attention(
-                    session, tenant_id=tenant_id, scope=agent_scope,
+                    session, tenant_id=tenant_id, scope=where_reach(agent_scope),
                 ))["items"]
             }
             contract = await load_autonomy_contract(

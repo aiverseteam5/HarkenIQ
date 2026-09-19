@@ -14,6 +14,7 @@ from sqlalchemy import delete as sa_delete, false as sa_false, func, select, upd
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harkeniq_cc.scope import ReadReach
 from harkeniq_cc.db.models import (
     CCAgentIdentity,
     CCAgentPreflight,
@@ -61,6 +62,31 @@ from harkeniq_cc.db.models import (
 )
 
 
+def require_read_reach(scope) -> Optional[ReadReach]:
+    """The repository boundary of A30.24: `None` or a `ReadReach`.
+
+    A repository filter used to read `tenant_wide` and `site_ids` by
+    `getattr`, so it accepted a bare `ResolvedScope` -- whose projections
+    are permission-NEUTRAL. A read then took its permission from the role
+    and its reach from any grant at all, and a grant narrowed to
+    `incident.view` at one site made that site's fleet readable (P1).
+
+    `None` is an internal caller (a poller, the evaluator): no user is
+    asking. Anything else must be `scope.read_reach(resolved, <the
+    permission this read requires>)`. A bare scope RAISES rather than
+    filtering, because a filter that quietly works is exactly how the
+    permission-neutral path would come back.
+    """
+    if scope is None or isinstance(scope, ReadReach):
+        return scope
+    raise TypeError(
+        "a repository read filter needs a permission-aware ReadReach "
+        "(harkeniq_cc.scope.read_reach(scope, <permission>)), not "
+        f"{type(scope).__name__}: ResolvedScope.site_ids is permission-"
+        "neutral and is never a read filter (spec A30.24)"
+    )
+
+
 def scope_sites(column, scope) -> Any:
     """A SQLAlchemy condition restricting `column` to the caller's sites.
 
@@ -73,10 +99,14 @@ def scope_sites(column, scope) -> Any:
     * anything else     -- ``site_id IN (...)``, and an EMPTY scope
       yields ``false()``, not "no filter". Fail closed is the whole
       point: an unscoped principal under strict mode must read nothing.
+
+    A30.24: `scope` is a `ReadReach` -- the reach of the grants that carry
+    the permission this read requires -- never a bare `ResolvedScope`.
     """
-    if scope is None or getattr(scope, "tenant_wide", False):
+    scope = require_read_reach(scope)
+    if scope is None or scope.tenant_wide:
         return None
-    site_ids = sorted(getattr(scope, "site_ids", ()) or ())
+    site_ids = sorted(scope.site_ids)
     if not site_ids:
         return sa_false()
     return column.in_(site_ids)
@@ -93,9 +123,10 @@ def _audit_scoped(stmt, scope):
     LESS audit than before E1.2, which is the correction rather than a
     regression. An auditor holds tenant scope and loses nothing.
     """
-    if scope is None or getattr(scope, "tenant_wide", False):
+    scope = require_read_reach(scope)
+    if scope is None or scope.tenant_wide:
         return stmt
-    site_ids = sorted(getattr(scope, "site_ids", ()) or ())
+    site_ids = sorted(scope.site_ids)
     if not site_ids:
         return stmt.where(sa_false())
     return stmt.where(CCAuditLog.site_id.in_(site_ids))
@@ -3503,13 +3534,14 @@ class CampaignRepo:
         rows = (
             await self.session.execute(stmt.order_by(CCCampaign.created_at.desc()))
         ).scalars().all()
-        if scope is None or getattr(scope, "tenant_wide", False):
+        scope = require_read_reach(scope)
+        if scope is None or scope.tenant_wide:
             return rows
         # A campaign is visible when the caller can see at least one site
         # it reaches. Filtering on the campaign's own sites rather than a
         # column keeps this consistent with how every other site-anchored
         # read is scoped.
-        visible = set(getattr(scope, "site_ids", ()) or ())
+        visible = set(scope.site_ids)
         if not visible:
             return []
         site_rows = (

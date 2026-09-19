@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.governance import load_attention
 
@@ -51,11 +52,12 @@ async def attention(
     read every site. This is also the one read every Operational Agent is
     required to hold, which is why it is the first defect A5 fixes.
     """
+    reach = read_reach(scope, "fleet.view")
     return await load_attention(
         session,
         tenant_id=user.tenant_id,
         site_id=site_id,
-        scope=scope,
+        scope=reach,
         band=band,
         limit=limit,
     )

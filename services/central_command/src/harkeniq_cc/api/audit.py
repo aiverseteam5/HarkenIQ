@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_current_user, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo
 
@@ -45,6 +46,7 @@ async def list_audit(
     scope=Depends(get_scope),
 ) -> dict:
     """Paginated audit entries."""
+    reach = read_reach(scope, "audit.view")
     repo = AuditRepo(session)
     rows = await repo.list_filtered(
         tenant_id=user.tenant_id,
@@ -52,10 +54,10 @@ async def list_audit(
         action=action,
         page=page,
         page_size=page_size,
-        scope=scope,
+        scope=reach,
     )
     total = await repo.count_filtered(
-        tenant_id=user.tenant_id, scope=scope, actor=actor, action=action,
+        tenant_id=user.tenant_id, scope=reach, actor=actor, action=action,
     )
     return {
         "entries": [_entry_dict(r) for r in rows],
