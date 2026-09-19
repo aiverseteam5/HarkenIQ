@@ -3894,8 +3894,30 @@ device-owned `network_ambiguity` incident stores its peers' ids in it as
 `votes`) and prior learning is narrowed to cohort knowledge, never the
 site's. The attention contract narrows site-scoped learned signals by the
 same rule. **Site-owned domains (deliberately unchanged):** audit (R3),
-autonomy site facts (R4), campaigns and waves (R5), candidate skills (D4),
-learned signals and fleet patterns, the org tree (D3), and the grant list.
+campaigns and waves (R5), candidate skills (D4), learned signals and fleet
+patterns, the org tree (D3), and the grant list. **Autonomy (R4) needed a
+change to be TRUE.** `narrow_to_sites` (A23-1) filtered the top-level lists
+whose items carry a `site_id` and never looked at two things: the
+error-budget aggregate FOLDED across sites, which carries no `site_id` and
+so passed the filter, and each action class's `safety` block. A reader
+holding no site at all therefore still received every site's drop-back
+status, suppressed fault-domain names and per-site autonomy budgets. It
+was found by this slice's LIVE gate, where the stack has real safety
+state; the unit estate had none, so the first R4 assertion compared an
+empty list with an empty list and passed. A reader who holds NO site now
+receives no site-derived safety fact (the aggregate, and each class's
+`error_budget`, `suppressed_domains` and `site_budget_remaining`); the
+tenant posture, the ladder, the dispositions and the tenant-wide outcome
+evidence are untouched, because that is the posture the reader operates
+under. **P2 — recorded, NOT corrected here.** For a reader who DOES hold a
+site those same fields still describe EVERY site: `sites_dropped_back`,
+`suppressed_domains` and the keys of `site_budget_remaining` name sites
+outside that reader's reach. It predates this slice, it affects every
+site- and org-scoped reader of `/api/autonomy/` and of the Operational
+Agent view today, and it is pinned by a test that the slice which closes
+it must invert. It is not folded in: A30.25's regression promise is that
+tenant, org-unit and site principals read byte-identically, and a
+narrowing correction is ratified and landed on its own (A30.8).
 **Context is not authority (R10/D2).** `SiteRepo.list_all` stays
 AUTHORITATIVE — it is what `sites_count`, site reach, delegation and
 administration are computed from. `SiteRepo.list_context` is a separate
@@ -3924,8 +3946,8 @@ route (zero added), the schema (CC head stays `0026`, A30.15), `resolve()`,
 `permits()`, `ResolvedScope.site_ids` (still truthful and
 permission-neutral — a device grant still contributes nothing to it), S1,
 S2, and the `device_class` vocabulary `server | switch`: the datacenter
-taxonomy is not implemented here. **Named follow-ups:** D3 org-ancestor
-context; D6 UNKNOWN class at ingest (taxonomy); D9 the wave-queue
+taxonomy is not implemented here. **Named follow-ups:** P2 above, which
+needs its own ratified narrowing slice; D3 org-ancestor context; D6 UNKNOWN class at ingest (taxonomy); D9 the wave-queue
 asymmetry; R7 approval-evidence projection; D10 skip-and-warn hardening of
 the SM outcome-identity fallback; the composite projections and the
 `/api/scope-grants/me` self-description recorded by S2; and, as test

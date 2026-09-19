@@ -4150,11 +4150,43 @@ pickers — the grant form and the organization page's unattached-sites
 list, where a row with no `org_unit_id` would otherwise look attachable —
 skip contextual rows; its navigation filters use them.
 
+### What the live gate found: R4 was not true, and P2
+
+The first R4 assertion passed in the unit suite and failed on the live
+stack. The unit estate had no safety state, so "a device principal receives
+no site governance facts" was an empty list compared with an empty list.
+The stack has real error budgets.
+
+`narrow_to_sites` filters the top-level safety lists by each item's
+`site_id`. Two things never had one to filter on: the error-budget
+aggregate, which is FOLDED across sites and so carries no `site_id` (the
+filter's "no site id means tenant-level" rule passed it), and the `safety`
+block copied into every action class -- `error_budget.sites_dropped_back`,
+`suppressed_domains`, and `site_budget_remaining`, a map keyed by site id.
+The function never looked inside an action class's `safety` at all.
+
+R4 is ratified for this slice and is stated about exactly one population: a
+principal with no site authority gets EMPTY site facts. So that is what
+changed -- a reader who holds no site receives none of those fields -- and
+the estate now carries safety state at every site so the assertion means
+something. The posture, the ladder, the dispositions and the tenant-wide
+outcome evidence stay: they are what the reader operates under.
+
+The same fields leak to a reader who DOES hold a site: a site-A
+administrator reads site B's drop-back status, suppressed domain names and
+remaining budgets. That is **P2**. It predates this slice, it is live for
+every site- and org-scoped reader today, and correcting it changes what
+those principals read -- which is the one thing this slice promised not to
+do, and proves differentially that it does not. It is therefore recorded
+and pinned (`test_P2_is_recorded_here_not_fixed_here`, to be inverted by
+the slice that closes it, as the F1 pin was) rather than folded in, and the
+code says so where the next reader will look.
+
 ### What is left alone, on purpose
 
 Audit stays site-only: `cc_audit_log` cannot say which device an entry is
 about, so a device principal reads none of it, including at its contextual
-site. Autonomy's site facts stay site-only. Campaigns, waves, candidate
+site. Campaigns, waves, candidate
 skills, learned signals, fleet patterns, the org tree and the grant list
 are site- or tenant-owned domains and are not made device-aware
 mechanically. `ResolvedScope.site_ids` keeps its meaning: a device grant
