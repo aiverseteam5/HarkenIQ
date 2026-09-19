@@ -3903,3 +3903,108 @@ approval anywhere.
 
 Still stated rather than promised: the interval between the current-role
 read and the CC→SM call holds no lock, as §34c already recorded.
+
+## §34e — A6-4B0b-S2: permission-aware read reach (A30.24)
+
+### What the B0b boundary found underneath F1
+
+F1 is an under-reach: a `device` grant covers a device and `site_ids`
+cannot say so. Tracing every reader for the B0b boundary showed the same
+projection is also an OVER-reach, in the other dimension. `_project` does
+not look at what a grant carries:
+
+```
+grants [site-a, full role] + [site-b, permission_subset = incident.view]
+  site_ids                          = {site-a, site-b}
+  permits("fleet.view", site-b)     = False
+  covers_site(site-b)               = True
+```
+
+A read route checks its permission against the ROLE (`has_permission`) and
+filters on `site_ids`. Permission came from one place and reach from
+another, so site-b's fleet, approvals, outcomes and audit were readable
+through a grant that was deliberately narrowed to incidents. `tenant_wide`
+is the same thing at full strength: one tenant grant narrowed to one
+permission removed the filter from every read. A26.11 found and fixed
+exactly this for `governance.view` and recorded why the route guard cannot
+be the place a subset is enforced; every other read kept the old shape.
+
+It does not take a hand-written subset to get there. A23-3 made the role a
+grant records a ceiling, so "site_admin at site A, viewer at site B" is two
+grants carrying different permissions under ONE token role — the ordinary
+way a tenant models a person with uneven responsibility. That person's
+token satisfies the guard on the approval queue and on the grant list, and
+the permission-neutral set then handed them site B's. What a grant CARRIES
+is `token role ∩ recorded role ∩ subset`, and the read must ask that, not
+the token.
+
+### One predicate, projected
+
+`permits()` already states the rule — coverage and permission on the SAME
+grant. Reads could not call it per row, so they used a set, and the set
+forgot the permission. S2 keeps the set and gives it back its permission:
+
+```
+read_reach(scope, "fleet.view")            -> ReadReach
+read_reach(scope, "action.approve", "audit.view")   # any-of guard
+```
+
+`ReadReach` is built from `scope.grants`, keeping a grant only when it is
+not inert and carries one of the named permissions (or `"*"`). Its sets
+are what `_project` would produce over that subset of grants; its
+`covers_site` / `covers_device` / `covers_org_unit` delegate to the kept
+grants' own `covers_*`. So it cannot disagree with `permits` — there is no
+second implementation of coverage to drift — and a generated test asserts
+the equality for every permission, grant mix and target.
+
+It is deliberately NOT a change to `ResolvedScope.site_ids`. That field
+answers a permission-neutral question that still has honest askers: an
+Operational Agent's WHERE-only scope (A22.13), the self-description at
+`/api/scope-grants/me`, the L2 snapshot an approval records. Making it
+permission-aware would silently change all of them; making the permission
+an explicit argument changes only the callers that name one.
+
+### Why the repository refuses a bare scope
+
+The fix is only durable if the old path cannot come back. `scope_sites`
+and `_audit_scoped` read `tenant_wide` and `site_ids` by `getattr`, so a
+`ResolvedScope` and a `ReadReach` are interchangeable to them — which
+means a future handler passing `scope=scope` would work, pass its tests,
+and reintroduce P1. They therefore accept `None` or a `ReadReach` and
+raise `TypeError` on anything else. The permission-neutral projection can
+still be read; it can no longer be a filter.
+
+Two source-level guards sit beside it, scoped to `api/` rather than banning
+the attribute globally: a handler may not read `.site_ids`, `.tenant_wide`
+or a permission-less `covers_*` off the resolved scope outside a short
+allow-list of self-description sites, and the permissions a handler hands
+to `read_reach` must equal the permissions its own route guard accepts —
+so "guarded on `incident.view`, filtered on `fleet.view`" fails by name.
+
+### The one legitimate permission-neutral filter
+
+The evaluator, the dry-run and the ingress re-derivation read attention
+narrowed to an agent's OWN reach, through `load_agent_reach`. That scope is
+WHERE-only (A22.13): every grant in it carries the scope-only marker and no
+permission, on purpose. Naming a permission there would be inventing one.
+`where_reach(scope)` builds the same `ReadReach` for exactly that kind of
+scope and raises for any other, and `read_reach` raises for a WHERE-only
+scope — so the two constructors partition the scopes between them and
+neither can stand in for the other.
+
+### Handlers keep their `scope` parameter
+
+The A23-1 consumption census requires a scope-treated handler to declare
+and LOAD `scope`. Handlers therefore keep `scope=Depends(get_scope)` and
+derive `reach = read_reach(scope, <the route's permission>)` in the body,
+which keeps the permission visible at the point of use and leaves the
+census, `ROUTE_CONTRACT` and the dependency graph untouched.
+
+### What S2 leaves for general B0b
+
+`ReadReach` carries `device_ids` and `device_classes`, already narrowed by
+permission, and no repository filter reads them: a device-scoped principal
+still reads zero list rows, and the test that pins F1 open still passes.
+General B0b adds the table-aware device predicates ON this primitive, which
+is the reason S2 lands first — the under-reach fix would otherwise have
+been built on, and widened, a fail-open.

@@ -3710,3 +3710,91 @@ Central Command route, the schema (CC head `0026`; the Console schema is
 untouched), autonomy, proposal admission and dispatch, SM and node
 authority, and every S1 boundary A30.22 ratified. General B0b, B0c, B1,
 B2 and the taxonomy remain not started.
+
+**A30.24 — A6-4B0b-S2: permission-aware read reach (decided: Vinod;
+recorded 2026-09-19, BEFORE the code).** Producing the general B0b
+boundary reproduced a second defect underneath F1, and it points the other
+way. **P1 — fail-OPEN, pre-existing since E1.2.** `_project` builds
+`ResolvedScope.site_ids` — and `tenant_wide`, and the permission-less
+`covers_site` / `covers_device` / `covers_org_unit` helpers — from EVERY
+effective grant, whatever that grant's `permission_subset` carries. The
+route guard is nominal role membership (`has_permission`, which A26.11
+already established cannot enforce a per-grant subset). A read therefore
+took its PERMISSION from the role and its REACH from any grant at all:
+with grant A over site-a carrying the full role and grant B over site-b
+narrowed to `incident.view`, `site_ids` is `{site-a, site-b}` while
+`permits("fleet.view", site_id="site-b")` is False — and every fleet,
+approval, outcome, audit, campaign and site read at site-b answered. No
+explicit subset is needed to reach it: the role a grant RECORDS is a
+ceiling (A23-3), so a person who is `site_admin` at one site and `viewer`
+at another carries a `site_admin` token, passed the guard on the approval
+queue and the grant list, and read the second site's — the realistic face
+of P1. The
+stronger form is the `tenant_wide` shortcut: a TENANT grant narrowed to
+one permission unfiltered every read in the platform. It is the defect
+A26.11 closed for `governance.view`, left standing on every other read,
+and it outranks general B0b for the reason S1 did: B0b adds the device and
+device_class dimensions to this same construction, so it would have
+extended a fail-open. **The invariant, LOCKED.** For any read requiring
+permission P, a resource is readable only when ONE effective grant both
+carries P and covers the resource:
+`READABLE(P, r) = ∃ effective grant G: P ∈ G.permissions ∧ G covers r`.
+Permission from one grant never combines with reach from another; role
+membership never substitutes for a grant's subset; nothing is synthesized.
+**The primitive.** `scope.read_reach(resolved_scope, *permissions)` returns
+a frozen `ReadReach` derived ONLY from the effective (non-inert) grants
+that carry at least one of the named permissions (`"*"` counts, exactly as
+in `permits`): `tenant_wide`, `site_ids` (site grants ∪ org-expanded),
+`org_unit_paths`, `device_ids`, `device_classes`, and coverage helpers that
+delegate to those same grants' `covers_*` — so `reach.covers_x(t)` is
+`permits(P, t)` by construction, asserted over a generated matrix. Several
+permissions mean ANY OF, for the routes whose guard is
+`require_any_permission`. It is a PROJECTION of canonical grant semantics,
+not a second resolver: it reads no row, no token and no tree, only a
+`ResolvedScope`. Contextual ancestry is not an input. A WHERE-only scope
+(A22.13) refuses the question, as `permits` does. **`ResolvedScope.site_ids`
+is NOT changed** — it stays the lifecycle-correct, permission-NEUTRAL
+projection, because legitimate consumers ask a permission-neutral question
+(an Operational Agent's operational reach, `/api/scope-grants/me`, the L2
+approval snapshot). What changes is that it may no longer be a read
+filter: `scope_sites`, `_audit_scoped` and `CampaignRepo.list_all` accept
+`None` (an internal caller) or a `ReadReach` and RAISE on anything else, so
+a permission-neutral scope cannot reach a repository filter by oversight;
+a source-level guard additionally fails the suite when an API module reads
+`.site_ids`, `.tenant_wide` or a permission-less `covers_*` off the
+resolved scope outside a named allow-list, and when the permissions a
+handler passes to `read_reach` differ from the permissions its own route
+guard accepts. **The one permission-neutral filter, named.** Three internal
+reads narrow to an Operational Agent's OWN reach — the CC-resident
+evaluator, the dry-run and the ingress re-derivation — and that scope is
+WHERE-only by ratified design (A22.13): an agent's authority is its
+bindings, so it carries no permission to be aware of. `scope.where_reach`
+is `read_reach`'s mirror and its only other constructor: it builds the
+same projection from a WHERE-only scope and REFUSES every other scope, so
+a principal's own authorization scope can never become a
+permission-neutral filter through it, and `read_reach` refuses a
+WHERE-only scope in turn. **Scope of S2, exactly.** Every class-C reader of the
+Phase-1 inventory takes its reach from `read_reach` with its route's own
+permission: fleet, agents, capabilities, firmware exposure, predictive
+risk, warranty and attention (`fleet.view`); incidents (`incident.view`);
+approval queue, history and records (`action.approve` or `audit.view`);
+outcomes, patterns, learning candidates and signals, autonomy narrowing,
+campaigns and Operational Agent reads (`fleet.view`); audit
+(`audit.view`); sites (`fleet.view`); the org tree (`site.view`); the grant
+list (`user.view` or `audit.view`); and the campaign preflight's
+caller-intersection (`site.manage`). Object visibility that precedes a
+mutation gate (404 before 403) asks the object's READ permission.
+**What a human can see change:** only a principal holding a grant whose
+subset withholds the permission a route requires reads less — which is the
+correction. A principal whose grants all carry the full role reads
+byte-identically, asserted by regression over the existing tenant, org and
+site personas. **OUT, and general B0b's:** the device / device_class
+under-reach (F1 stays OPEN — `ReadReach` carries `device_ids` and
+`device_classes` and no repository filter consumes them yet), contextual
+site projection, incident and outcome ownership, approval class arity,
+parent-incident redaction, candidate-skill ownership, the empty-class
+reconciliation, the taxonomy. **Unchanged:** the permission vocabulary
+(25), `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE`
+(13), every route (zero added) and response shape, the schema (CC head
+`0026`), `resolve()`, `permits()`, every mutation gate, S1. General B0b,
+B0c, B1, B2 and the taxonomy remain not started.
