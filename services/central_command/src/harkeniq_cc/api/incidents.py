@@ -64,7 +64,31 @@ def _diagnosis(explanation: dict | None) -> dict | None:
     }
 
 
-def _incident_dict(row, site_names: dict) -> dict:
+def _incident_dict(
+    row, site_names: dict, *, reach=None, visible_parents: frozenset = frozenset(),
+) -> dict:
+    """One incident, as THIS caller may read it (A30.25, R2/D7).
+
+    Correlation never widens reach. Two things on an incident row are not
+    about the incident's own device, and a caller who reads the row only
+    through device ownership -- who does not hold its site -- gets neither:
+
+    * the PARENT. `parent_incident_id` is the parent's id only when the
+      parent is independently visible to this caller; otherwise it is
+      null and the incident reads as the top-level incident it is, for
+      them. A hidden parent is not named, and not hinted at.
+    * `correlation`. `correlation_meta` is an open dict with no bounded
+      contract (A30.7), and it is where site-wide fault data lives: a
+      device-owned `network_ambiguity` incident stores its PEERS' agent
+      ids in it as `votes`.
+
+    `reach=None` is an internal caller. For a caller who holds the site,
+    every field is exactly what it was.
+    """
+    holds_site = reach is None or reach.covers_site(row.site_id)
+    parent_id = row.parent_incident_id
+    if parent_id and reach is not None and parent_id not in visible_parents:
+        parent_id = None
     return {
         "incident_id": row.incident_id,
         "kind": row.kind,
@@ -74,14 +98,14 @@ def _incident_dict(row, site_names: dict) -> dict:
         "subsystem": row.subsystem,
         "site_id": row.site_id,
         "site_name": site_names.get(row.site_id, ""),
-        "parent_incident_id": row.parent_incident_id,
-        "is_parent": row.parent_incident_id is None,
+        "parent_incident_id": parent_id,
+        "is_parent": parent_id is None,
         "confidence": row.confidence,
         # A2/A1.1: an inferred fault domain produces a lower-confidence
         # conclusion, and the surface must say so rather than presenting it
         # as confirmed.
         "inferred": row.inferred,
-        "correlation": row.correlation_meta or {},
+        "correlation": (row.correlation_meta or {}) if holds_site else {},
         "diagnosis": _diagnosis(row.explanation),
         "opened_at": row.opened_at.isoformat() if row.opened_at else None,
         "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
@@ -118,10 +142,24 @@ async def list_incidents(
         limit=limit,
         scope=reach,
     )
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
-    site_names = {s.id: s.site_name for s in sites}
+    site_names = await SiteRepo(session).names_in_view(user.tenant_id, scope=reach)
 
     by_id = {r.incident_id: r for r in rows}
+    # D7: a parent is named only if the caller may read it ON ITS OWN --
+    # on this page or not, open or not. One query for the ones not here.
+    visible_parents = frozenset(by_id) | frozenset(
+        await repo.visible_ids(
+            user.tenant_id,
+            {r.parent_incident_id for r in rows if r.parent_incident_id} - set(by_id),
+            scope=reach,
+        )
+    )
+
+    def as_dict(row) -> dict:
+        return _incident_dict(
+            row, site_names, reach=reach, visible_parents=visible_parents,
+        )
+
     parents = [r for r in rows if r.parent_incident_id is None]
     children_by_parent: dict[str, list] = {}
     for r in rows:
@@ -130,10 +168,9 @@ async def list_incidents(
 
     items = []
     for parent in parents:
-        entry = _incident_dict(parent, site_names)
+        entry = as_dict(parent)
         entry["children"] = [
-            _incident_dict(c, site_names)
-            for c in children_by_parent.get(parent.incident_id, [])
+            as_dict(c) for c in children_by_parent.get(parent.incident_id, [])
         ]
         entry["child_count"] = len(entry["children"])
         items.append(entry)
@@ -141,7 +178,7 @@ async def list_incidents(
     # A child whose parent is outside this page (or already resolved) is
     # still shown, rather than disappearing into a parent nobody listed.
     orphans = [
-        _incident_dict(r, site_names)
+        as_dict(r)
         for r in rows
         if r.parent_incident_id and r.parent_incident_id not in by_id
     ]
@@ -174,16 +211,35 @@ async def get_incident(
     row = await repo.get(user.tenant_id, incident_id)
     if row is None:
         raise HTTPException(status_code=404, detail="incident not found")
-    # E1.2: an incident at a site outside the caller's scope reads as
-    # absent. 403 would confirm it exists.
-    if row.site_id and not reach.covers_site(row.site_id):
+    # E1.2: an incident outside the caller's scope reads as absent. 403
+    # would confirm it exists.
+    #
+    # A30.25: decided by the SAME predicate as the list -- the owner rule,
+    # in SQL -- so the detail and the list cannot disagree about who owns
+    # an incident. It used to ask site coverage alone, which refused a
+    # device-scoped principal its own device's incident.
+    if row.site_id and incident_id not in await repo.visible_ids(
+        user.tenant_id, [incident_id], scope=reach,
+    ):
         raise HTTPException(status_code=404, detail="incident not found")
 
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
-    site_names = {s.id: s.site_name for s in sites}
-    entry = _incident_dict(row, site_names)
-    children = await repo.children_of(user.tenant_id, incident_id)
-    entry["children"] = [_incident_dict(c, site_names) for c in children]
+    site_names = await SiteRepo(session).names_in_view(user.tenant_id, scope=reach)
+    # D7: this incident's parent is named only if independently visible.
+    # Its children's parent is this incident, which the caller is reading.
+    visible_parents = frozenset({incident_id}) | frozenset(
+        await repo.visible_ids(
+            user.tenant_id, [row.parent_incident_id or ""], scope=reach,
+        )
+    )
+    entry = _incident_dict(
+        row, site_names, reach=reach, visible_parents=visible_parents,
+    )
+    # R2: the children the caller could read on their own, and no others.
+    children = await repo.children_of(user.tenant_id, incident_id, scope=reach)
+    entry["children"] = [
+        _incident_dict(c, site_names, reach=reach, visible_parents=visible_parents)
+        for c in children
+    ]
     entry["child_count"] = len(entry["children"])
 
     # S3 -> S4: has the fleet seen this before? Learned signals for the
@@ -193,11 +249,18 @@ async def get_incident(
 
     device = None
     if row.device_agent_id:
-        device = await FleetCacheRepo(session).get_by_agent_id(row.device_agent_id)
-    if device is not None and device.site_id == row.site_id:
+        device = await FleetCacheRepo(session).get_at_site(
+            row.site_id, row.device_agent_id,
+        )
+    if device is not None:
         signals = await LearnedSignalRepo(session).list_active(user.tenant_id)
+        # A30.25 (R2): a SITE-scoped signal is site knowledge, and reading
+        # an incident through device ownership does not confer the site.
+        # Such a caller gets the cohort knowledge any scoped reader may
+        # already read, and not the site's.
+        learning_site = row.site_id if reach.covers_site(row.site_id) else ""
         entry["prior_learning"] = signals_for_device(
-            signals, device.vendor, device.model, row.site_id,
+            signals, device.vendor, device.model, learning_site,
         )
     else:
         entry["prior_learning"] = []

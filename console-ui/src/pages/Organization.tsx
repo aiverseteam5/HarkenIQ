@@ -6,6 +6,7 @@ import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { deleteJson, getJson, patchJson, postJson, putJson } from "../api";
 import { useAuth } from "../useAuth";
+import { authoritativeSites, type MaybeContextualSite } from "../siteContext";
 
 /* E1.1 — Organization: the tenant's own containment tree.
  *
@@ -54,7 +55,7 @@ interface UnitDetail {
   subtree_site_count: number;
 }
 
-interface SiteRow {
+interface SiteRow extends MaybeContextualSite {
   id: string;
   site_name: string;
   status: string;
@@ -193,7 +194,8 @@ export default function Organization() {
         getJson<{ sites: SiteRow[] } | SiteRow[]>(`/api/t/${tenantId}/sites/`),
       ]);
       setTree(t);
-      setSites(Array.isArray(s) ? s : s.sites);
+      // A30.25: an authority surface offers the sites the caller HOLDS.
+      setSites(authoritativeSites(Array.isArray(s) ? s : s.sites));
     } catch (err) {
       toast((err as Error).message, "error");
     } finally {

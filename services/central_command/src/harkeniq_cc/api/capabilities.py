@@ -104,9 +104,7 @@ async def device_capabilities(
         raise HTTPException(status_code=404, detail="device not found")
     # E1.2 layer 2, and 404 rather than 403 for the same reason as
     # /api/fleet/{id}: a 403 confirms the device exists.
-    if not reach.covers_device(
-        row.agent_id, row.site_id, row.device_class or "server"
-    ):
+    if not reach.covers_device(row.agent_id, row.site_id, row.device_class or ""):
         raise HTTPException(status_code=404, detail="device not found")
 
     registry = build_capability_registry(

@@ -337,6 +337,7 @@ def build_attention(
     now: Optional[datetime] = None,
     learned_signals=None,
     incidents=None,
+    authoritative_site_ids=None,
 ) -> dict:
     """Compose the tenant's attention answer. Pure: no I/O, no DB.
 
@@ -393,8 +394,17 @@ def build_attention(
         # device — site knowledge first, then cohort. This is the edge that
         # closes the loop: yesterday's outcomes change what today's
         # attention says, for humans and agents alike.
+        #
+        # A30.25 (R2): a SITE-scoped signal is site knowledge. A caller
+        # who reads this device through a `device` or `device_class` grant
+        # does not hold its site, so they get the cohort knowledge any
+        # scoped reader may read and not the site's. `None` is an internal
+        # or tenant-wide caller, for whom nothing narrows.
+        learning_site = site_id
+        if authoritative_site_ids is not None and site_id not in authoritative_site_ids:
+            learning_site = ""
         device_signals = signals_for_device(
-            learned_signals or [], risk.vendor, risk.model, site_id,
+            learned_signals or [], risk.vendor, risk.model, learning_site,
         )
 
         items.append({

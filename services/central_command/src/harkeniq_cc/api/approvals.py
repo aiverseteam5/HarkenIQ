@@ -66,6 +66,7 @@ from harkeniq_cc.target_authority import (
     AuthorizedTarget,
     TargetIntegrityError,
     governing_policy_for_targets,
+    resolve_target,
     uncovered_targets,
     wave_subject_matches,
     wave_targets,
@@ -299,6 +300,36 @@ def _scope_snapshot(scope) -> dict:
     }
 
 
+async def _single_target_in_scope(
+    session: AsyncSession, scope, *, site_id: str, device_agent_id: str,
+    tenant_level: bool,
+) -> bool:
+    """The SCOPE dimension of a single-target approval (A30.25, R6/R9).
+
+    An activation names no site and is the tenant question it always was.
+    Every other single-target subject names one device, and is asked by
+    the owner rule -- of the target AS IT CURRENTLY RESOLVES at the
+    subject's site: its id, that site, and the class its fleet row carries
+    now, never an inferred one. So a `device` grant reaches it by id, and
+    a `device_class` grant reaches it when the target canonically belongs
+    to that class (R6), which no caller could be given before because
+    nothing supplied the class. A target Central Command cannot identify
+    at that site is the SITE question: a device or class grant confers
+    nothing over it (R9, natural zero -- the rule S1 already applies to a
+    wave), while a site, org-unit or tenant grant still does.
+
+    This is ONE gate among the ones that follow and replaces none of
+    them: the permission is still carried by the SAME grant (`permits`),
+    and the policy, the approver group, the duplicate check, subject
+    integrity and S1's every-target rule are untouched. It confers no
+    standalone authority.
+    """
+    if tenant_level:
+        return scope.permits("action.approve", tenant_object=True)
+    target = await resolve_target(session, site_id, device_agent_id)
+    return scope.permits_owned("action.approve", site_id=site_id, target=target)
+
+
 async def _record_and_evaluate(
     session: AsyncSession,
     *,
@@ -400,11 +431,9 @@ async def _record_and_evaluate(
                     f"of the {len(targets)} devices this site-wave targets"
                 ),
             )
-    elif not scope.permits(
-        "action.approve",
-        site_id=site_id,
-        device_agent_id=device_agent_id,
-        tenant_object=tenant_level,
+    elif not await _single_target_in_scope(
+        session, scope, site_id=site_id, device_agent_id=device_agent_id,
+        tenant_level=tenant_level,
     ):
         raise HTTPException(
             status_code=403,
@@ -1342,15 +1371,22 @@ async def approval_records(
     # A23 (READ_SCOPED, made true): the subject sits at a site, and a
     # caller who cannot see that site cannot see who approved work on
     # it. Absent, never 403 -- a 403 confirms the subject exists.
-    site_id = ""
+    #
+    # A30.25 (D8): by the OWNER rule, and nothing broader. The subject
+    # names one device, so whoever may read that device's queue entry may
+    # read who decided it -- a device-scoped approver could approve a
+    # subject and then not read its own record.
     if subject_type == SUBJECT_ACTION:
-        route = await ApprovalRouteRepo(session).get_by_action_id(action_id)
-        site_id = getattr(route, "site_id", "") or ""
+        subject = await ApprovalRouteRepo(session).get_by_action_id(action_id)
     else:
-        proposal = await AgentProposalRepo(session).get(user.tenant_id, action_id)
-        site_id = getattr(proposal, "site_id", "") or ""
-    if site_id and not reach.covers_site(site_id):
-        records = []
+        subject = await AgentProposalRepo(session).get(user.tenant_id, action_id)
+    site_id = getattr(subject, "site_id", "") or ""
+    if site_id:
+        target = await resolve_target(
+            session, site_id, getattr(subject, "device_agent_id", "") or "",
+        )
+        if not reach.covers_owned(site_id, target):
+            records = []
     return {
         "subject_type": subject_type,
         "subject_ref": action_id,

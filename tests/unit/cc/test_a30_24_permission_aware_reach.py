@@ -298,14 +298,18 @@ class TestSiteIdsKeepsItsMeaning:
             assert reach.tenant_wide == scope.tenant_wide, (role, permission)
             assert reach.org_unit_paths == scope.org_unit_paths
 
-    def test_f1_is_still_open(self):
-        """General B0b's: a device grant reaches its device and no
-        repository filter can say so yet. S2 must not have closed it by
-        accident -- least of all by putting a site into `site_ids`."""
+    def test_a_device_grant_never_becomes_site_reach(self):
+        """F1 was closed by A30.25 WITHOUT touching this. A device grant
+        reaches its device, contributes no site to `site_ids` -- neutral
+        or permission-aware -- and the SITE filter stays false for it. The
+        device is read through the device-aware predicate instead, which
+        is what keeps context from ever becoming authority."""
         scope = _resolve([_row(SCOPE_DEVICE, "dev-a")])
         reach = read_reach(scope, "fleet.view")
-        assert reach.device_ids == {"dev-a"} and reach.site_ids == frozenset()
+        assert scope.site_ids == frozenset() and reach.site_ids == frozenset()
+        assert reach.device_ids == {"dev-a"}
         assert str(scope_sites(CCFleetCache.site_id, reach)) == "false"
+        assert not scope.covers_site("site-a") and not reach.covers_site("site-a")
 
 
 class TestTheTwoConstructorsPartitionTheScopes:
@@ -672,8 +676,9 @@ NEUTRAL_ATTRS = {
 HELPER_PERMISSIONS = {
     ("campaigns.py", "_visible_sites"): {"fleet.view"},
     ("operational_agents.py", "_agent_visible"): {"fleet.view"},
-    ("operational_agents.py", "_narrow_proposals"): {"fleet.view"},
-    ("operational_agents.py", "_authority_for_proposal"): {"fleet.view"},
+    # A30.25: the ONE place the proposal reads derive their reach, so the
+    # list narrowing and the receipts cannot use different permissions.
+    ("operational_agents.py", "_proposal_reach"): {"fleet.view"},
 }
 
 

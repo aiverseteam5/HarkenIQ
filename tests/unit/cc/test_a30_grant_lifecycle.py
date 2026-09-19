@@ -45,7 +45,7 @@ WHAT THIS MODULE HOLDS
 * an expired agent stops proposing
 * `clear_scopes` still retires expired-but-unrevoked rows
 * the administrative reads that must keep seeing lapsed rows still do
-* F1 is NOT fixed here, and that is asserted, not assumed
+* F1 was NOT fixed here (A30.25 closed it); `site_ids` staying truthful is still asserted
 """
 
 from __future__ import annotations
@@ -352,17 +352,18 @@ class TestTheLifecycleMatrix:
 
 
 # ---------------------------------------------------------------------------
-# F1 is deliberately NOT fixed here
+# F1 was B0b's, and B0b closed it without touching `site_ids`
 # ---------------------------------------------------------------------------
 
 
-class TestF1RemainsOpenOnPurpose:
-    def test_site_ids_still_cannot_express_device_reach(self):
-        """A6-4B0b's defect, asserted as still present.
-
-        If this ever starts passing by accident, the under-reach was
-        fixed by something that was not B0b -- most likely by reaching
-        back for raw grant rows, which is the path B0a removed.
+class TestSiteIdsStaysTruthful:
+    def test_site_ids_never_gains_device_reach(self):
+        """B0a left F1 open rather than paper over it with raw grant rows;
+        A30.25 (A6-4B0b) closed it with device-aware repository
+        predicates. What this asserted while F1 was open is now a
+        PERMANENT invariant: a device grant covers its device and adds no
+        site to `site_ids`. If that ever changes, a device has been turned
+        into site authority -- the one fix B0b was forbidden.
         """
         scope = resolve(
             tenant_id=TENANT, principal_type="user", principal_ref="p1",
@@ -371,8 +372,9 @@ class TestF1RemainsOpenOnPurpose:
             sites=[NS(id="site-a", org_unit_id=None)], enforcement="strict",
         )
         assert scope.site_ids == frozenset(), (
-            "site_ids gained device reach; that is A6-4B0b's job"
+            "site_ids gained device reach: context has become authority"
         )
+        assert scope.covers_site("site-a") is False
         assert scope.covers_device("dev-1") is True, (
             "canonical coverage must still say the device is in scope"
         )

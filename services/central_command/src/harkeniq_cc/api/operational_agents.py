@@ -53,6 +53,7 @@ from harkeniq_cc.governance import (
     load_agent_reach,
     load_autonomy_contract,
 )
+from harkeniq_cc.target_authority import load_fleet_index
 from harkeniq_cc.scope import (
     SCOPE_DEVICE,
     SCOPE_ORG_UNIT,
@@ -566,12 +567,49 @@ async def _require_visible_agent(session, tenant_id: str, agent_id: str, scope):
     return agent
 
 
-def _narrow_proposals(scope, proposals):
-    """A scoped reader sees the proposals made at THEIR sites."""
+async def _proposal_reach(session, tenant_id: str, scope):
+    """(reach, fleet index) for judging proposals by the owner rule.
+
+    A30.25. A proposal targets ONE device, so it is that device's: a
+    reader reaches it by site, by the device's id, or by its CURRENT
+    class. The index is the identity lookup that resolves the device at
+    the proposal's site, and it is read only for a reach that HAS a device
+    or class dimension -- for every tenant, org-unit and site principal
+    the rule is site coverage, exactly as it was, and no fleet read is
+    added to their request.
+    """
     reach = read_reach(scope, AGENT_READ)
+    index = None
+    if not reach.tenant_wide and (reach.device_ids or reach.device_classes):
+        index = await load_fleet_index(session, tenant_id)
+    return reach, index
+
+
+def _proposal_in_reach(reach, index, proposal) -> bool:
+    """The owner rule for one proposal. ONE implementation, asked by the
+    list narrowing and by the receipts, so a proposal cannot be reachable
+    in one and out of reach in the other."""
+    if reach.tenant_wide:
+        return True
+    target = None
+    if index is not None:
+        target = index.resolve(
+            proposal.site_id, getattr(proposal, "device_agent_id", "") or "",
+        )
+    return reach.covers_owned(proposal.site_id, target)
+
+
+def _narrow_proposals(reach, index, proposals):
+    """A scoped reader sees the proposals they reach: made at THEIR sites,
+    or about a device they hold by id or by class (A30.25). It used to ask
+    the site alone, so a device-scoped Operational Agent could not see its
+    own proposals."""
     if reach.tenant_wide:
         return list(proposals)
-    return [p for p in proposals if p.site_id and p.site_id in reach.site_ids]
+    return [
+        p for p in proposals
+        if p.site_id and _proposal_in_reach(reach, index, p)
+    ]
 
 
 def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> bool:
@@ -882,6 +920,9 @@ async def list_agents(
     repo = OperationalAgentRepo(session)
     agents = await repo.list_all(user.tenant_id, status=status)
     prop_repo = AgentProposalRepo(session)
+    proposal_reach, fleet_index = await _proposal_reach(
+        session, user.tenant_id, scope,
+    )
     items = []
     for agent in agents:
         if machine and agent.id != user.user_id:
@@ -896,7 +937,8 @@ async def list_agents(
             continue
         caps = await repo.list_capabilities(agent.id)
         proposals = _narrow_proposals(
-            scope, await prop_repo.list_for_agent(user.tenant_id, agent.id)
+            proposal_reach, fleet_index,
+            await prop_repo.list_for_agent(user.tenant_id, agent.id),
         )
         if machine:
             from harkeniq_cc.receipts import machine_agent_list_item
@@ -1050,10 +1092,12 @@ async def get_agent(
     contract = narrow_to_sites(
         contract, None if reach.tenant_wide else set(reach.site_ids)
     )
+    proposal_reach, fleet_index = await _proposal_reach(
+        session, user.tenant_id, scope,
+    )
     proposals = _narrow_proposals(
-        scope, await AgentProposalRepo(session).list_for_agent(
-            user.tenant_id, agent.id,
-        )
+        proposal_reach, fleet_index,
+        await AgentProposalRepo(session).list_for_agent(user.tenant_id, agent.id),
     )
     agent_reach = await load_agent_reach(
         session, tenant_id=user.tenant_id, agent_id=agent.id
@@ -1080,7 +1124,9 @@ async def get_agent(
         return await machine_agent_view(
             session, tenant_id=user.tenant_id, agent=agent, human_view=view,
             proposals=proposals[:50],
-            authority_for=lambda p: _authority_for_proposal(scope, p),
+            authority_for=lambda p: _authority_for_proposal(
+                proposal_reach, fleet_index, p,
+            ),
         )
     # A27.6: one query for the page, never one per row.
     from harkeniq_cc.db.repos import AgentSubmissionRepo
@@ -1518,10 +1564,14 @@ async def list_proposals(
     machine = await _machine_self_read(request, user, agent_id)
 
     await _require_visible_agent(session, user.tenant_id, agent_id, scope)
+    proposal_reach, fleet_index = await _proposal_reach(
+        session, user.tenant_id, scope,
+    )
     proposals = _narrow_proposals(
-        scope, await AgentProposalRepo(session).list_for_agent(
+        proposal_reach, fleet_index,
+        await AgentProposalRepo(session).list_for_agent(
             user.tenant_id, agent_id, limit=limit,
-        )
+        ),
     )
 
     if machine:
@@ -1534,7 +1584,9 @@ async def list_proposals(
 
         items = await machine_proposal_items(
             session, user.tenant_id, proposals,
-            authority_for=lambda p: _authority_for_proposal(scope, p),
+            authority_for=lambda p: _authority_for_proposal(
+                proposal_reach, fleet_index, p,
+            ),
         )
         return {
             "proposals": items,
@@ -2618,16 +2670,17 @@ async def _machine_self_read(
     return True
 
 
-def _authority_for_proposal(scope, proposal) -> bool:
-    """Does this scope currently reach the work? One implementation.
+def _authority_for_proposal(reach, index, proposal) -> bool:
+    """Does this reach currently cover the work? One implementation.
 
     Asked by the receipt reads and by the machine list, so a proposal
-    cannot be narrowed in one and complete in the other.
+    cannot be narrowed in one and complete in the other. A30.25: by the
+    owner rule (`_proposal_in_reach`), so an agent scoped to a device
+    reads the estate detail of its OWN proposal about that device.
     """
     if proposal is None or not getattr(proposal, "site_id", ""):
         return True
-    reach = read_reach(scope, AGENT_READ)
-    return reach.tenant_wide or proposal.site_id in reach.site_ids
+    return _proposal_in_reach(reach, index, proposal)
 
 
 async def _charge_machine_read(
@@ -2703,7 +2756,8 @@ async def _authority_over(session, user, scope, proposal) -> bool:
     with no site (a refusal that never reached one) is not estate
     information, so it does not narrow anything.
     """
-    return _authority_for_proposal(scope, proposal)
+    reach, index = await _proposal_reach(session, user.tenant_id, scope)
+    return _authority_for_proposal(reach, index, proposal)
 
 
 def _receipt_response(request: Request, payload: dict) -> Response:

@@ -661,10 +661,33 @@ def narrow_to_sites(contract: dict, visible_site_ids) -> dict:
     principal learns nothing about sites outside their reach -- not
     even that they exist and are not reporting. ``None`` means a
     tenant-wide reader and returns the contract untouched.
+
+    A30.25 (R4): a reader who holds NO site receives no SITE-DERIVED
+    safety fact at all. That is a `device`- or `device_class`-scoped
+    principal, whom A6-4B0b makes a real reader of this platform: raw
+    site error budgets, suppressed fault domains and per-site autonomy
+    budgets are site governance, and holding a device at a site is not
+    holding the site. The lists above were already empty for such a
+    reader. What was NOT is everything this function never looked at --
+    the error-budget aggregate FOLDED across sites (it carries no
+    `site_id`, so `_site_ok` passed it), and each action class's `safety`
+    block -- so they are emptied here. The tenant posture, the ladder,
+    the dispositions and the tenant-wide outcome evidence are unchanged:
+    that is the posture the reader operates under.
+
+    STATED, NOT HIDDEN: for a reader who DOES hold a site, those same
+    fields are untouched by this slice and still describe every site --
+    `sites_dropped_back`, `suppressed_domains` and the keys of
+    `site_budget_remaining` name sites outside that reader's reach. It is
+    a pre-existing gap in this function, found by A6-4B0b's live gate and
+    recorded as its own finding for ratification: this slice's regression
+    promise is that tenant, org-unit and site principals read
+    byte-identically, so it is not corrected under that promise.
     """
     if visible_site_ids is None:
         return contract
     visible = set(visible_site_ids)
+    holds_no_site = not visible
 
     def _site_ok(item) -> bool:
         sid = item.get("site_id", "") if isinstance(item, dict) else ""
@@ -688,7 +711,7 @@ def narrow_to_sites(contract: dict, visible_site_ids) -> dict:
     safety["site_stop_switches"] = [
         s for s in safety.get("site_stop_switches", []) if _site_ok(s)
     ]
-    safety["error_budgets"] = [
+    safety["error_budgets"] = [] if holds_no_site else [
         e for e in safety.get("error_budgets", []) if _site_ok(e)
     ]
     out["safety_state"] = safety
@@ -706,6 +729,13 @@ def narrow_to_sites(contract: dict, visible_site_ids) -> dict:
             if not (isinstance(sig, dict) and sig.get("scope_type") == "site"
                     and sig.get("scope_ref") not in visible)
         ]
+        if holds_no_site and isinstance(row.get("safety"), dict):
+            row["safety"] = {
+                **row["safety"],
+                "error_budget": None,
+                "suppressed_domains": [],
+                "site_budget_remaining": {},
+            }
         classes.append(row)
     out["action_classes"] = classes
     return out

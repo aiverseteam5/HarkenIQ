@@ -10,9 +10,19 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Iterable, Any, Optional, Sequence
 
-from sqlalchemy import delete as sa_delete, false as sa_false, func, select, update as sa_update
+from sqlalchemy import (
+    and_,
+    delete as sa_delete,
+    exists,
+    false as sa_false,
+    func,
+    or_,
+    select,
+    update as sa_update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from harkeniq_cc.scope import ReadReach
 from harkeniq_cc.db.models import (
@@ -144,8 +154,113 @@ def _actor_matches(actor: str):
 
 
 def apply_scope(stmt, column, scope):
-    """Conjoin `scope_sites` onto a statement when it applies."""
+    """Conjoin `scope_sites` onto a statement when it applies.
+
+    For a SITE-owned table only. A table whose rows name a device is
+    filtered by `scope_fleet_devices` or `scope_device_owned` (A30.25): a
+    site filter on such a table is what made a `device` or `device_class`
+    grant read nothing (F1).
+    """
     condition = scope_sites(column, scope)
+    return stmt if condition is None else stmt.where(condition)
+
+
+# ---------------------------------------------------------------------------
+# A30.25 (A6-4B0b): device-bearing tables. Two predicates, by name.
+#
+# The owner rule: a row that names a device is DEVICE-owned when that
+# device currently resolves in the fleet cache AT THE ROW'S OWN SITE, and
+# SITE-owned otherwise. A device-owned row is readable when one grant that
+# carries the read's permission covers the device -- by site, by id, or by
+# the device's CURRENT class. A site-owned row is readable when such a
+# grant covers the site. It is `Grant.covers_device` asked of the target as
+# it currently resolves; `ReadReach.covers_owned` is the same rule in
+# Python, and a generated matrix holds the two equal on both engines.
+#
+# Not one generic filter, on purpose. The fleet cache is its own
+# resolution; every other table has to ASK it, because only
+# `cc_fleet_cache` carries `device_class`. A reader should be able to see
+# which of the two it is looking at.
+#
+# For a reach with no device and no class -- every tenant, org-unit and
+# site principal -- each predicate is the single clause
+# ``site_col IN (...)`` and compiles to exactly what `scope_sites` does.
+# ---------------------------------------------------------------------------
+
+
+def scope_fleet_devices(scope) -> Any:
+    """The `cc_fleet_cache` rows a reach covers: site, device id, or class.
+
+    Every fleet row resolves itself, so this is `covers_device` verbatim.
+    `lower()` because `Grant.covers_device` compares class
+    case-insensitively; a blank class is in no reach (`read_reach` drops
+    it) and so never matches (R1).
+    """
+    reach = require_read_reach(scope)
+    if reach is None or reach.tenant_wide:
+        return None
+    clauses = []
+    if reach.site_ids:
+        clauses.append(CCFleetCache.site_id.in_(sorted(reach.site_ids)))
+    if reach.device_ids:
+        clauses.append(CCFleetCache.agent_id.in_(sorted(reach.device_ids)))
+    if reach.device_classes:
+        clauses.append(
+            func.lower(CCFleetCache.device_class).in_(sorted(reach.device_classes))
+        )
+    if not clauses:
+        return sa_false()
+    return or_(*clauses)
+
+
+def scope_device_owned(site_column, device_column, scope) -> Any:
+    """The rows of a device-bearing table a reach covers, by the owner rule.
+
+    ``site IN sites`` covers a row whoever owns it -- a site administrator
+    reads an incident on a device Central Command has never heard of. The
+    device half applies only to a row that NAMES a device (a blank device
+    column is a site-owned row: a correlated parent incident, say) whose
+    device RESOLVES in the fleet cache at that row's own site, and is then
+    covered by id or by its current class. A device that does not resolve
+    is natural zero (R9): nothing is revoked, and nothing is read.
+
+    The fleet table is aliased so the `EXISTS` correlates to the OUTER
+    row's columns and never to a fleet join the caller may already have.
+    """
+    reach = require_read_reach(scope)
+    if reach is None or reach.tenant_wide:
+        return None
+    clauses = []
+    if reach.site_ids:
+        clauses.append(site_column.in_(sorted(reach.site_ids)))
+    if reach.device_ids or reach.device_classes:
+        fleet = aliased(CCFleetCache)
+        covered = []
+        if reach.device_ids:
+            covered.append(fleet.agent_id.in_(sorted(reach.device_ids)))
+        if reach.device_classes:
+            covered.append(
+                func.lower(fleet.device_class).in_(sorted(reach.device_classes))
+            )
+        clauses.append(
+            and_(
+                device_column != "",
+                # Correlate everything but the aliased fleet table to the
+                # enclosing query, explicitly: the outer row's own site
+                # and device decide, whatever else the caller has joined.
+                exists().where(
+                    fleet.agent_id == device_column,
+                    fleet.site_id == site_column,
+                    or_(*covered),
+                ).correlate_except(fleet),
+            )
+        )
+    if not clauses:
+        return sa_false()
+    return or_(*clauses)
+
+
+def _where(stmt, condition):
     return stmt if condition is None else stmt.where(condition)
 
 
@@ -425,12 +540,70 @@ class SiteRepo:
         ).scalar_one_or_none()
 
     async def list_all(self, tenant_id: str, scope=None) -> Sequence[CCSite]:
+        """The sites the caller holds AUTHORITY over. Authoritative, always.
+
+        `sites_count`, site reach, delegation ceilings and administration
+        are computed from this and from nothing else. A site that merely
+        contains a device the caller reads is NOT here: see `list_context`.
+        """
         stmt = apply_scope(
             select(CCSite).where(CCSite.tenant_id == tenant_id), CCSite.id, scope
         )
         return (
             await self.session.execute(stmt.order_by(CCSite.site_name))
         ).scalars().all()
+
+    async def list_context(self, tenant_id: str, scope=None) -> Sequence[CCSite]:
+        """The sites that CONTAIN a device the caller reads, and nothing more.
+
+        A30.25 (D2, R10): context is not authority. A device- or
+        device_class-scoped principal looking at its own device needs to
+        know which site that device is at; it does not thereby hold the
+        site. These rows exist to be PROJECTED as ``{id, site_name,
+        contextual: true}`` and to name a site in a payload about the
+        caller's own devices. They are deliberately a separate read from
+        `list_all`: nothing here is written into a `ResolvedScope` or a
+        `ReadReach`, `covers_site()` stays false for every one of them,
+        and every site mutation -- already gated on `permits(site_id=...)`
+        -- refuses them.
+
+        Permission-aware, because it starts from the reach: a device grant
+        that does not carry the read's permission yields no context.
+        Sites the caller already holds are excluded; a tenant-wide or
+        internal caller has no contextual sites at all.
+        """
+        reach = require_read_reach(scope)
+        if reach is None or reach.tenant_wide:
+            return []
+        if not (reach.device_ids or reach.device_classes):
+            return []
+        fleet = aliased(CCFleetCache)
+        covered = []
+        if reach.device_ids:
+            covered.append(fleet.agent_id.in_(sorted(reach.device_ids)))
+        if reach.device_classes:
+            covered.append(
+                func.lower(fleet.device_class).in_(sorted(reach.device_classes))
+            )
+        stmt = select(CCSite).where(
+            CCSite.tenant_id == tenant_id,
+            exists()
+            .where(fleet.site_id == CCSite.id, or_(*covered))
+            .correlate_except(fleet),
+        )
+        if reach.site_ids:
+            stmt = stmt.where(CCSite.id.notin_(sorted(reach.site_ids)))
+        return (
+            await self.session.execute(stmt.order_by(CCSite.site_name))
+        ).scalars().all()
+
+    async def names_in_view(self, tenant_id: str, scope=None) -> dict[str, str]:
+        """site id -> name, for naming a site in a payload about the
+        caller's own rows: authoritative sites plus contextual ones. A name
+        map and nothing else -- it is never a reach answer."""
+        rows = list(await self.list_all(tenant_id, scope=scope))
+        rows += list(await self.list_context(tenant_id, scope=scope))
+        return {s.id: s.site_name for s in rows}
 
     async def upsert(
         self,
@@ -538,12 +711,14 @@ class FleetCacheRepo:
     async def list_all(
         self, tenant_id: str, scope=None
     ) -> Sequence[CCFleetCache]:
-        stmt = apply_scope(
+        # A30.25: a fleet row is covered by site, by device id, or by its
+        # own class -- not by site alone, which read nothing for a
+        # `device` or `device_class` grant (F1).
+        stmt = _where(
             select(CCFleetCache)
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
             .where(CCSite.tenant_id == tenant_id),
-            CCFleetCache.site_id,
-            scope,
+            scope_fleet_devices(scope),
         )
         return (
             await self.session.execute(stmt.order_by(CCFleetCache.agent_name))
@@ -561,21 +736,21 @@ class FleetCacheRepo:
         scope=None,
     ) -> tuple[Sequence[CCFleetCache], int]:
         """Return paginated devices with total count, optionally filtered."""
-        stmt = apply_scope(
+        covered = scope_fleet_devices(scope)
+        stmt = _where(
             select(CCFleetCache)
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
             .where(CCSite.tenant_id == tenant_id),
-            CCFleetCache.site_id,
-            scope,
+            covered,
         )
-        # The COUNT is scoped too: a total that counted rows the caller
-        # cannot see would leak the size of the rest of the fleet.
-        count_stmt = apply_scope(
+        # The COUNT is scoped too, by the SAME condition: a total that
+        # counted rows the caller cannot see would leak the size of the
+        # rest of the fleet.
+        count_stmt = _where(
             select(func.count(CCFleetCache.id))
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
             .where(CCSite.tenant_id == tenant_id),
-            CCFleetCache.site_id,
-            scope,
+            covered,
         )
         if site_id:
             stmt = stmt.where(CCFleetCache.site_id == site_id)
@@ -611,26 +786,42 @@ class FleetCacheRepo:
             )
         ).scalar_one_or_none()
 
+    async def get_at_site(
+        self, site_id: str, agent_id: str
+    ) -> Optional[CCFleetCache]:
+        """The device as it resolves AT THIS SITE, or None (A30.25).
+
+        An identity lookup for the owner rule, never a visibility answer:
+        a device that has moved sites is not the device a row at the old
+        site is about.
+        """
+        return (
+            await self.session.execute(
+                select(CCFleetCache)
+                .where(CCFleetCache.site_id == site_id)
+                .where(CCFleetCache.agent_id == agent_id)
+                .limit(1)
+            )
+        ).scalars().first()
+
     async def count_by_health(self, tenant_id: str, scope=None) -> dict[str, int]:
         """Return {health_status: count} for the devices the caller may see."""
-        stmt = apply_scope(
+        stmt = _where(
             select(CCFleetCache.health, func.count(CCFleetCache.id))
             .join(CCSite, CCSite.id == CCFleetCache.site_id)
             .where(CCSite.tenant_id == tenant_id),
-            CCFleetCache.site_id,
-            scope,
+            scope_fleet_devices(scope),
         ).group_by(CCFleetCache.health)
         rows = (await self.session.execute(stmt)).all()
         return {row[0]: row[1] for row in rows}
 
     async def count_total(self, tenant_id: str, scope=None) -> int:
         result = await self.session.execute(
-            apply_scope(
+            _where(
                 select(func.count(CCFleetCache.id))
                 .join(CCSite, CCSite.id == CCFleetCache.site_id)
                 .where(CCSite.tenant_id == tenant_id),
-                CCFleetCache.site_id,
-                scope,
+                scope_fleet_devices(scope),
             )
         )
         return result.scalar() or 0
@@ -679,13 +870,14 @@ class ApprovalRouteRepo:
     async def list_pending(
         self, tenant_id: str, scope=None
     ) -> Sequence[CCApprovalRoute]:
-        stmt = apply_scope(
+        stmt = _where(
             select(CCApprovalRoute)
             .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
             .where(CCSite.tenant_id == tenant_id)
             .where(CCApprovalRoute.decision.is_(None)),
-            CCApprovalRoute.site_id,
-            scope,
+            scope_device_owned(
+                CCApprovalRoute.site_id, CCApprovalRoute.device_agent_id, scope,
+            ),
         )
         return (
             await self.session.execute(stmt.order_by(CCApprovalRoute.routed_at))
@@ -694,13 +886,14 @@ class ApprovalRouteRepo:
     async def list_pending_paginated(
         self, tenant_id: str, page: int = 1, page_size: int = 50, scope=None,
     ) -> tuple[Sequence[CCApprovalRoute], int]:
-        base = apply_scope(
+        base = _where(
             select(CCApprovalRoute)
             .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
             .where(CCSite.tenant_id == tenant_id)
             .where(CCApprovalRoute.decision.is_(None)),
-            CCApprovalRoute.site_id,
-            scope,
+            scope_device_owned(
+                CCApprovalRoute.site_id, CCApprovalRoute.device_agent_id, scope,
+            ),
         )
         total = (
             await self.session.execute(
@@ -719,13 +912,14 @@ class ApprovalRouteRepo:
     async def list_history(
         self, tenant_id: str, scope=None
     ) -> Sequence[CCApprovalRoute]:
-        stmt = apply_scope(
+        stmt = _where(
             select(CCApprovalRoute)
             .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
             .where(CCSite.tenant_id == tenant_id)
             .where(CCApprovalRoute.decision.isnot(None)),
-            CCApprovalRoute.site_id,
-            scope,
+            scope_device_owned(
+                CCApprovalRoute.site_id, CCApprovalRoute.device_agent_id, scope,
+            ),
         )
         return (
             await self.session.execute(
@@ -736,13 +930,14 @@ class ApprovalRouteRepo:
     async def list_history_paginated(
         self, tenant_id: str, page: int = 1, page_size: int = 50, scope=None,
     ) -> tuple[Sequence[CCApprovalRoute], int]:
-        base = apply_scope(
+        base = _where(
             select(CCApprovalRoute)
             .join(CCSite, CCSite.id == CCApprovalRoute.site_id)
             .where(CCSite.tenant_id == tenant_id)
             .where(CCApprovalRoute.decision.isnot(None)),
-            CCApprovalRoute.site_id,
-            scope,
+            scope_device_owned(
+                CCApprovalRoute.site_id, CCApprovalRoute.device_agent_id, scope,
+            ),
         )
         total = (
             await self.session.execute(
@@ -1636,12 +1831,18 @@ class OutcomeHistoryRepo:
         further to the caller's own sites; `scope=None` is the internal
         caller (the IntelligenceEngine), which is fleet-wide by design.
         """
-        stmt = apply_scope(
+        # A30.25: an outcome is about one device. A row whose
+        # `device_agent_id` does not resolve at its site (D10: the SM's
+        # non-canonical fallback, were it ever to fire) is SITE-owned, so
+        # no device or class grant reads it -- the read is never widened
+        # to fit an identifier.
+        stmt = _where(
             select(CCOutcomeHistory)
             .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
             .where(CCSite.tenant_id == tenant_id),
-            CCOutcomeHistory.site_id,
-            scope,
+            scope_device_owned(
+                CCOutcomeHistory.site_id, CCOutcomeHistory.device_agent_id, scope,
+            ),
         ).order_by(CCOutcomeHistory.ingested_at).limit(limit)
         if since is not None:
             stmt = stmt.where(CCOutcomeHistory.ingested_at > since)
@@ -2278,10 +2479,9 @@ class IncidentRepo:
         limit: int = 200,
         scope=None,
     ) -> Sequence[CCIncident]:
-        stmt = apply_scope(
+        stmt = _where(
             select(CCIncident).where(CCIncident.tenant_id == tenant_id),
-            CCIncident.site_id,
-            scope,
+            self._owned(scope),
         )
         if status:
             stmt = stmt.where(CCIncident.status == status)
@@ -2298,16 +2498,48 @@ class IncidentRepo:
             return None
         return row
 
+    @staticmethod
+    def _owned(scope):
+        """A30.25: an incident that names a device is that device's; one
+        that names none -- a correlated parent -- is its site's."""
+        return scope_device_owned(
+            CCIncident.site_id, CCIncident.device_agent_id, scope,
+        )
+
+    async def visible_ids(
+        self, tenant_id: str, incident_ids: Iterable[str], scope=None,
+    ) -> set[str]:
+        """Which of these incidents the caller may INDEPENDENTLY read.
+
+        R2/D7: correlation never widens reach. A child's parent, and a
+        parent's children, are shown only when they would be shown on
+        their own -- whatever their status or page -- and a parent that
+        would not is never named.
+        """
+        wanted = sorted({i for i in incident_ids if i})
+        if not wanted:
+            return set()
+        stmt = _where(
+            select(CCIncident.incident_id)
+            .where(CCIncident.tenant_id == tenant_id)
+            .where(CCIncident.incident_id.in_(wanted)),
+            self._owned(scope),
+        )
+        return set((await self.session.execute(stmt)).scalars().all())
+
     async def children_of(
-        self, tenant_id: str, parent_id: str,
+        self, tenant_id: str, parent_id: str, scope=None,
     ) -> Sequence[CCIncident]:
+        # R2: the SAME predicate as the list. A visible parent does not
+        # carry a caller to children it could not read on their own.
+        stmt = _where(
+            select(CCIncident)
+            .where(CCIncident.tenant_id == tenant_id)
+            .where(CCIncident.parent_incident_id == parent_id),
+            self._owned(scope),
+        )
         return (
-            await self.session.execute(
-                select(CCIncident)
-                .where(CCIncident.tenant_id == tenant_id)
-                .where(CCIncident.parent_incident_id == parent_id)
-                .order_by(CCIncident.opened_at)
-            )
+            await self.session.execute(stmt.order_by(CCIncident.opened_at))
         ).scalars().all()
 
 
@@ -2724,13 +2956,16 @@ class AgentProposalRepo:
     async def list_awaiting_approval(
         self, tenant_id: str, scope=None
     ) -> Sequence[CCAgentProposal]:
-        stmt = apply_scope(
+        # A30.25: a proposal targets one device, so the queue follows the
+        # owner rule like a node action's route does.
+        stmt = _where(
             select(CCAgentProposal).where(
                 CCAgentProposal.tenant_id == tenant_id,
                 CCAgentProposal.status == "awaiting_approval",
             ),
-            CCAgentProposal.site_id,
-            scope,
+            scope_device_owned(
+                CCAgentProposal.site_id, CCAgentProposal.device_agent_id, scope,
+            ),
         )
         return (
             await self.session.execute(stmt.order_by(CCAgentProposal.created_at))

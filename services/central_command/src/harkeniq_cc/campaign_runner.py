@@ -144,8 +144,10 @@ async def preflight(
     if caller_scope is not None:
         in_scope = [
             d for d in in_scope
+            # A30.25 (R1): an authorization question reads the class the
+            # fleet row carries; a blank is never inferred to be `server`.
             if caller_scope.covers_device(
-                d.agent_id, d.site_id or "", d.device_class or "server"
+                d.agent_id, d.site_id or "", d.device_class or ""
             )
         ]
     sites = {s.id: s.site_name for s in await SiteRepo(session).list_all(tenant_id)}
