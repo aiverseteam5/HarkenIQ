@@ -4008,3 +4008,155 @@ still reads zero list rows, and the test that pins F1 open still passes.
 General B0b adds the table-aware device predicates ON this primitive, which
 is the reason S2 lands first — the under-reach fix would otherwise have
 been built on, and widened, a fail-open.
+
+## §34f — A6-4B0b: canonical reach convergence (A30.25)
+
+### What was left
+
+S1 made a set of devices authorizable only as a whole. S2 made a read take
+its reach from the grants that carry its permission. What remained is the
+defect A30.1 named first: a `device` or `device_class` grant is real
+authority — `covers_device()` and `permits()` say yes — and it contributes
+nothing to `site_ids`, which every device-bearing list filtered on. So the
+platform told a principal, at `/api/scope-grants/me`, that it reaches a
+device, answered the device DETAIL read, and returned an empty fleet list,
+an empty incident list and an empty approval queue.
+
+S2 deliberately carried `device_ids` and `device_classes` on `ReadReach`,
+already narrowed by permission, with no consumer. This slice is the
+consumer.
+
+### One owner rule
+
+The tempting fix is per table: "add `OR device_agent_id IN (…)`". It is
+wrong in two ways at once. It trusts a device id on a row without asking
+whether that device exists where the row says it does, and it has nothing
+to match a CLASS against, because only `cc_fleet_cache` carries
+`device_class`.
+
+So ownership is decided once, the way S1 already decided it for waves:
+
+> A row or subject that names a device is DEVICE-OWNED when that device
+> currently resolves in the fleet cache at the row's own site. Otherwise it
+> is SITE-OWNED.
+
+A device-owned row is readable under P when one effective grant carrying P
+covers the device — by site (so by org unit, or tenant), by id, or by the
+device's CURRENT class. A site-owned row is readable when such a grant
+covers the site. That is `Grant.covers_device` asked of the target as it
+currently resolves, and three ratified decisions fall out of it rather than
+being bolted on:
+
+* **R9, natural zero.** A device that does not resolve owns nothing, so a
+  grant naming it reaches nothing — without revoking, mutating or marking
+  the grant inert, which would make a grant's lifecycle flap with a cache.
+  The reach returns when the device does.
+* **R1, no inferred class.** An unresolved device has no class, and a
+  resolved one has the class its fleet row carries. Nothing on an
+  authorization path writes `or "server"`.
+* **Site administrators lose nothing.** A row whose device is unknown is
+  still at their site, and they still read it.
+
+`target_authority.AuthorizedTarget` is S1's "one device as the
+authorization question sees it" — id, site, current class, never
+defaulted. It is reused rather than copied, so reads, the single-target
+approval gate and S1's waves have one notion of a resolved device.
+
+### Two predicates, by name
+
+```
+scope_fleet_devices(reach)
+    site_id IN sites  OR  agent_id IN device_ids  OR  lower(device_class) IN classes
+
+scope_device_owned(site_col, device_col, reach)
+    site_col IN sites
+    OR ( device_col <> ''
+         AND EXISTS ( SELECT 1 FROM cc_fleet_cache f
+                      WHERE f.agent_id = device_col AND f.site_id = site_col
+                        AND ( f.agent_id IN device_ids
+                              OR lower(f.device_class) IN classes ) ) )
+```
+
+Not one generic filter. A reader should be able to see, at the call site,
+that the fleet cache is its own resolution and that every other table has
+to ask it. Both take a `ReadReach` (or `None` for an internal caller) and
+raise on a bare `ResolvedScope`, exactly as S2's `scope_sites` does; both
+yield `false()` for an empty reach; and `read_reach` drops an empty device
+or class ref, because `IN ('')` would match every row whose device column
+is blank — which is precisely the set of SITE-owned rows.
+
+For a principal with no device and no class reach, each predicate is the
+single clause `site_col IN (…)`. That is not an approximation of the old
+filter; it compiles to it. The human regression is asserted that way —
+differentially, against the legacy filter, for every read route — rather
+than by inspection.
+
+### Where Python has to agree with SQL
+
+Most readers can let the database decide. Two cannot: a receipt builder
+that judges proposals through a synchronous callback, and the approval
+DECISION, which is a `permits()` question on the resolved scope and must
+stay one. For those, `ReadReach.covers_owned(site_id, target)` and
+`ResolvedScope.permits_owned(permission, site_id=…, target=…)` state the
+owner rule in Python, over a `FleetIndex` read once per request. The
+cross-reader matrix exists to keep the two statements of the rule equal:
+for every grant type and every negative control, what the repository
+returns is what the canonical predicate says, on sqlite and on PostgreSQL.
+
+### Incidents: what a newly visible child may carry
+
+Making a device's incident visible is not the end of R2. Three things ride
+on an incident row that are not about that device:
+
+* **its parent.** The list already shows a child whose parent is off-page
+  as a top-level item — and kept the parent's id. `parent_incident_id` is
+  now `null` unless the parent is independently visible, in the list, in
+  the detail and among the children.
+* **`correlation`.** `correlation_meta` is an open dict (A30.7 already
+  withholds it from machines for having no contract), and it is where
+  site-wide fault data lives: a parent's `devices` list, and — on a
+  DEVICE-owned `network_ambiguity` incident — `votes`, keyed by the peers'
+  agent ids. A caller who does not cover the incident's site gets `{}`.
+* **prior learning.** A site-scoped learned signal is site knowledge. A
+  caller who reads an incident only through device ownership gets the
+  cohort signals any scoped reader may already read, and not the site's.
+  The attention contract attaches the same signals per device, so it
+  narrows by the same rule.
+
+For a principal who covers the site, all three are byte-identical to
+before.
+
+### Context is not authority, made structural
+
+A device-scoped principal looking at an incident needs to know which site
+it is at. That is comprehension, and D2 grants exactly that much:
+`{id, site_name, contextual: true}`.
+
+What keeps it from becoming authority is that it is never the same object.
+`SiteRepo.list_all` remains the authoritative read — `sites_count`, site
+reach, delegation ceilings and administration are all computed from it and
+none of them changes. `SiteRepo.list_context` is a separate read that
+starts from the devices the caller reads and returns the sites containing
+them. Its result goes to two places: the contextual rows of the sites
+routes, and a name map for payloads about the caller's own devices. It is
+never written into a `ResolvedScope` or a `ReadReach`, which have no field
+that could hold it, and a source-level test pins its call sites. Every site
+mutation was already gated on `permits(site_id=…)`, which a device grant
+cannot satisfy, and a sweep drives each of them at a contextual site to
+prove it.
+
+An authoritative site row gains no field. The Console's two authority
+pickers — the grant form and the organization page's unattached-sites
+list, where a row with no `org_unit_id` would otherwise look attachable —
+skip contextual rows; its navigation filters use them.
+
+### What is left alone, on purpose
+
+Audit stays site-only: `cc_audit_log` cannot say which device an entry is
+about, so a device principal reads none of it, including at its contextual
+site. Autonomy's site facts stay site-only. Campaigns, waves, candidate
+skills, learned signals, fleet patterns, the org tree and the grant list
+are site- or tenant-owned domains and are not made device-aware
+mechanically. `ResolvedScope.site_ids` keeps its meaning: a device grant
+still contributes nothing to it, and the test that pinned F1 open keeps
+that half of its assertion as a permanent invariant.
