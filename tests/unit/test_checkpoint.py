@@ -1,6 +1,7 @@
 """Checkpoint persistence tests (Doc 06 §7, Doc 13 §7, Doc 10 §2.14)."""
 
 import math
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,6 +21,29 @@ from harkeniq.state.checkpoint import CheckpointManager
 
 T0 = 1_700_000_000.0
 STEP = 60.0
+
+#: Doc 13 §7: `baseline.max_age_days`. A baseline whose last sample is older
+#: than this is discarded on load. Stated here, not read off the manager, so
+#: the boundary test pins the SPEC'D number rather than following whatever
+#: the code happens to say.
+MAX_BASELINE_AGE_DAYS = 30
+
+
+def ago(**delta) -> str:
+    """A checkpoint timestamp relative to NOW, in the stored format.
+
+    `CheckpointManager` judges staleness against the wall clock, so a
+    fixture's freshness has to be relative too. A hard-coded "fresh" date
+    is a time bomb: `2026-08-19T00:00:00Z` was fresh when these tests were
+    written, crossed the 30-day rule at 2026-09-18T00:00:00Z, and four
+    tests began failing on an untouched main with no code change.
+
+    Generated per call -- never cached at import, so a long session cannot
+    age a fixture -- and at second resolution, which is what is stored.
+    """
+    return (datetime.now(timezone.utc) - timedelta(**delta)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 @pytest.fixture
@@ -41,7 +65,8 @@ def make_baseline(sensor_id="fan:Fan1", **overrides):
         sample_count=20,
         ring_buffer=[(T0 + i * STEP, 9500.0 + i) for i in range(20)],
         first_sample_at="2023-11-14T22:13:20Z",
-        last_sample_at="2026-08-19T00:00:00Z",
+        # Fresh by construction: see `ago`.
+        last_sample_at=ago(days=1),
         degraded_baseline=False,
         regression_state=RegressionState(
             sum_x=10.0, sum_y=190000.0, sum_xy=95000.0,
@@ -218,7 +243,8 @@ class TestDirtyTracking:
         await save_minimal(mgr, baselines={"fan:Fan1": b})
         b.mean = 9400.0
         b.sample_count = 21
-        b.last_sample_at = "2026-08-19T00:01:00Z"
+        # One minute after the fixture's own last sample, as before.
+        b.last_sample_at = ago(days=1, minutes=-1)
         await save_minimal(mgr, baselines={"fan:Fan1": b})
         loaded = (await mgr.load_checkpoint())["baselines"]["fan:Fan1"]
         assert loaded.mean == 9400.0
@@ -249,8 +275,15 @@ class TestPruning:
         assert counts == {"fan:Fan1": 1000, "fan:Fan2": 1}
 
     async def test_stale_baseline_discarded_on_load(self, mgr):
-        fresh = make_baseline("fan:Fan1", last_sample_at="2026-08-19T00:00:00Z")
-        stale = make_baseline("fan:Fan2", last_sample_at="2026-01-01T00:00:00Z")
+        # One day either side of the spec'd boundary, relative to NOW, on
+        # the manager's PRODUCTION default: a day inside `max_age_days` is
+        # kept, a day past it is discarded. Both halves stay true at any
+        # date, and either one fails if the 30-day rule is moved.
+        assert mgr.max_baseline_age_days == MAX_BASELINE_AGE_DAYS
+        fresh = make_baseline(
+            "fan:Fan1", last_sample_at=ago(days=MAX_BASELINE_AGE_DAYS - 1))
+        stale = make_baseline(
+            "fan:Fan2", last_sample_at=ago(days=MAX_BASELINE_AGE_DAYS + 1))
         await save_minimal(mgr, baselines={"fan:Fan1": fresh, "fan:Fan2": stale})
         loaded = (await mgr.load_checkpoint())["baselines"]
         assert "fan:Fan1" in loaded
