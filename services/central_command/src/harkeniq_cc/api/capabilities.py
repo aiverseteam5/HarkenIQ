@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.capabilities import (
@@ -65,10 +66,11 @@ async def capability_registry(
     with full governance and no executor behind it is precisely what
     this endpoint exists to surface.
     """
+    reach = read_reach(scope, "fleet.view")
     return await load_capability_registry(
         session,
         tenant_id=user.tenant_id,
-        scope=scope,
+        scope=reach,
         site_id=site_id,
         action_type=action_type,
     )
@@ -91,6 +93,7 @@ async def device_capabilities(
     different fixes, and an operator looking at a device that will not
     act needs to know which one they have.
     """
+    reach = read_reach(scope, "fleet.view")
     from harkeniq_cc.db.models import CCFleetCache, CCSite
 
     row = await session.get(CCFleetCache, device_id)
@@ -101,7 +104,7 @@ async def device_capabilities(
         raise HTTPException(status_code=404, detail="device not found")
     # E1.2 layer 2, and 404 rather than 403 for the same reason as
     # /api/fleet/{id}: a 403 confirms the device exists.
-    if not scope.covers_device(
+    if not reach.covers_device(
         row.agent_id, row.site_id, row.device_class or "server"
     ):
         raise HTTPException(status_code=404, detail="device not found")
@@ -206,13 +209,14 @@ async def get_catalogue(
     facts, and an operator debugging a silent agent needs to see which one
     is missing.
     """
+    reach = read_reach(scope, "fleet.view")
     from harkeniq_cc.capability_catalogue import catalogue_view
     from harkeniq_cc.db.repos import CapabilityCatalogueRepo
 
     rows = await CapabilityCatalogueRepo(session).list_for_tenant(user.tenant_id)
     await session.commit()  # a lazy seed for a new tenant is a real write
     registry = await load_capability_registry(
-        session, tenant_id=user.tenant_id, scope=scope,
+        session, tenant_id=user.tenant_id, scope=reach,
     )
     return {
         "tenant_id": user.tenant_id,

@@ -75,7 +75,12 @@ from harkeniq_cc.operational_agent import (
     SCOPE_ORG_UNIT,
     SCOPE_SITE,
 )
-from harkeniq_cc.scope import SCOPE_DEVICE, SCOPE_DEVICE_CLASS, expand_rules_to_site_ids
+from harkeniq_cc.scope import (
+    SCOPE_DEVICE,
+    SCOPE_DEVICE_CLASS,
+    expand_rules_to_site_ids,
+    read_reach,
+)
 
 logger = logging.getLogger("harkeniq.cc.api.campaigns")
 
@@ -252,10 +257,24 @@ async def _rule_reach(session, tenant_id: str, rules) -> frozenset[str]:
     return expand_rules_to_site_ids(rules, units, sites)
 
 
+#: Reading a campaign is a `fleet.view` read. The same permission decides
+#: the 404-before-403 visibility that precedes a lifecycle mutation: a
+#: caller who could not GET the campaign is not told it exists.
+CAMPAIGN_READ = "fleet.view"
+
+
 def _visible_sites(scope):
-    if getattr(scope, "tenant_wide", False):
+    """The sites the caller may READ campaigns at, or None for all.
+
+    A30.24: from the grants that themselves carry `fleet.view`. The bare
+    `scope.site_ids` is permission-neutral -- a grant narrowed to
+    `incident.view` at a site put that site's campaigns, waves and
+    targets in reach.
+    """
+    reach = read_reach(scope, CAMPAIGN_READ)
+    if reach.tenant_wide:
         return None
-    return set(getattr(scope, "site_ids", ()) or ())
+    return set(reach.site_ids)
 
 
 async def _campaign_visible(session, tenant_id: str, scope, rules, site_rows) -> bool:
@@ -471,7 +490,9 @@ async def preflight_campaign(
         campaign=campaign,
         scope_rules=rules,
         resolved_site_ids=await _rule_reach(session, user.tenant_id, rules),
-        caller_scope=scope,
+        # A30.24: the caller-intersection asks coverage, so it asks it of
+        # the grants that carry the permission this route requires.
+        caller_scope=read_reach(scope, "site.manage"),
         actor=user.email or user.user_id, actor_ref=actor_of(user),
     )
     await session.commit()

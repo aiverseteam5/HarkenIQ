@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.autonomy import narrow_to_sites
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.governance import load_autonomy_contract
 
 router = APIRouter(prefix="/api/autonomy", tags=["autonomy"])
@@ -64,5 +65,6 @@ async def autonomy_contract(
         site_id=site_id,
         action_type=action_type,
     )
-    visible = None if getattr(scope, "tenant_wide", False) else set(scope.site_ids)
+    reach = read_reach(scope, "fleet.view")
+    visible = None if reach.tenant_wide else set(reach.site_ids)
     return narrow_to_sites(contract, visible)

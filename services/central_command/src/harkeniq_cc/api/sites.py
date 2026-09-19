@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_cc_state, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import AuditRepo, FleetCacheRepo, OrgUnitRepo, SiteRepo
@@ -164,7 +165,8 @@ async def list_sites(
     scope=Depends(get_scope),
 ) -> dict:
     """List registered sites for the tenant."""
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=scope)
+    reach = read_reach(scope, "fleet.view")
+    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
     total = len(sites)
     start = (page - 1) * page_size
     end = start + page_size
@@ -188,11 +190,12 @@ async def get_site(
     scope=Depends(get_scope),
 ) -> dict:
     """Site detail with device count."""
+    reach = read_reach(scope, "fleet.view")
     site = await SiteRepo(session).get_by_id(site_id)
     if site is None or site.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="site not found")
     # E1.2: out of scope reads as absent.
-    if not scope.covers_site(site.id):
+    if not reach.covers_site(site.id):
         raise HTTPException(status_code=404, detail="site not found")
 
     devices = await FleetCacheRepo(session).list_by_site(site_id)

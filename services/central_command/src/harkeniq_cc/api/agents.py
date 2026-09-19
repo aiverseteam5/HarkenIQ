@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import FleetCacheRepo
 
@@ -46,13 +47,14 @@ async def list_agents(
     scope=Depends(get_scope),
 ) -> dict:
     """List agents from fleet cache."""
+    reach = read_reach(scope, "fleet.view")
     devices, total = await FleetCacheRepo(session).list_filtered(
         tenant_id=user.tenant_id,
         site_id=site_id,
         search=search,
         page=page,
         page_size=page_size,
-        scope=scope,
+        scope=reach,
     )
     return {
         "agents": [_agent_dict(d) for d in devices],
@@ -74,6 +76,7 @@ async def get_agent(
     scope=Depends(get_scope),
 ) -> dict:
     """Agent detail."""
+    reach = read_reach(scope, "fleet.view")
     dev = await FleetCacheRepo(session).get_by_agent_id(agent_id)
     if dev is None:
         raise HTTPException(status_code=404, detail="agent not found")
@@ -84,7 +87,7 @@ async def get_agent(
     if site is None or site.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="agent not found")
     # E1.2: out of scope reads as absent, not as forbidden.
-    if not scope.covers_device(
+    if not reach.covers_device(
         dev.agent_id, dev.site_id, dev.device_class or "server"
     ):
         raise HTTPException(status_code=404, detail="agent not found")

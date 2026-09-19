@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
     CandidateSkillRepo,
@@ -33,8 +34,9 @@ async def list_candidates(
     A23: a candidate carries the site and device it was generated from,
     so the read is site-scoped like every other site-anchored row.
     """
+    reach = read_reach(scope, "fleet.view")
     rows = await CandidateSkillRepo(session).list_candidates(
-        user.tenant_id, status=status, scope=scope,
+        user.tenant_id, status=status, scope=reach,
     )
     return {
         "candidates": [
@@ -121,8 +123,9 @@ async def list_signals(
     )
     # A23: a site-scoped signal names its site. A cohort signal names a
     # vendor/model and is tenant knowledge; it passes through unchanged.
-    if not getattr(scope, "tenant_wide", False):
-        visible = set(getattr(scope, "site_ids", ()) or ())
+    reach = read_reach(scope, "fleet.view")
+    if not reach.tenant_wide:
+        visible = set(reach.site_ids)
         rows = [
             s for s in rows
             if s.scope_type != "site" or s.scope_ref in visible

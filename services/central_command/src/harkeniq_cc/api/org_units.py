@@ -35,6 +35,7 @@ from harkeniq_cc.grant_integrity import (
     GrantIntegrityError,
     refuse_unit_delete_under_grants,
 )
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.org_tree import (
     MAX_DEPTH,
     flatten,
@@ -106,8 +107,12 @@ def _bad(exc: OrgTreeError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def _visible_units(units, scope) -> tuple[list, set[str]]:
+def _visible_units(units, reach) -> tuple[list, set[str]]:
     """Split the tenant's units into what this caller may see (L3).
+
+    `reach` is the caller's `site.view` ReadReach (A30.24): authority over
+    a unit comes from the grants that carry the permission this read
+    requires, never from a grant narrowed to something else.
 
     Returns (visible units, ids that are contextual-only). A tenant-wide
     caller sees everything and nothing is contextual.
@@ -122,19 +127,19 @@ def _visible_units(units, scope) -> tuple[list, set[str]]:
     children. Showing them would leak the sibling branches L3 requires
     to be invisible.
     """
-    if scope is None or getattr(scope, "tenant_wide", False):
+    if reach is None or reach.tenant_wide:
         return list(units), set()
 
     by_id = {u.id: u for u in units}
     authoritative: set[str] = set()
     for unit in units:
-        if scope.covers_org_unit(unit.path):
+        if reach.covers_org_unit(unit.path):
             authoritative.add(unit.id)
             continue
         # A site-scoped principal (no org grant) still needs to see the
         # unit their site hangs from, or the tree renders empty for them.
-        for site_id in scope.site_ids:
-            if scope.site_unit_paths.get(site_id, "") == unit.path:
+        for site_id in reach.site_ids:
+            if reach.site_unit_paths.get(site_id, "") == unit.path:
                 authoritative.add(unit.id)
                 break
 
@@ -176,7 +181,8 @@ async def list_org_units(
     units = await repo.list_all(user.tenant_id)
     counts = await repo.site_counts(user.tenant_id)
 
-    visible, contextual_ids = _visible_units(units, scope)
+    reach = read_reach(scope, "site.view")
+    visible, contextual_ids = _visible_units(units, reach)
     roots = assemble_tree(visible, site_counts=counts)
     for node in flatten(roots):
         node["contextual"] = node["id"] in contextual_ids
@@ -187,7 +193,7 @@ async def list_org_units(
         "tenant_id": user.tenant_id,
         "max_depth": MAX_DEPTH,
         "unit_count": len(visible),
-        "tenant_wide": bool(getattr(scope, "tenant_wide", False)),
+        "tenant_wide": reach.tenant_wide,
         "tree": roots,
     }
 
@@ -207,8 +213,14 @@ async def get_org_unit(
     # E1.2: a unit the caller can neither act on nor see as an ancestor
     # reads as absent. A contextual ancestor IS readable -- that is what
     # makes a breadcrumb work -- and carries `authority: false`.
-    contextual = unit.id in getattr(scope, "contextual_unit_ids", frozenset())
-    if not scope.covers_org_unit(unit.path) and not contextual:
+    #
+    # A30.24: both halves come from the grants that carry `site.view`. An
+    # ancestor is context only for an org grant this read may use.
+    reach = read_reach(scope, "site.view")
+    contextual = unit.path not in reach.org_unit_paths and any(
+        unit.id in ancestor_ids(path) for path in reach.org_unit_paths
+    )
+    if not reach.covers_org_unit(unit.path) and not contextual:
         raise HTTPException(status_code=404, detail="org unit not found")
 
     counts = await repo.site_counts(user.tenant_id)

@@ -710,6 +710,156 @@ def _project(
     )
 
 
+# ---------------------------------------------------------------------------
+# A30.24: permission-aware read reach
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReadReach:
+    """What one principal may READ under a named permission. A projection.
+
+    `ResolvedScope.site_ids` is permission-NEUTRAL: it is built from every
+    effective grant whatever that grant carries. A read route took its
+    permission from the role and its reach from that set, so a grant
+    narrowed to `incident.view` at site-b made site-b's fleet readable
+    (P1, spec A30.24). This type is the same projection over ONLY the
+    grants that carry the permission the read requires:
+
+        READABLE(P, r) = exists effective grant G: P in G.permissions
+                                                    and G covers r
+
+    Not a second resolver. It is derived from a `ResolvedScope` by
+    :func:`read_reach` and from nothing else, and its coverage helpers
+    delegate to the kept grants' own `covers_*`, so it cannot disagree
+    with `ResolvedScope.permits`. Contextual ancestry is not an input.
+
+    `device_ids` and `device_classes` are carried, already narrowed by
+    permission, for general A6-4B0b. No repository filter consumes them
+    yet: F1 stays open in this slice.
+    """
+
+    tenant_id: str
+    #: The permissions asked for. Several mean ANY OF -- the read routes
+    #: whose guard is `require_any_permission`.
+    permissions: tuple[str, ...]
+    grants: tuple[Grant, ...] = ()
+    tenant_wide: bool = False
+    site_ids: frozenset[str] = frozenset()
+    org_unit_paths: frozenset[str] = frozenset()
+    device_ids: frozenset[str] = frozenset()
+    device_classes: frozenset[str] = frozenset()
+    site_unit_paths: Mapping[str, str] = field(default_factory=dict)
+    unit_paths: Mapping[str, str] = field(default_factory=dict)
+
+    def covers_site(self, site_id: str, org_unit_path: str = "") -> bool:
+        path = org_unit_path or self.site_unit_paths.get(site_id, "")
+        return any(g.covers_site(site_id, path) for g in self.grants)
+
+    def covers_device(
+        self, agent_id: str, site_id: str = "", device_class: str = ""
+    ) -> bool:
+        path = self.site_unit_paths.get(site_id, "")
+        return any(
+            g.covers_device(agent_id, site_id, path, device_class)
+            for g in self.grants
+        )
+
+    def covers_org_unit(self, unit_path: str) -> bool:
+        return any(g.covers_org_unit(unit_path) for g in self.grants)
+
+    def covers_org_unit_id(self, unit_id: str) -> bool:
+        path = self.unit_paths.get(unit_id, "")
+        return bool(path) and self.covers_org_unit(path)
+
+    def is_empty(self) -> bool:
+        return not self.grants
+
+
+def read_reach(scope: ResolvedScope, *permissions: str) -> ReadReach:
+    """The reach `scope` holds for a read requiring any of `permissions`.
+
+    A grant contributes only when it is effective (not inert) and carries
+    one of the named permissions itself -- ``"*"`` counts, exactly as in
+    `permits`. Permission from one grant never combines with reach from
+    another, and the role is not consulted: the role already went INTO
+    each grant's permissions at resolution, intersected with that grant's
+    subset and recorded-role ceiling.
+
+    A scope resolved for EXPANSION ONLY refuses, as `permits` does
+    (A22.13): it carries no permission to be aware of. Its askers want
+    :func:`where_reach`.
+    """
+    wanted = tuple(p for p in permissions if p)
+    if not wanted or SCOPE_ONLY_MARKER in wanted:
+        raise ScopeError("read_reach needs the permission the read requires")
+    if scope.scope_only:
+        raise ScopeError(
+            "this scope was resolved to answer WHERE, not WHETHER; a "
+            "permission-aware read reach needs the principal's own scope"
+        )
+    return _reach(scope, wanted)
+
+
+def where_reach(scope: ResolvedScope) -> ReadReach:
+    """The operational reach of a WHERE-only scope (A22.13), as a filter.
+
+    The mirror of :func:`read_reach`, and deliberately its only other
+    constructor. The CC-resident evaluator, the dry-run and the ingress
+    re-derivation narrow their reads to an Operational Agent's own
+    reach, and that scope carries NO permission by ratified design -- an
+    agent's authority is its bindings, not a role. So the permission-
+    neutral question is legitimate for exactly one kind of scope, and
+    this refuses every other kind: a principal's own authorization scope
+    can never be turned into a permission-neutral filter through here.
+    """
+    if not scope.scope_only:
+        raise ScopeError(
+            "where_reach is for a WHERE-only scope; a principal's own scope "
+            "must name the permission its read requires (read_reach)"
+        )
+    return _reach(scope, (SCOPE_ONLY_MARKER,))
+
+
+def _reach(scope: ResolvedScope, wanted: tuple[str, ...]) -> ReadReach:
+    kept = tuple(
+        g for g in scope.grants
+        if not g.inert
+        and ("*" in g.permissions or any(p in g.permissions for p in wanted))
+    )
+    tenant_wide = any(g.scope_type == SCOPE_TENANT for g in kept)
+    org_paths = frozenset(
+        g.org_unit_path for g in kept if g.scope_type == SCOPE_ORG_UNIT
+    )
+    # Same arithmetic as `_project`, over the kept grants only. The known
+    # sites are the keys of `site_unit_paths`, which `resolve()` fills for
+    # every site of the tenant.
+    site_ids = {g.scope_ref for g in kept if g.scope_type == SCOPE_SITE}
+    if tenant_wide:
+        site_ids |= set(scope.site_unit_paths)
+    else:
+        for site_id, path in scope.site_unit_paths.items():
+            if path and any(is_descendant(path, p) for p in org_paths):
+                site_ids.add(site_id)
+    return ReadReach(
+        tenant_id=scope.tenant_id,
+        permissions=wanted,
+        grants=kept,
+        tenant_wide=tenant_wide,
+        site_ids=frozenset(site_ids),
+        org_unit_paths=org_paths,
+        device_ids=frozenset(
+            g.scope_ref for g in kept if g.scope_type == SCOPE_DEVICE
+        ),
+        device_classes=frozenset(
+            g.scope_ref.lower() for g in kept
+            if g.scope_type == SCOPE_DEVICE_CLASS
+        ),
+        site_unit_paths=dict(scope.site_unit_paths),
+        unit_paths=dict(scope.unit_paths),
+    )
+
+
 def expand_rules_to_site_ids(
     rules: Iterable[Any], org_units: Iterable[Any], sites: Iterable[Any]
 ) -> frozenset[str]:

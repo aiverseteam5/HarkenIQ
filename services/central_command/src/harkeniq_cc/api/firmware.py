@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import CveFeedRepo, FleetCacheRepo
 from harkeniq_cc.exposure import match_exposures  # noqa: F401  (re-exported)
@@ -87,7 +88,8 @@ async def firmware_exposure(
 
     A23: one row per exposed device, so the device list is scoped.
     """
-    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=scope)
+    reach = read_reach(scope, "fleet.view")
+    devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
     entries = await CveFeedRepo(session).list_all(tenant_id=user.tenant_id)
     exposures = match_exposures(devices, entries)
     return {

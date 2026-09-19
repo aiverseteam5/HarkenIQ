@@ -43,6 +43,7 @@ from harkeniq_cc.api.deps import (
     require_any_permission,
     require_permission,
 )
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.approval_policy import (
     DECISION_APPROVED,
     DECISION_DENIED,
@@ -1092,11 +1093,12 @@ async def list_pending(
     routes: they carry a rationale and evidence a human should see
     first, and there are far fewer of them.
     """
+    reach = read_reach(scope, "action.approve", "audit.view")
     routes, total = await ApprovalRouteRepo(session).list_pending_paginated(
-        user.tenant_id, page=page, page_size=page_size, scope=scope,
+        user.tenant_id, page=page, page_size=page_size, scope=reach,
     )
     proposals = await AgentProposalRepo(session).list_awaiting_approval(
-        user.tenant_id, scope=scope
+        user.tenant_id, scope=reach
     )
 
     # A2/D1: activations waiting on a human, in the SAME queue. Listed
@@ -1288,8 +1290,9 @@ async def approval_history(
     scope=Depends(get_scope),
 ) -> dict:
     """History of approval decisions."""
+    reach = read_reach(scope, "action.approve", "audit.view")
     routes, total = await ApprovalRouteRepo(session).list_history_paginated(
-        user.tenant_id, page=page, page_size=page_size, scope=scope,
+        user.tenant_id, page=page, page_size=page_size, scope=reach,
     )
     items = [_route_dict(r) for r in routes]
     await _attach_approval_progress(session, user.tenant_id, items)
@@ -1323,6 +1326,7 @@ async def approval_records(
     was, what they decided, and when. Works for both origins -- the
     subject is a node action id or an agent proposal id.
     """
+    reach = read_reach(scope, "action.approve", "audit.view")
     repo = ApprovalRecordRepo(session)
     records = list(await repo.list_for_subject(SUBJECT_ACTION, action_id))
     subject_type = SUBJECT_ACTION
@@ -1345,7 +1349,7 @@ async def approval_records(
     else:
         proposal = await AgentProposalRepo(session).get(user.tenant_id, action_id)
         site_id = getattr(proposal, "site_id", "") or ""
-    if site_id and not scope.covers_site(site_id):
+    if site_id and not reach.covers_site(site_id):
         records = []
     return {
         "subject_type": subject_type,

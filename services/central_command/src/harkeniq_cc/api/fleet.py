@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
+from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.api.warranty import warranty_dict
 from harkeniq_cc.db.repos import FleetCacheRepo, SiteRepo, WarrantyRepo
@@ -51,6 +52,7 @@ async def list_devices(
     scope=Depends(get_scope),
 ) -> dict:
     """List devices across all sites, paginated and filtered."""
+    reach = read_reach(scope, "fleet.view")
     devices, total = await FleetCacheRepo(session).list_filtered(
         tenant_id=user.tenant_id,
         site_id=site_id,
@@ -59,7 +61,7 @@ async def list_devices(
         search=search,
         page=page,
         page_size=page_size,
-        scope=scope,
+        scope=reach,
     )
     # R4-2 P15: bulk-attach warranty status for the dashboard table
     warranty_map = await WarrantyRepo(session).get_map(
@@ -92,12 +94,13 @@ async def fleet_summary(
     scope=Depends(get_scope),
 ) -> dict:
     """KPI aggregates across the tenant's fleet."""
+    reach = read_reach(scope, "fleet.view")
     cache = FleetCacheRepo(session)
-    by_health = await cache.count_by_health(user.tenant_id, scope=scope)
+    by_health = await cache.count_by_health(user.tenant_id, scope=reach)
     total = sum(by_health.values())
     # The summary counts what the CALLER may see. A total that included
     # sites they cannot reach would leak the size of the rest of the fleet.
-    sites_count = len(await SiteRepo(session).list_all(user.tenant_id, scope=scope))
+    sites_count = len(await SiteRepo(session).list_all(user.tenant_id, scope=reach))
 
     # S4: real open incidents, not the critical-health proxy this used to
     # count. The two differ: a correlated fault is ONE incident across many
@@ -106,7 +109,7 @@ async def fleet_summary(
 
     incidents_open = len(
         await IncidentRepo(session).list_incidents(
-            user.tenant_id, status="open", limit=1000, scope=scope,
+            user.tenant_id, status="open", limit=1000, scope=reach,
         )
     )
 
@@ -140,6 +143,7 @@ async def get_device(
     FleetOverview's detail panel always called /api/fleet/{id}, which
     did not exist until now.
     """
+    reach = read_reach(scope, "fleet.view")
     from harkeniq_cc.db.models import CCFleetCache, CCSite
 
     row = await session.get(CCFleetCache, device_id)
@@ -150,7 +154,7 @@ async def get_device(
         raise HTTPException(status_code=404, detail="device not found")
     # E1.2 layer 2 on a single object. 404, not 403: a 403 would confirm
     # the device exists, which is itself a leak across a scope boundary.
-    if not scope.covers_device(
+    if not reach.covers_device(
         row.agent_id, row.site_id, row.device_class or "server"
     ):
         raise HTTPException(status_code=404, detail="device not found")

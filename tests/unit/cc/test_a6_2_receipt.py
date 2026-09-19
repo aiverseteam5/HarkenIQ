@@ -100,13 +100,34 @@ async def _stack():
         )
 
     async def _fake_scope():
-        class S:
-            tenant_wide = True
-            site_ids: set = set()
-        s = S()
-        s.tenant_wide = stack.tenant_wide
-        s.site_ids = stack.site_ids
-        return s
+        # A REAL resolved scope, not an object that happens to carry
+        # `tenant_wide` and `site_ids` (A30.24): reads derive their reach
+        # through `read_reach`, which needs the grants and what they
+        # carry. The stack still decides WHERE; `resolve()` decides how.
+        from types import SimpleNamespace as NS
+        from harkeniq_cc.scope import resolve
+
+        def _row(scope_type, ref):
+            return NS(
+                scope_type=scope_type, scope_ref=ref, permission_subset=None,
+                revoked_at=None, expires_at=None, role=None, realm="",
+            )
+
+        if stack.machine is not None:
+            principal_type, (ref, perms) = "agent", stack.machine
+        else:
+            principal_type, ref = "user", stack.persona[0]
+            perms = ROLE_PERMISSIONS[stack.persona[2]]
+        rows = (
+            [_row("tenant", "")] if stack.tenant_wide
+            else [_row("site", sid) for sid in sorted(stack.site_ids)]
+        )
+        return resolve(
+            tenant_id=TENANT, principal_type=principal_type,
+            principal_ref=ref, role_permissions=list(perms), grant_rows=rows,
+            sites=[NS(id=sid, org_unit_id=None) for sid in sorted(stack.site_ids)],
+            enforcement="strict",
+        )
 
     from harkeniq_cc.api.deps import get_scope
 

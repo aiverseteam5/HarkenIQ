@@ -678,12 +678,14 @@ class TestMeteringIsScopeFree:
     @pytest.mark.asyncio
     async def test_a_strict_grantless_tenant_still_reports_every_site(self):
         from harkeniq_cc.db.repos import SiteRepo
-        from harkeniq_cc.scope import empty_scope
+        from harkeniq_cc.scope import empty_scope, read_reach
 
         app, sessionmaker, estate = await _a23_stack()   # strict, no grants
         async with sessionmaker() as session:
             for_billing = await SiteRepo(session).list_all(TENANT)            # scope=None
-            for_a_user = await SiteRepo(session).list_all(TENANT, scope=empty_scope(TENANT))
+            for_a_user = await SiteRepo(session).list_all(
+                TENANT, scope=read_reach(empty_scope(TENANT), "fleet.view"),
+            )
         assert {s.id for s in for_billing} == set(estate.sites.values())
         assert for_a_user == []
 
