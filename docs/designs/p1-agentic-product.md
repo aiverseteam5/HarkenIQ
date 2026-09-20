@@ -4008,3 +4008,249 @@ still reads zero list rows, and the test that pins F1 open still passes.
 General B0b adds the table-aware device predicates ON this primitive, which
 is the reason S2 lands first — the under-reach fix would otherwise have
 been built on, and widened, a fail-open.
+
+## §34g — A6-4B0b-S3: autonomy scope isolation (A30.26)
+
+*§34f is general B0b's section. That slice is complete on its own branch
+and waits on this one, so the number is reserved.*
+
+### What general B0b's live gate found
+
+B0b's first R4 assertion passed in the unit suite and failed on the live
+stack: the unit estate had no safety state, so it compared an empty list
+with an empty list. The real stack has error budgets, and they reached a
+reader who held no site at all. B0b fixed that half (R4 is its own ratified
+decision) and recorded the other half as **P2**: the same fields reach a
+reader who DOES hold a site, and describe every site in the tenant.
+
+`narrow_to_sites` (A23-1) walks the composed contract and drops list items
+whose `site_id` is outside the reader's reach. An aggregate has no
+`site_id`. So it passed:
+
+```
+site-A reader, three sites, only site C dropped back          (main, today)
+  disposition                       requires_approval   <- because of site C
+  class.safety.error_budget         total 81, sites_dropped_back [site-C]
+  class.safety.suppressed_domains   fault-A, fault-B, SECRET-C
+  class.safety.site_budget_remaining  {site-A: 5, site-B: 7, site-C: 0}
+  safety_state.error_budgets        the same aggregate, top level
+  evidence                          58 executions over 2 sites
+  stop_switch.sites_reporting_active  1                 <- site C's switch
+  advancement.blocked_by            error_budget_dropped_back
+```
+
+### Two more faces, found by the Phase-1 inventory
+
+**The probe.** `site_id` is a query parameter, and the composer applies it
+BEFORE the narrowing pass runs. A site-A reader asking for
+`/api/autonomy/?site_id=site-C` gets a contract composed over site C alone:
+
+```
+  class.safety.error_budget         total 47, success 7, failure 40, 14.89 %
+  class.safety.suppressed_domains   SECRET-C
+  class.safety.site_budget_remaining  {site-C: 0}
+  evidence                          47 executions, 47 failures
+```
+
+That is not an aggregate that happens to include a hidden site; it is a
+targeted read of any site in the tenant, one request each.
+
+**The copies.** `govern_proposal` takes the class row of the TENANT-WIDE
+contract and stores its `blocking_conditions` and learned signals on the
+proposal. A proposal for a device at site A therefore carries
+
+```
+  error_budget_dropped_back | site-C
+  domain_suppressed         | site-A | fault-A
+  domain_suppressed         | site-C | SECRET-C
+```
+
+and seven projections return the stored list as it is: the approval queue,
+the two approval-decision responses, the Operational Agent detail and
+proposal list, the dry-run, the machine submission response and the machine
+receipts. Five of those answer an external runtime.
+
+### One reader of site safety state
+
+`cc_safety_state` has exactly one reader in Central Command:
+`governance.load_autonomy_contract`, which hands every row to
+`autonomy.build_autonomy`. Seven callers:
+
+| Caller | Returns the contract to a principal? | S3 |
+|---|---|---|
+| `GET /api/autonomy/` | yes | composed over the caller's reach |
+| `GET /api/operational-agents/{id}` (human + machine view) | yes, through `agent_view` | composed over the caller's reach |
+| CC-resident evaluator (`agent_runtime`) | no — decides, persists a verdict | unchanged, `reach=None` |
+| ingress re-derivation (`POST …/proposals`) | no — decides, persists a verdict | unchanged, `reach=None` |
+| dry-run reasoning | no — must reason as the runtime does (A22.6) | unchanged, `reach=None` |
+| campaign submit | no — autonomous or per-wave approval | unchanged, `reach=None` |
+| activation preflight | no — class lists and a flag | unchanged, `reach=None` |
+
+`reach` is a REQUIRED keyword on the loader. A caller that forgets it does
+not get the tenant by default; it gets a `TypeError`. `None` is the
+internal-decision answer, exactly as `scope=None` is for a repository
+(A30.24), and a structural test allow-lists the call sites that pass it, so
+a future principal-facing caller cannot take the tenant-wide composition by
+copying one of them.
+
+### Field ownership
+
+| Class | Fields | For a narrowed reader |
+|---|---|---|
+| A — tenant-owned | `contract_version`, `actor.*`, `scope.tenant_id`, tenant `stop_switch.{active, changed_by, changed_at}`, `configured_level`, `level_source`, `budget_limit`, `budget_period`, `actions_used`, `device_scoped_budgets`, `ladder`; per class `risk`, `required_permission`, `granted_at_level`, `budget_mapped`, `never_budget_grantable`, `approval.{mode, required_approvers, policy_id}`; blocking rows scoped `tenant` | unchanged |
+| B — site-owned | `scope.sites`, `sites_reporting`, `sites_not_reporting`, `suppressions`, `site_stop_switches`; blocking rows scoped `site` / `domain`; per class `safety.suppressed_domains`, `safety.site_budget_remaining`, `sites_dropped_back`; site-scoped learned signals | authorized sites only |
+| C — aggregate over sites | `stop_switch.sites_reporting_active`, `safety_state.reported`, `safety_state.error_budgets`; per class `safety.reported`, `safety.error_budget`, `disposition`, `disposition_reason`, `approval.required`, `evidence`, `advancement` | RECOMPUTED over authorized sites |
+| D — contextual only | none on `main`; general B0b's contextual site rows are a separate read and never an input here | — |
+| E — ambiguous | see "Reported, not changed" | reported |
+
+Class C is the part A23-1 missed and the part a post-filter cannot repair:
+there is nothing to strip from `total: 81`.
+
+### SELECT, then aggregate
+
+The composer already knew how to do this for one site:
+
+```python
+if site_id:
+    safety_rows = [s for s in safety_rows if s.site_id == site_id]
+    sites       = [s for s in sites if s.id == site_id]
+    outcomes    = [o for o in outcomes if o.get("site_id") == site_id]
+```
+
+S3 makes that selection a named function over a SET and runs it first:
+
+```
+select_site_inputs(safety_rows, sites, outcomes, learned_signals,
+                   visible_site_ids, site_id)
+  visible_site_ids is None   -> the whole tenant (a tenant-wide reader, or
+                                an internal decision)
+  otherwise                  -> rows whose site is in the set; a site-scoped
+                                learned signal only for a site in the set
+  site_id                    -> narrows further, WITHIN that selection
+```
+
+Everything after it is the existing fold, unchanged, over what was
+selected. Three consequences fall out instead of being written:
+
+* **every class-C field is right at once** — the disposition, the reason,
+  `approval.required`, the evidence and the advancement distance are
+  computed from the selected rows because they were never computed from
+  anything else;
+* **the probe closes** — `site_id=site-C` inside a selection that does not
+  contain site C selects nothing, and the answer is the one a non-existent
+  site id gets, so the parameter is not an existence oracle either;
+* **an empty reach is empty by construction** — a device- or class-scoped
+  reader, and a reader whose only grant is expired, revoked, inert or
+  narrowed away from `fleet.view`, selects no site. `reported` is false,
+  which is the direction S5 already requires ("unreported reads UNKNOWN,
+  never safe"); no zero is fabricated and no global value stands in.
+  Tenant-owned posture is still there, because it never came from a site.
+
+`narrow_to_sites` is deleted rather than kept as a second pass. Its input
+is a composed contract, and the rule is that hidden rows do not reach the
+fold; a helper shaped like the defect is an invitation to repair the next
+field the same way.
+
+The authorized set is not computed here. It is
+`read_reach(scope, "fleet.view")` — the S2 primitive, with the route's own
+permission — reduced to `None` (tenant-wide) or `site_ids`. A `device` or
+`device_class` grant adds no site to it; an org grant adds its subtree's
+sites; a grant whose subset withholds `fleet.view` adds nothing, which is
+what stops a narrowed grant leaking through another grant.
+
+### Persisted verdicts are narrowed where they are read
+
+A proposal is a record of what the evaluator decided and why. S3 does not
+change what is written: the write path is a decision path. It changes what
+a projection returns:
+
+```
+visible_blocking_conditions(rows, sites)   keep scope == "tenant";
+                                           keep a row whose site_id is in
+                                           `sites`; drop everything else
+visible_learned_signals(rows, sites)       drop scope_type == "site" outside
+                                           `sites` (A23-1's own rule)
+```
+
+A row that is scoped to a site or a domain and cannot name its site is
+dropped for a narrowed reader: fail closed. The projections take the
+authorized set as a required argument, and each handler passes the reach it
+already computed for its own read — the approval queue the
+`action.approve | audit.view` reach, the Operational Agent reads the
+`fleet.view` reach — so the rows a reader sees on a proposal are never more
+than that route already shows them about those sites. Read-time narrowing
+also covers every proposal written before this slice.
+
+### Reported, not changed
+
+**E1 — the tenant-wide disposition fold is execution semantics.** S5
+decided that a drop-back at any site withdraws the class's autonomy for the
+tenant at Central Command; E0.2 then made the Site Manager's own
+enforcement per site. The evaluator still uses S5's fold, so a proposal at
+site A can be routed to a human because of site C. After S3 no projection
+names site C or its fault domain, but the proposal is still
+`requires_approval` with a generic reason, and the preflight's unattended /
+attended lists and its `safety_reported` flag are folded the same way. A
+reader who holds site A, sees no drop-back there, and sees the proposal
+waiting can infer that some other site dropped back. Removing that
+inference means evaluating per site — which makes Central Command LESS
+conservative (site C's failures stop demanding a human at site A) and is
+therefore a product decision about autonomy, not an isolation fix.
+Recommended for a ruling: adopt per-site evaluation, which is what E0.2
+already enforces at the Site Manager and what would make the operator's
+view and the evaluator agree for every scoped reader.
+
+**E2 — outcome statistics persisted on a proposal.**
+`evidence.outcome_evidence`, and the sentence `_rationale` composes from it
+("succeeded 93% of the time across 170 executions in this tenant"), are
+tenant-wide counts frozen at evaluation time. They name no site, they
+cannot be recomputed for a reader later, and withholding the structured
+block while the sentence remains would change nothing. Closing it changes
+what the evaluator writes and what an approver reads; it belongs with R7
+(approval-evidence projection), already a named follow-up.
+
+**E3 — cohort learned signals.** A23 ratified a cohort signal as tenant
+knowledge: it names a vendor and a model and is the point of fleet
+learning. It is nevertheless learned from every site's outcomes, so it is
+listed here rather than silently kept.
+
+### How it is proven
+
+* **Deletion equivalence (the invariant, stated as a test).** For every
+  persona, the contract composed over the full estate for that reader
+  equals the contract a TENANT-WIDE reader gets over an estate in which the
+  hidden sites DO NOT EXIST. "A hidden site has no influence" and
+  "deleting it changes nothing" are the same statement, and the oracle
+  does not re-implement the fold. Asserted on the pure composer and,
+  through the production stack with persisted grants under STRICT, between
+  two separately seeded stacks.
+* **Poisoned rows (filter BEFORE aggregate, behaviourally).** Hidden-site
+  inputs whose every attribute except the site id raises. A narrowed
+  composition succeeds; the SAME rows under a tenant-wide reader raise,
+  which is the control that proves the poison is live.
+* **Sentinels.** Sites A, B and C carry distinct budgets, error counts,
+  outcome counts, fault-domain names, stop-switch and reporting states, with
+  values chosen so that no sum of visible values equals a sum that includes
+  a hidden one. Every A/B payload is searched, serialized, for site C's id,
+  its fault domain and its numbers.
+* **The matrix.** TENANT, ORG A+B, SITE-A, SITE-B, DEVICE in A,
+  DEVICE_CLASS, no scope, plus subset-narrowed, expired, revoked and inert
+  grants on the hidden site — each against `/api/autonomy/`, every
+  `site_id` probe, the Operational Agent view (human and machine) and the
+  seven proposal projections, and every narrowing paired with a control
+  that reads the same fact.
+* **Live.** Real Keycloak identities against a wiped stack: an error budget
+  seeded at the Site Manager for site B with a sentinel count, carried to
+  Central Command by the real poller, read by a two-site control, absent
+  for the site-A principal on the contract, on the probe and on the
+  Operational Agent view.
+
+### What general B0b does when it merges this
+
+B0b's branch is not touched by S3. When it merges `main` it takes this
+section's composer, drops its own `holds_no_site` branch in
+`narrow_to_sites` (the function is gone; R4 for a reader holding no site is
+true by construction), inverts `test_P2_is_recorded_here_not_fixed_here`,
+replaces its frozen-legacy autonomy oracle for site-holding readers with
+this slice's expectations, removes the "stated, not hidden" paragraph, and
+re-verifies to a new head.
