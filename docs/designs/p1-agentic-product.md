@@ -4171,10 +4171,28 @@ visible_blocking_conditions(rows, sites)   keep scope == "tenant";
                                            `sites`; drop everything else
 visible_learned_signals(rows, sites)       drop scope_type == "site" outside
                                            `sites` (A23-1's own rule)
+visible_disposition_reason(reason, rows, sites)
+                                           the stored reason, unless it is
+                                           the text of a row that was just
+                                           withheld and of no row that was
+                                           kept
 ```
 
 A row that is scoped to a site or a domain and cannot name its site is
 dropped for a narrowed reader: fail closed.
+
+**The reason follows its row.** `govern_proposal` takes a verdict's
+`disposition_reason` from a blocking row's `detail`, so the reason can be a
+row's text verbatim — and a `domain_suppressed` row's text is
+`fault domain SECRET-C is suppressed (…)`. On today's composer the reason is
+always taken from a tenant- or site-scoped row, whose text names nothing;
+but narrowing the rows and returning their text one field up would be the
+same defect in a different field, and it would arrive the day somebody
+reorders a list. So where the stored reason is the text of a withheld row
+and of no kept row, the reader gets one neutral sentence instead — that the
+verdict rests on a governance condition outside their authorized scope. It
+says that something is withheld, which the waiting proposal already shows
+(E1), and not what or where.
 
 **Which reach.** Not the route's own. The approval queue is guarded by
 `action.approve | audit.view`, and a person can hold `action.approve` at a
@@ -4199,9 +4217,10 @@ decided that a drop-back at any site withdraws the class's autonomy for the
 tenant at Central Command; E0.2 then made the Site Manager's own
 enforcement per site. The evaluator still uses S5's fold, so a proposal at
 site A can be routed to a human because of site C. After S3 no projection
-names site C or its fault domain, but the proposal is still
-`requires_approval` with a generic reason, and the preflight's unattended /
-attended lists and its `safety_reported` flag are folded the same way. A
+names site C, its fault domain or the kind of condition, but the proposal
+is still `requires_approval` and still waiting, and the preflight's
+unattended / attended lists and its `safety_reported` flag are folded the
+same way. A
 reader who holds site A, sees no drop-back there, and sees the proposal
 waiting can infer that some other site dropped back. Removing that
 inference means evaluating per site — which makes Central Command LESS

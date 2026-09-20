@@ -3900,7 +3900,14 @@ through a typed view that only the canonical scope can construct and that
 every projection REQUIRES, so a new projection cannot omit it and cannot
 be handed "unrestricted" by mistake; applied
 at read time so rows written before this slice are covered and no write or
-decision path changes. **What S3 deliberately does NOT change — internal
+decision path changes. **A stored REASON follows its row.** The evaluator
+copies a verdict's `disposition_reason` from a blocking row's own text, so a
+reason can BE the text of a row the reader may not read — and a
+domain-scoped row's text names its fault domain. Where the stored reason is
+the text of a withheld row and of no row the reader keeps, it is replaced by
+one neutral sentence saying the verdict rests on a governance condition
+outside the reader's authorized scope. It states that something is withheld
+and not what; a tenant-wide reader reads the reason as recorded. **What S3 deliberately does NOT change — internal
 decisions.** Five consumers use the contract to DECIDE and never return it:
 the CC-resident evaluator, the ingress re-derivation, the dry-run's
 reasoning (A22.6: it must reason exactly as the runtime does), campaign
@@ -3911,11 +3918,12 @@ allow-lists by call site, so execution semantics are byte-identical.
 tenant-wide disposition fold is execution semantics:* S5 made a drop-back
 at ANY site require a human for that class at EVERY site, while E0.2 made
 the Site Manager's enforcement per site. A proposal at site A can therefore
-be `requires_approval` because of site C, and its `disposition`, its
-generic `disposition_reason`, the preflight's unattended / attended class
-lists and its `safety_reported` flag still reflect that; they name no
-site, and removing the inference needs per-site evaluation, which WIDENS
-autonomy at Central Command and is a product decision. *E2 — tenant-wide
+be `requires_approval` because of site C, and its `disposition` and status,
+the preflight's unattended / attended class lists and its
+`safety_reported` flag still reflect that; they name no site and say
+nothing about which condition or where, and removing the inference needs
+per-site evaluation, which WIDENS autonomy at Central Command and is a
+product decision. *E2 — tenant-wide
 outcome statistics persisted on a proposal* (`evidence.outcome_evidence`
 and the sentence `_rationale` writes from it) cannot be recomputed for a
 reader after the fact; closing it changes what the evaluator WRITES. *E3 —
