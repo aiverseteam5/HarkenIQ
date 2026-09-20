@@ -29,7 +29,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.autonomy import narrow_to_sites
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.governance import load_autonomy_contract
 
@@ -47,24 +46,30 @@ async def autonomy_contract(
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
-    """The tenant's autonomy contract: posture, evidence, safety, advancement.
+    """The autonomy contract AS THIS CALLER MAY READ IT (A30.26).
 
-    Every read below is tenant-scoped by its repository; `site_id`
-    narrows within the tenant and can never widen beyond it. A23: the
-    disposition is tenant posture and every reader sees it; the lists
-    that NAME sites (safety, blocking conditions) are narrowed to the
-    caller's reach, so a cluster-scoped principal learns nothing about
-    sites outside it.
+    Tenant-owned posture -- the level, the ladder, the tenant stop switch,
+    each class's risk and grant level, the approval policy -- is the same
+    for every reader. Every SITE-derived fact is composed over the sites
+    the caller's `fleet.view` reach authorizes and over no other: the
+    safety lists, the error budgets and their totals, `reported`, the
+    outcome evidence, and the disposition, reason, approval requirement
+    and advancement folded from them. The sites are selected BEFORE the
+    fold, so there is no tenant-wide value behind the answer -- a
+    cluster-scoped principal reads the contract of a tenant that contains
+    only their cluster.
+
+    `site_id` narrows WITHIN that reach and can never widen it. Asking for
+    a site outside it composes over nothing, which is also what a site id
+    that does not exist gets.
     """
-    contract = await load_autonomy_contract(
+    return await load_autonomy_contract(
         session,
         tenant_id=user.tenant_id,
         actor_id=f"user:{user.user_id}",
         actor_species="human",
         permissions=user.permissions,
+        reach=read_reach(scope, "fleet.view"),
         site_id=site_id,
         action_type=action_type,
     )
-    reach = read_reach(scope, "fleet.view")
-    visible = None if reach.tenant_wide else set(reach.site_ids)
-    return narrow_to_sites(contract, visible)

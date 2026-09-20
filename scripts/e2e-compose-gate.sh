@@ -5707,6 +5707,265 @@ echo "  TENANT grant, subset [incident.view]: $S2_SEEN"
 [ "$S2_SEEN" = "fleet=- sites=- audit=- incidents=AB" ] || {
   echo "a narrowed tenant grant still read tenant-wide (the tenant_wide shortcut)" >&2; exit 1; }
 
+# ===========================================================================
+# A6-4B0b-S3 (A30.26), live: autonomy scope isolation. General B0b's gate
+# found P2 here, on this stack, against real error budgets -- so this is
+# where it is shown closed. `build_autonomy` folded EVERY site's safety state
+# and the narrowing pass that followed only dropped list items carrying a
+# `site_id`; an aggregate has none, so a site-A reader received the tenant's
+# error-budget totals, `sites_dropped_back` naming site B, and a disposition
+# folded from a site they could not see. `?site_id=` returned any site in
+# isolation, and a proposal's stored blocking conditions named every site.
+#
+# The state is REAL and comes from where it really comes from: an error budget
+# written at the SITE MANAGER for site B, carried to Central Command by the
+# production poller (the poller replaces `cc_safety_state` on every poll, so
+# anything written at Central Command would be gone in thirty seconds). The
+# count is a number nothing else on this stack produces, so finding it in a
+# payload means site B reached that reader. Every absence is paired with a
+# CONTROL who holds site B and reads the same fact.
+# ===========================================================================
+S3_SENTINEL=470047
+S3_DOMAIN="GATE-S3-SECRET-B"
+s3_walk() {  # $1 token, $2 path, $3.. forbidden values -> "clean" or the leaks
+  python3 - "$@" <<'PY'
+import json, subprocess, sys
+token, path, forbidden = sys.argv[1], sys.argv[2], sys.argv[3:]
+out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                      "http://localhost:8090" + path],
+                     capture_output=True, text=True).stdout
+def leaves(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from leaves(item)
+    else:
+        yield node
+found = sorted({
+    f"{bad} in {leaf!r}"[:90] for leaf in leaves(json.loads(out))
+    for bad in forbidden
+    if (isinstance(leaf, str) and bad in leaf)
+    or (isinstance(leaf, int) and not isinstance(leaf, bool) and str(leaf) == bad)
+})
+print("clean" if not found else "LEAK: " + " | ".join(found))
+PY
+}
+
+step "A6-4B0b-S3/BB: site B withdraws a class AT THE SITE MANAGER, and the real poll carries it to Central Command"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_SM_SITE_B=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_B'")
+[ -n "$S3_SM_SITE_B" ] || { echo "the Site Manager does not serve site B" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO sm_error_budgets (site_id, action_type, success_count, failure_count,
+        total_count, min_success_rate, dropped_back, dropped_back_at, updated_at)
+   VALUES ('$S3_SM_SITE_B', 'BMC_RESET', 3, $((S3_SENTINEL - 3)), $S3_SENTINEL,
+           0.95, true, now(), now())
+   ON CONFLICT (site_id, action_type) DO UPDATE SET success_count = 3,
+        failure_count = $((S3_SENTINEL - 3)), total_count = $S3_SENTINEL,
+        dropped_back = true, dropped_back_at = now(), updated_at = now()" > /dev/null
+s3_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$SITE_B'
+              AND error_budgets::text LIKE '%$S3_SENTINEL%'")" = "1" ]
+}
+wait_for "the poller to carry site B's drop-back into cc_safety_state" 180 s3_polled
+[ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$SITE_A'
+            AND error_budgets::text LIKE '%$S3_SENTINEL%'")" = "0" ] || {
+  echo "the Site Manager reported site B's budget against site A (E0.2)" >&2; exit 1; }
+echo "  site B dropped BMC_RESET back at the Site Manager ($S3_SENTINEL outcomes); Central Command holds it for site B only"
+
+step "A6-4B0b-S3/BC: a site-A principal reads site A's autonomy -- and the control reads BOTH"
+for S3_P in a ab device; do
+  tenant_realm_user "gate-s3-$S3_P@demo" "gate-s3-$S3_P" site_admin
+done
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+S3_AB=$(tenant_token gate-s3-ab@demo gate-s3-ab)
+S3_DEV=$(tenant_token gate-s3-device@demo gate-s3-device)
+S3_DEVICE_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' ORDER BY agent_id LIMIT 1")
+s3_grant() {  # $1 principal subject, $2 scope_type, $3 scope_ref
+  curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",
+         \"role\":\"site_admin\"}" \
+    http://localhost:8090/api/scope-grants/
+}
+[ "$(s3_grant "$(s1_sub "$S3_A")" site "$SITE_A")" = "201" ] || { echo "a/A refused" >&2; exit 1; }
+[ "$(s3_grant "$(s1_sub "$S3_AB")" site "$SITE_A")" = "201" ] || { echo "ab/A refused" >&2; exit 1; }
+[ "$(s3_grant "$(s1_sub "$S3_AB")" site "$SITE_B")" = "201" ] || { echo "ab/B refused" >&2; exit 1; }
+[ "$(s3_grant "$(s1_sub "$S3_DEV")" device "$S3_DEVICE_A")" = "201" ] || { echo "device grant refused" >&2; exit 1; }
+s3_contract() {  # $1 token, $2 query, $3 expectation: both | a | none
+  s2_get "$1" "/api/autonomy/$2" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+A, B, want, sentinel = '$SITE_A', '$SITE_B', '$3', $S3_SENTINEL
+row = next(r for r in c['action_classes'] if r['action_type'] == 'BMC_RESET')
+budget = row['safety']['error_budget']
+sites = sorted(s['id'] for s in c['scope']['sites'])
+dropped = [b for b in row['blocking_conditions'] if b['code'] == 'error_budget_dropped_back']
+top = [e for e in c['safety_state']['error_budgets'] if e['action_type'] == 'BMC_RESET']
+if want == 'both':
+    assert {A, B} <= set(sites), sites
+    assert budget and budget['total'] == sentinel and budget['sites_dropped_back'] == [B], budget
+    assert top and top[0]['total'] == sentinel, top
+    assert [b['site_id'] for b in dropped] == [B], dropped
+    assert 'error_budget_dropped_back' in row['advancement']['blocked_by'], row['advancement']
+else:
+    assert sites == ([A] if want == 'a' else []), sites
+    assert budget is None, budget            # site A has no BMC_RESET budget of its own
+    assert top == [] and dropped == [], (top, dropped)
+    assert 'error_budget_dropped_back' not in row['advancement']['blocked_by'], row['advancement']
+    assert set(row['safety']['site_budget_remaining']) <= {A}, row['safety']
+    if want == 'none':
+        assert c['safety_state'] == {'reported': False, 'sites_reporting': [],
+            'sites_not_reporting': [], 'suppressions': [], 'error_budgets': [],
+            'site_stop_switches': []}, c['safety_state']
+        assert row['safety'] == {'reported': False, 'error_budget': None,
+            'suppressed_domains': [], 'site_budget_remaining': {}}, row['safety']
+        assert c['posture']['ladder'] and 'configured_level' in c['posture']
+print('  %-7s sites=%s BMC_RESET total=%s dropped_back_at=%s' % (
+    want, len(sites), budget and budget['total'], [b['site_id'][:8] for b in dropped]))"
+}
+echo "  CONTROL (holds A and B):"; s3_contract "$S3_AB" "" both
+echo "  site-A principal:";        s3_contract "$S3_A" "" a
+[ "$(s3_walk "$S3_A" "/api/autonomy/" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  s3_walk "$S3_A" "/api/autonomy/" "$SITE_B" "$S3_SENTINEL" >&2
+  echo "a site-A principal read site B's autonomy state (P2)" >&2; exit 1; }
+# The S2 persona, reused on purpose: site A in full, site B narrowed to
+# incident.view. Its grant at B does not carry fleet.view, so B's safety
+# state must not arrive through it.
+echo "  A in full + B narrowed to incident.view (the S2 principal):"
+s3_contract "$S2_MIXED" "" a
+[ "$(s3_walk "$S2_MIXED" "/api/autonomy/" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  echo "a grant narrowed to incident.view carried site B's autonomy state" >&2; exit 1; }
+# R4: a device grant names no site, so it selects no site-derived fact.
+echo "  device-scoped principal (R4):"; s3_contract "$S3_DEV" "" none
+[ "$(s3_walk "$S3_DEV" "/api/autonomy/" "$SITE_A" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  echo "a device-scoped principal read site-derived autonomy state (R4)" >&2; exit 1; }
+
+step "A6-4B0b-S3/BD: ?site_id= is a focus inside the caller's reach, never a probe of another site"
+# CONTROL first: for a reader who holds site B the focus really does return
+# site B in isolation -- which is exactly what it returned to everybody.
+s2_get "$S3_AB" "/api/autonomy/?site_id=$SITE_B" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+row = next(r for r in c['action_classes'] if r['action_type'] == 'BMC_RESET')
+assert [s['id'] for s in c['scope']['sites']] == ['$SITE_B'], c['scope']
+assert row['safety']['error_budget']['total'] == $S3_SENTINEL, row['safety']
+print('  control  site B in isolation: total=%s (the oracle the probe used to be)' % row['safety']['error_budget']['total'])"
+python3 - "$S3_A" "$SITE_B" <<'PY'
+import json, subprocess, sys
+token, site_b = sys.argv[1], sys.argv[2]
+def get(query):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090/api/autonomy/" + query],
+                         capture_output=True, text=True).stdout
+    body = json.loads(out)
+    assert body["scope"].pop("site_id") == query.split("=", 1)[1]   # their own echo
+    body.pop("generated_at")
+    return body
+hidden, absent = get(f"?site_id={site_b}"), get("?site_id=gate-s3-no-such-site")
+assert hidden == absent, "a hidden site answers differently from a site that does not exist"
+assert hidden["scope"]["sites"] == [] and hidden["safety_state"]["error_budgets"] == []
+print("  site-A principal: ?site_id=<site B> == ?site_id=<no such site>, and both are empty")
+PY
+
+step "A6-4B0b-S3/BE: the Operational Agent view is composed over the READER's sites"
+S3_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"gate-s3-agent-$(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"BMC_RESET\"}]}" \
+  http://localhost:8090/api/operational-agents/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ -n "$S3_AGENT" ] || { echo "could not create the S3 agent" >&2; exit 1; }
+s3_agent_view() {  # $1 token, $2 "sees" | "blind"
+  s2_get "$1" "/api/operational-agents/$S3_AGENT" | python3 -c "
+import sys, json
+v = json.load(sys.stdin)
+row = next(c for c in v['capabilities']['action_classes'] if c['action_type'] == 'BMC_RESET')
+named = sorted({b.get('site_id') for b in row['blocking_conditions'] if b.get('site_id')})
+blocked = row['advancement']['blocked_by']
+if '$2' == 'sees':
+    assert '$SITE_B' in named and 'error_budget_dropped_back' in blocked, (named, blocked)
+else:
+    assert '$SITE_B' not in named and 'error_budget_dropped_back' not in blocked, (named, blocked)
+print('  %-6s blocking rows name %d site(s); advancement blocked_by=%s' % ('$2', len(named), blocked))"
+}
+echo "  tenant owner:";     s3_agent_view "$TOKEN" sees
+echo "  site-A principal:"; s3_agent_view "$S3_A" blind
+[ "$(s3_walk "$S3_A" "/api/operational-agents/$S3_AGENT" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  echo "the agent view told a site-A principal about site B" >&2; exit 1; }
+
+step "A6-4B0b-S3/BF: a STORED verdict names a site only to a reader who holds fleet.view there"
+# The evaluator decides over the whole tenant and records what it decided, so
+# a proposal at site A carries rows about site B -- and a REASON copied from
+# one of those rows' own text. The row is written directly,
+# as an `awaiting_approval` agent PROPOSAL for the draft agent above: nothing
+# evaluates a draft agent, nothing dispatches an undecided proposal, and the
+# poller never touches this table (a node route would be superseded at once).
+S3_PROP="gate-s3-prop-$(date +%s)"
+S3_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_agent_proposals (id, tenant_id, agent_id, actor, agent_version, site_id,
+        device_agent_id, action_type, params, rationale, evidence, disposition,
+        disposition_reason, blocking_conditions, authorization_basis, status, decided_by,
+        dedupe_key, directive_id, dispatch_reason, outcome, created_at)
+   VALUES ('$S3_PROP', '$S3_TENANT', '$S3_AGENT', 'op-agent:$S3_AGENT@v1', 1, '$SITE_A',
+        '$S3_DEVICE_A', 'BMC_RESET', '{}'::jsonb, 'S3 gate proposal',
+        '{\"learned_signals\": [
+            {\"scope_type\": \"site\", \"scope_ref\": \"$SITE_B\", \"statement\": \"$S3_DOMAIN\"},
+            {\"scope_type\": \"cohort\", \"scope_ref\": \"Dell/R750\", \"statement\": \"cohort\"}]}'::jsonb,
+        'requires_approval', 'withdrawn at site B: $S3_DOMAIN',
+        '[{\"code\": \"level_below_grant\", \"detail\": \"tenant\", \"scope\": \"tenant\"},
+          {\"code\": \"site_suppressed\", \"detail\": \"here\", \"scope\": \"site\", \"site_id\": \"$SITE_A\"},
+          {\"code\": \"error_budget_dropped_back\", \"detail\": \"withdrawn at site B: $S3_DOMAIN\", \"scope\": \"site\", \"site_id\": \"$SITE_B\"},
+          {\"code\": \"domain_suppressed\", \"detail\": \"$S3_DOMAIN\", \"scope\": \"domain\",
+           \"site_id\": \"$SITE_B\", \"domain_id\": \"$S3_DOMAIN\"}]'::jsonb,
+        'human_approval', 'awaiting_approval', '', '$S3_PROP', '', '', '', now())" > /dev/null
+s3_verdict() {  # $1 token, $2 expected site count among the blocking rows
+  python3 - "$1" "$2" "$S3_AGENT" "$S3_PROP" "$SITE_A" "$SITE_B" "$S3_DOMAIN" <<'PY'
+import json, subprocess, sys
+token, want, agent, prop, A, B, secret = sys.argv[1:8]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+queue = next(i["proposal"] for i in get("/api/approvals/")["actions"]
+             if i.get("origin") == "agent" and i["id"] == prop)
+listed = next(p for p in get(f"/api/operational-agents/{agent}/proposals")["proposals"]
+              if p["proposal_id"] == prop)
+detail = next(p for p in get(f"/api/operational-agents/{agent}")["proposals"]
+              if p["proposal_id"] == prop)
+for where, proposal in (("queue", queue), ("list", listed), ("detail", detail)):
+    rows = proposal["blocking_conditions"]
+    named = sorted({r["site_id"] for r in rows if r.get("site_id")})
+    signals = sorted(s["statement"] for s in proposal["evidence"]["learned_signals"])
+    assert [r["code"] for r in rows if r["scope"] == "tenant"] == ["level_below_grant"], (where, rows)
+    reason = proposal["disposition_reason"]
+    if want == "2":
+        assert named == sorted([A, B]) and secret in json.dumps(proposal), (where, named)
+        assert signals == sorted(["cohort", secret]), (where, signals)
+        assert reason == f"withdrawn at site B: {secret}", (where, reason)
+    else:
+        assert named == [A] and secret not in json.dumps(proposal), (where, named)
+        assert signals == ["cohort"], (where, signals)
+        # The stored reason IS the withheld row's text: it goes with the row.
+        assert "outside your authorized scope" in reason, (where, reason)
+print(f"    queue, list and detail agree: blocking rows name {want} site(s); reason = {reason!r}")
+PY
+}
+echo "  CONTROL (holds A and B):"; s3_verdict "$S3_AB" 2
+echo "  site-A principal:";        s3_verdict "$S3_A" 1
+# This proof owns its state (the A30.21 lesson): the synthetic proposal and
+# the Site Manager budget it seeded are removed, so nothing later in the gate
+# -- or in a slice that appends after this one -- inherits a withdrawn class.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_agent_proposals WHERE id='$S3_PROP'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_error_budgets WHERE site_id='$S3_SM_SITE_B' AND action_type='BMC_RESET'
+   AND total_count=$S3_SENTINEL" > /dev/null
+echo "  the seeded budget and the synthetic proposal are removed"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 
