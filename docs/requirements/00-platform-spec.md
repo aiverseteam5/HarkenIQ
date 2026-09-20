@@ -3840,8 +3840,14 @@ the outer site list while keeping a global aggregate, by keeping a hidden
 site's name in suppression or fault data, by computing a budget over hidden
 sites, by presenting site safety state through a tenant-level-looking
 structure, or by treating contextual site ancestry as authority. **The
-authority source is the one that already exists.** The authorized set is
-`read_reach(scope, <the route's own guard permission>)` (A30.24):
+authority source is the one that already exists.** A site-derived autonomy
+fact is a `fleet.view` fact — that is the permission `/api/autonomy/` is
+read under — and it stays one wherever it is projected, so the authorized
+set is `read_reach(scope, "fleet.view")` (A30.24) on EVERY projection,
+including those whose route is guarded by another permission: an approver
+holding `action.approve` at a site without `fleet.view` there reads the
+proposal and not that site's safety rows, which is what stops a
+subset-narrowed grant carrying these facts out through a different route.
 `tenant_wide` means the whole tenant, otherwise exactly `site_ids` — site
 grants and org-expanded sites, from grants that carry the permission. No
 second resolver, no autonomy-specific authority model, no separate
@@ -3888,9 +3894,11 @@ publishes safe conclusions for such principals later; nothing here does.
 **Persisted verdicts are narrowed where they are READ.** A proposal's
 stored `blocking_conditions` and `evidence.learned_signals` keep what the
 evaluator recorded; every projection returns a row that names a site only
-when that site is inside the reader's reach for that route, and keeps
+when that site is inside the reader's `fleet.view` reach, and keeps
 tenant-scoped rows. One implementation, asked by all seven projections,
-required rather than optional so a new projection cannot omit it; applied
+through a typed view that only the canonical scope can construct and that
+every projection REQUIRES, so a new projection cannot omit it and cannot
+be handed "unrestricted" by mistake; applied
 at read time so rows written before this slice are covered and no write or
 decision path changes. **What S3 deliberately does NOT change — internal
 decisions.** Five consumers use the contract to DECIDE and never return it:

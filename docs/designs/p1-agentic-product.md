@@ -4152,8 +4152,9 @@ fold; a helper shaped like the defect is an invitation to repair the next
 field the same way.
 
 The authorized set is not computed here. It is
-`read_reach(scope, "fleet.view")` — the S2 primitive, with the route's own
-permission — reduced to `None` (tenant-wide) or `site_ids`. A `device` or
+`read_reach(scope, "fleet.view")` — the S2 primitive, with the permission
+autonomy facts are read under — reduced to `None` (tenant-wide) or
+`site_ids`. A `device` or
 `device_class` grant adds no site to it; an org grant adds its subtree's
 sites; a grant whose subset withholds `fleet.view` adds nothing, which is
 what stops a narrowed grant leaking through another grant.
@@ -4173,13 +4174,23 @@ visible_learned_signals(rows, sites)       drop scope_type == "site" outside
 ```
 
 A row that is scoped to a site or a domain and cannot name its site is
-dropped for a narrowed reader: fail closed. The projections take the
-authorized set as a required argument, and each handler passes the reach it
-already computed for its own read — the approval queue the
-`action.approve | audit.view` reach, the Operational Agent reads the
-`fleet.view` reach — so the rows a reader sees on a proposal are never more
-than that route already shows them about those sites. Read-time narrowing
-also covers every proposal written before this slice.
+dropped for a narrowed reader: fail closed.
+
+**Which reach.** Not the route's own. The approval queue is guarded by
+`action.approve | audit.view`, and a person can hold `action.approve` at a
+site through a grant whose subset withholds `fleet.view`. Filtering these
+rows on the queue's reach would hand that person site safety facts that
+`/api/autonomy/` refuses them — permission from one grant, facts that need
+another, which is P1's shape. A site-derived autonomy fact is a
+`fleet.view` fact wherever it appears, so every projection narrows by
+`read_reach(scope, "fleet.view")`. That is stated once, in
+`governance.autonomy_view(scope)`, which returns a small frozen
+`AutonomyView`; the projections REQUIRE one and raise on anything else, the
+way a repository refuses a bare scope (A30.24). `None` cannot be passed to
+mean "unrestricted", and the only constructor goes through the canonical
+scope.
+
+Read-time narrowing also covers every proposal written before this slice.
 
 ### Reported, not changed
 
