@@ -4125,7 +4125,12 @@ a property of the conclusion A23 publishes (the sub-minute part was proven
 to carry a hidden rank and IS in this slice, above); *the unprojected
 window* — the signal (500) and cycle (200) repositories cut in SQL before
 projection, which matters only to a tenant holding more rows than that, and
-is not caller-controlled; *predictive `cohort_failure_rate` / `outcomes_considered`* are
+is not caller-controlled; *the Site Manager's pattern store is keyed by
+pattern id with no site* — on a multi-site Site Manager (E1.3) the last
+push wins, so after this slice the row holds ONE receiving site's bounded
+payload (the conclusion, and at most that site's own count) rather than a
+row per site; nothing reads it back through a site-scoped API today, and
+making it per-site is a Site Manager schema change; *predictive `cohort_failure_rate` / `outcomes_considered`* are
 tenant-wide OUTCOME statistics — S3-E2's family, decided by R6 and
 implemented with it; *Site Manager explanation free text* other than a
 pattern citation is model- or rule-authored prose about the reader's own

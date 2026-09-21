@@ -4416,8 +4416,9 @@ Twin X has BMC_RESET at 14 attempts and POWER_CYCLE at 15; twin Y has
 BMC_RESET at 16. Same bands, and the two rows swap places. POWER_CYCLE's 15
 are all at site A, so a site-A reader learns which side of 15 the hidden
 total is on. Five carriers, one cause: the pattern list, the cycle list,
-the microseconds of every learning timestamp, `?limit=1` (cut in SQL,
-returning the smallest-total cohort), and the order a Site Manager is
+the microseconds of every learning timestamp, `?limit=n` (cut in SQL over
+the exact instant: the LAST pattern a detector stamped is its
+smallest-total cohort), and the order a Site Manager is
 pushed — and so cites — patterns in.
 
 For a scoped reader: `pattern_order` / `project_cycles` /
@@ -4463,7 +4464,8 @@ milliseconds; ~1 in 10⁴). Closing it needs one instant per pass at WRITE.
 
 WHEN at minute grain and coarser (`detected_at`, `last_confirmed_at`,
 `observation_count`, order across passes); the unprojected SQL window on
-signals (500) and cycles (200); predictive
+signals (500) and cycles (200); `sm_fleet_patterns` keyed by pattern id
+with no site (last push wins on a multi-site Site Manager); predictive
 `cohort_failure_rate` / `outcomes_considered` (S3-E2's family, R6); Site
 Manager explanation prose other than a pattern citation. Reasons in spec
 A30.28.
