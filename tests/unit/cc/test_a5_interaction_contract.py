@@ -501,7 +501,11 @@ class TestD3OneAttentionComposer:
         async with stack.client() as c:
             over_http = (await c.get("/api/attention/")).json()
         async with stack.sessionmaker() as session:
-            in_process = await load_attention(session, tenant_id=TENANT)
+            # A30.28: the in-process caller is the evaluator's shape -- an
+            # internal decision path that reads rank and never returns items.
+            in_process = await load_attention(
+                session, tenant_id=TENANT, learning=None,
+            )
         assert [(i["agent_id"], i["rank"]) for i in over_http["items"]] == \
                [(i["agent_id"], i["rank"]) for i in in_process["items"]]
 

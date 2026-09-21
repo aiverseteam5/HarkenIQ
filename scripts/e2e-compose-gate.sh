@@ -5966,6 +5966,206 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
    AND total_count=$S3_SENTINEL" > /dev/null
 echo "  the seeded budget and the synthetic proposal are removed"
 
+# ===========================================================================
+# A6-4B0b-S4 (spec A30.28) -- learned-signal and fleet-pattern PAYLOAD isolation
+#
+# A23 stands: a vendor/model cohort conclusion is tenant knowledge. E3-F1 is
+# what lay under it -- a reader entitled to the ROW was handed its CONTENT as
+# stored: another site's id and failure count, the number of sites, the tenant
+# totals, and a sentence restating them.
+#
+# Nothing here is written into a learning table. Outcome rows are seeded for
+# site A (5 failures) and site B (a count nothing else on this stack produces)
+# and the REAL IntelligenceEngine loop detects the cross-site pattern, derives
+# the signals, opens the cycle and pushes the pattern to the Site Manager.
+# Every absence is paired with a CONTROL -- the tenant owner -- reading the
+# same fact, so an empty answer cannot pass as a correct one.
+# ===========================================================================
+S4_ACTION="CONFIG_RESTORE"
+S4_B_FAILURES=4337
+S4_A_FAILURES=5
+S4_TOTAL=$((S4_B_FAILURES + S4_A_FAILURES))
+S4_RUN="gate-s4-$(date +%s)"
+s4_numbers() {  # $1 token, $2 path, $3.. forbidden -> "clean" | the leaks
+  # Numbers are matched as NUMBERS: an int leaf exactly, or inside a string
+  # only where no hex digit touches it -- ids on this stack are hex, and a
+  # substring match on four digits would cry wolf about one in ten runs.
+  python3 - "$@" <<'PY'
+import json, re, subprocess, sys
+token, path, forbidden = sys.argv[1], sys.argv[2], sys.argv[3:]
+out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                      "http://localhost:8090" + path], capture_output=True, text=True).stdout
+def leaves(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from leaves(item)
+    else:
+        yield node
+def hit(leaf, bad):
+    if isinstance(leaf, bool):
+        return False
+    if isinstance(leaf, (int, float)):
+        return bad.isdigit() and float(leaf) == float(bad)
+    if not isinstance(leaf, str):
+        return False
+    if bad.isdigit():
+        return re.search(rf"(?<![0-9a-fA-F]){bad}(?![0-9a-fA-F])", leaf) is not None
+    return bad in leaf
+found = sorted({f"{bad} in {str(leaf)[:70]!r}" for leaf in leaves(json.loads(out))
+                for bad in forbidden if hit(leaf, bad)})
+print("clean" if not found else "LEAK: " + " | ".join(found))
+PY
+}
+
+step "A6-4B0b-S4/BG: the REAL engine learns a cross-site pattern -- and what it stores is E3-F1"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S4_DEVICE_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' ORDER BY agent_id LIMIT 1")
+S4_VENDOR=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT vendor FROM cc_fleet_cache WHERE agent_id='$S4_DEVICE_A'" | sed 's/^ *//;s/ *$//' | tr -d '\r')
+S4_MODEL=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT model FROM cc_fleet_cache WHERE agent_id='$S4_DEVICE_A'" | sed 's/^ *//;s/ *$//' | tr -d '\r')
+[ -n "$S4_VENDOR$S4_MODEL" ] || { echo "site A's device declares no cohort" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+        vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+   SELECT substr(md5('$S4_RUN-' || site || '-' || n), 1, 32), site, '$S4_RUN-' || site || '-' || n,
+          '$S4_ACTION', device, '$S4_VENDOR', '$S4_MODEL', 'FAILURE', false, '', now(), now()
+   FROM (SELECT '$SITE_A' AS site, '$S4_DEVICE_A' AS device, generate_series(1, $S4_A_FAILURES) AS n
+         UNION ALL
+         SELECT '$SITE_B', 'gate-agent-c', generate_series(1, $S4_B_FAILURES)) rows" > /dev/null
+s4_learned() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_learned_signals WHERE action_type='$S4_ACTION'
+              AND scope_type='cohort' AND evidence::text LIKE '%$SITE_B%'")" = "1" ]
+}
+wait_for "the intelligence loop to detect the cross-site $S4_ACTION pattern" 480 s4_learned
+S4_STORED=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT statement || ' ## ' || evidence::text FROM cc_learned_signals
+   WHERE action_type='$S4_ACTION' AND scope_type='cohort'")
+for S4_FACT in "$SITE_B" "$S4_B_FAILURES" "$S4_TOTAL attempts" "across 2 sites"; do
+  echo "$S4_STORED" | grep -q -- "$S4_FACT" || {
+    echo "CONTROL failed: the stored cohort signal does not carry '$S4_FACT'" >&2; exit 1; }
+done
+echo "  the engine stored site B's id, its $S4_B_FAILURES failures, '$S4_TOTAL attempts' and 'across 2 sites' on a COHORT row"
+
+step "A6-4B0b-S4/BH: the owner reads what is stored; a site-A principal reads the bounded conclusion"
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+s4_read() {  # $1 token, $2 owner | scoped
+  python3 - "$1" "$2" "$S4_ACTION" "$SITE_A" "$SITE_B" "$S4_A_FAILURES" "$S4_B_FAILURES" "$S4_TOTAL" <<'PY'
+import json, subprocess, sys
+token, who, action, A, B, a_n, b_n, total = sys.argv[1:9]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+signal = next(s for s in get("/api/learning/signals")["signals"]
+              if s["action_type"] == action and s["scope_type"] == "cohort")
+pattern = next(p for p in get("/api/outcomes/patterns")["patterns"]
+               if p["pattern_type"] == "cross_site_batch"
+               and p["affected_scope"].get("action_type") == action)
+cycle = next(c for c in get("/api/learning/cycles")["cycles"]
+             if c["pattern_id"] == pattern["pattern_id"])
+ev = signal["evidence"]
+if who == "owner":
+    assert ev["site_failure_counts"] == {A: int(a_n), B: int(b_n)}, ev
+    assert ev["total"] == int(total) and ev["sites_affected"] == 2, ev
+    assert f"{total} attempts" in signal["statement"] and "across 2 sites" in signal["statement"]
+    assert f"({total}/{total})" in pattern["description"], pattern["description"]
+    assert B in pattern["affected_scope"]["sites"]
+    assert cycle["outcomes_before"]["total"] == int(total), cycle
+    assert "projection" not in ev
+else:
+    assert ev["site_failure_counts"] == {A: int(a_n)}, ev          # its OWN site, kept
+    assert ev["projection"] == "scoped" and ev["partial"] == ["site_failure_counts"], ev
+    assert {"total", "failures", "sites_affected"} <= set(ev["withheld"]), ev
+    assert ev["failure_rate"] == 1.0, ev                            # the CONCLUSION, kept
+    assert signal["statement"] == f"{action} on {signal['vendor']} {signal['model']} fails about 100% of the time.", signal["statement"]
+    assert pattern["affected_scope"]["sites"] == A, pattern
+    assert "more than one site" in pattern["description"] and "(" not in pattern["description"]
+    assert cycle["sites_distributed"] is None and cycle["devices_applied"] is None, cycle
+    assert "total" not in cycle["outcomes_before"], cycle
+print(f"    {who}: statement = {signal['statement']!r}")
+print(f"    {who}: pattern   = {pattern['description']!r}")
+PY
+}
+echo "  CONTROL (tenant owner):"; s4_read "$TOKEN" owner
+echo "  site-A principal:";       s4_read "$S3_A" scoped
+for S4_PATH in /api/learning/signals /api/outcomes/patterns "/api/outcomes/patterns?limit=1" \
+               /api/learning/cycles /api/attention/ /api/autonomy/; do
+  [ "$(s4_numbers "$S3_A" "$S4_PATH" "$SITE_B" "$S4_B_FAILURES" "$S4_TOTAL")" = "clean" ] || {
+    echo "$S4_PATH told a site-A principal about site B: $(s4_numbers "$S3_A" "$S4_PATH" "$SITE_B" "$S4_B_FAILURES" "$S4_TOTAL")" >&2; exit 1; }
+done
+echo "  signals, patterns, ?limit=1, cycles, attention and autonomy carry no site-B id, count or tenant total"
+
+step "A6-4B0b-S4/BI: attention and incident detail still LEARN -- the conclusion, for the reader's own device"
+python3 - "$S3_A" "$S4_ACTION" "$S4_DEVICE_A" "$SITE_B" <<'PY'
+import json, subprocess, sys
+token, action, device, B = sys.argv[1:5]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+item = next(i for i in get("/api/attention/")["items"] if i["agent_id"] == device)
+learned = [s for s in item["evidence"]["learned_signals"] if s["action_type"] == action]
+assert learned, "attention lost the cohort conclusion for the reader's own device"
+for s in learned:
+    assert s["evidence"].get("projection") == "scoped" and B not in json.dumps(s), s
+    assert "about 100%" in s["statement"], s["statement"]
+patterns = [p for p in item["evidence"]["fleet_patterns"] if action in p.get("description", "")]
+assert patterns and all("(" not in p["description"] for p in patterns), patterns
+print(f"    attention: {len(learned)} learned signal(s) and {len(patterns)} pattern(s) for {device}, bounded")
+incidents = [i for i in get("/api/incidents/?status=")["incidents"] if i.get("device_agent_id") == device]
+if incidents:
+    prior = get(f"/api/incidents/{incidents[0]['incident_id']}")["prior_learning"]
+    mine = [s for s in prior if s["action_type"] == action]
+    assert mine and all(s["evidence"].get("projection") == "scoped" for s in mine), prior
+    assert B not in json.dumps(prior)
+    print(f"    incident {incidents[0]['incident_id']}: prior_learning carries {len(mine)} bounded signal(s)")
+else:
+    print("    (no incident on this device in this run; prior_learning is proven in the unit and PostgreSQL suites)")
+PY
+
+step "A6-4B0b-S4/BJ: what crossed CC->SM is one site's bounded payload -- Central Command still holds the whole"
+S4_PATTERN=$(s1_cc "SELECT id FROM cc_fleet_patterns WHERE pattern_type='cross_site_batch'
+                    AND affected_scope::jsonb->>'action_type'='$S4_ACTION' LIMIT 1")
+s4_pushed() { [ "$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'")" = "1" ]; }
+wait_for "the distribution loop to push the pattern to the Site Manager" 480 s4_pushed
+S4_CC_ROW=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT description || ' ## ' || evidence::text FROM cc_fleet_patterns WHERE id='$S4_PATTERN'")
+echo "$S4_CC_ROW" | grep -q "across 2 sites ($S4_TOTAL/$S4_TOTAL)" || {
+  echo "CONTROL failed: Central Command's own pattern row lost its evidence" >&2; exit 1; }
+S4_SM_BAD=$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN' AND (
+      description LIKE '%across%' OR description LIKE '%(%/%)%'
+   OR evidence::jsonb ? 'total' OR evidence::jsonb ? 'failures' OR evidence::jsonb ? 'sites_affected'
+   OR (SELECT count(*) FROM jsonb_object_keys(
+         COALESCE(evidence::jsonb->'site_failure_counts', '{}'::jsonb))) > 1
+   OR affected_scope::jsonb->>'sites' LIKE '%,%')")
+[ "$S4_SM_BAD" = "0" ] || {
+  echo "the Site Manager stores another site's facts for $S4_PATTERN:" >&2
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -c \
+    "SELECT description, affected_scope, evidence FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'" >&2
+  exit 1; }
+echo "  Site Manager row: $(docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT description FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'" | sed 's/^ *//')"
+
+step "A6-4B0b-S4/BK: this proof owns its state"
+# The A30.21 lesson. The engine's in-process aggregate keeps what it counted
+# until Central Command restarts; nothing after this step reads learning.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_outcome_history WHERE action_id LIKE '$S4_RUN-%';
+   DELETE FROM cc_learned_signals WHERE action_type='$S4_ACTION';
+   DELETE FROM cc_learning_cycles WHERE pattern_id IN (
+       SELECT id FROM cc_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION');
+   DELETE FROM cc_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$S4_RUN-%'")" = "0" ] || {
+  echo "the seeded outcomes were not removed" >&2; exit 1; }
+echo "  the seeded outcomes and everything the engine learned from them are removed"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

@@ -27,8 +27,10 @@ interface LearningCycle {
   pattern_id: string;
   pattern_type: string;
   skill_id: string | null;
-  sites_distributed: number;
-  devices_applied: number;
+  // A30.28: a scoped reader is not told how many sites or devices the
+  // cohort spans -- Central Command withholds the count (null) and says so.
+  sites_distributed: number | null;
+  devices_applied: number | null;
   outcomes_before: Record<string, number>;
   outcomes_after: Record<string, number>;
   improvement_pct: number | null;
@@ -220,7 +222,11 @@ export default function Learning() {
       ),
     },
     { key: "skill_id", header: "Candidate", render: (r) => r.skill_id ?? "none yet" },
-    { key: "devices_applied", header: "Devices reached" },
+    {
+      key: "devices_applied",
+      header: "Devices reached",
+      render: (r) => r.devices_applied ?? "outside your scope",
+    },
     {
       key: "improvement_pct",
       header: "Measured change",

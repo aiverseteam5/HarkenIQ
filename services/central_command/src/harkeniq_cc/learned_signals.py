@@ -49,36 +49,44 @@ def signal_key(scope_type: str, scope_ref: str, action_type: str) -> str:
     return f"{scope_type}:{scope_ref}:{(action_type or '').strip().upper()}"
 
 
-def _statement(pattern_type: str, action_type: str, vendor: str, model: str,
-               evidence: dict, scope_type: str, scope_label: str) -> str:
+def render_statement(pattern_type: str, action_type: str, vendor: str, model: str,
+                     evidence: dict, scope_type: str, scope_label: str,
+                     *, approximate: bool = False) -> str:
     """Plain language a human reads and an agent can quote.
 
-    Every number here comes from the pattern's own evidence.
+    EVERY NUMBER HERE COMES FROM `evidence`, and that is load-bearing
+    (A30.28): a scoped reader's statement is this same function over their
+    PROJECTED evidence, so the text can never state a count the structured
+    payload withheld. `approximate` says "about" before each percentage,
+    because a projected rate has been rounded. A number from anywhere else
+    -- an argument, a closure, the clock -- would break that, and
+    `test_every_number_in_a_statement_comes_from_its_evidence` holds it.
     """
     rate = evidence.get("failure_rate")
     total = evidence.get("total")
     where = f" at {scope_label}" if scope_type == SCOPE_SITE else ""
     cohort = f"{vendor} {model}".strip() or "this hardware"
+    about = "about " if approximate else ""
 
     if pattern_type == "anomaly":
         trend = evidence.get("trend")
         if trend is not None:
             return (
                 f"{action_type} on {cohort}{where} is failing more often than "
-                f"it was (failure rate moved {trend:+.0%})."
+                f"it was (failure rate moved {about}{trend:+.0%})."
             )
         return f"{action_type} on {cohort}{where} is failing more often than it was."
 
     if rate is None:
         return f"{action_type} on {cohort}{where} shows a recurring failure pattern."
 
-    base = f"{action_type} on {cohort}{where} fails {rate:.0%} of the time"
+    base = f"{action_type} on {cohort}{where} fails {about}{rate:.0%} of the time"
     if total:
         base += f" ({evidence.get('failures', '?')} of {total} attempts)"
     if pattern_type == "reliability":
         fleet = evidence.get("fleet_failure_rate")
         if fleet is not None:
-            base += f", against a fleet average of {fleet:.0%}"
+            base += f", against a fleet average of {about}{fleet:.0%}"
     elif pattern_type == "cross_site_batch":
         sites = evidence.get("sites_affected")
         if sites:
@@ -118,7 +126,7 @@ def derive_signals(pattern, now: Optional[Any] = None) -> list[dict]:
         "action_type": action_type,
         "vendor": vendor,
         "model": model,
-        "statement": _statement(
+        "statement": render_statement(
             pattern.pattern_type, action_type, vendor, model, evidence,
             SCOPE_COHORT, "",
         ),
@@ -143,7 +151,7 @@ def derive_signals(pattern, now: Optional[Any] = None) -> list[dict]:
                 "action_type": action_type,
                 "vendor": vendor,
                 "model": model,
-                "statement": _statement(
+                "statement": render_statement(
                     pattern.pattern_type, action_type, vendor, model,
                     site_evidence, SCOPE_SITE, "this site",
                 ),

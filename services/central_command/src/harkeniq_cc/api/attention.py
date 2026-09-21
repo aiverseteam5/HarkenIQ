@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.governance import load_attention
+from harkeniq_cc.governance import learning_view, load_attention
 
 router = APIRouter(prefix="/api/attention", tags=["attention"])
 
@@ -58,6 +58,10 @@ async def attention(
         tenant_id=user.tenant_id,
         site_id=site_id,
         scope=reach,
+        # A30.28: learned signals and fleet patterns are projected for THIS
+        # reader -- human or Operational Agent, one rule -- before they are
+        # attached to a device.
+        learning=learning_view(scope),
         band=band,
         limit=limit,
     )

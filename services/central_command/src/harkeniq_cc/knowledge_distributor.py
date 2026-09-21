@@ -115,6 +115,50 @@ class KnowledgeDistributor:
         return list(self._distributions)
 
 
+def site_payload(patterns: list[FleetPattern], site_id: str) -> str:
+    """`PushPolicy.learned_patterns_json` for ONE receiving site (A30.28).
+
+    A pattern is detected over the whole tenant and names every failing
+    site with its count. Until S4 that whole payload went to every Site
+    Manager whose fleet held the cohort -- including sites the pattern
+    does not name -- so site A's Site Manager durably stored site C's id
+    and failure count, and quoted "across 2 sites (30/40)" into its own
+    incident diagnoses.
+
+    A receiving site is a reader that holds exactly itself, so it gets the
+    SAME bounded projection a site-scoped principal gets, by the same
+    function: the cohort conclusion, its own site's facts, and nothing
+    about any other site. `hide_unnamed=False` because a site that holds
+    the cohort and is not failing yet is who this loop exists to tell.
+
+    The Site Manager upserts by pattern id and this ledger is in-process,
+    so a Central Command restart re-pushes and OVERWRITES what an earlier
+    release delivered -- no Site Manager migration is needed.
+    """
+    from harkeniq_cc.learning_projection import pattern_order, project_pattern
+
+    # Ordered by what the site is shown. The caller's order is detection
+    # order -- cohorts ranked by tenant attempt total -- and a Site Manager
+    # cites patterns in the order it received them.
+    projected = sorted(
+        (project_pattern(pattern, frozenset({site_id}), hide_unnamed=False)
+         for pattern in patterns),
+        key=pattern_order,
+    )
+    payload = []
+    for p in projected:
+        payload.append({
+            "pattern_id": p.pattern_id,
+            "pattern_type": p.pattern_type,
+            "description": p.description,
+            "affected_scope": p.affected_scope,
+            "confidence": p.confidence,
+            "evidence": p.evidence,
+            "detected_at": p.detected_at,
+        })
+    return json.dumps(payload)
+
+
 async def distribute_patterns(
     config, sessionmaker, client=None, distributor=None
 ) -> int:
@@ -179,18 +223,7 @@ async def distribute_patterns(
     delivered = 0
     for site_id, site_patterns in per_site.items():
         site = site_by_id[site_id]
-        payload = json.dumps([
-            {
-                "pattern_id": p.pattern_id,
-                "pattern_type": p.pattern_type,
-                "description": p.description,
-                "affected_scope": p.affected_scope,
-                "confidence": p.confidence,
-                "evidence": p.evidence,
-                "detected_at": p.detected_at,
-            }
-            for p in site_patterns
-        ])
+        payload = site_payload(site_patterns, site_id)
         try:
             result = await client.push_policy(
                 site["sm_endpoint"],

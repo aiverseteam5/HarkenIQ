@@ -585,7 +585,13 @@ class TestEveryPersonaReadsItsOwnTenant:
         without_hidden = await E.build(_holds(name))
         oracle = (await without_hidden.as_person().get("/api/autonomy/")).json()
 
-        assert E.normalised(mine) == E.normalised(oracle)
+        # S4 (A30.28): a scoped reader's learned signals are BOUNDED, so the
+        # tenant-wide oracle is bounded before it is compared. A tenant
+        # persona is compared exactly -- nothing about it may change.
+        expected = E.normalised(oracle)
+        if E.PERSONAS[name][1] is not None:
+            expected = E.bounded(expected)
+        assert E.normalised(mine) == expected
         assert E.leaks(mine, _holds(name)) == []
 
     async def test_the_tenant_reader_is_the_control(self):
@@ -721,7 +727,7 @@ class TestTheProbeOverHttp:
         without_hidden = await E.build(("A", "B"))
         oracle = (await without_hidden.as_person().get(
             "/api/autonomy/", site_id=SITES["B"].id)).json()
-        assert E.normalised(mine) == E.normalised(oracle)
+        assert E.normalised(mine) == E.bounded(E.normalised(oracle))   # S4
 
 
 # ---------------------------------------------------------------------------

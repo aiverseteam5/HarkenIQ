@@ -291,6 +291,31 @@ def normalised(contract: dict) -> dict:
     return out
 
 
+def bounded(contract: dict) -> dict:
+    """The oracle's learned signals, as a SCOPED reader is shown them (S4).
+
+    A30.28 narrows a learned signal's PAYLOAD for every reader who is not
+    tenant-wide: confidence is rounded to a 0.25 grid, because an exact
+    confidence is a count in disguise. The deletion-equivalence oracle is a
+    TENANT-WIDE reader of a smaller estate, so it reads exact values, and
+    the equivalence S3 proves is therefore
+
+        scoped(full estate)  ==  bounded(tenant-wide(estate without the
+                                 hidden sites))
+
+    The rounding is restated here, not imported, so the oracle cannot
+    share a mistake with the code it checks. Nothing but `learning[]` is
+    touched -- every site-derived AUTONOMY fact is still compared exactly.
+    """
+    out = json.loads(json.dumps(contract))
+    for row in out.get("action_classes", []):
+        for signal in row.get("learning") or []:
+            value = float(signal["confidence"])
+            steps = int(value * 4 + 0.5)
+            signal["confidence"] = 0.0 if value <= 0 else min(1.0, max(0.25, steps / 4))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Plain objects, for the pure composer
 # ---------------------------------------------------------------------------
