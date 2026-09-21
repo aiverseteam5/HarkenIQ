@@ -4085,7 +4085,29 @@ the signal's own key — on every path: the signal list, the autonomy
 contract's `learning[]`, attention's per-device signals and the two quoted
 into `reasons[]`, incident `prior_learning`, and the frozen copy on a
 proposal, which the evaluator wrote in exact order and which is re-ordered
-at read, never rewritten. **Frozen copies** keep what the evaluator
+at read, never rewritten. **A second ordering channel, found by the
+slice's own twin estates and corrected here before the code landed.**
+`OutcomeAggregator.get_metrics` sorts cohorts by their tenant attempt
+TOTAL; the detector stamps each pattern with `time.time()` in that order,
+and the pass opens its cycles and upserts its signals in it. So within one
+engine pass DETECTION ORDER IS A RANK BY HIDDEN TOTAL, and it reached a
+scoped reader five ways: the pattern list (`ORDER BY detected_at DESC`),
+the cycle list (`started_at DESC`), the sub-second part of every learning
+timestamp, the caller-controlled `?limit=` on `/api/outcomes/patterns`
+(cut in SQL over the exact instant, `limit=1` returned the cohort with the
+SMALLEST tenant total), and the order patterns are pushed to — and
+therefore cited by — a Site Manager. Demonstrated: a site-A reader who
+knows POWER_CYCLE's 15 attempts are all their own read whether hidden
+BMC_RESET totalled more or fewer than 15 from which row came first. For a
+reader who is not tenant-wide: patterns, cycles, the pushed payload and the
+pattern citations inside `evidence_cited` are ordered by what is SHOWN
+(floored instant, then the cohort the row names; a random id only makes
+the order total); learning timestamps are FLOORED TO THE MINUTE, stored
+type kept; and `limit` is applied AFTER projection. *Stated limit:* a pass
+that straddles a minute boundary still orders its two halves — the pass is
+in-memory and takes milliseconds, so this is a one-bit residue at roughly
+1-in-10⁴ passes, and removing it needs a per-pass instant at WRITE, which
+changes stored rows and is not this slice. **Frozen copies** keep what the evaluator
 recorded; A30.26 drops a site-scoped entry whose site the reader does not
 hold, and S4 bounds the entries that survive. **Proof obligations.** Two
 hidden estates that deliberately collapse to the same band, a scoped reader
@@ -4096,11 +4118,14 @@ non-vacuity guard proving the tenant-wide reader DOES tell them apart;
 positive controls proving the cohort conclusion stays visible and the
 tenant-wide payload is byte-identical to `main`. **Named follow-ups,
 deliberately NOT pulled in** — each is a different semantic, none carries
-E3-F1's payload: *timestamps and temporal counts* (`detected_at`,
-`last_confirmed_at`, `observation_count`, and the pattern and cycle lists'
-time ordering) say WHEN the tenant concluded something, which is a property
-of the conclusion A23 publishes, and cannot separate two estates in one
-band; *predictive `cohort_failure_rate` / `outcomes_considered`* are
+E3-F1's payload: *WHEN, at minute grain and coarser* — `detected_at`,
+`last_confirmed_at`, `observation_count`, and the order of rows from
+DIFFERENT engine passes say when the tenant concluded something, which is
+a property of the conclusion A23 publishes (the sub-minute part was proven
+to carry a hidden rank and IS in this slice, above); *the unprojected
+window* — the signal (500) and cycle (200) repositories cut in SQL before
+projection, which matters only to a tenant holding more rows than that, and
+is not caller-controlled; *predictive `cohort_failure_rate` / `outcomes_considered`* are
 tenant-wide OUTCOME statistics — S3-E2's family, decided by R6 and
 implemented with it; *Site Manager explanation free text* other than a
 pattern citation is model- or rule-authored prose about the reader's own

@@ -4400,8 +4400,34 @@ signal's own key (a function of cohort and action, never of the estate):
   what is stored, correctly). `project_frozen_signals` re-orders at read;
   the stored record is not rewritten.
 
-Patterns and cycles are ordered by TIME, which is a follow-up semantic
-(below), not a function of a withheld number.
+**Detection order is a rank by hidden total** — found by this slice's own
+twin estates, after the first draft of this section said patterns and
+cycles were "ordered by TIME ... not a function of a withheld number".
+They are both:
+
+```
+OutcomeAggregator.get_metrics()   sorted(..., key=total_count, reverse=True)
+PatternDetector._detect_*         FleetPattern(detected_at=time.time())   <- in that order
+IntelligenceEngine.run_cycle      start_cycle(...), upsert(signal)        <- in that order
+FleetPatternRepo.list_patterns    ORDER BY detected_at DESC LIMIT :limit
+```
+
+Twin X has BMC_RESET at 14 attempts and POWER_CYCLE at 15; twin Y has
+BMC_RESET at 16. Same bands, and the two rows swap places. POWER_CYCLE's 15
+are all at site A, so a site-A reader learns which side of 15 the hidden
+total is on. Five carriers, one cause: the pattern list, the cycle list,
+the microseconds of every learning timestamp, `?limit=1` (cut in SQL,
+returning the smallest-total cohort), and the order a Site Manager is
+pushed — and so cites — patterns in.
+
+For a scoped reader: `pattern_order` / `project_cycles` /
+`_citation_order` sort by what is shown; `bound_instant` floors learning
+timestamps to the minute (stored type kept: datetime, float or ISO
+string); `limit` is applied after projection over the route's own maximum
+window. Rows from DIFFERENT passes keep their real order — that is when
+the tenant learned something, and it is a follow-up semantic. Stated
+limit: a pass straddling a minute boundary orders its halves (in-memory,
+milliseconds; ~1 in 10⁴). Closing it needs one instant per pass at WRITE.
 
 ### Proof
 
@@ -4412,8 +4438,16 @@ Patterns and cycles are ordered by TIME, which is a follow-up semantic
   compared for equality as parsed JSON, order included. Non-vacuity: the
   tenant-wide reader's responses DIFFER, or the test fails.
 * **Order twin.** Two same-band signals whose exact confidences swap
-  between the estates; the scoped order is identical, the tenant order
-  flips.
+  between the estates, and whose tenant totals swap detection order; the
+  scoped order of signals, patterns, cycles, `?limit=1..3`, citations and
+  the pushed payload is identical, the tenant order flips. The fixture
+  keeps the engine's sub-second order exactly and pins it inside one
+  minute, so the channel is present and the test cannot flake on a
+  boundary.
+* **Mutation-checked.** 22 deliberate regressions (each projection
+  bypassed, each sort removed, each band made exact, the limit cut moved
+  back into SQL, the reach permission changed) — every one turns the
+  module red.
 * **Sentinels.** Hidden-site ids and magnitude-coded counts; every key and
   leaf of every response walked, text included.
 * **Positive controls.** The cohort conclusion (cohort, action, banded
@@ -4427,8 +4461,9 @@ Patterns and cycles are ordered by TIME, which is a follow-up semantic
 
 ### Follow-ups, named and not built
 
-Timestamps and temporal counts (`detected_at`, `last_confirmed_at`,
-`observation_count`, time-ordered pattern and cycle lists); predictive
+WHEN at minute grain and coarser (`detected_at`, `last_confirmed_at`,
+`observation_count`, order across passes); the unprojected SQL window on
+signals (500) and cycles (200); predictive
 `cohort_failure_rate` / `outcomes_considered` (S3-E2's family, R6); Site
 Manager explanation prose other than a pattern citation. Reasons in spec
 A30.28.
