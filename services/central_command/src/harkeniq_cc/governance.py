@@ -18,7 +18,12 @@ from typing import Iterable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.autonomy import build_autonomy
+from harkeniq_cc.autonomy import (
+    build_autonomy,
+    visible_blocking_conditions,
+    visible_disposition_reason,
+    visible_verdict_evidence,
+)
 from harkeniq_cc.capabilities import build_capability_registry
 from harkeniq_cc.db.repos import (
     ApprovalPolicyRepo,
@@ -32,12 +37,14 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
     StopSwitchRepo,
     TenantSettingsRepo,
+    require_read_reach,
 )
 from harkeniq_cc.scope import (
     PRINCIPAL_AGENT,
     PRINCIPAL_USER,
     SCOPE_ONLY_MARKER,
     ResolvedScope,
+    read_reach,
     resolve,
 )
 
@@ -197,6 +204,95 @@ async def load_agent_reach(
     )
 
 
+def authorized_sites(reach) -> Optional[frozenset[str]]:
+    """The sites whose autonomy facts this reach may read (A30.26).
+
+    ``None`` means the whole tenant; anything else is the exact set. It is
+    a PROJECTION of S2's `ReadReach` and adds no rule of its own: a site
+    grant or an org-expanded site that carries the route's permission is
+    in, and nothing else is -- a `device` or `device_class` grant names no
+    site (R4), an inert, expired, revoked or subset-narrowed grant is not
+    in the reach at all (A30.24), and a contextual site (general B0b) has
+    no field on `ReadReach` to arrive through.
+
+    Refuses anything that is not a `ReadReach`, a bare `ResolvedScope`
+    included: that set is permission-NEUTRAL, and filtering autonomy facts
+    through it would be P1 again.
+    """
+    reach = require_read_reach(reach)
+    if reach is None:
+        raise TypeError(
+            "authorized_sites() needs the reader's ReadReach (A30.26); "
+            "there is no reader-less projection of a proposal"
+        )
+    return None if reach.tenant_wide else frozenset(reach.site_ids)
+
+
+#: The permission a site-derived AUTONOMY fact is read under (A30.26). It is
+#: the guard on `/api/autonomy/`, and it stays the permission wherever such
+#: a fact is projected -- including a route guarded by something else.
+AUTONOMY_FACT_PERMISSION = "fleet.view"
+
+
+@dataclass(frozen=True)
+class AutonomyView:
+    """Which sites' autonomy facts ONE reader may be shown (A30.26).
+
+    A proposal records the blocking conditions and learned signals the
+    evaluator decided on, and the evaluator decides over the whole
+    tenant. Every projection of a proposal therefore needs to know whose
+    eyes it is for, and this is the only way to say so.
+
+    It exists as a TYPE for the reason `ReadReach` does: the alternative
+    is an optional set where ``None`` means "unrestricted", and a
+    projection that forgot the argument -- or was handed ``None`` by a
+    caller who had nothing better -- would leak silently and pass its
+    tests. `require_autonomy_view` refuses everything but one of these,
+    and `autonomy_view` is its only constructor outside a test.
+    """
+
+    #: ``None`` = the whole tenant. Otherwise the exact set, possibly empty.
+    sites: Optional[frozenset[str]]
+
+    def blocking(self, rows) -> list:
+        return visible_blocking_conditions(rows, self.sites)
+
+    def evidence(self, evidence) -> dict:
+        return visible_verdict_evidence(evidence, self.sites)
+
+    def reason(self, reason, rows) -> str:
+        """The stored reason, unless it is the text of a withheld row."""
+        return visible_disposition_reason(reason, rows, self.sites)
+
+
+def autonomy_view(scope) -> AutonomyView:
+    """The reader's view of site-derived autonomy facts, from their scope.
+
+    `read_reach(scope, "fleet.view")` and nothing else: NOT the reach of
+    whatever route is projecting. The approval queue is guarded by
+    `action.approve | audit.view`, and a grant can carry `action.approve`
+    at a site while its subset withholds `fleet.view` there; narrowing by
+    the queue's own reach would show that reader safety facts
+    `/api/autonomy/` refuses them. Permission and coverage come from the
+    SAME grant (A30.24), for the permission these facts require.
+    """
+    return AutonomyView(
+        sites=authorized_sites(read_reach(scope, AUTONOMY_FACT_PERMISSION))
+    )
+
+
+def require_autonomy_view(view) -> AutonomyView:
+    """The projection boundary of A30.26: an `AutonomyView`, or a TypeError."""
+    if isinstance(view, AutonomyView):
+        return view
+    raise TypeError(
+        "a proposal projection needs the reader's AutonomyView "
+        "(harkeniq_cc.governance.autonomy_view(scope)), not "
+        f"{type(view).__name__}: a stored verdict names sites the reader may "
+        "not hold, and there is no reader-less projection of one (spec A30.26)"
+    )
+
+
 async def load_autonomy_contract(
     session: AsyncSession,
     *,
@@ -204,14 +300,34 @@ async def load_autonomy_contract(
     actor_id: str,
     actor_species: str,
     permissions: Iterable[str],
+    reach,
     site_id: Optional[str] = None,
     action_type: Optional[str] = None,
 ) -> dict:
     """Fetch every tenant-scoped input and compose the contract.
 
     Every read below is tenant-scoped by its repository; `site_id`
-    narrows within the tenant and can never widen beyond it.
+    narrows within the reader's own sites and can never widen beyond them.
+
+    `reach` is REQUIRED and has no default (A30.26), so a caller cannot
+    obtain the tenant-wide composition by leaving something out:
+
+    * a `ReadReach` -- the contract is going back to a PRINCIPAL. It is
+      composed over the sites that reach authorizes and over nothing
+      else, selected BEFORE anything is folded (`select_site_inputs`), so
+      no aggregate, boolean or disposition in it reflects another site;
+    * ``None`` -- an INTERNAL DECISION PATH (the evaluator, the ingress
+      re-derivation, the dry-run's reasoning, campaign submission, the
+      activation preflight). These decide over the whole tenant and never
+      return the contract. The call sites allowed to say so are
+      allow-listed by a structural test.
+
+    A bare `ResolvedScope` is refused, exactly as the repositories refuse
+    one (A30.24).
     """
+    visible_site_ids = (
+        None if require_read_reach(reach) is None else authorized_sites(reach)
+    )
     budgets = await AutonomyBudgetRepo(session).list_all(tenant_id)
     stop_switch = await StopSwitchRepo(session).get(tenant_id)
     outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
@@ -238,6 +354,7 @@ async def load_autonomy_contract(
         approval_policies=policies,
         site_id=site_id,
         action_type=action_type,
+        visible_site_ids=visible_site_ids,
     )
 
 

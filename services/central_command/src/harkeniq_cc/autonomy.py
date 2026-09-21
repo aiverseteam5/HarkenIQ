@@ -338,6 +338,69 @@ def _iso(value) -> Optional[str]:
     return str(value)
 
 
+#: A learned signal's `scope_type` when it names a site (the other value is
+#: a vendor/model cohort). Same literal as `learned_signals.SCOPE_SITE`;
+#: restated so this module stays free of intra-package imports.
+_SIGNAL_SCOPE_SITE = "site"
+
+
+def select_site_inputs(
+    *,
+    safety_rows: Iterable[Any],
+    sites: Iterable[Any],
+    outcomes: Iterable[dict],
+    learned_signals: Iterable[Any] = (),
+    visible_site_ids: Optional[Iterable[str]] = None,
+    site_id: Optional[str] = None,
+) -> tuple[list, list, list, list]:
+    """SELECT the site inputs a contract may be folded from (A30.26).
+
+    Runs BEFORE anything is aggregated, and it is the only place a
+    reader's reach meets a site row. The fold below never sees a row this
+    function did not return, which is what makes every aggregate, every
+    boolean and every disposition a statement about the SELECTED sites
+    and nothing else -- there is no tenant-wide value to hide afterwards.
+
+    `visible_site_ids`
+        ``None`` is the whole tenant: a tenant-wide reader, or an internal
+        decision path that never returns the contract to a principal. Any
+        other value is the exact set of sites the reader is authorized
+        for, and an EMPTY set selects nothing -- it is never read as
+        "unrestricted". A site-scoped learned signal is kept only for a
+        site in the set; a cohort signal names no site.
+
+    `site_id`
+        The reader's own focus. It narrows WITHIN the selection above and
+        can never widen it, so asking for a site outside one's reach
+        selects nothing -- the same answer a site that does not exist
+        gets. It does not touch learned signals (it never did).
+
+    Only `site_id` / `id` / `scope_type` / `scope_ref` are read off a row
+    here. Nothing else about an unselected row is ever looked at.
+    """
+    visible = None if visible_site_ids is None else frozenset(visible_site_ids)
+
+    def _selected(sid) -> bool:
+        if visible is not None and sid not in visible:
+            return False
+        return not site_id or sid == site_id
+
+    if visible is None and not site_id:
+        return list(safety_rows), list(sites), list(outcomes), list(learned_signals)
+
+    return (
+        [s for s in safety_rows if _selected(s.site_id)],
+        [s for s in sites if _selected(s.id)],
+        [o for o in outcomes if _selected(o.get("site_id"))],
+        [
+            sig for sig in learned_signals
+            if visible is None
+            or getattr(sig, "scope_type", "") != _SIGNAL_SCOPE_SITE
+            or getattr(sig, "scope_ref", "") in visible
+        ],
+    )
+
+
 def build_autonomy(
     *,
     tenant_id: str,
@@ -354,6 +417,7 @@ def build_autonomy(
     site_id: Optional[str] = None,
     action_type: Optional[str] = None,
     now: Optional[datetime] = None,
+    visible_site_ids: Optional[Iterable[str]] = None,
 ) -> dict[str, Any]:
     """Compose the governance contract. Pure: no I/O, no clock of its own.
 
@@ -361,18 +425,24 @@ def build_autonomy(
     same attributes). A site that has not reported is reported as
     UNKNOWN, never as safe — an unobserved safety state is the one thing
     a governance layer must not round down.
+
+    SELECT, THEN AGGREGATE (A30.26). `visible_site_ids` is the set of
+    sites this contract may describe; every site-derived fact below --
+    each list, each total, each boolean, and the dispositions folded from
+    them -- is computed from those sites only. It is applied first and
+    once, by `select_site_inputs`; nothing here filters a composed value.
     """
     now = now or datetime.now(timezone.utc)
     held = set(permissions or ())
     wildcard = "*" in held
-    outcomes = list(outcomes)
-    safety_rows = list(safety_rows)
-    sites = list(sites)
-
-    if site_id:
-        safety_rows = [s for s in safety_rows if s.site_id == site_id]
-        sites = [s for s in sites if s.id == site_id]
-        outcomes = [o for o in outcomes if o.get("site_id") == site_id]
+    safety_rows, sites, outcomes, learned_signals = select_site_inputs(
+        safety_rows=safety_rows,
+        sites=sites,
+        outcomes=outcomes,
+        learned_signals=learned_signals,
+        visible_site_ids=visible_site_ids,
+        site_id=site_id,
+    )
 
     # -- posture ------------------------------------------------------------
     # Only the device_type="*" row shapes site-wide policy; SM enforcement
@@ -651,61 +721,127 @@ def build_autonomy(
     }
 
 
-def narrow_to_sites(contract: dict, visible_site_ids) -> dict:
-    """The contract as a SCOPED reader may see it (A23).
+# ---------------------------------------------------------------------------
+# A persisted verdict, as a scoped reader may see it (A30.26)
+# ---------------------------------------------------------------------------
+#
+# The evaluator stores a class row's blocking conditions and learned
+# signals on every proposal it admits, and it decides over the whole
+# tenant, so a proposal at one site can carry rows that name another.
+# What was WRITTEN is a decision record and is not rewritten; what a
+# projection RETURNS is narrowed here, by one implementation every
+# projection asks.
+#
+# There is deliberately no function that narrows a composed CONTRACT.
+# `narrow_to_sites` was that function, and it is why P2 existed: an
+# aggregate has no `site_id` to filter on. A contract is narrowed by
+# composing it over fewer sites (`select_site_inputs`), never afterwards.
 
-    The disposition, the ladder and the tenant posture are tenant-wide
-    facts and pass through unchanged. What is narrowed is every list
-    that names a SITE: the sites the contract was composed over, the
-    safety lists, the site-scoped blocking conditions. A cluster-scoped
-    principal learns nothing about sites outside their reach -- not
-    even that they exist and are not reporting. ``None`` means a
-    tenant-wide reader and returns the contract untouched.
+
+def visible_blocking_conditions(
+    blocking: Optional[Iterable[Any]], visible_site_ids: Optional[Iterable[str]],
+) -> list:
+    """Blocking conditions a reader holding `visible_site_ids` may read.
+
+    ``None`` is a tenant-wide reader and returns every row. Otherwise a
+    row passes when it is TENANT-scoped, or when it names a site inside
+    the set. Everything else is dropped -- including a site- or
+    domain-scoped row that cannot name its site, and any shape this
+    function does not recognise: fail closed.
     """
+    rows = list(blocking or [])
     if visible_site_ids is None:
-        return contract
-    visible = set(visible_site_ids)
+        return rows
+    visible = frozenset(visible_site_ids)
+    kept = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        site = row.get("site_id") or ""
+        if site:
+            if site in visible:
+                kept.append(row)
+        elif row.get("scope") == SCOPE_TENANT:
+            kept.append(row)
+    return kept
 
-    def _site_ok(item) -> bool:
-        sid = item.get("site_id", "") if isinstance(item, dict) else ""
-        return not sid or sid in visible
 
-    out = dict(contract)
-    scope = dict(out.get("scope") or {})
-    scope["sites"] = [s for s in scope.get("sites", []) if s.get("id") in visible]
-    out["scope"] = scope
+#: What a scoped reader is told when the reason a verdict recorded is the
+#: text of a row they may not read. It says THAT something is withheld --
+#: which a proposal waiting on a human already shows -- and nothing about
+#: what it is or where.
+WITHHELD_REASON = (
+    "this verdict rests on a governance condition outside your authorized scope"
+)
 
-    safety = dict(out.get("safety_state") or {})
-    safety["sites_reporting"] = [
-        s for s in safety.get("sites_reporting", []) if s in visible
-    ]
-    safety["sites_not_reporting"] = [
-        s for s in safety.get("sites_not_reporting", []) if s in visible
-    ]
-    safety["suppressions"] = [
-        s for s in safety.get("suppressions", []) if _site_ok(s)
-    ]
-    safety["site_stop_switches"] = [
-        s for s in safety.get("site_stop_switches", []) if _site_ok(s)
-    ]
-    safety["error_budgets"] = [
-        e for e in safety.get("error_budgets", []) if _site_ok(e)
-    ]
-    out["safety_state"] = safety
 
-    classes = []
-    for row in out.get("action_classes", []):
-        row = dict(row)
-        row["blocking_conditions"] = [
-            b for b in row.get("blocking_conditions", []) if _site_ok(b)
-        ]
-        # A site-scoped learned signal names its site; a cohort signal
-        # names a vendor/model and is tenant knowledge.
-        row["learning"] = [
-            sig for sig in row.get("learning", [])
-            if not (isinstance(sig, dict) and sig.get("scope_type") == "site"
-                    and sig.get("scope_ref") not in visible)
-        ]
-        classes.append(row)
-    out["action_classes"] = classes
+def visible_disposition_reason(
+    reason: Optional[str],
+    blocking: Optional[Iterable[Any]],
+    visible_site_ids: Optional[Iterable[str]],
+) -> str:
+    """A stored verdict's reason, as a scoped reader may read it.
+
+    THE REASON FOLLOWS ITS ROW. The evaluator copies `disposition_reason`
+    from a blocking row's own `detail`, so the reason can BE a row's text
+    -- and a domain-scoped row's text names its fault domain. Returning
+    the text of a row that was just withheld, one field up, would be the
+    same leak in a different field.
+
+    So: where the stored reason is the text of a WITHHELD row and of no
+    row the reader keeps, it is replaced by `WITHHELD_REASON`. A reason
+    that a kept row also states (the same condition at a site the reader
+    holds), a tenant-scoped reason, and any reason for a tenant-wide
+    reader are returned as recorded.
+    """
+    reason = reason or ""
+    if visible_site_ids is None or not reason:
+        return reason
+    rows = [row for row in (blocking or []) if isinstance(row, dict)]
+    kept = visible_blocking_conditions(rows, visible_site_ids)
+    kept_ids = {id(row) for row in kept}
+    kept_text = {row.get("detail") for row in kept}
+    withheld_text = {row.get("detail") for row in rows if id(row) not in kept_ids}
+    if reason in withheld_text and reason not in kept_text:
+        return WITHHELD_REASON
+    return reason
+
+
+def visible_learned_signals(
+    signals: Optional[Iterable[Any]], visible_site_ids: Optional[Iterable[str]],
+) -> list:
+    """Learned signals a reader holding `visible_site_ids` may read.
+
+    A site-scoped signal names its site; a cohort signal names a vendor
+    and model and is tenant knowledge (A23). Same rule the composer
+    applies to the signals it selects.
+    """
+    rows = list(signals or [])
+    if visible_site_ids is None:
+        return rows
+    visible = frozenset(visible_site_ids)
+    return [
+        sig for sig in rows
+        if not (
+            isinstance(sig, dict)
+            and sig.get("scope_type") == _SIGNAL_SCOPE_SITE
+            and sig.get("scope_ref") not in visible
+        )
+    ]
+
+
+def visible_verdict_evidence(
+    evidence: Optional[dict], visible_site_ids: Optional[Iterable[str]],
+) -> dict:
+    """A proposal's stored `evidence`, with its learned signals narrowed.
+
+    Only `learned_signals` carries site references. The rest is about the
+    proposal's own device and condition, or is a tenant-wide outcome
+    statistic that names no site (recorded as E2 in A30.26, not changed).
+    """
+    out = dict(evidence or {})
+    if visible_site_ids is not None and "learned_signals" in out:
+        out["learned_signals"] = visible_learned_signals(
+            out.get("learned_signals"), visible_site_ids,
+        )
     return out

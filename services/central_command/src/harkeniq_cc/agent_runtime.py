@@ -164,12 +164,16 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                     session, tenant_id=tenant_id, scope=where_reach(agent_scope),
                 ))["items"]
             }
+            # A30.26: an INTERNAL DECISION, so the whole tenant -- this
+            # contract is reasoned over and never returned. What a
+            # proposal RECORDS from it is narrowed wherever it is read.
             contract = await load_autonomy_contract(
                 session,
                 tenant_id=tenant_id,
                 actor_id=attribution_key(agent.id, agent.version),
                 actor_species="agent",
                 permissions=AGENT_PERMISSIONS,
+                reach=None,
             )
             seen_keys = await prop_repo.all_dedupe_keys(tenant_id)
             proposals = evaluate(

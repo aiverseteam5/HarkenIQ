@@ -568,12 +568,17 @@ async def submit_campaign(
     if not ok:
         raise HTTPException(409, reason)
 
+    # A30.26: an INTERNAL DECISION -- one class row is read to choose
+    # between autonomous execution, per-wave approval and refusal. The
+    # contract is never returned, and the only text that reaches the
+    # caller is a DENIED reason, which is always tenant-scoped.
     contract = await load_autonomy_contract(
         session,
         tenant_id=user.tenant_id,
         actor_id=campaign_actor(campaign.id, campaign.version),
         actor_species="campaign",
         permissions=list(user.permissions),
+        reach=None,
     )
     row = next(
         (c for c in contract["action_classes"]

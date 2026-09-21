@@ -50,8 +50,10 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
 )
 from harkeniq_cc.governance import (
+    autonomy_view,
     load_agent_reach,
     load_autonomy_contract,
+    require_autonomy_view,
 )
 from harkeniq_cc.scope import (
     SCOPE_DEVICE,
@@ -199,13 +201,21 @@ def _agent_dict(agent, scopes=(), capabilities=()) -> dict:
     }
 
 
-def proposal_dict(p) -> dict:
+def proposal_dict(p, *, view) -> dict:
     """One proposal, with everything a decision-maker needs in the row.
 
     Shared with the approvals surface: an agent item in the queue is this
     payload plus the queue's own envelope, so the two can never describe
     the same proposal differently.
+
+    `view` is the READER's `AutonomyView` and is REQUIRED (A30.26). The
+    evaluator decides over the whole tenant and stores the class row's
+    blocking conditions and learned signals on the proposal, so a proposal
+    at one site can name another site's drop-back and its suppressed fault
+    domains. What was recorded is left alone; what is RETURNED names a
+    site only when the reader holds `fleet.view` there.
     """
+    view = require_autonomy_view(view)
     return {
         "proposal_id": p.id,
         "agent_id": p.agent_id,
@@ -216,10 +226,12 @@ def proposal_dict(p) -> dict:
         "action_type": p.action_type,
         "params": p.params or {},
         "rationale": p.rationale,
-        "evidence": p.evidence or {},
+        "evidence": view.evidence(p.evidence),
         "disposition": p.disposition,
-        "disposition_reason": p.disposition_reason,
-        "blocking_conditions": p.blocking_conditions or [],
+        "disposition_reason": view.reason(
+            p.disposition_reason, p.blocking_conditions,
+        ),
+        "blocking_conditions": view.blocking(p.blocking_conditions),
         "authorization_basis": p.authorization_basis,
         "status": p.status,
         "decided_by": p.decided_by,
@@ -240,7 +252,7 @@ def proposal_dict(p) -> dict:
     }
 
 
-def proposal_dict_with_provenance(p, submission_id: str = "") -> dict:
+def proposal_dict_with_provenance(p, submission_id: str = "", *, view) -> dict:
     """`proposal_dict`, with the submission id resolved (A27.6).
 
     A separate entry point rather than an optional argument threaded
@@ -248,7 +260,7 @@ def proposal_dict_with_provenance(p, submission_id: str = "") -> dict:
     the page's submissions in ONE query and pass the id in, and nothing
     else has to change or pay for a lookup it does not want.
     """
-    out = proposal_dict(p)
+    out = proposal_dict(p, view=view)
     out["provenance"] = provenance_block(p, submission_id)
     return out
 
@@ -1038,17 +1050,18 @@ async def get_agent(
     # not the caller's to read.
     reach = read_reach(scope, "fleet.view")
     devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
+    # A30.26: the contract this view is built from is composed over the
+    # READER's sites -- selected before the fold, not narrowed after it --
+    # so the dispositions, evidence and posture below describe nothing the
+    # reader does not hold. The agent may be governed by more than that;
+    # what governs it beyond the caller is not the caller's to read.
     contract = await load_autonomy_contract(
         session,
         tenant_id=user.tenant_id,
         actor_id=attribution_key(agent.id, agent.version),
         actor_species="agent",
         permissions=user.permissions,
-    )
-    from harkeniq_cc.autonomy import narrow_to_sites
-
-    contract = narrow_to_sites(
-        contract, None if reach.tenant_wide else set(reach.site_ids)
+        reach=reach,
     )
     proposals = _narrow_proposals(
         scope, await AgentProposalRepo(session).list_for_agent(
@@ -1081,6 +1094,7 @@ async def get_agent(
             session, tenant_id=user.tenant_id, agent=agent, human_view=view,
             proposals=proposals[:50],
             authority_for=lambda p: _authority_for_proposal(scope, p),
+            view=autonomy_view(scope),
         )
     # A27.6: one query for the page, never one per row.
     from harkeniq_cc.db.repos import AgentSubmissionRepo
@@ -1092,8 +1106,10 @@ async def get_agent(
             user.tenant_id, [p.id for p in page],
         )
     )
+    facts = autonomy_view(scope)
     view["proposals"] = [
-        proposal_dict_with_provenance(p, by_proposal.get(p.id, "")) for p in page
+        proposal_dict_with_provenance(p, by_proposal.get(p.id, ""), view=facts)
+        for p in page
     ]
     return view
 
@@ -1535,6 +1551,7 @@ async def list_proposals(
         items = await machine_proposal_items(
             session, user.tenant_id, proposals,
             authority_for=lambda p: _authority_for_proposal(scope, p),
+            view=autonomy_view(scope),
         )
         return {
             "proposals": items,
@@ -1544,8 +1561,9 @@ async def list_proposals(
             "view": "machine",
         }
 
+    facts = autonomy_view(scope)
     return {
-        "proposals": [proposal_dict(p) for p in proposals],
+        "proposals": [proposal_dict(p, view=facts) for p in proposals],
         "total": len(proposals),
         "agent_id": agent_id,
         "tenant_id": user.tenant_id,
@@ -1951,12 +1969,17 @@ async def dry_run_agent(
             session, tenant_id=tenant_id, scope=where_reach(agent_scope),
         ))["items"]
     }
+    # A30.26: an INTERNAL DECISION. A22.6 requires the preview to reason
+    # exactly as the runtime does, so it reasons over the same whole-tenant
+    # contract -- and the contract itself is not in the response. The
+    # verdicts that ARE returned are narrowed to the caller below.
     contract = await load_autonomy_contract(
         session,
         tenant_id=tenant_id,
         actor_id=attribution_key(agent_id, agent.version),
         actor_species="agent",
         permissions=AGENT_PERMISSIONS,
+        reach=None,
     )
     catalogue_rows = await CapabilityCatalogueRepo(session).list_for_tenant(
         tenant_id
@@ -2003,6 +2026,14 @@ async def dry_run_agent(
     # table snapshot, so the code should not be the only thing asserting it.
     await session.rollback()
 
+    # A30.26: the preview REASONS over the whole tenant, because the
+    # runtime does (A22.6) -- and then answers THIS caller. A verdict's
+    # blocking conditions and learned signals name sites; the caller is
+    # shown a site only where they hold `fleet.view`. For a machine that is
+    # its own grants, so a runtime bound to one site stops being told
+    # another site's drop-back and suppressed fault domains.
+    facts = autonomy_view(scope)
+
     return {
         "agent_id": agent_id,
         "agent_version": agent_version,
@@ -2026,12 +2057,14 @@ async def dry_run_agent(
                 # proposal used to carry {"reason": ...} whatever the class.
                 "params": p["params"],
                 "disposition": p["disposition"],
-                "disposition_reason": p["disposition_reason"],
-                "blocking_conditions": p["blocking_conditions"],
+                "disposition_reason": facts.reason(
+                    p["disposition_reason"], p["blocking_conditions"],
+                ),
+                "blocking_conditions": facts.blocking(p["blocking_conditions"]),
                 "authorization_basis": p["authorization_basis"],
                 "requires_human": p["authorization_basis"] != BASIS_AUTONOMOUS,
                 "rationale": p["rationale"],
-                "evidence": p["evidence"],
+                "evidence": facts.evidence(p["evidence"]),
             }
             for p in would_propose
         ],
@@ -2343,12 +2376,17 @@ async def submit_proposal(
         capabilities=await repo.list_capabilities(agent_id),
         devices=devices,
         incidents_by_device=await _incidents_by_device(session, tenant_id),
+        # A30.26: an INTERNAL DECISION -- the same whole-tenant contract
+        # the evaluator reasons over, or a re-derivation could admit what
+        # the runtime would not. Never returned; the response narrows
+        # what the admitted proposal recorded.
         autonomy_contract=await load_autonomy_contract(
             session,
             tenant_id=tenant_id,
             actor_id=attribution_key(agent_id, agent.version),
             actor_species="agent",
             permissions=AGENT_PERMISSIONS,
+            reach=None,
         ),
         attention_by_device={
             item["agent_id"]: item
@@ -2443,7 +2481,9 @@ async def submit_proposal(
     await session.commit()
     if proposal is None:
         response.status_code = 409
-    return _submission_result(row, replayed=False, proposal=proposal)
+    return _submission_result(
+        row, replayed=False, proposal=proposal, view=autonomy_view(scope),
+    )
 
 
 def _submission_digest(body: SubmitProposal) -> str:
@@ -2459,12 +2499,16 @@ def _submission_digest(body: SubmitProposal) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _submission_result(row, *, replayed: bool, proposal=None) -> dict:
+def _submission_result(row, *, replayed: bool, proposal=None, view=None) -> dict:
     """One shape for every answer this route gives.
 
     `accepted` says a proposal EXISTS. It never says anything will run --
     the words matter, because the caller is a machine that will act on
     this field.
+
+    A30.26: an answer that carries a PROPOSAL needs the submitter's
+    `AutonomyView`, and `require_autonomy_view` refuses ``None`` -- the
+    default exists only for the two answers that carry no proposal.
     """
     out = {
         "submission_id": row.id,
@@ -2484,12 +2528,15 @@ def _submission_result(row, *, replayed: bool, proposal=None) -> dict:
         ),
     }
     if proposal is not None:
+        view = require_autonomy_view(view)
         out["proposal"] = {
             "id": proposal.id,
             "status": proposal.status,
             "disposition": proposal.disposition,
-            "disposition_reason": proposal.disposition_reason,
-            "blocking_conditions": proposal.blocking_conditions or [],
+            "disposition_reason": view.reason(
+                proposal.disposition_reason, proposal.blocking_conditions,
+            ),
+            "blocking_conditions": view.blocking(proposal.blocking_conditions),
             "action_type": proposal.action_type,
             "device_agent_id": proposal.device_agent_id,
             "site_id": proposal.site_id,
@@ -2784,7 +2831,7 @@ async def get_submission_receipt(
     authority = await _authority_over(session, user, scope, proposal)
     payload = await build_receipt(
         session, tenant_id=user.tenant_id, submission=submission,
-        proposal=proposal, authority=authority,
+        proposal=proposal, authority=authority, view=autonomy_view(scope),
     )
     record_status_read(narrowed=not authority)
     return _receipt_response(request, payload)
@@ -2824,7 +2871,7 @@ async def get_proposal_receipt(
     authority = await _authority_over(session, user, scope, proposal)
     payload = await build_receipt(
         session, tenant_id=user.tenant_id, submission=None,
-        proposal=proposal, authority=authority,
+        proposal=proposal, authority=authority, view=autonomy_view(scope),
     )
     record_status_read(narrowed=not authority)
     return _receipt_response(request, payload)
