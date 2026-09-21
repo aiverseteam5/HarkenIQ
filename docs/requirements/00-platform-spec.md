@@ -3944,3 +3944,173 @@ construction), inverts the test that pins P2 open, and re-verifies.
 added) and response SHAPE, the schema (CC head `0026`), `resolve()`,
 `permits()`, `read_reach`, every mutation gate, the `server | switch`
 vocabulary. B0c, B1, B2 and the taxonomy remain not started.
+
+**A30.27 — The S3-E1 / S3-E2 / S3-E3 architecture decision package
+(decided: Vinod, 2026-09-21; RECORDED here, NOT implemented).** A30.26
+reported three things it did not change. The package was produced read-only
+on `a5f9549` after S3 closed and ratified as R1–R7. They are recorded so
+that the slice which implements them starts from a ratified text, and so
+that S4 (A30.28) can say exactly what it is not. *Naming: S3-E1/E2/E3, never
+bare "E1" — that collides with the Enterprise Governance slices E1.1–E1.4.*
+**R1 — Model C:** a proposal is assessed against its TARGET SITE (the S3
+primitive already yields that row: the composer over the device's own site)
+plus a CLOSED, typed global safety gate; the tenant-wide disposition fold
+stops being the assessment. **R2 — option A:** the gate's hidden-derived
+membership is EMPTY — no condition at a site the target does not belong to
+enters the gate. Established by execution: the fold globalises only
+`error_budget_dropped_back` and `budget_window_exhausted`; a site's Site
+Manager stop switch and an unreported site do not affect disposition today,
+suppression is already per target site, and the Site Manager enforces
+drop-back and site stop per the device's OWN site. **R3:** a target site
+that has not reported is REQUIRES_APPROVAL (unreported is unknown, never
+safe); a target-site Site Manager stop is a LOCAL denial. **R4:** a campaign
+is autonomous only if EVERY site in its own immutable plan assesses
+autonomous AND the gate passes. **R5:** the activation preflight assesses
+over the AGENT's own reach, and `safety_reported` means every in-reach site
+reported — which also removes the one non-monotone input the package found
+(a hidden site reporting flipped the dimension UNKNOWN → READY). **R6 — E2
+dual evidence:** `decision_evidence_at_creation` is immutable and
+`viewer_projected_evidence` is what a reader is shown; the rationale is
+rendered from typed facts, not stored as a sentence. **R7:** E3-F1 is fixed
+BEFORE general B0b (PR #48) is refreshed. **Sequencing, unchanged:** R1–R6
+change what Central Command DECIDES and could widen autonomy; they are
+implemented after general B0b merges and main-verifies, in their own slice
+with their own boundary. **A23 is NOT reopened by E3:** a vendor/model
+cohort conclusion is tenant knowledge. What the package demonstrated is a
+PAYLOAD defect under that ruling, which is A30.28.
+
+**A30.28 — A6-4B0b-S4: learned-signal and fleet-pattern payload isolation
+(decided: Vinod, 2026-09-21; closes E3-F1).** *Ordering truth: the
+ratification preceded all code; an interrupted session then drafted the
+production change in the working tree before this text was committed.
+Nothing had been committed or pushed, so this docs commit is still the
+first commit of the slice and no history was rewritten to make it so.*
+**The defect, E3-F1 — FAIL-OPEN disclosure across the site boundary,
+pre-existing since S3's learning substrate, missed by the A23-1 sweep and
+by A30.26's sentinels because every seeded signal carried
+`evidence = {}`.** A fleet pattern is detected over the whole tenant, and
+`derive_signals` copies its whole `evidence` — for a `cross_site_batch`,
+`site_failure_counts` keyed by SITE ID, `sites_affected`, `total`,
+`failures` — onto the cohort signal and onto every site signal. Readers
+selected ROWS by scope and returned their CONTENT as stored. Demonstrated
+over HTTP under STRICT: a site-1 operator read hidden site-3's id and its
+count of 27 on a cohort row they were entitled to see, through
+`/api/learning/signals`, `/api/attention/` (`evidence.learned_signals[]`,
+and ON `MACHINE_SURFACE`) and incident `prior_learning`; the statement said
+"30 of 40 attempts, across 2 sites". `/api/outcomes/patterns` had a
+route-local `_narrow_sites` that filtered two keys and only when they were
+a dict or list — production writes `affected_scope.sites` as a
+comma-joined STRING, so it passed whole — and never touched
+`sites_affected`, the totals or `description`. **A23 is RETAINED, exactly:**
+the vendor/model cohort CONCLUSION is tenant knowledge and every reader
+keeps it; a site-scoped signal follows its site; a pattern whose named
+sites are all outside the reader's scope is absent (A23-1's read rule).
+**S4 fixes payload isolation ONLY** — no decision path, no stored row, no
+selection rule changes. **The invariant, LOCKED.** The cohort conclusion is
+tenant knowledge; site-specific SUPPORTING evidence is scope-filtered. A
+scoped principal must not recover a hidden site's identity, count, or the
+size of the hidden estate through structured evidence, a pattern payload,
+statement or description text, a rationale, a distribution payload,
+`evidence_cited`, a learning cycle, a counter, a percentage, a rank, row
+order, list length, site cardinality, attempts or totals. **Three S4
+decisions (Vinod).** *(1) Bounded bands.* For a reader who is not
+tenant-wide, a RATE is the conclusion and is kept rounded to the nearest
+5 %; CONFIDENCE is rounded to a 0.25 grid; EVERY COUNT is withheld — total,
+failures, attempts, model total, `sites_affected`, a hidden site's entry —
+and the payload says so in an explicit `withheld` list rather than
+inventing a smaller number. Exact values are not kept because they are
+counts in disguise: `batch_failure` confidence is `min(1, total/20)`,
+`reliability` `min(1, total/30)`, `cross_site_batch`
+`min(1, total/20 + 0.1·sites)`, so exact confidence plus a three-decimal
+rate plus the reader's own site count recovers the hidden estate's totals
+exactly. A site-keyed map keeps only the reader's own sites and is ALWAYS
+marked `partial`, dropped-or-not, so the marker says nothing about sites
+the reader does not hold. Field types and response shapes are unchanged;
+a tenant-wide reader's payload is byte-identical. A band is permitted only
+because an exact hidden-estate value cannot be reconstructed from it; it is
+not a licence to publish a coarser count. *(2) Source patterns are IN S4*,
+through ONE canonical projection (`harkeniq_cc.learning_projection`) that
+serves signals AND patterns; `_narrow_sites` is deleted, not repaired. It
+names what may pass, never what may not (A25.3): an evidence key the
+projection does not recognise is withheld. *(3) The reach rule is
+`fleet.view` on EVERY projection* — A30.26's rule applied to learning — so
+the authorized set is `read_reach(scope, "fleet.view")` (A30.24) wherever
+learned knowledge is shown, including incident detail under
+`incident.view`. No second resolver; the view is a TYPE
+(`LearningView`) every projection REQUIRES, so a new projection cannot
+omit it or be handed "unrestricted" by mistake, and the composer's
+`learning` argument is REQUIRED with no default: a `LearningView` for a
+principal, `None` for the internal decision paths (evaluator, dry-run
+reasoning, ingress re-derivation), allow-listed by call site in a
+structural test. **TEXT FOLLOWS ITS EVIDENCE.** Where typed evidence
+exists, a statement or description is RE-RENDERED from the PROJECTED
+evidence by the generator that wrote it (`render_statement` is that one
+generator, and every number in it comes from its `evidence` argument), so
+text cannot state what the structure withheld. Where none exists — the
+frozen copy on a proposal keeps the statement and not the evidence; a Site
+Manager cites a pattern by description — the stored text is reduced through
+the two generators' small fixed grammar and then PROVEN: anything still
+shaped like a count replaces the whole text with one neutral sentence.
+Fail closed. **Three further ratifications (Vinod), all IN S4.**
+*(A) Distribution payload.* `PushPolicy.learned_patterns_json` carried the
+whole tenant pattern to every Site Manager whose fleet held the cohort, so
+site A's Site Manager durably stored site C's id and count. A receiving
+site is a reader that holds exactly itself and gets the SAME projection by
+the SAME function; it is still told about a cohort it holds and is not yet
+failing on (R-C2 is why the loop exists), and told the bounded conclusion
+only. The Site Manager upserts by pattern id and the distribution ledger is
+in-process, so a Central Command restart re-pushes and overwrites what an
+earlier release delivered: no Site Manager change, no migration. A hidden
+site's facts do not survive merely because the pattern crossed CC→SM.
+*(B) `evidence_cited`.* A Site Manager's diagnosis cites the patterns it
+reasoned with, by description, and that text rides back inside a diagnosis
+for a device the reader DOES hold — including text pushed before this
+slice. Bounded at READ, by the same projection, and ONLY for an entry that
+cites a fleet pattern: the rest of that list is the device's own telemetry
+("3 of 5 fans") and reducing it would destroy the diagnosis to protect
+nothing. No second redaction model. *(C) `/api/learning/cycles`* names no
+site, which is why it was declared UNSCOPED on the strength of "counts
+only" — and a hidden-estate count is exactly what a scoped reader may not
+be handed. `sites_distributed` and `devices_applied` are withheld (null,
+and named in `withheld`), `outcomes_before/after` take the evidence
+projection, `improvement_pct` is rounded to 5 points; the route is
+re-declared READ_SCOPED so the contract describes runtime truth. Rows are
+not filtered (none names a site) and the stored ledger is untouched.
+**Same-band ordering protection.** Two hidden-estate states that fall in
+one band must not be told apart by a deterministic secondary channel. The
+repository orders signals by the EXACT stored confidence, so two signals in
+one band were still ranked by the value the band withholds. A scoped
+reader's rows are ordered by what they are SHOWN — banded confidence, then
+the signal's own key — on every path: the signal list, the autonomy
+contract's `learning[]`, attention's per-device signals and the two quoted
+into `reasons[]`, incident `prior_learning`, and the frozen copy on a
+proposal, which the evaluator wrote in exact order and which is re-ordered
+at read, never rewritten. **Frozen copies** keep what the evaluator
+recorded; A30.26 drops a site-scoped entry whose site the reader does not
+hold, and S4 bounds the entries that survive. **Proof obligations.** Two
+hidden estates that deliberately collapse to the same band, a scoped reader
+who holds the same site in both, and byte equality of everything that
+reader is returned — values, confidence, rate, order, rank, count,
+statement text, payload shape, nested evidence, list length — with a
+non-vacuity guard proving the tenant-wide reader DOES tell them apart;
+positive controls proving the cohort conclusion stays visible and the
+tenant-wide payload is byte-identical to `main`. **Named follow-ups,
+deliberately NOT pulled in** — each is a different semantic, none carries
+E3-F1's payload: *timestamps and temporal counts* (`detected_at`,
+`last_confirmed_at`, `observation_count`, and the pattern and cycle lists'
+time ordering) say WHEN the tenant concluded something, which is a property
+of the conclusion A23 publishes, and cannot separate two estates in one
+band; *predictive `cohort_failure_rate` / `outcomes_considered`* are
+tenant-wide OUTCOME statistics — S3-E2's family, decided by R6 and
+implemented with it; *Site Manager explanation free text* other than a
+pattern citation is model- or rule-authored prose about the reader's own
+device. **E1 and E2 are NOT implemented by this slice.** **General B0b is
+NOT changed and PR #48 is not touched**; when it consumes `main` it takes
+this projection for attention's signals as it takes S3's composer.
+**Unchanged:** the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE` (13), every route (zero
+added; ONE treatment re-declared, UNSCOPED → READ_SCOPED), every migration
+head (CC `0026`, Console `0004`, SM `0010`), `resolve()`, `permits()`,
+`read_reach`, every stored row, every decision path, S1, S2, S3. Only
+readers who are not tenant-wide change, and only by reading LESS. B0c, B1,
+B2 and the taxonomy remain not started.

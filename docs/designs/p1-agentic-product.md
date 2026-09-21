@@ -4284,3 +4284,156 @@ true by construction), inverts `test_P2_is_recorded_here_not_fixed_here`,
 replaces its frozen-legacy autonomy oracle for site-holding readers with
 this slice's expectations, removes the "stated, not hidden" paragraph, and
 re-verifies to a new head.
+
+## §34h — The S3-E1/E2/E3 decision package (A30.27) — recorded, not built
+
+§34g reported three things and changed none of them. The package examined
+each on `a5f9549`, read-only, and Vinod ratified R1–R7 on 2026-09-21. The
+ratified text lives in spec A30.27; this section records only what the
+package established by EXECUTION, because the implementing slice will need
+it and should not have to rediscover it.
+
+* The tenant-wide fold globalises exactly two conditions:
+  `error_budget_dropped_back` and `budget_window_exhausted`. A site's Site
+  Manager stop switch and an unreported site do not change a disposition
+  (no reported rows → `autonomous` with `safety.reported = False`).
+* Suppression is already per target site; the Site Manager already enforces
+  drop-back and site stop per the DEVICE'S OWN site. So Model C (R1) moves
+  Central Command's assessment to where enforcement already is.
+* The fold is monotone — hidden state only ever reduces autonomy — with ONE
+  exception: the preflight's `safety_reported`, which a hidden site
+  reporting flips UNKNOWN → READY. R5 removes it.
+* The site-local row needs nothing new:
+  `build_autonomy(visible_site_ids={device.site_id})` is S3's primitive.
+* E2's carriers are `class_row["evidence"]` and the `_rationale` sentence
+  ("across N executions in this tenant"), frozen by `govern_proposal`.
+
+R1–R6 change what Central Command decides. They are implemented after
+general B0b merges and main-verifies, in their own slice. R7 is §34i.
+
+## §34i — A6-4B0b-S4: learned-signal and pattern payload isolation (A30.28)
+
+*Ordering truth: ratified first; production code was drafted in the working
+tree by an interrupted session before this section was committed; nothing
+had been committed, so the docs commit is still the slice's first.*
+
+### What E3-F1 is
+
+A23 ruled that a vendor/model cohort conclusion is tenant knowledge, and
+every reader selects rows accordingly. Nobody looked INSIDE a surviving
+row. `derive_signals` copies a pattern's whole evidence onto every signal:
+
+```
+cohort signal  dell:r750:SEL_CLEAR           visible to a site-A reader (A23)
+  evidence.site_failure_counts = {"site-a": 3, "site-c": 27}
+  evidence.sites_affected      = 2
+  evidence.total / failures    = 40 / 30
+  statement = "... fails 75% of the time (30 of 40 attempts), across 2 sites"
+```
+
+A23-1's sweep and S3's sentinels both missed it for one reason: every
+seeded signal had `evidence = {}`. The estate now seeds real evidence.
+
+### Why the exact numbers cannot stay
+
+Confidence is a count in disguise:
+
+| pattern | confidence |
+|---|---|
+| `batch_failure` | `min(1, total / 20)` |
+| `reliability` | `min(1, total / 30)` |
+| `cross_site_batch` | `min(1, total / 20 + 0.1 · sites)` |
+
+`0.70` IS 14 attempts; `0.733` IS 11/15. With their own site's count a
+reader subtracts and has the hidden estate exactly. Hence bands: rate to
+5 %, confidence to 0.25, every count withheld and SAID to be withheld.
+
+### One projection
+
+`harkeniq_cc/learning_projection.py` — pure, no I/O, no resolver.
+`visible is None` returns what is stored BY IDENTITY (tenant-wide readers
+are byte-identical); any set, including the empty one, returns the bounded
+form. It is reached only through `governance.LearningView`, built only by
+`learning_view(scope)` = `authorized_sites(read_reach(scope,
+"fleet.view"))`.
+
+| carrier | where | treatment |
+|---|---|---|
+| signal `evidence`, `statement`, `confidence` | `/api/learning/signals` | `view.signals` |
+| per-device signals, `reasons[]` quotes, `fleet_patterns[]` | `/api/attention/` (machine surface) | projected BEFORE compose, so all three are bounded at once |
+| `prior_learning` | incident detail (`incident.view` route, `fleet.view` facts) | `view.signals` |
+| `learning[]` | `/api/autonomy/`, agent view | projected in `load_autonomy_contract` for a principal |
+| pattern `evidence`, `affected_scope`, `description` | `/api/outcomes/patterns` | `view.patterns`; `_narrow_sites` deleted |
+| frozen `evidence.learned_signals[]` | seven proposal projections (A30.26's list) | `AutonomyView.evidence` → `project_frozen_signals` |
+| `evidence_cited` | incident list + detail | `view.citations`, pattern citations only |
+| cycle counts | `/api/learning/cycles` | `view.cycle`; route re-declared READ_SCOPED |
+| `learned_patterns_json` | CC→SM `PushPolicy` | `site_payload`: the receiver holds exactly itself |
+
+Text follows its evidence: re-rendered from the projected evidence where
+typed evidence exists; otherwise reduced through the generators' grammar,
+then checked for residue, and replaced whole if any count-shaped text
+remains.
+
+### Distribution is a read
+
+A Site Manager is a reader that holds one site. Giving it the same function
+with `frozenset({site_id})` means there is no second rule to drift.
+`hide_unnamed=False` is the one difference from a principal's read: a site
+holding the cohort and not yet failing is who R-C2 exists to tell. It is
+told the bounded conclusion. No Site Manager change: it upserts by pattern
+id, and the distribution ledger is in-process, so a restart re-pushes over
+whatever an earlier release delivered. Text a Site Manager ALREADY quoted
+into a stored diagnosis is covered at read by `view.citations`.
+
+### The same-band ordering channel
+
+A band hides a value only if nothing else ranks by it. The repository
+orders signals by exact `confidence DESC`; returned in that order, two
+same-band rows are ranked by the withheld number. Every principal-facing
+list is therefore ordered by what is SHOWN — banded confidence, then the
+signal's own key (a function of cohort and action, never of the estate):
+
+* live rows: `project_signals` re-sorts; `signals_for_device` sorts after
+  projection, so attention's per-device list, the two signals quoted into
+  `reasons[]`, and `prior_learning` inherit it;
+* frozen rows: the evaluator wrote them in exact order (it reasons over
+  what is stored, correctly). `project_frozen_signals` re-orders at read;
+  the stored record is not rewritten.
+
+Patterns and cycles are ordered by TIME, which is a follow-up semantic
+(below), not a function of a withheld number.
+
+### Proof
+
+* **Twin estates.** Two tenants identical except for the HIDDEN site's
+  counts, chosen so both fall in one rate band and one confidence band. A
+  site-A reader's every response — signals, patterns, cycles, attention,
+  incident detail and list, autonomy, agent view, proposal projections — is
+  compared for equality as parsed JSON, order included. Non-vacuity: the
+  tenant-wide reader's responses DIFFER, or the test fails.
+* **Order twin.** Two same-band signals whose exact confidences swap
+  between the estates; the scoped order is identical, the tenant order
+  flips.
+* **Sentinels.** Hidden-site ids and magnitude-coded counts; every key and
+  leaf of every response walked, text included.
+* **Positive controls.** The cohort conclusion (cohort, action, banded
+  rate) is present for every scoped persona; the tenant-wide reader is
+  byte-identical to the stored rows.
+* **Structure.** `load_attention(learning=None)` call sites allow-listed by
+  AST; every projection requires a `LearningView`; `render_statement`
+  takes every number from its evidence.
+* **PostgreSQL** (JSONB evidence round-trip, float confidence, ordering
+  under a real `ORDER BY`), and **live** gate steps on a wiped stack.
+
+### Follow-ups, named and not built
+
+Timestamps and temporal counts (`detected_at`, `last_confirmed_at`,
+`observation_count`, time-ordered pattern and cycle lists); predictive
+`cohort_failure_rate` / `outcomes_considered` (S3-E2's family, R6); Site
+Manager explanation prose other than a pattern citation. Reasons in spec
+A30.28.
+
+### What general B0b does when it merges this
+
+PR #48 is not touched. When it consumes `main` it takes `learning_view`
+for attention's signals the way it takes §34g's composer, and re-verifies.
