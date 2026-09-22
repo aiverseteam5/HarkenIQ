@@ -4130,11 +4130,14 @@ pattern id with no site* — on a multi-site Site Manager (E1.3) the last
 push wins, so after this slice the row holds ONE receiving site's bounded
 payload (the conclusion, and at most that site's own count) rather than a
 row per site; nothing reads it back through a site-scoped API today, and
-making it per-site is a Site Manager schema change; *predictive `cohort_failure_rate` / `outcomes_considered`* are
+making it per-site is a Site Manager schema change; *(closed by A30.29, below — the
+independent review showed the site's reasoning consuming another site's
+projection is a live disclosure path, not a storage nicety)*; *predictive `cohort_failure_rate` / `outcomes_considered`* are
 tenant-wide OUTCOME statistics — S3-E2's family, decided by R6 and
 implemented with it; *Site Manager explanation free text* other than a
 pattern citation is model- or rule-authored prose about the reader's own
-device. **E1 and E2 are NOT implemented by this slice.** **General B0b is
+device. *(This reasoning was WRONG and is corrected by A30.29: the prose is
+generated from a prompt that carried the unbounded pattern description.)* **E1 and E2 are NOT implemented by this slice.** **General B0b is
 NOT changed and PR #48 is not touched**; when it consumes `main` it takes
 this projection for attention's signals as it takes S3's composer.
 **Unchanged:** the permission vocabulary (25), `ROLE_PERMISSIONS`,
@@ -4144,3 +4147,178 @@ head (CC `0026`, Console `0004`, SM `0010`), `resolve()`, `permits()`,
 `read_reach`, every stored row, every decision path, S1, S2, S3. Only
 readers who are not tenant-wide change, and only by reading LESS. B0c, B1,
 B2 and the taxonomy remain not started.
+
+**A30.29 — A6-4B0b-S4 remediation: generated content inherits the
+projection it was generated from (decided: Vinod, 2026-09-22; closes the
+independent review's HIGH on PR #51 at `540a0cd`).** *Ordering truth: the
+review verdict was FIX BEFORE MERGE; the finding was reproduced by
+execution before this text was written; this text is committed before the
+remediation code.* **The HIGH.** A30.28 bounded a pattern CITATION at read
+and left the PROSE the same pattern was quoted into as stored. A Site
+Manager feeds every matching fleet pattern's `description` into the
+reasoning prompt (`ingest._matching_fleet_patterns` →
+`reasoning._build_messages`), persists `summary = completion[:500]`, and
+then feeds that summary and the same evidence into the skill prompt whose
+YAML is persisted as `yaml_text`. Central Command's `_diagnosis` bounded
+`evidence_cited` only and returned `generated.*` verbatim;
+`/api/learning/candidates` returned `yaml_text` verbatim. Reproduced on the
+S4 estate: a site-A principal read "SEL_CLEAR fails at 65% on Dell R750
+across 3 sites (35/54)" through `GET /api/incidents/{id}` and through the
+candidate list, at 200. The review overstated one detail — the LLM
+provider's `reasoning_steps` are deterministic templates and its
+`suggested_action` is always empty — and the correction changes nothing:
+the block is DECLARED generated, and a future provider may populate every
+field of it. **The window is not "pre-S4 rows".** A Site Manager reloads
+its pattern mirror from `sm_fleet_patterns` at boot, so after an upgrade it
+keeps generating from an unbounded payload until Central Command re-pushes,
+which happens on a restart and not on a clock; and on a multi-site Site
+Manager the store is keyed by pattern id alone, so site B's projected
+payload overwrites site A's and a site-A diagnosis quotes site B's own
+count — a LIVE post-S4 source, not history. **Ratified: Option A —
+explicit generation provenance and fail-closed scoped projection. Option
+B (withhold generated text from every scoped reader unconditionally) is
+REJECTED — it takes LLM Explain from the persona it was built for. A clock
+cutoff is REJECTED — the boot reload makes the clock wrong. Regex or text
+sanitisation of model output is REJECTED — it cannot be proven.** **The
+invariant, LOCKED.** *Generated content inherits the confidentiality
+boundary of the evidence projection it was generated from.* A scoped
+reader may receive generated content ONLY when HarkenIQ can PROVE that the
+generation projection is covered by that reader's CURRENT canonical reach.
+Unknown, missing or ambiguous provenance FAILS CLOSED for scoped readers.
+Historical canonical content stays stored unchanged; a tenant-wide
+authorized reader retains it. **The provenance model.** One durable,
+structured marker, `generation_visibility`, describes the AUTHORIZATION
+BOUNDARY of the evidence projection an artifact was generated from —
+never the evidence: `{"scope": "site" | "tenant", "site_id": <canonical
+Central Command site id> | null, "projection_version": 1}`. It carries no
+site list, no count, no total, no fault name, no metric, no rationale, no
+signal content. Its vocabulary and its algebra live ONCE, in
+`harkeniq.generation_provenance`, the package both services already
+import, so the writer at the Site Manager and the reader at Central
+Command cannot hold two rules: the visibility of an artifact generated
+from several inputs is their JOIN — unknown anywhere is unknown; `tenant`
+anywhere is `tenant`; one site throughout is that site; two different
+sites is `tenant` (only tenant-wide authority covers evidence of more than
+one site, and the vocabulary deliberately has no multi-site form). A
+marker is never inferred from prose. **Site-generated content.** Central
+Command's per-site distribution payload (A30.28 (A)) now MARKS every
+pattern as projected for that canonical site. The Site Manager preserves
+the marker from the projected pattern through the reasoning evidence to
+the diagnosis, the persisted explanation, candidate generation and the
+persisted candidate. The visibility of a diagnosis is the join of the
+device's own site (the device's telemetry and its own history are that
+site's facts) with the marker of every fleet pattern the reasoning
+consumed; the candidate generated from that diagnosis and that evidence
+carries the same visibility. A device whose site is not bound to a Central
+Command identity (E0.2) has no canonical site to name, so nothing is
+written and the artifact reads UNKNOWN. **Tenant-generated content.** A
+pattern consumed WITHOUT a marker — pushed by a Central Command older than
+this amendment, or reloaded from the pre-A30.29 store — is an unbounded
+tenant payload, and an artifact generated from it is marked `tenant`. That
+is the truth about its inputs, is never downgraded to a site afterwards,
+and a non-tenant-wide reader does not receive that artifact's generated
+text because the containing incident is otherwise readable. **Historical
+and unknown provenance.** No backfill, because none is mechanically
+provable: a pre-A30.29 explanation or candidate reads UNKNOWN, a
+tenant-wide reader keeps its canonical content, a scoped reader gets the
+generated fields WITHHELD. No stored row is rewritten. Independently safe
+fields — the incident row itself, its title, status, components,
+correlation, `confidence`, `evidence_cited` (A30.28 (B)),
+`similar_past_incidents` (the device's own history), a candidate's site,
+device, component, validation state and match count — remain available.
+**Current reach at read time.** Provenance is evidence of how an artifact
+was created; it is NOT an authorization token. At read, the marker is
+compared against the reader's CURRENT canonical reach — A30.28's
+`LearningView`, which is S2's `read_reach(scope, "fleet.view")`, on every
+projection including incident detail under `incident.view` — so a reader
+who held site A when the artifact was generated and no longer does is
+withheld on the next read, and is shown it again when A is restored.
+Nothing hardcodes "reader site == generated site": an org or site-set
+reader receives a site-generated artifact when the recorded site is
+covered by their current reach; a `device` or `device_class` reader holds
+no site in that reach until general B0b (F1, deliberately open) and is
+withheld, fail closed, under this contract; contextual ancestry never
+synthesises authority (A30.5). **Incident projection.** The policy covers
+the ENTIRE generated block — `summary`, `suggested_action`,
+`reasoning_steps`, and any field a future provider adds — by naming what
+may pass, never what may not: for a reader the marker does not cover, the
+block is `{"summary": <one neutral sentence>, "suggested_action": "",
+"reasoning_steps": [], "withheld": true}`, and the response never names
+the site the marker names. The sentence is the same whether the marker
+names another site or is missing, because "recorded for a site you do not
+hold" is itself a fact about the hidden estate. Two ADDITIVE fields on the
+diagnosis for every reader: `generated.withheld` and
+`generation_visibility` (the marker when the reader is covered, `null`
+otherwise). **Candidate projection.** `yaml_text` — and the validation
+`warnings`, which are derived from it — are withheld the same way
+(`yaml_text: ""`, `warnings: []`, `generated_withheld: true`,
+`generation_visibility` as above). A candidate being site-owned does NOT
+make its generated content site-safe; the generation provenance is
+authoritative for this decision. **Multi-site Site Manager store — fixed
+here, not deferred.** A30.28 named `sm_fleet_patterns` keyed by pattern id
+as a follow-up; truthful provenance depends on the site's reasoning
+consuming the site's own projection, so it is part of this remediation.
+`sm_site_fleet_patterns` is keyed `(site_id, pattern_id)` and stores the
+marker as pushed; `PushPolicy` resolves the receiving site by Central
+Command's site id (E0.2 — an unresolved site is REFUSED, never guessed),
+refuses a payload whose marker names a different site than the one it is
+being stored under, stores an unmarked payload with `visibility = NULL`
+(an older Central Command — the artifact then reads `tenant`), and one
+site's push can neither replace nor be replaced by another site's row.
+Reasoning for a device consumes ITS site's rows; a legacy
+`sm_fleet_patterns` row is consumed only where the site holds no row for
+that pattern id, as unmarked evidence, so an upgraded Site Manager
+degrades to `tenant`-visibility artifacts rather than to fleet-blind
+diagnoses until Central Command re-pushes; a re-push supersedes the legacy
+row for that site. The legacy table is not rewritten and not dropped.
+`sm_candidate_skills.site_id` (E1.3) had no writer — the snapshot joined
+through the device instead — and is written now, from the same resolved
+site. **Migration and protocol, additive and rolling-upgrade safe.** SM
+migration **0011**: `sm_site_fleet_patterns` (new; FK `sites.id`), and
+`sm_candidate_skills.generation_visibility` JSON nullable, no backfill. CC
+migration **0027**: `cc_candidate_skills.generation_visibility` JSON
+nullable, no backfill. Proto: `CandidateSkill.generation_visibility_json`
+(tag 9, additive). The incident explanation is a JSON document at both
+services and the marker is a key INSIDE it, written in the same assignment
+as the generated text, so an explanation cannot exist with text and
+without the provenance of its own creation; no incident migration. *Old
+CC / new SM:* the push carries no marker → stored `NULL` → artifacts read
+`tenant` → withheld from scoped readers at a new CC, and the old CC's
+reads are what they were. *New CC / old SM:* the marker is an unknown key
+the old upsert drops; the old SM writes no provenance; the new CC reads
+UNKNOWN → withheld. *Old CC ingesting a new SM's snapshot:* tag 9 is an
+unknown field it never decodes; the explanation key rides inside the JSON
+it stores verbatim and its `_diagnosis` ignores it. Every combination is
+either the old behaviour or fail-closed, and each is tested. **Unchanged:**
+the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE` (13), `ROUTE_CONTRACT`
+(zero routes added), `resolve()`, `permits()`, `read_reach`, every
+decision path, every S4 projection A30.28 already ratified, S1, S2, S3;
+the Site Manager's own site-token API (E1.3's site-authority plane, not a
+tenant RBAC surface) returns the site's rows as stored and is out of this
+amendment's scope, recorded as a limit. A tenant-wide reader's content is
+unchanged and gains two fields. **Proof obligations.** *Historical attack:*
+an incident persisted with NO provenance whose `summary` carries
+`SECRET_SITE_C` and whose generated fields carry "30 of 40 attempts across
+2 sites", and a candidate whose YAML carries the same — a site human, a
+device human, a device-class human and a machine principal receive the
+row where independently authorized, its safe local facts, and neither
+sentinel through list or detail; the tenant-wide reader receives the
+original. *New-write matrix:* site-A projected evidence → artifact marked
+A; a current covering site reader, an org reader covering A and the
+tenant-wide reader see it; a site-B reader and an org reader not covering
+A are withheld; revoking A withholds on the next read and restoring A
+shows it again. *Multi-site Site Manager:* one Site Manager owning A and
+B, pattern P pushed projected for A and for B with distinct sentinels — A's
+diagnosis consumed A's projection only, B's consumed B's, neither push
+overwrote the other, and each persisted artifact's provenance matches the
+projection actually consumed. *Provider-independent:* every generated
+field withheld even when a hypothetical provider populates all of them,
+including a field this amendment does not name. *Compatibility:* each
+producer/consumer pairing above. *Real PostgreSQL:* both upgrades on
+databases holding rows, backfilling none; JSONB marker round-trip. *Live:*
+the compose gate's multi-site Site Manager receives two per-site rows with
+their markers, the historical attack on the live stack, and both live
+databases upgraded from the previous heads with rows present. E1 and E2
+remain not implemented; general B0b and PR #48 untouched; B0c, B1, B2 and
+the taxonomy not started.
