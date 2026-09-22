@@ -3975,8 +3975,8 @@ hygiene outside this slice, `tests/unit/cc/test_warranty.py`'s hard-coded
 
 **A30.26 — A6-4B0b-S3: autonomy scope isolation (decided: Vinod; recorded
 2026-09-20, BEFORE the code).** *Numbering: A30.25 is the general B0b
-amendment. That slice is complete on its own branch and waits on this one,
-so its number is reserved and not reused here.* General B0b's live gate
+amendment; its number was reserved here while that slice waited on this one.
+It has since merged (PR #48, `d69105c`, 2026-09-22).* General B0b's live gate
 found a second pre-existing defect, **P2 — FAIL-OPEN information
 disclosure across the site boundary, present since S5 and only partly
 closed by A23-1.** `build_autonomy` folds EVERY site's safety state into
