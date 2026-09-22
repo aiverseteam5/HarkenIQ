@@ -4126,6 +4126,18 @@ on an incident row that are not about that device:
 For a principal who covers the site, all three are byte-identical to
 before.
 
+Both the prior-learning rule and the attention contract's narrowing compose
+with §34i and §34j (S4), which run first and are taken as given: the signals
+are projected through the reader's `LearningView` (`fleet.view` reach -- a
+cohort conclusion kept, its evidence bounded, a site-scoped signal only for
+a site held under `fleet.view`), and only then does device ownership
+withhold the incident's site. The diagnosis -- pattern citations and the
+generated block -- is projected by that same `LearningView`, independently
+of the owner rule, so a reader who reaches an incident by its device does
+not read raw generated text or an unbounded citation through it. In
+`incidents.py` the two rules stand side by side: `_incident_dict` takes the
+owner rule's `reach` and `visible_parents` beside S4's `view`.
+
 ### Context is not authority, made structural
 
 A device-scoped principal looking at an incident needs to know which site
@@ -4150,48 +4162,77 @@ pickers — the grant form and the organization page's unattached-sites
 list, where a row with no `org_unit_id` would otherwise look attachable —
 skip contextual rows; its navigation filters use them.
 
-### What the live gate found: R4 was not true, and P2
+### What the live gate found: R4 was not true, and P2 — since closed by §34g
 
 The first R4 assertion passed in the unit suite and failed on the live
 stack. The unit estate had no safety state, so "a device principal receives
 no site governance facts" was an empty list compared with an empty list.
 The stack has real error budgets.
 
-`narrow_to_sites` filters the top-level safety lists by each item's
-`site_id`. Two things never had one to filter on: the error-budget
-aggregate, which is FOLDED across sites and so carries no `site_id` (the
-filter's "no site id means tenant-level" rule passed it), and the `safety`
-block copied into every action class -- `error_budget.sites_dropped_back`,
-`suppressed_domains`, and `site_budget_remaining`, a map keyed by site id.
-The function never looked inside an action class's `safety` at all.
+`narrow_to_sites` (A23-1) filtered the top-level safety lists by each
+item's `site_id`. Two things never had one to filter on: the error-budget
+aggregate, FOLDED across sites, and the `safety` block copied into every
+action class -- `error_budget.sites_dropped_back`, `suppressed_domains`,
+and `site_budget_remaining`, a map keyed by site id. So a reader holding
+no site received every site's drop-back status and suppressed domain
+names; and -- **P2** -- so did a reader who holds ONE site, about every
+other. This slice first fixed the R4 half by emptying those fields for a
+reader with no site, left P2 recorded and pinned because correcting it
+changes what site and org principals read, and asked for a narrowing
+slice of its own.
 
-R4 is ratified for this slice and is stated about exactly one population: a
-principal with no site authority gets EMPTY site facts. So that is what
-changed -- a reader who holds no site receives none of those fields -- and
-the estate now carries safety state at every site so the assertion means
-something. The posture, the ladder, the dispositions and the tenant-wide
-outcome evidence stay: they are what the reader operates under.
-
-The same fields leak to a reader who DOES hold a site: a site-A
-administrator reads site B's drop-back status, suppressed domain names and
-remaining budgets. That is **P2**. It predates this slice, it is live for
-every site- and org-scoped reader today, and correcting it changes what
-those principals read -- which is the one thing this slice promised not to
-do, and proves differentially that it does not. It is therefore recorded
-and pinned (`test_P2_is_recorded_here_not_fixed_here`, to be inverted by
-the slice that closes it, as the F1 pin was) rather than folded in, and the
-code says so where the next reader will look.
+That slice is §34g (S3, A30.26), and it merged before this one. It did not
+repair `narrow_to_sites`; it deleted it. A contract is now COMPOSED over
+the reader's authorized sites (`select_site_inputs`, before the fold) and
+never narrowed afterwards, and a stored verdict is narrowed where it is
+read (`AutonomyView`). Under that design R4 is true by construction -- an
+empty reach selects nothing, is never read as unrestricted, and yields
+`reported: false` rather than zero-filled facts -- so on reconciliation
+this slice's own edit (`holds_no_site`) and its frozen pre-S3 oracle for
+site holders were dropped, not merged. The pin was inverted, as the F1 pin
+was: a site holder now reads its own site's drop-back status, suppressed
+domains and remaining budget, and nothing that names another site. The
+one thing a site holder reads differently is S3's, by ratification: its
+own site's error budget, not the tenant total. The unit estate keeps real
+safety state at every site so that none of this is an empty list compared
+with an empty list.
 
 ### What is left alone, on purpose
 
 Audit stays site-only: `cc_audit_log` cannot say which device an entry is
 about, so a device principal reads none of it, including at its contextual
-site. Campaigns, waves, candidate
-skills, learned signals, fleet patterns, the org tree and the grant list
-are site- or tenant-owned domains and are not made device-aware
-mechanically. `ResolvedScope.site_ids` keeps its meaning: a device grant
-still contributes nothing to it, and the test that pinned F1 open keeps
-that half of its assertion as a permanent invariant.
+site. Campaigns, waves, candidate skills, learned signals, fleet patterns,
+the org tree and the grant list are site- or tenant-owned domains and are
+not made device-aware mechanically (learned signals and patterns are bounded
+per reader by §34i, taken as given). `ResolvedScope.site_ids` keeps its
+meaning: a device grant still contributes nothing to it, and the test that
+pinned F1 open keeps that half of its assertion as a permanent invariant.
+
+### Reconciled onto §34g–§34j (2026-09-22)
+
+This slice was written against S2 (§34e) and merged onto main after S3
+(§34g), the S3-E1/E2/E3 package (§34h) and S4 (§34i, §34j) had landed.
+The reconciliation rule was that S3 and S4 win every overlap:
+
+* `autonomy.py` is S3's; this slice's `narrow_to_sites` docstring and
+  `holds_no_site` edit no longer have a function to live in.
+* `operational_agents.py` keeps this slice's owner-rule `authority_for`
+  (a device-scoped agent reads its own proposal) beside S3's
+  `view=autonomy_view(scope)`; the Operational Agent view is composed by
+  `load_autonomy_contract(reach=…)`.
+* `incidents.py` keeps both: the owner rule, the hidden parent, the
+  withheld correlation, and S4's `LearningView` on the diagnosis and on
+  prior learning.
+* The tests that froze the pre-S3 `narrow_to_sites` as an oracle were
+  rewritten onto S3's deletion equivalence; the P2 pin was inverted. S4's
+  "nothing hidden is named" sweep learned that a device- or class-scoped
+  reader now reads its OWN devices' rows (F1 closed): a device's id is
+  the reader's own reach, not a hidden site named, and every other marker
+  -- site ids, site names, counts, evidence -- stays forbidden for it.
+* Nothing of S3-E1 or S3-E2 (A30.27) is implemented here; they remain
+  ratified and unbuilt, to follow this slice's merge in their own slice.
+* CC migration head `0027` and SM head `0011` are carried from S4; this
+  slice still adds no migration.
 
 ## §34g — A6-4B0b-S3: autonomy scope isolation (A30.26)
 
