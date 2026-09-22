@@ -487,24 +487,54 @@ class TestTheWire:
             {"scope": "site", "site_id": "cc-site-1", "projection_version": 1}
         assert cands["cand-old"]["generation_visibility"] is None
 
-    async def test_ingest_stores_a_marker_and_never_erases_one(self):
+    async def test_candidate_content_and_provenance_are_one_atomic_unit(self):
         stack = await S.build("X")
-        marker = site_visibility(stack.site("A")).to_dict()
+        marker_a = site_visibility(stack.site("A")).to_dict()
+        marker_b = site_visibility(stack.site("B")).to_dict()
         async with stack.sessionmaker() as session:
             repo = CandidateSkillRepo(session)
             await repo.upsert(stack.tenant, stack.site("A"), {
-                "skill_id": "c1", "yaml_text": "name: a\n", "generation_visibility": marker})
-            # A re-poll from an older Site Manager carries none: the
-            # recorded marker stays. (A poll never rewrites provenance.)
+                "skill_id": "c1", "yaml_text": "name: safe-a\n",
+                "warnings_json": '["safe-a"]', "generation_visibility": marker_a})
+
+            # A byte-identical legacy replay may preserve the marker: it
+            # still describes these exact protected bytes.
             await repo.upsert(stack.tenant, stack.site("A"), {
-                "skill_id": "c1", "yaml_text": "name: a\n", "generation_visibility": None})
+                "skill_id": "c1", "yaml_text": "name: safe-a\n",
+                "warnings_json": '["safe-a"]'})
+            row = await session.get(CCCandidateSkill, ("c1", stack.tenant))
+            assert row.generation_visibility == marker_a
+
+            # Changed content with no marker cannot inherit A's marker.
             await repo.upsert(stack.tenant, stack.site("A"), {
-                "skill_id": "c2", "yaml_text": "name: b\n"})
+                "skill_id": "c1", "yaml_text": f"description: {SECRET}\n",
+                "warnings_json": json.dumps([PHRASE])})
+            assert row.generation_visibility is None
+            assert LearningView(sites=frozenset({stack.site("A")})).candidate(row)[
+                "generated_withheld"] is True
+            assert SECRET in LearningView(sites=None).candidate(row)["yaml_text"]
+
+            # A malformed marker is UNKNOWN for changed content too.
+            await repo.upsert(stack.tenant, stack.site("A"), {
+                "skill_id": "c1", "yaml_text": f"description: {SECRET}-v2\n",
+                "warnings_json": json.dumps([PHRASE]),
+                "generation_visibility": {"scope": "site", "site_id": stack.site("A")}})
+            assert row.generation_visibility is None
+
+            # A marked replacement is one B/B pair. Current A reach no
+            # longer reveals it; current B reach and tenant reach do.
+            await repo.upsert(stack.tenant, stack.site("B"), {
+                "skill_id": "c1", "yaml_text": "name: safe-b\n",
+                "warnings_json": '["safe-b"]', "generation_visibility": marker_b})
             await session.commit()
-            c1 = await session.get(CCCandidateSkill, ("c1", stack.tenant))
-            c2 = await session.get(CCCandidateSkill, ("c2", stack.tenant))
-        assert c1.generation_visibility == marker
-        assert c2.generation_visibility is None
+            assert row.yaml_text == "name: safe-b\n"
+            assert row.warnings == ["safe-b"]
+            assert row.generation_visibility == marker_b
+            assert LearningView(sites=frozenset({stack.site("A")})).candidate(row)[
+                "generated_withheld"] is True
+            assert LearningView(sites=frozenset({stack.site("B")})).candidate(row)[
+                "yaml_text"] == "name: safe-b\n"
+            assert LearningView(sites=None).candidate(row)["yaml_text"] == "name: safe-b\n"
 
 
 # ---------------------------------------------------------------------------

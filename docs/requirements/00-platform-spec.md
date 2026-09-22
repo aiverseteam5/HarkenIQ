@@ -4254,7 +4254,18 @@ otherwise). **Candidate projection.** `yaml_text` — and the validation
 (`yaml_text: ""`, `warnings: []`, `generated_withheld: true`,
 `generation_visibility` as above). A candidate being site-owned does NOT
 make its generated content site-safe; the generation provenance is
-authoritative for this decision. **Multi-site Site Manager store — fixed
+authoritative for this decision. **Generated content and provenance are
+one atomic security unit.** A candidate ingest that changes `yaml_text`,
+validation `warnings`, or any equivalent protected generated content MUST
+replace `generation_visibility` from that same incoming artifact in the
+same repository transaction. Missing, null, malformed or otherwise invalid
+incoming provenance on changed content stores UNKNOWN (`NULL`) so every
+scoped projection fails closed; an earlier marker never survives content it
+did not describe. A byte-identical replay may preserve the existing marker,
+but identity (`skill_id`) alone never proves content equivalence. Concurrent
+same-id writes are serialized so the durable row is always one complete
+content/provenance pair, never content from one writer with the other
+writer's marker. **Multi-site Site Manager store — fixed
 here, not deferred.** A30.28 named `sm_fleet_patterns` keyed by pattern id
 as a follow-up; truthful provenance depends on the site's reasoning
 consuming the site's own projection, so it is part of this remediation.

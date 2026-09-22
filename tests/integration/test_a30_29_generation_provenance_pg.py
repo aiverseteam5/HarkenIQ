@@ -22,6 +22,7 @@ Gated on ``HARKEN_TEST_CC_PG_DSN`` (CC) and ``HARKEN_TEST_SM_PG_DSN`` (SM).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -32,7 +33,9 @@ import pytest
 from sqlalchemy import text
 
 from harkeniq.generation_provenance import KEY, parse, site_visibility
-from harkeniq_cc.db.base import make_engine
+from harkeniq_cc.db.base import make_engine, make_sessionmaker
+from harkeniq_cc.db.models import CCCandidateSkill
+from harkeniq_cc.db.repos import CandidateSkillRepo
 from tests.unit.cc import s3_estate as E
 from tests.unit.cc import s4_estate as S
 from tests.unit.cc.test_a30_29_generated_content_isolation import (
@@ -112,6 +115,88 @@ class TestCentralCommandOnPostgres:
             assert "sites" in stored and parse(stored) is None
         finally:
             await stack.state.engine.dispose()
+
+    async def test_concurrent_cross_site_candidates_remain_complete_pairs(self):
+        """Two real transactions may race on one tenant/skill id. The final
+        row is one writer's complete protected-content/provenance unit, not
+        YAML from one and the other writer's marker."""
+        engine = make_engine(CC_DSN)
+        db = make_sessionmaker(engine)
+        tag = uuid.uuid4().hex[:8]
+        tenant, skill = f"pair-{tag}", f"candidate-{tag}"
+        marker_a = site_visibility(f"site-a-{tag}").to_dict()
+        marker_b = site_visibility(f"site-b-{tag}").to_dict()
+
+        async def write(site, yaml, warning, marker):
+            async with db() as session:
+                await CandidateSkillRepo(session).upsert(tenant, site, {
+                    "skill_id": skill, "yaml_text": yaml,
+                    "warnings_json": f'["{warning}"]',
+                    "generation_visibility": marker,
+                })
+                await session.commit()
+
+        try:
+            # Seed so this test measures competing updates as well as the
+            # transaction-scoped same-id serialization.
+            await write(f"site-a-{tag}", "name: seed-a\n", "seed-a", marker_a)
+            await asyncio.gather(
+                write(f"site-a-{tag}", "name: write-a\n", "write-a", marker_a),
+                write(f"site-b-{tag}", "name: write-b\n", "write-b", marker_b),
+            )
+            async with db() as session:
+                row = await session.get(CCCandidateSkill, (skill, tenant))
+                pair = (row.yaml_text, tuple(row.warnings or []), row.generation_visibility)
+            assert pair in (
+                ("name: write-a\n", ("write-a",), marker_a),
+                ("name: write-b\n", ("write-b",), marker_b),
+            )
+        finally:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "delete from cc_candidate_skills where tenant_id=:t and skill_id=:s"
+                ), {"t": tenant, "s": skill})
+            await engine.dispose()
+
+    async def test_concurrent_unmarked_content_never_inherits_marked_provenance(self):
+        """Whichever writer commits last, an unmarked replacement is NULL
+        and a marked replacement carries its own marker."""
+        engine = make_engine(CC_DSN)
+        db = make_sessionmaker(engine)
+        tag = uuid.uuid4().hex[:8]
+        tenant, skill = f"unknown-{tag}", f"candidate-{tag}"
+        marker = site_visibility(f"site-a-{tag}").to_dict()
+
+        async def write(yaml, warning, incoming_marker):
+            async with db() as session:
+                await CandidateSkillRepo(session).upsert(tenant, f"site-a-{tag}", {
+                    "skill_id": skill, "yaml_text": yaml,
+                    "warnings_json": f'["{warning}"]',
+                    "generation_visibility": incoming_marker,
+                })
+                await session.commit()
+
+        try:
+            await write("name: seed\n", "seed", marker)
+            await asyncio.gather(
+                write("name: marked\n", "marked", marker),
+                write(f"description: {SECRET}\n", PHRASE, None),
+            )
+            async with db() as session:
+                row = await session.get(CCCandidateSkill, (skill, tenant))
+                if row.yaml_text == f"description: {SECRET}\n":
+                    assert row.warnings == [PHRASE]
+                    assert row.generation_visibility is None
+                else:
+                    assert row.yaml_text == "name: marked\n"
+                    assert row.warnings == ["marked"]
+                    assert row.generation_visibility == marker
+        finally:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "delete from cc_candidate_skills where tenant_id=:t and skill_id=:s"
+                ), {"t": tenant, "s": skill})
+            await engine.dispose()
 
     async def test_0026_to_0027_on_a_database_holding_rows(self):
         """The production upgrade path: a pre-marker candidate is present,
