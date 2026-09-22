@@ -6029,6 +6029,25 @@ S4_VENDOR=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc
 S4_MODEL=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT model FROM cc_fleet_cache WHERE agent_id='$S4_DEVICE_A'" | sed 's/^ *//;s/ *$//' | tr -d '\r')
 [ -n "$S4_VENDOR$S4_MODEL" ] || { echo "site A's device declares no cohort" >&2; exit 1; }
+# A30.29 (BJ below): the distribution loop targets a site by whether its
+# FLEET holds the cohort, exactly, and site B's S1 devices are "Dell R750"
+# while site A's real node declares "$S4_VENDOR $S4_MODEL". So that the
+# ONE Site Manager serving A and B genuinely receives the pattern for
+# BOTH sites, site B gets a device of site A's cohort -- owned by this
+# proof and removed by BO. The poller rebuilds the cache per poll, so the
+# device is at Central Command within one poll and gone after the delete.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                        service_tag, device_class, first_seen_at, last_seen_at)
+   SELECT 'gatedevs400000000000000000000000', s.id, 'gate-agent-s4', 's4',
+          '$S4_VENDOR', '$S4_MODEL', 'GATES4', 'server', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING" > /dev/null
+wait_for "site B's cohort device visible at Central Command" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_fleet_cache WHERE site_id='$SITE_B' AND agent_id='gate-agent-s4'
+     AND vendor='$S4_VENDOR' AND model='$S4_MODEL'\" \
+   | grep -qx ' *1 *'"
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
         vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
@@ -6430,9 +6449,11 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "DELETE FROM cc_incidents WHERE incident_id='$S4_INC';
    DELETE FROM cc_candidate_skills WHERE skill_id='$S4_CAND'" > /dev/null
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-  "DELETE FROM sm_fleet_patterns WHERE pattern_id='gate-a3029-legacy'" > /dev/null
+  "DELETE FROM sm_fleet_patterns WHERE pattern_id='gate-a3029-legacy';
+   DELETE FROM devices WHERE agent_id='gate-agent-s4'" > /dev/null
 [ "$(s1_cc "SELECT count(*) FROM cc_incidents WHERE incident_id='$S4_INC'")" = "0" ] || { echo "seeded incident not removed" >&2; exit 1; }
-echo "  the seeded incident, candidate and legacy pattern row are removed"
+[ "$(s1_sm "SELECT count(*) FROM devices WHERE agent_id='gate-agent-s4'")" = "0" ] || { echo "site B's cohort device not removed" >&2; exit 1; }
+echo "  the seeded incident, candidate, legacy pattern row and site B's cohort device are removed"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
