@@ -4909,3 +4909,67 @@ store, the push, the migrations and the historical attack; the generation
 path is proven at unit level against the real `IngestService` and a fake
 provider. §34i's other follow-ups (fixed SQL windows, minute residue,
 `observation_count`, predictive fields) are not pulled in.
+
+## §34k — S3-E1/E2/E3 architecture ratification closed (A30.30) — recorded, not built
+
+§34h recorded what the package established by execution and A30.27 recorded
+Vinod's R1–R7. General B0b (§34f) has merged and main-verified, which was the
+sequencing gate, so the ratification is closed here in the shape an
+implementer will build against. Nothing in this section is code; a design that
+departs from it is a new amendment first.
+
+### The S3-E1 shape
+
+**Two questions, two objects, one answer.** `local =
+build_autonomy(visible_site_ids={target.site_id})` is the site-local
+assessment — S3's primitive, unchanged. `gate = GlobalSafetyGate(members=…)`
+is a CLOSED, typed set whose members are named in the spec by amendment before
+they exist; its initial hidden-site-derived membership is EMPTY (R2, option
+A). FINAL EXECUTION ELIGIBILITY is the conjunction, and it is the only thing a
+dispatch path may read. The tenant-wide disposition fold stops being the
+assessment; `error_budget_dropped_back` and `budget_window_exhausted` fold per
+target site, which is where the Site Manager already enforces them.
+
+* Target site not reported → `REQUIRES_APPROVAL` (unreported is UNKNOWN).
+* Target-site Site Manager stop → local `DENIED`; not a gate member.
+* Campaign: autonomous only if every site in the immutable plan is locally
+  autonomous AND the gate passes (A18's plan is the set, never a subset).
+* Preflight: assessed over the agent's own reach; `safety_reported` means
+  every in-reach site reported — the one non-monotone input is gone (R5).
+* Invariant to prove structurally, not by review: hidden state never
+  increases machine authority. A generated test walks every gate member and
+  every hidden-site condition and asserts monotone reduction only.
+* Scoped projection: the gate contributes exactly the typed reason
+  `GLOBAL_SAFETY_CONSTRAINT`; no identity, count, metric or free text under
+  it. §34g's deletion-equivalence oracle is the test: a scoped reader of the
+  whole estate reads what a tenant-wide reader reads of an estate where the
+  hidden sites do not exist.
+* S1 (§34c/§34d) untouched: eligibility is not authorization. `fleet.view`
+  stays the visibility basis for every autonomy fact (§34g).
+
+### The S3-E2 shape
+
+Two named carriers. `decision_evidence_at_creation` is what `govern_proposal`
+froze — today `class_row["evidence"]` and the `_rationale` sentence (§34h) —
+and it is immutable: never rewritten to fit a viewer, never re-derived.
+`viewer_projected_evidence` is computed at read time from the viewer's CURRENT
+reach through the views that already exist (`read_reach`, `AutonomyView`,
+`LearningView`) and is presentation only: not a second decision record, not an
+authorization token, audited as a read. Rationale is rendered from typed facts
+through the projection (§34i's rule for text), so a sentence can never restate
+a number the projection withheld.
+
+### The S3-E3 ruling
+
+A23 retained: cohort conclusions are tenant knowledge, site-scoped signals are
+scope-filtered. E3-F1 was a payload defect under that ruling and §34i/§34j
+closed it; S4 is the canonical payload-isolation implementation and is not
+redesigned.
+
+### Status and sequence
+
+S3-E1 implementation NOT STARTED. S3-E2 implementation NOT STARTED. S3-E3
+redesign NOT REQUIRED. Next: A6-4B0c (A30.12; boundary preview in A30.30) →
+A6-4B1 (A30.13) → A6-4B2 (A30.14), one slice at a time, each with its own
+boundary, ratification and review. S3-E1/E2 follow, in their own slice, unless
+a proven fail-open needs containment first.

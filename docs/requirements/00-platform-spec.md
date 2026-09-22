@@ -4507,3 +4507,111 @@ their markers, the historical attack on the live stack, and both live
 databases upgraded from the previous heads with rows present. E1 and E2
 remain not implemented; general B0b and PR #48 untouched; B0c, B1, B2 and
 the taxonomy not started.
+
+
+**A30.30 — S3-E1 / S3-E2 / S3-E3: architecture ratification CLOSED (decided:
+Vinod, 2026-09-21 as R1–R7; closure recorded 2026-09-22, after general B0b
+merged and main-verified; docs only, NOT implemented).** A30.27 recorded the
+package so that the implementing slice would start from a ratified text, and
+sequenced its implementation after general B0b. General B0b (A30.25) merged as
+`d69105c` and main-verified on 2026-09-22, so this amendment closes the
+ratification DURABLY: the semantics below are the target model, and a later
+implementation may not change them silently — any deviation is a new dated
+amendment under §9's change control, ratified before the code. *Naming:
+S3-E1/E2/E3 throughout, as A30.27 fixed it; "E1/E2/E3" in the ledger and in
+review correspondence means these three and never the Enterprise Governance
+slices E1.1–E1.4.*
+
+**S3-E1 — the ratified target model:** SITE-LOCAL AUTONOMY ASSESSMENT + CLOSED
+GLOBAL SAFETY GATE = FINAL EXECUTION ELIGIBILITY. (a) Site-local autonomy and
+global safety are SEPARATE concepts, and stay separate in code, in contracts
+and in audit: the local assessment is S3's primitive — the composer over the
+target's own site, `build_autonomy(visible_site_ids={target.site_id})` — and
+the gate is a distinct, CLOSED, typed set of global safety constraints. (b)
+Hidden state MUST NEVER increase machine authority. This is an invariant to be
+proven structurally: no condition at a site the target does not belong to may
+move an eligibility towards autonomous, and the one non-monotone input the
+package found (the preflight's `safety_reported` flipping UNKNOWN → READY when
+a hidden site reports) is removed as R5 ratified. (c) Hidden state may REDUCE
+execution eligibility only through an explicitly ratified global safety
+constraint — a named member of the gate, recorded in this specification by
+dated amendment BEFORE it exists in code. (d) The gate's initial
+hidden-site-derived membership is EMPTY (A30.27 R2, option A): no hidden-site
+condition is a member today, and the two conditions the tenant-wide fold
+currently globalises (`error_budget_dropped_back`, `budget_window_exhausted`)
+return to the site they belong to — site-local drop-back and error-budget
+state REMAINS site-local and never fences another site. (e) Target site not
+reported → REQUIRES_APPROVAL: unreported is UNKNOWN, never safe (S5). (f)
+Target-site Site Manager stop → the LOCAL assessment is DENIED; a local
+denial, not a gate member. (g) A campaign is autonomous only if EVERY site in
+its own immutable plan (A18) assesses locally autonomous AND the gate passes;
+one non-autonomous site makes the campaign require approval, never the
+reverse. (h) Scoped consumers see only BOUNDED global reason codes: the gate
+contributes to any projection exactly the typed reason
+`GLOBAL_SAFETY_CONSTRAINT` — the intended bounded reason — and under it NO
+hidden site identity, count, metric, name or free-text reason, ever; S3's
+deletion-equivalence oracle (A30.26) applies to the gate's output as to every
+other site-derived fact. (i) S1's multi-target authorization (A30.22/A30.23)
+is UNCHANGED: eligibility is what autonomy may do, authorization is who may
+decide, and neither substitutes for the other. (j) `fleet.view` remains the
+visibility basis for every autonomy fact, on every projection (A30.26). (k)
+The activation preflight assesses over the AGENT's own reach, and
+`safety_reported` means every in-reach site reported (R5).
+
+**S3-E2 — the ratified dual-evidence model:** `decision_evidence_at_creation`
+and `viewer_projected_evidence`, two things with two names. (a) Historical
+decision evidence is IMMUTABLE truth: written once when a proposal is governed
+(`govern_proposal`), never rewritten to match a viewer's scope, never
+re-derived. (b) The current viewer projection MUST respect the viewer's
+CURRENT canonical reach — S2's `read_reach`, S3's `AutonomyView`, S4's
+`LearningView` — and it is a presentation/read projection, NOT a second
+decision record; it carries no authority and is audited as a read, not as a
+decision. (c) Generated rationale must not leak hidden historical or site
+evidence: rationale is rendered from TYPED facts through the projection
+(A30.28's rule for text — re-rendered from projected evidence, never a stored
+sentence restating withheld numbers). (d) Current reach remains authoritative
+for viewing. (e) Historical evidence is NOT an authorization token: reading
+what a decision saw confers nothing about what a viewer may now see or do.
+
+**S3-E3 — A23 semantics RETAINED:** a vendor/model cohort learned signal is
+TENANT KNOWLEDGE; a site-scoped learned signal is SCOPE-FILTERED. E3-F1, the
+payload-confidentiality defect the package demonstrated, was closed separately
+by S4 (A30.28/A30.29), which remains the canonical payload-isolation
+implementation. A23 is NOT reopened; no E3 semantic redesign is required.
+
+**Implementation status, stated so it cannot drift:** S3-E1 implementation NOT
+STARTED; S3-E2 implementation NOT STARTED; S3-E3 semantic redesign NOT
+REQUIRED. S3-E1/E2 change what Central Command DECIDES and could widen
+autonomy; when they are implemented it is in their own slice, with its own
+boundary ratified by Vinod and its own independent review, AFTER the sequence
+below — unless a fail-open needing immediate containment is proven first, in
+which case containment is its own slice too. **Next implementation sequence
+(ratified order, none started here):** A6-4B0c Machine Read Metering
+Completion (A30.12) → A6-4B1 Governed Discovery (A30.13) → A6-4B2 Operational
+Context Projection (A30.14); each merges and main-verifies before the next
+begins, and they are not combined.
+
+**A6-4B0c boundary preview (the contract the slice must meet; recorded, not
+implemented):** meter EVERY explicit machine-readable route; anchor
+completeness to `MACHINE_SURFACE` / the canonical route contract, never a
+router-prefix assumption; cover Attention and Incidents; make it structurally
+difficult to add a machine route without a metering decision (the completeness
+guard of A30.12, anchored on `MACHINE_SURFACE`, is the intended mechanism: a
+machine route with no decided meter answer fails the suite); add NO
+permission, NO machine-ceiling capability and NO new machine route; preserve
+A6-4A's narrowing (A29) and S1/S2/S3/S4/B0b. A correctly-bound runtime can
+receive 429 for the first time, so the window is set against real gate traffic
+before it lands.
+
+**Follow-ups preserved, all NON-BLOCKING, none implemented here:** site-less
+incident hardening (PR #48 review, A); `governing_policy()` target-resolution
+consistency (B); the PostgreSQL fixture / `alembic_version` test debt (C);
+candidate identity strengthening (`skill_id` alone never proves content
+equivalence); the fixed pre-projection SQL windows; minute-boundary timestamp
+residue; `observation_count` semantics at minute grain; the predictive cohort
+fields (`cohort_failure_rate` / `outcomes_considered`); machine Attention
+live-gate coverage; the `test_directives.py` infrastructure hang; Console
+Vitest and the DSN-gated PostgreSQL proofs not run in CI; D3 / D6 / D9 / R7 /
+D10; `test_warranty.py`'s 2027-01-01. **Unchanged by this amendment:** no
+production code, no migration, no route, no permission, no ceiling; CC head
+`0027`, SM `0011`, Console `0004`.
