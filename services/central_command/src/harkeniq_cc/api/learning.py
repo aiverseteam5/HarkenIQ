@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.governance import learning_view
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
@@ -33,8 +34,17 @@ async def list_candidates(
 
     A23: a candidate carries the site and device it was generated from,
     so the read is site-scoped like every other site-anchored row.
+
+    A30.29: the ROW being the reader's does not make its YAML theirs. The
+    YAML was generated from a prompt that carried whichever pattern
+    payload the Site Manager held, and `view.candidate` returns it -- and
+    the validation warnings derived from it -- only when the recorded
+    generation projection is a site the reader holds now. Unknown
+    provenance (every candidate written before A30.29) is withheld from
+    a scoped reader and kept for a tenant-wide one.
     """
     reach = read_reach(scope, "fleet.view")
+    view = learning_view(scope)
     rows = await CandidateSkillRepo(session).list_candidates(
         user.tenant_id, status=status, scope=reach,
     )
@@ -46,13 +56,12 @@ async def list_candidates(
                 "source_device": r.source_device,
                 "source_component": r.source_component,
                 "validation_state": r.validation_state,
-                "warnings": r.warnings or [],
                 "dry_run_matches": r.dry_run_matches,
                 "status": r.status,
                 "cycle_id": r.cycle_id,
                 "generated_at": r.generated_at.isoformat(),
                 "received_at": r.received_at.isoformat(),
-                "yaml_text": r.yaml_text,
+                **view.candidate(r),
             }
             for r in rows
         ],
@@ -64,8 +73,14 @@ async def list_cycles(
     status: str | None = None,
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
 ) -> dict:
     """R-C1 learning cycles, from the DURABLE ledger (S3).
+
+    A30.28: a cycle names no site, and COUNTS them -- `sites_distributed`
+    is how many sites hold the cohort, `devices_applied` how many devices
+    match it, `outcomes_*.total` are tenant attempt totals. A scoped
+    reader gets the bounded projection every learning payload gets.
 
     These used to be read from the intelligence engine's in-process
     tracker, so the record of what the fleet learned vanished on restart.
@@ -75,8 +90,12 @@ async def list_cycles(
     rows = await LearningCycleRepo(session).list_cycles(
         user.tenant_id, status=status,
     )
+    view = learning_view(scope)
     return {
-        "cycles": [
+        # Projected AS A LIST: a scoped reader's cycles are re-ordered by
+        # what they are shown, because `started_at DESC` within one engine
+        # pass is the cohorts' rank by tenant attempt total.
+        "cycles": view.cycles([
             {
                 "cycle_id": c.cycle_id,
                 "pattern_id": c.pattern_id,
@@ -98,7 +117,7 @@ async def list_cycles(
                 ),
             }
             for c in rows
-        ],
+        ]),
         "tenant_id": user.tenant_id,
     }
 
@@ -121,15 +140,12 @@ async def list_signals(
     rows = await LearnedSignalRepo(session).list_active(
         user.tenant_id, scope_type=scope_type, scope_ref=scope_ref,
     )
-    # A23: a site-scoped signal names its site. A cohort signal names a
-    # vendor/model and is tenant knowledge; it passes through unchanged.
-    reach = read_reach(scope, "fleet.view")
-    if not reach.tenant_wide:
-        visible = set(reach.site_ids)
-        rows = [
-            s for s in rows
-            if s.scope_type != "site" or s.scope_ref in visible
-        ]
+    # A23: a site-scoped signal follows its site; a cohort signal names a
+    # vendor/model and is tenant knowledge. A30.28: that is a statement
+    # about the CONCLUSION. The evidence under it names sites and counts
+    # them, so what a scoped reader is handed is the bounded projection --
+    # one rule, in `learning_projection`, for every reader of a signal.
+    rows = learning_view(scope).signals(rows)
     return {
         "signals": [
             {

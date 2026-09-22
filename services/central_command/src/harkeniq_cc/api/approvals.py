@@ -44,6 +44,7 @@ from harkeniq_cc.api.deps import (
     require_permission,
 )
 from harkeniq_cc.scope import read_reach
+from harkeniq_cc.governance import autonomy_view
 from harkeniq_cc.approval_policy import (
     DECISION_APPROVED,
     DECISION_DENIED,
@@ -108,13 +109,19 @@ def _route_dict(route) -> dict:
     }
 
 
-def _proposal_item(proposal, submission_id: str = "") -> dict:
+def _proposal_item(proposal, submission_id: str = "", *, view) -> dict:
     """One agent proposal as a queue item.
 
     Carries the SAME envelope a node-originated action carries so a
     consumer can render one list, plus the agent context a human needs
     to decide: who proposed it, what it observed, the evidence, the
     governance verdict and what is blocking it.
+
+    `view` is the reader's `AutonomyView` (A30.26), required by
+    `proposal_dict`: "what is blocking it" was decided over the whole
+    tenant, and a site's safety rows are `fleet.view` facts -- this queue
+    is guarded by `action.approve | audit.view`, which is not the same
+    thing and may be held at a site where `fleet.view` is not.
     """
     from harkeniq_cc.api.operational_agents import proposal_dict
 
@@ -153,7 +160,7 @@ def _proposal_item(proposal, submission_id: str = "") -> dict:
         "delivered_at": (
             proposal.dispatched_at.isoformat() if proposal.dispatched_at else None
         ),
-        "proposal": proposal_dict(proposal),
+        "proposal": proposal_dict(proposal, view=view),
     }
 
 
@@ -598,7 +605,9 @@ async def _decide_agent_proposal(
                 "delivery": {"accepted": False, "delivered": False,
                              "reason": gate_reason},
                 "approval": block,
-                "proposal": _proposal_item(proposal)["proposal"],
+                "proposal": _proposal_item(
+                    proposal, view=autonomy_view(scope),
+                )["proposal"],
             }
         site = await SiteRepo(session).get_by_id(proposal.site_id)
         if site is None or site.tenant_id != user.tenant_id:
@@ -699,7 +708,7 @@ async def _decide_agent_proposal(
         "decided_by": decided_by,
         "delivery": delivery,
         "approval": block,
-        "proposal": _proposal_item(proposal)["proposal"],
+        "proposal": _proposal_item(proposal, view=autonomy_view(scope))["proposal"],
     }
 
 
@@ -1161,9 +1170,13 @@ async def list_pending(
             )
         )
 
+    facts = autonomy_view(scope)
     items = (
         activations
-        + [_proposal_item(p, by_proposal.get(p.id, "")) for p in proposals]
+        + [
+            _proposal_item(p, by_proposal.get(p.id, ""), view=facts)
+            for p in proposals
+        ]
         if page == 1 else []
     ) + [_route_dict(r) for r in routes]
 

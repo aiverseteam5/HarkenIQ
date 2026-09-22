@@ -395,8 +395,12 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/outcomes/patterns"):          ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/learning/candidates"):        ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/learning/signals"):           ("fleet.view", READ_SCOPED, False),
-    # Counts only; no site or device identifier exists on the row.
-    ("GET", "/api/learning/cycles"):            ("fleet.view", UNSCOPED, False),
+    # A30.28: a cycle names no site or device -- and COUNTS them
+    # (`sites_distributed`, `devices_applied`, tenant attempt totals). It
+    # was declared UNSCOPED on the strength of "counts only"; a hidden-site
+    # count is exactly what a scoped reader may not be handed. Rows are not
+    # filtered (none names a site); their CONTENT is bounded for the reader.
+    ("GET", "/api/learning/cycles"):            ("fleet.view", READ_SCOPED, False),
     # The CVE feed is a vendor advisory list with no fleet dimension.
     ("GET", "/api/firmware/cve-feed"):          ("fleet.view", UNSCOPED, False),
     ("POST", "/api/firmware/cve-feed"):         ("site.manage", TENANT_GATED, True),

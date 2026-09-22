@@ -99,15 +99,29 @@ def submission_block(row) -> dict[str, Any]:
     }
 
 
-def proposal_block(proposal, *, full: bool) -> dict[str, Any]:
-    """Lifecycle state, and estate detail ONLY under current authority."""
+def proposal_block(proposal, *, full: bool, view) -> dict[str, Any]:
+    """Lifecycle state, and estate detail ONLY under current authority.
+
+    `view` is the reader's `AutonomyView` (A30.26) and is REQUIRED: the
+    stored blocking conditions were decided over the whole tenant and name
+    sites this reader may not hold, so there is no reader-less way to
+    return them.
+    """
+    from harkeniq_cc.governance import require_autonomy_view
+
+    view = require_autonomy_view(view)
     if proposal is None:
         return {}
     block = {
         "proposal_id": proposal.id,
         "status": proposal.status,
         "disposition": proposal.disposition,
-        "disposition_reason": _bounded(proposal.disposition_reason),
+        # Returned with or without `full`, so narrowed here rather than
+        # beside the rows: a reason can be the text of a row this reader
+        # may not see (A30.26).
+        "disposition_reason": _bounded(view.reason(
+            proposal.disposition_reason, proposal.blocking_conditions,
+        )),
         "created_at": _iso(proposal.created_at),
     }
     if full:
@@ -134,8 +148,12 @@ def proposal_block(proposal, *, full: bool) -> dict[str, Any]:
             "site_id": proposal.site_id,
             # Governance's own reasons for withholding the work. Useful to
             # the submitter, and about the decision rather than the
-            # execution.
-            "blocking_conditions": proposal.blocking_conditions or [],
+            # execution. A30.26: only the rows that are tenant-scoped or
+            # name a site inside the reader's own `fleet.view` reach --
+            # the evaluator decided over the whole tenant, and an external
+            # runtime holding one site was being told another site's
+            # drop-back and suppressed fault domains.
+            "blocking_conditions": view.blocking(proposal.blocking_conditions),
         })
     return block
 
@@ -321,6 +339,7 @@ async def build_receipt(
     submission=None,
     proposal=None,
     authority: bool,
+    view,
 ) -> dict[str, Any]:
     """One receipt, from canonical state only.
 
@@ -328,6 +347,9 @@ async def build_receipt(
     the route through the one scope resolver. It decides how much of the
     estate the receipt may describe (A25.2) — never whether the receipt
     exists, which the caller's identity already settled.
+
+    `view` is the caller's `AutonomyView` (A30.26): which sites' autonomy
+    facts the stored verdict may name back to them.
     """
     from harkeniq_cc.db.repos import OutcomeHistoryRepo
 
@@ -346,7 +368,7 @@ async def build_receipt(
             "current" if authority else "historical_attribution_only"
         ),
         "submission": submission_block(submission),
-        "proposal": proposal_block(proposal, full=authority),
+        "proposal": proposal_block(proposal, full=authority, view=view),
         "approval": approval_block(completion, proposal),
         "execution": execution_block(proposal, full=authority),
         "outcome": outcome_block(proposal, outcome_row if authority else None),
@@ -368,7 +390,7 @@ async def build_receipt(
 
 
 async def machine_proposal_items(
-    session: Any, tenant_id: str, proposals, *, authority_for
+    session: Any, tenant_id: str, proposals, *, authority_for, view
 ) -> list[dict[str, Any]]:
     """The proposal list, as a MACHINE principal may see it.
 
@@ -384,7 +406,8 @@ async def machine_proposal_items(
     can never describe it differently.
 
     `authority_for(proposal) -> bool` is supplied by the caller, which
-    owns the scope question.
+    owns the scope question. `view` is the caller's `AutonomyView`
+    (A30.26), required for the same reason `proposal_block` requires it.
 
     WHAT IS CACHED, AND WHAT MUST NEVER BE. The POLICY resolution is
     cached per (action_type, device) so a list of fifty proposals over
@@ -406,7 +429,7 @@ async def machine_proposal_items(
         items.append({
             "proposal_id": proposal.id,
             "created_at": _iso(proposal.created_at),
-            "proposal": proposal_block(proposal, full=full),
+            "proposal": proposal_block(proposal, full=full, view=view),
             "approval": approval_block(completion, proposal),
             "execution": execution_block(proposal, full=full),
             "outcome": outcome_block(proposal),
@@ -552,6 +575,7 @@ async def machine_agent_view(
     human_view: dict,
     proposals=(),
     authority_for,
+    view,
 ) -> dict[str, Any]:
     """`GET /{agent_id}` as a machine principal may see it (A25.3/A25.5).
 
@@ -600,6 +624,7 @@ async def machine_agent_view(
         },
         "proposals": await machine_proposal_items(
             session, tenant_id, proposals, authority_for=authority_for,
+            view=view,
         ),
         "governs": (
             "Configuration and lifecycle state for your own agent. This "

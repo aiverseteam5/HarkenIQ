@@ -30,8 +30,10 @@ SERVICES = {
     # A29.16's bounded refusal evidence 0026. The head is hand-declared ON
     # PURPOSE: a new migration is a schema amendment, and this assertion
     # is what makes somebody say which one.
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0026"),
-    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0010"),
+    # A30.29 adds CC 0027 (candidate generation provenance) and SM 0011
+    # (per-site pattern store + candidate generation provenance).
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0027"),
+    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0011"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
     "console": (REPO / "services/console", "HARKEN_CONSOLE_DSN", "0004"),
@@ -1101,3 +1103,114 @@ class TestCC0021StrictBirthPin:
         assert remaining["other"] == ("strict", "someone@example.com"), (
             "a row a human set is theirs, not the migration's to delete"
         )
+
+
+class TestA3029GenerationProvenance:
+    """A30.29: CC 0027 and SM 0011 arrive on databases holding rows, and
+    backfill NOTHING. A candidate written before the marker reads UNKNOWN;
+    a legacy Site Manager pattern row keeps its shape and its table."""
+
+    def test_cc_0027_adds_the_column_without_backfilling(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("alter table cc_candidate_skills drop column generation_visibility")
+        con.execute(
+            "insert into cc_candidate_skills (skill_id, tenant_id, site_id, yaml_text, "
+            "source_device, source_component, validation_state, dry_run_matches, status, "
+            "generated_at, received_at) values ('c1', 't1', 's1', 'name: x', 'node-1', "
+            "'fan:1', 'draft', 0, 'received', '2026-09-01 00:00:00', '2026-09-01 00:00:00')"
+        )
+        con.execute("update alembic_version set version_num='0026'")
+        con.commit()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == SERVICES["cc"][2]
+        assert "generation_visibility" in _columns(db, "cc_candidate_skills")
+        con = sqlite3.connect(db)
+        try:
+            value = con.execute(
+                "select generation_visibility from cc_candidate_skills where skill_id='c1'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert value is None, (
+            "a candidate written before the marker must read UNKNOWN -- "
+            "neither 'tenant' nor its own site is a provable backfill"
+        )
+
+    def test_cc_0027_is_idempotent_and_downgrades(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0026'")
+        con.commit()
+        con.close()
+        _alembic("cc", db, "upgrade", "head")          # column already there: no-op
+        assert "generation_visibility" in _columns(db, "cc_candidate_skills")
+        _alembic("cc", db, "downgrade", "0026")
+        assert _version(db) == "0026"
+        assert "generation_visibility" not in _columns(db, "cc_candidate_skills")
+        assert "cc_candidate_skills" in _tables(db)
+
+    def test_sm_0011_adds_the_site_store_and_leaves_the_legacy_rows(self, tmp_path):
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("drop table sm_site_fleet_patterns")
+        con.execute("alter table sm_candidate_skills drop column generation_visibility")
+        con.execute(
+            "insert into sites (id, name, status, created_at) "
+            "values ('s1', 'site-1', 'active', '2026-08-31 00:00:00')"
+        )
+        con.execute(
+            "insert into sm_fleet_patterns (pattern_id, pattern_type, description, "
+            "confidence, detected_at, received_at) values ('pat-L', 'cross_site_batch', "
+            "'SEL_CLEAR fails at 65% across 3 sites (35/54)', 0.9, '1', '2026-09-01 00:00:00')"
+        )
+        con.execute(
+            "insert into sm_candidate_skills (skill_id, yaml_text, source_device, "
+            "source_component, validation_state, dry_run_matches, generated_at, "
+            "reported_to_cc) values ('c-old', 'name: x', 'node-1', 'fan:1', 'DRAFT', 0, "
+            "'2026-09-01 00:00:00', 0)"
+        )
+        con.execute("update alembic_version set version_num='0010'")
+        con.commit()
+        con.close()
+
+        _alembic("sm", db, "upgrade", "head")
+        assert _version(db) == SERVICES["sm"][2]
+        assert "sm_site_fleet_patterns" in _tables(db)
+        assert "sm_fleet_patterns" in _tables(db), "the legacy store is not dropped"
+        assert {"site_id", "pattern_id", "visibility"} <= _columns(db, "sm_site_fleet_patterns")
+        assert "generation_visibility" in _columns(db, "sm_candidate_skills")
+        con = sqlite3.connect(db)
+        try:
+            legacy = con.execute(
+                "select pattern_id, description from sm_fleet_patterns"
+            ).fetchall()
+            per_site = con.execute("select count(*) from sm_site_fleet_patterns").fetchone()[0]
+            marker = con.execute(
+                "select generation_visibility from sm_candidate_skills where skill_id='c-old'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert legacy == [("pat-L", "SEL_CLEAR fails at 65% across 3 sites (35/54)")]
+        assert per_site == 0, "a legacy row is not copied under any site: its site is unknown"
+        assert marker is None
+
+    def test_sm_0011_is_idempotent_and_downgrades(self, tmp_path):
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0010'")
+        con.commit()
+        con.close()
+        _alembic("sm", db, "upgrade", "head")
+        assert _version(db) == SERVICES["sm"][2]
+        _alembic("sm", db, "downgrade", "0010")
+        assert _version(db) == "0010"
+        assert "sm_site_fleet_patterns" not in _tables(db)
+        assert "generation_visibility" not in _columns(db, "sm_candidate_skills")
+        assert "sm_fleet_patterns" in _tables(db)

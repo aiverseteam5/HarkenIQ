@@ -18,8 +18,22 @@ from typing import Iterable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harkeniq_cc.autonomy import build_autonomy
+from harkeniq_cc.autonomy import (
+    build_autonomy,
+    visible_blocking_conditions,
+    visible_disposition_reason,
+    visible_verdict_evidence,
+)
 from harkeniq_cc.capabilities import build_capability_registry
+from harkeniq_cc.learning_projection import (
+    project_candidate,
+    project_citations,
+    project_cycles,
+    project_frozen_signals,
+    project_generated,
+    project_patterns,
+    project_signals,
+)
 from harkeniq_cc.db.repos import (
     ApprovalPolicyRepo,
     AutonomyBudgetRepo,
@@ -32,12 +46,14 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
     StopSwitchRepo,
     TenantSettingsRepo,
+    require_read_reach,
 )
 from harkeniq_cc.scope import (
     PRINCIPAL_AGENT,
     PRINCIPAL_USER,
     SCOPE_ONLY_MARKER,
     ResolvedScope,
+    read_reach,
     resolve,
 )
 
@@ -197,6 +213,178 @@ async def load_agent_reach(
     )
 
 
+def authorized_sites(reach) -> Optional[frozenset[str]]:
+    """The sites whose autonomy facts this reach may read (A30.26).
+
+    ``None`` means the whole tenant; anything else is the exact set. It is
+    a PROJECTION of S2's `ReadReach` and adds no rule of its own: a site
+    grant or an org-expanded site that carries the route's permission is
+    in, and nothing else is -- a `device` or `device_class` grant names no
+    site (R4), an inert, expired, revoked or subset-narrowed grant is not
+    in the reach at all (A30.24), and a contextual site (general B0b) has
+    no field on `ReadReach` to arrive through.
+
+    Refuses anything that is not a `ReadReach`, a bare `ResolvedScope`
+    included: that set is permission-NEUTRAL, and filtering autonomy facts
+    through it would be P1 again.
+    """
+    reach = require_read_reach(reach)
+    if reach is None:
+        raise TypeError(
+            "authorized_sites() needs the reader's ReadReach (A30.26); "
+            "there is no reader-less projection of a proposal"
+        )
+    return None if reach.tenant_wide else frozenset(reach.site_ids)
+
+
+#: The permission a site-derived AUTONOMY fact is read under (A30.26). It is
+#: the guard on `/api/autonomy/`, and it stays the permission wherever such
+#: a fact is projected -- including a route guarded by something else.
+AUTONOMY_FACT_PERMISSION = "fleet.view"
+
+
+@dataclass(frozen=True)
+class AutonomyView:
+    """Which sites' autonomy facts ONE reader may be shown (A30.26).
+
+    A proposal records the blocking conditions and learned signals the
+    evaluator decided on, and the evaluator decides over the whole
+    tenant. Every projection of a proposal therefore needs to know whose
+    eyes it is for, and this is the only way to say so.
+
+    It exists as a TYPE for the reason `ReadReach` does: the alternative
+    is an optional set where ``None`` means "unrestricted", and a
+    projection that forgot the argument -- or was handed ``None`` by a
+    caller who had nothing better -- would leak silently and pass its
+    tests. `require_autonomy_view` refuses everything but one of these,
+    and `autonomy_view` is its only constructor outside a test.
+    """
+
+    #: ``None`` = the whole tenant. Otherwise the exact set, possibly empty.
+    sites: Optional[frozenset[str]]
+
+    def blocking(self, rows) -> list:
+        return visible_blocking_conditions(rows, self.sites)
+
+    def evidence(self, evidence) -> dict:
+        """The stored evidence, with its learned signals narrowed AND bounded.
+
+        A30.26 drops a site-scoped entry whose site the reader does not
+        hold. A30.28 then bounds what is left: a cohort entry is always
+        kept, and its recorded statement says "30 of 40 attempts, across
+        2 sites" -- row selection never looked inside a surviving row.
+        """
+        out = visible_verdict_evidence(evidence, self.sites)
+        if self.sites is not None and "learned_signals" in out:
+            out["learned_signals"] = project_frozen_signals(
+                out.get("learned_signals"), self.sites,
+            )
+        return out
+
+    def reason(self, reason, rows) -> str:
+        """The stored reason, unless it is the text of a withheld row."""
+        return visible_disposition_reason(reason, rows, self.sites)
+
+
+def autonomy_view(scope) -> AutonomyView:
+    """The reader's view of site-derived autonomy facts, from their scope.
+
+    `read_reach(scope, "fleet.view")` and nothing else: NOT the reach of
+    whatever route is projecting. The approval queue is guarded by
+    `action.approve | audit.view`, and a grant can carry `action.approve`
+    at a site while its subset withholds `fleet.view` there; narrowing by
+    the queue's own reach would show that reader safety facts
+    `/api/autonomy/` refuses them. Permission and coverage come from the
+    SAME grant (A30.24), for the permission these facts require.
+    """
+    return AutonomyView(
+        sites=authorized_sites(read_reach(scope, AUTONOMY_FACT_PERMISSION))
+    )
+
+
+def require_autonomy_view(view) -> AutonomyView:
+    """The projection boundary of A30.26: an `AutonomyView`, or a TypeError."""
+    if isinstance(view, AutonomyView):
+        return view
+    raise TypeError(
+        "a proposal projection needs the reader's AutonomyView "
+        "(harkeniq_cc.governance.autonomy_view(scope)), not "
+        f"{type(view).__name__}: a stored verdict names sites the reader may "
+        "not hold, and there is no reader-less projection of one (spec A30.26)"
+    )
+
+
+#: The permission a learned signal or fleet pattern is read under (A30.28).
+#: It is the guard on `/api/learning/signals` and `/api/outcomes/patterns`,
+#: and it stays the permission wherever that knowledge is projected --
+#: including incident detail, which is guarded by `incident.view`. Same
+#: rule, same reason, as `AUTONOMY_FACT_PERMISSION`.
+LEARNING_FACT_PERMISSION = "fleet.view"
+
+
+@dataclass(frozen=True)
+class LearningView:
+    """Which sites' LEARNING facts one reader may be shown (A30.28).
+
+    A learned signal's conclusion is tenant knowledge (A23); its
+    supporting evidence names sites, counts them, and carries tenant
+    totals. Every projection of a signal or a pattern therefore needs to
+    know whose eyes it is for. This is a TYPE for the reason
+    `AutonomyView` is: the alternative is an optional set where ``None``
+    means "unrestricted", and a projection that forgot the argument would
+    leak silently and pass its tests.
+
+    It resolves nothing. `sites` is `authorized_sites(read_reach(scope,
+    "fleet.view"))` -- S2's reach, S3's projection of it -- and the rule
+    itself lives once, in `harkeniq_cc.learning_projection`.
+    """
+
+    #: ``None`` = the whole tenant. Otherwise the exact set, possibly empty.
+    sites: Optional[frozenset[str]]
+
+    def signals(self, rows) -> list:
+        return project_signals(rows, self.sites)
+
+    def patterns(self, rows, *, limit: Optional[int] = None) -> list:
+        return project_patterns(rows, self.sites, limit=limit)
+
+    def citations(self, entries):
+        """An incident diagnosis's `evidence_cited`, pattern citations bounded."""
+        return project_citations(entries, self.sites)
+
+    def cycles(self, payloads) -> list:
+        return project_cycles(payloads, self.sites)
+
+    def generated(self, explanation) -> tuple[dict, Optional[dict]]:
+        """An incident diagnosis's generated block (A30.29): shown only when
+        its recorded projection is one of THIS reader's sites now."""
+        return project_generated(explanation, self.sites)
+
+    def candidate(self, row) -> dict:
+        """A candidate skill's generated fields (A30.29), same rule."""
+        return project_candidate(row, self.sites)
+
+
+def learning_view(scope) -> LearningView:
+    """The reader's view of learned knowledge, from their scope."""
+    return LearningView(
+        sites=authorized_sites(read_reach(scope, LEARNING_FACT_PERMISSION))
+    )
+
+
+def require_learning_view(view) -> LearningView:
+    """The projection boundary of A30.28: a `LearningView`, or a TypeError."""
+    if isinstance(view, LearningView):
+        return view
+    raise TypeError(
+        "a learned-signal or fleet-pattern projection needs the reader's "
+        "LearningView (harkeniq_cc.governance.learning_view(scope)), not "
+        f"{type(view).__name__}: the stored evidence names sites the reader "
+        "may not hold, and there is no reader-less projection of it "
+        "(spec A30.28)"
+    )
+
+
 async def load_autonomy_contract(
     session: AsyncSession,
     *,
@@ -204,20 +392,46 @@ async def load_autonomy_contract(
     actor_id: str,
     actor_species: str,
     permissions: Iterable[str],
+    reach,
     site_id: Optional[str] = None,
     action_type: Optional[str] = None,
 ) -> dict:
     """Fetch every tenant-scoped input and compose the contract.
 
     Every read below is tenant-scoped by its repository; `site_id`
-    narrows within the tenant and can never widen beyond it.
+    narrows within the reader's own sites and can never widen beyond them.
+
+    `reach` is REQUIRED and has no default (A30.26), so a caller cannot
+    obtain the tenant-wide composition by leaving something out:
+
+    * a `ReadReach` -- the contract is going back to a PRINCIPAL. It is
+      composed over the sites that reach authorizes and over nothing
+      else, selected BEFORE anything is folded (`select_site_inputs`), so
+      no aggregate, boolean or disposition in it reflects another site;
+    * ``None`` -- an INTERNAL DECISION PATH (the evaluator, the ingress
+      re-derivation, the dry-run's reasoning, campaign submission, the
+      activation preflight). These decide over the whole tenant and never
+      return the contract. The call sites allowed to say so are
+      allow-listed by a structural test.
+
+    A bare `ResolvedScope` is refused, exactly as the repositories refuse
+    one (A30.24).
     """
+    visible_site_ids = (
+        None if require_read_reach(reach) is None else authorized_sites(reach)
+    )
     budgets = await AutonomyBudgetRepo(session).list_all(tenant_id)
     stop_switch = await StopSwitchRepo(session).get(tenant_id)
     outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
     safety_rows = await SafetyStateRepo(session).list_for_tenant(tenant_id)
     sites = await SiteRepo(session).list_all(tenant_id)
     learned = await LearnedSignalRepo(session).list_active(tenant_id)
+    if visible_site_ids is not None:
+        # A30.28: a principal's contract quotes each signal's STATEMENT and
+        # confidence. `select_site_inputs` decides which ROWS it may see;
+        # this decides what is inside the ones that survive. An internal
+        # decision path (`reach=None`) reasons over what is stored.
+        learned = project_signals(learned, visible_site_ids)
     # Approval policies shape what "requires approval" actually means for
     # a class. Read at fleet.view even though managing them needs
     # site.manage: knowing an action needs two approvers is posture, and
@@ -238,6 +452,7 @@ async def load_autonomy_contract(
         approval_policies=policies,
         site_id=site_id,
         action_type=action_type,
+        visible_site_ids=visible_site_ids,
     )
 
 
@@ -278,12 +493,27 @@ async def load_attention(
     session: AsyncSession,
     *,
     tenant_id: str,
+    learning,
     site_id: Optional[str] = None,
     scope=None,
     band: Optional[str] = None,
     limit: Optional[int] = None,
 ) -> dict:
     """Fetch every input and compose the attention answer. ONE of these.
+
+    `learning` is REQUIRED and has no default (A30.28), for the reason
+    `load_autonomy_contract`'s `reach` has none: attention attaches learned
+    signals and fleet patterns to every device, and this is the one read
+    every Operational Agent is required to hold.
+
+    * a `LearningView` -- the answer is going back to a PRINCIPAL, human or
+      machine. Signals and patterns are projected for that reader BEFORE
+      they are composed, so the evidence, the statement quoted inside
+      `reasons[]` and the pattern description are all bounded at once;
+    * ``None`` -- an INTERNAL DECISION PATH (the evaluator, the dry-run's
+      reasoning, the ingress re-derivation). They read rank, band, driver
+      and score off each item and never return the attention payload. The
+      call sites allowed to say so are allow-listed by a structural test.
 
     `/api/attention` and the Operational Agent evaluator must rank the
     same devices from the same evidence, or the agent acts on a picture
@@ -342,6 +572,10 @@ async def load_attention(
         else frozenset(s.id for s in authoritative_sites)
     )
     learned = await LearnedSignalRepo(session).list_active(tenant_id)
+    if learning is not None:
+        view = require_learning_view(learning)
+        patterns = view.patterns(patterns)
+        learned = view.signals(learned)
     open_incidents = await IncidentRepo(session).list_incidents(
         tenant_id, status="open", site_id=site_id, limit=1000, scope=scope,
     )

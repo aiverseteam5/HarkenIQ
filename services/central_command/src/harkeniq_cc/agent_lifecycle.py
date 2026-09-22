@@ -222,10 +222,15 @@ async def run_preflight(
     facts = action_facts()
     platform_implemented = {k for k, v in facts.items() if v["implemented"]}
 
+    # A30.26: an INTERNAL DECISION. The preflight is the activation
+    # gate's input and is stored once for every reader, so it cannot be
+    # composed for one of them; it keeps class NAMES and one flag from
+    # this contract and no site-naming row.
     contract = await load_autonomy_contract(
         session, tenant_id=tenant_id,
         actor_id=attribution_key(agent.id, agent.version),
         actor_species="agent", permissions=["fleet.view"],
+        reach=None,
     )
     class_rows = {
         row["action_type"]: row for row in contract.get("action_classes", [])

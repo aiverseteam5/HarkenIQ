@@ -300,7 +300,11 @@ async def _ingest_candidates(
     from harkeniq_cc.db.repos import CandidateSkillRepo
 
     repo = CandidateSkillRepo(session)
-    for cand in candidates:
+    # Candidate upserts take transaction-scoped same-id advisory locks.
+    # One snapshot transaction can therefore hold several locks until its
+    # commit; canonical ordering prevents two concurrent pollers whose lists
+    # arrive in different orders from forming an A->B / B->A deadlock.
+    for cand in sorted(candidates, key=lambda value: str(value.get("skill_id", ""))):
         if not cand.get("skill_id"):
             continue
         await repo.upsert(tenant_id, site_id, cand)

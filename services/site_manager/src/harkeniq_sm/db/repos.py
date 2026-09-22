@@ -31,6 +31,7 @@ from harkeniq_sm.db.models import (
     Rack,
     Site,
     SMFleetPatternRow,
+    SMSitePatternRow,
     VerdictReportRow,
     utcnow,
 )
@@ -39,6 +40,13 @@ from harkeniq_sm.db.models import (
 class SiteRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def get(self, site_id: str) -> Optional[Site]:
+        """A site by this Site Manager's OWN primary key -- the id a device
+        row carries. Not a resolution: the caller already holds the id."""
+        if not site_id:
+            return None
+        return await self.session.get(Site, site_id)
 
     async def get_by_cc_id(self, cc_site_id: str) -> Optional[Site]:
         """The site Central Command means. The authoritative resolution."""
@@ -615,16 +623,45 @@ _audit_chain_lock = asyncio.Lock()
 
 
 class SMFleetPatternRepo:
-    """QA-033: CC-pushed fleet patterns (idempotent upsert by id)."""
+    """QA-033: the LEGACY pattern store, read-only since A30.29.
+
+    Rows here were pushed before the store became per-site. They are
+    read once at boot as UNMARKED evidence and never written again; the
+    writer is `SMSitePatternRepo`. There is deliberately no `upsert`: a
+    write path into a table keyed without a site is the multi-site defect
+    itself.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def upsert(self, pattern: dict) -> SMFleetPatternRow:
+    async def list_all(self) -> Sequence[SMFleetPatternRow]:
+        return (
+            await self.session.execute(
+                select(SMFleetPatternRow).order_by(
+                    SMFleetPatternRow.received_at.desc()
+                )
+            )
+        ).scalars().all()
+
+
+class SMSitePatternRepo:
+    """Fleet patterns as pushed to ONE site (A30.29): keyed (site, pattern).
+
+    Idempotent per (site_id, pattern_id). A push for site B can neither
+    replace nor be replaced by site A's row for the same pattern.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, site_id: str, pattern: dict, visibility: Optional[dict],
+    ) -> SMSitePatternRow:
         pattern_id = str(pattern.get("pattern_id", ""))
-        row = await self.session.get(SMFleetPatternRow, pattern_id)
+        row = await self.session.get(SMSitePatternRow, (site_id, pattern_id))
         if row is None:
-            row = SMFleetPatternRow(pattern_id=pattern_id)
+            row = SMSitePatternRow(site_id=site_id, pattern_id=pattern_id)
             self.session.add(row)
         row.pattern_type = str(pattern.get("pattern_type", ""))
         row.description = str(pattern.get("description", ""))
@@ -632,14 +669,27 @@ class SMFleetPatternRepo:
         row.confidence = float(pattern.get("confidence", 0.0) or 0.0)
         row.evidence = pattern.get("evidence")
         row.detected_at = str(pattern.get("detected_at", ""))
+        # The marker as pushed, or NULL for a push that carried none. It
+        # is stored verbatim and interpreted at generation time by
+        # `harkeniq.generation_provenance.parse`, which fails closed.
+        row.visibility = dict(visibility) if isinstance(visibility, dict) else None
         await self.session.flush()
         return row
 
-    async def list_all(self) -> Sequence[SMFleetPatternRow]:
+    async def list_for_site(self, site_id: str) -> Sequence[SMSitePatternRow]:
         return (
             await self.session.execute(
-                select(SMFleetPatternRow).order_by(
-                    SMFleetPatternRow.received_at.desc()
+                select(SMSitePatternRow)
+                .where(SMSitePatternRow.site_id == site_id)
+                .order_by(SMSitePatternRow.received_at.desc())
+            )
+        ).scalars().all()
+
+    async def list_all(self) -> Sequence[SMSitePatternRow]:
+        return (
+            await self.session.execute(
+                select(SMSitePatternRow).order_by(
+                    SMSitePatternRow.received_at.desc()
                 )
             )
         ).scalars().all()

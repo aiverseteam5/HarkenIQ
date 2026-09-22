@@ -5985,6 +5985,760 @@ print('  MACHINE_SURFACE = 13, ceiling unchanged, 5 off-plane routes still refus
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/policies/$B0B_POLICY" > /dev/null
 
+# A6-4B0b-S3 (A30.26), live: autonomy scope isolation. General B0b's gate
+# found P2 here, on this stack, against real error budgets -- so this is
+# where it is shown closed. `build_autonomy` folded EVERY site's safety state
+# and the narrowing pass that followed only dropped list items carrying a
+# `site_id`; an aggregate has none, so a site-A reader received the tenant's
+# error-budget totals, `sites_dropped_back` naming site B, and a disposition
+# folded from a site they could not see. `?site_id=` returned any site in
+# isolation, and a proposal's stored blocking conditions named every site.
+#
+# The state is REAL and comes from where it really comes from: an error budget
+# written at the SITE MANAGER for site B, carried to Central Command by the
+# production poller (the poller replaces `cc_safety_state` on every poll, so
+# anything written at Central Command would be gone in thirty seconds). The
+# count is a number nothing else on this stack produces, so finding it in a
+# payload means site B reached that reader. Every absence is paired with a
+# CONTROL who holds site B and reads the same fact.
+# ===========================================================================
+S3_SENTINEL=470047
+S3_DOMAIN="GATE-S3-SECRET-B"
+s3_walk() {  # $1 token, $2 path, $3.. forbidden values -> "clean" or the leaks
+  python3 - "$@" <<'PY'
+import json, subprocess, sys
+token, path, forbidden = sys.argv[1], sys.argv[2], sys.argv[3:]
+out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                      "http://localhost:8090" + path],
+                     capture_output=True, text=True).stdout
+def leaves(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from leaves(item)
+    else:
+        yield node
+found = sorted({
+    f"{bad} in {leaf!r}"[:90] for leaf in leaves(json.loads(out))
+    for bad in forbidden
+    if (isinstance(leaf, str) and bad in leaf)
+    or (isinstance(leaf, int) and not isinstance(leaf, bool) and str(leaf) == bad)
+})
+print("clean" if not found else "LEAK: " + " | ".join(found))
+PY
+}
+
+step "A6-4B0b-S3/BB: site B withdraws a class AT THE SITE MANAGER, and the real poll carries it to Central Command"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_SM_SITE_B=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_B'")
+[ -n "$S3_SM_SITE_B" ] || { echo "the Site Manager does not serve site B" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO sm_error_budgets (site_id, action_type, success_count, failure_count,
+        total_count, min_success_rate, dropped_back, dropped_back_at, updated_at)
+   VALUES ('$S3_SM_SITE_B', 'BMC_RESET', 3, $((S3_SENTINEL - 3)), $S3_SENTINEL,
+           0.95, true, now(), now())
+   ON CONFLICT (site_id, action_type) DO UPDATE SET success_count = 3,
+        failure_count = $((S3_SENTINEL - 3)), total_count = $S3_SENTINEL,
+        dropped_back = true, dropped_back_at = now(), updated_at = now()" > /dev/null
+s3_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$SITE_B'
+              AND error_budgets::text LIKE '%$S3_SENTINEL%'")" = "1" ]
+}
+wait_for "the poller to carry site B's drop-back into cc_safety_state" 180 s3_polled
+[ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$SITE_A'
+            AND error_budgets::text LIKE '%$S3_SENTINEL%'")" = "0" ] || {
+  echo "the Site Manager reported site B's budget against site A (E0.2)" >&2; exit 1; }
+echo "  site B dropped BMC_RESET back at the Site Manager ($S3_SENTINEL outcomes); Central Command holds it for site B only"
+
+step "A6-4B0b-S3/BC: a site-A principal reads site A's autonomy -- and the control reads BOTH"
+for S3_P in a ab device; do
+  tenant_realm_user "gate-s3-$S3_P@demo" "gate-s3-$S3_P" site_admin
+done
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+S3_AB=$(tenant_token gate-s3-ab@demo gate-s3-ab)
+S3_DEV=$(tenant_token gate-s3-device@demo gate-s3-device)
+S3_DEVICE_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' ORDER BY agent_id LIMIT 1")
+s3_grant() {  # $1 principal subject, $2 scope_type, $3 scope_ref
+  curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",
+         \"role\":\"site_admin\"}" \
+    http://localhost:8090/api/scope-grants/
+}
+[ "$(s3_grant "$(s1_sub "$S3_A")" site "$SITE_A")" = "201" ] || { echo "a/A refused" >&2; exit 1; }
+[ "$(s3_grant "$(s1_sub "$S3_AB")" site "$SITE_A")" = "201" ] || { echo "ab/A refused" >&2; exit 1; }
+[ "$(s3_grant "$(s1_sub "$S3_AB")" site "$SITE_B")" = "201" ] || { echo "ab/B refused" >&2; exit 1; }
+[ "$(s3_grant "$(s1_sub "$S3_DEV")" device "$S3_DEVICE_A")" = "201" ] || { echo "device grant refused" >&2; exit 1; }
+s3_contract() {  # $1 token, $2 query, $3 expectation: both | a | none
+  s2_get "$1" "/api/autonomy/$2" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+A, B, want, sentinel = '$SITE_A', '$SITE_B', '$3', $S3_SENTINEL
+row = next(r for r in c['action_classes'] if r['action_type'] == 'BMC_RESET')
+budget = row['safety']['error_budget']
+sites = sorted(s['id'] for s in c['scope']['sites'])
+dropped = [b for b in row['blocking_conditions'] if b['code'] == 'error_budget_dropped_back']
+top = [e for e in c['safety_state']['error_budgets'] if e['action_type'] == 'BMC_RESET']
+if want == 'both':
+    assert {A, B} <= set(sites), sites
+    assert budget and budget['total'] == sentinel and budget['sites_dropped_back'] == [B], budget
+    assert top and top[0]['total'] == sentinel, top
+    assert [b['site_id'] for b in dropped] == [B], dropped
+    assert 'error_budget_dropped_back' in row['advancement']['blocked_by'], row['advancement']
+else:
+    assert sites == ([A] if want == 'a' else []), sites
+    assert budget is None, budget            # site A has no BMC_RESET budget of its own
+    assert top == [] and dropped == [], (top, dropped)
+    assert 'error_budget_dropped_back' not in row['advancement']['blocked_by'], row['advancement']
+    assert set(row['safety']['site_budget_remaining']) <= {A}, row['safety']
+    if want == 'none':
+        assert c['safety_state'] == {'reported': False, 'sites_reporting': [],
+            'sites_not_reporting': [], 'suppressions': [], 'error_budgets': [],
+            'site_stop_switches': []}, c['safety_state']
+        assert row['safety'] == {'reported': False, 'error_budget': None,
+            'suppressed_domains': [], 'site_budget_remaining': {}}, row['safety']
+        assert c['posture']['ladder'] and 'configured_level' in c['posture']
+print('  %-7s sites=%s BMC_RESET total=%s dropped_back_at=%s' % (
+    want, len(sites), budget and budget['total'], [b['site_id'][:8] for b in dropped]))"
+}
+echo "  CONTROL (holds A and B):"; s3_contract "$S3_AB" "" both
+echo "  site-A principal:";        s3_contract "$S3_A" "" a
+[ "$(s3_walk "$S3_A" "/api/autonomy/" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  s3_walk "$S3_A" "/api/autonomy/" "$SITE_B" "$S3_SENTINEL" >&2
+  echo "a site-A principal read site B's autonomy state (P2)" >&2; exit 1; }
+# The S2 persona, reused on purpose: site A in full, site B narrowed to
+# incident.view. Its grant at B does not carry fleet.view, so B's safety
+# state must not arrive through it.
+echo "  A in full + B narrowed to incident.view (the S2 principal):"
+s3_contract "$S2_MIXED" "" a
+[ "$(s3_walk "$S2_MIXED" "/api/autonomy/" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  echo "a grant narrowed to incident.view carried site B's autonomy state" >&2; exit 1; }
+# R4: a device grant names no site, so it selects no site-derived fact.
+echo "  device-scoped principal (R4):"; s3_contract "$S3_DEV" "" none
+[ "$(s3_walk "$S3_DEV" "/api/autonomy/" "$SITE_A" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  echo "a device-scoped principal read site-derived autonomy state (R4)" >&2; exit 1; }
+
+step "A6-4B0b-S3/BD: ?site_id= is a focus inside the caller's reach, never a probe of another site"
+# CONTROL first: for a reader who holds site B the focus really does return
+# site B in isolation -- which is exactly what it returned to everybody.
+s2_get "$S3_AB" "/api/autonomy/?site_id=$SITE_B" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+row = next(r for r in c['action_classes'] if r['action_type'] == 'BMC_RESET')
+assert [s['id'] for s in c['scope']['sites']] == ['$SITE_B'], c['scope']
+assert row['safety']['error_budget']['total'] == $S3_SENTINEL, row['safety']
+print('  control  site B in isolation: total=%s (the oracle the probe used to be)' % row['safety']['error_budget']['total'])"
+python3 - "$S3_A" "$SITE_B" <<'PY'
+import json, subprocess, sys
+token, site_b = sys.argv[1], sys.argv[2]
+def get(query):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090/api/autonomy/" + query],
+                         capture_output=True, text=True).stdout
+    body = json.loads(out)
+    assert body["scope"].pop("site_id") == query.split("=", 1)[1]   # their own echo
+    body.pop("generated_at")
+    return body
+hidden, absent = get(f"?site_id={site_b}"), get("?site_id=gate-s3-no-such-site")
+assert hidden == absent, "a hidden site answers differently from a site that does not exist"
+assert hidden["scope"]["sites"] == [] and hidden["safety_state"]["error_budgets"] == []
+print("  site-A principal: ?site_id=<site B> == ?site_id=<no such site>, and both are empty")
+PY
+
+step "A6-4B0b-S3/BE: the Operational Agent view is composed over the READER's sites"
+S3_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"gate-s3-agent-$(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"BMC_RESET\"}]}" \
+  http://localhost:8090/api/operational-agents/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ -n "$S3_AGENT" ] || { echo "could not create the S3 agent" >&2; exit 1; }
+s3_agent_view() {  # $1 token, $2 "sees" | "blind"
+  s2_get "$1" "/api/operational-agents/$S3_AGENT" | python3 -c "
+import sys, json
+v = json.load(sys.stdin)
+row = next(c for c in v['capabilities']['action_classes'] if c['action_type'] == 'BMC_RESET')
+named = sorted({b.get('site_id') for b in row['blocking_conditions'] if b.get('site_id')})
+blocked = row['advancement']['blocked_by']
+if '$2' == 'sees':
+    assert '$SITE_B' in named and 'error_budget_dropped_back' in blocked, (named, blocked)
+else:
+    assert '$SITE_B' not in named and 'error_budget_dropped_back' not in blocked, (named, blocked)
+print('  %-6s blocking rows name %d site(s); advancement blocked_by=%s' % ('$2', len(named), blocked))"
+}
+echo "  tenant owner:";     s3_agent_view "$TOKEN" sees
+echo "  site-A principal:"; s3_agent_view "$S3_A" blind
+[ "$(s3_walk "$S3_A" "/api/operational-agents/$S3_AGENT" "$SITE_B" "$S3_SENTINEL")" = "clean" ] || {
+  echo "the agent view told a site-A principal about site B" >&2; exit 1; }
+
+step "A6-4B0b-S3/BF: a STORED verdict names a site only to a reader who holds fleet.view there"
+# The evaluator decides over the whole tenant and records what it decided, so
+# a proposal at site A carries rows about site B -- and a REASON copied from
+# one of those rows' own text. The row is written directly,
+# as an `awaiting_approval` agent PROPOSAL for the draft agent above: nothing
+# evaluates a draft agent, nothing dispatches an undecided proposal, and the
+# poller never touches this table (a node route would be superseded at once).
+S3_PROP="gate-s3-prop-$(date +%s)"
+S3_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_agent_proposals (id, tenant_id, agent_id, actor, agent_version, site_id,
+        device_agent_id, action_type, params, rationale, evidence, disposition,
+        disposition_reason, blocking_conditions, authorization_basis, status, decided_by,
+        dedupe_key, directive_id, dispatch_reason, outcome, created_at)
+   VALUES ('$S3_PROP', '$S3_TENANT', '$S3_AGENT', 'op-agent:$S3_AGENT@v1', 1, '$SITE_A',
+        '$S3_DEVICE_A', 'BMC_RESET', '{}'::jsonb, 'S3 gate proposal',
+        '{\"learned_signals\": [
+            {\"scope_type\": \"site\", \"scope_ref\": \"$SITE_B\", \"statement\": \"$S3_DOMAIN\"},
+            {\"scope_type\": \"cohort\", \"scope_ref\": \"Dell/R750\", \"statement\": \"cohort\"}]}'::jsonb,
+        'requires_approval', 'withdrawn at site B: $S3_DOMAIN',
+        '[{\"code\": \"level_below_grant\", \"detail\": \"tenant\", \"scope\": \"tenant\"},
+          {\"code\": \"site_suppressed\", \"detail\": \"here\", \"scope\": \"site\", \"site_id\": \"$SITE_A\"},
+          {\"code\": \"error_budget_dropped_back\", \"detail\": \"withdrawn at site B: $S3_DOMAIN\", \"scope\": \"site\", \"site_id\": \"$SITE_B\"},
+          {\"code\": \"domain_suppressed\", \"detail\": \"$S3_DOMAIN\", \"scope\": \"domain\",
+           \"site_id\": \"$SITE_B\", \"domain_id\": \"$S3_DOMAIN\"}]'::jsonb,
+        'human_approval', 'awaiting_approval', '', '$S3_PROP', '', '', '', now())" > /dev/null
+s3_verdict() {  # $1 token, $2 expected site count among the blocking rows
+  python3 - "$1" "$2" "$S3_AGENT" "$S3_PROP" "$SITE_A" "$SITE_B" "$S3_DOMAIN" <<'PY'
+import json, subprocess, sys
+token, want, agent, prop, A, B, secret = sys.argv[1:8]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+queue = next(i["proposal"] for i in get("/api/approvals/")["actions"]
+             if i.get("origin") == "agent" and i["id"] == prop)
+listed = next(p for p in get(f"/api/operational-agents/{agent}/proposals")["proposals"]
+              if p["proposal_id"] == prop)
+detail = next(p for p in get(f"/api/operational-agents/{agent}")["proposals"]
+              if p["proposal_id"] == prop)
+for where, proposal in (("queue", queue), ("list", listed), ("detail", detail)):
+    rows = proposal["blocking_conditions"]
+    named = sorted({r["site_id"] for r in rows if r.get("site_id")})
+    signals = sorted(s["statement"] for s in proposal["evidence"]["learned_signals"])
+    assert [r["code"] for r in rows if r["scope"] == "tenant"] == ["level_below_grant"], (where, rows)
+    reason = proposal["disposition_reason"]
+    if want == "2":
+        assert named == sorted([A, B]) and secret in json.dumps(proposal), (where, named)
+        assert signals == sorted(["cohort", secret]), (where, signals)
+        assert reason == f"withdrawn at site B: {secret}", (where, reason)
+    else:
+        assert named == [A] and secret not in json.dumps(proposal), (where, named)
+        assert signals == ["cohort"], (where, signals)
+        # The stored reason IS the withheld row's text: it goes with the row.
+        assert "outside your authorized scope" in reason, (where, reason)
+print(f"    queue, list and detail agree: blocking rows name {want} site(s); reason = {reason!r}")
+PY
+}
+echo "  CONTROL (holds A and B):"; s3_verdict "$S3_AB" 2
+echo "  site-A principal:";        s3_verdict "$S3_A" 1
+# This proof owns its state (the A30.21 lesson): the synthetic proposal and
+# the Site Manager budget it seeded are removed, so nothing later in the gate
+# -- or in a slice that appends after this one -- inherits a withdrawn class.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_agent_proposals WHERE id='$S3_PROP'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_error_budgets WHERE site_id='$S3_SM_SITE_B' AND action_type='BMC_RESET'
+   AND total_count=$S3_SENTINEL" > /dev/null
+echo "  the seeded budget and the synthetic proposal are removed"
+
+# ===========================================================================
+# A6-4B0b-S4 (spec A30.28) -- learned-signal and fleet-pattern PAYLOAD isolation
+#
+# A23 stands: a vendor/model cohort conclusion is tenant knowledge. E3-F1 is
+# what lay under it -- a reader entitled to the ROW was handed its CONTENT as
+# stored: another site's id and failure count, the number of sites, the tenant
+# totals, and a sentence restating them.
+#
+# Nothing here is written into a learning table. Outcome rows are seeded for
+# site A (5 failures) and site B (a count nothing else on this stack produces)
+# and the REAL IntelligenceEngine loop detects the cross-site pattern, derives
+# the signals, opens the cycle and pushes the pattern to the Site Manager.
+# Every absence is paired with a CONTROL -- the tenant owner -- reading the
+# same fact, so an empty answer cannot pass as a correct one.
+# ===========================================================================
+S4_ACTION="CONFIG_RESTORE"
+S4_B_FAILURES=4337
+S4_A_FAILURES=5
+S4_TOTAL=$((S4_B_FAILURES + S4_A_FAILURES))
+S4_RUN="gate-s4-$(date +%s)"
+s4_numbers() {  # $1 token, $2 path, $3.. forbidden -> "clean" | the leaks
+  # Numbers are matched as NUMBERS: an int leaf exactly, or inside a string
+  # only where no hex digit touches it -- ids on this stack are hex, and a
+  # substring match on four digits would cry wolf about one in ten runs.
+  python3 - "$@" <<'PY'
+import json, re, subprocess, sys
+token, path, forbidden = sys.argv[1], sys.argv[2], sys.argv[3:]
+out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                      "http://localhost:8090" + path], capture_output=True, text=True).stdout
+def leaves(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from leaves(item)
+    else:
+        yield node
+def hit(leaf, bad):
+    if isinstance(leaf, bool):
+        return False
+    if isinstance(leaf, (int, float)):
+        return bad.isdigit() and float(leaf) == float(bad)
+    if not isinstance(leaf, str):
+        return False
+    if bad.isdigit():
+        return re.search(rf"(?<![0-9a-fA-F]){bad}(?![0-9a-fA-F])", leaf) is not None
+    return bad in leaf
+found = sorted({f"{bad} in {str(leaf)[:70]!r}" for leaf in leaves(json.loads(out))
+                for bad in forbidden if hit(leaf, bad)})
+print("clean" if not found else "LEAK: " + " | ".join(found))
+PY
+}
+
+step "A6-4B0b-S4/BG: the REAL engine learns a cross-site pattern -- and what it stores is E3-F1"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S4_DEVICE_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' ORDER BY agent_id LIMIT 1")
+S4_VENDOR=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT vendor FROM cc_fleet_cache WHERE agent_id='$S4_DEVICE_A'" | sed 's/^ *//;s/ *$//' | tr -d '\r')
+S4_MODEL=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT model FROM cc_fleet_cache WHERE agent_id='$S4_DEVICE_A'" | sed 's/^ *//;s/ *$//' | tr -d '\r')
+[ -n "$S4_VENDOR$S4_MODEL" ] || { echo "site A's device declares no cohort" >&2; exit 1; }
+# A30.29 (BJ below): the distribution loop targets a site by whether its
+# FLEET holds the cohort, exactly, and site B's S1 devices are "Dell R750"
+# while site A's real node declares "$S4_VENDOR $S4_MODEL". So that the
+# ONE Site Manager serving A and B genuinely receives the pattern for
+# BOTH sites, site B gets a device of site A's cohort -- owned by this
+# proof and removed by BO. The poller rebuilds the cache per poll, so the
+# device is at Central Command within one poll and gone after the delete.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                        service_tag, device_class, first_seen_at, last_seen_at)
+   SELECT 'gatedevs400000000000000000000000', s.id, 'gate-agent-s4', 's4',
+          '$S4_VENDOR', '$S4_MODEL', 'GATES4', 'server', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING" > /dev/null
+wait_for "site B's cohort device visible at Central Command" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT count(*) FROM cc_fleet_cache WHERE site_id='$SITE_B' AND agent_id='gate-agent-s4'
+     AND vendor='$S4_VENDOR' AND model='$S4_MODEL'\" \
+   | grep -qx ' *1 *'"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+        vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+   SELECT substr(md5('$S4_RUN-' || site || '-' || n), 1, 32), site, '$S4_RUN-' || site || '-' || n,
+          '$S4_ACTION', device, '$S4_VENDOR', '$S4_MODEL', 'FAILURE', false, '', now(), now()
+   FROM (SELECT '$SITE_A' AS site, '$S4_DEVICE_A' AS device, generate_series(1, $S4_A_FAILURES) AS n
+         UNION ALL
+         SELECT '$SITE_B', 'gate-agent-c', generate_series(1, $S4_B_FAILURES)) rows" > /dev/null
+s4_learned() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_learned_signals WHERE action_type='$S4_ACTION'
+              AND scope_type='cohort' AND evidence::text LIKE '%$SITE_B%'")" = "1" ]
+}
+wait_for "the intelligence loop to detect the cross-site $S4_ACTION pattern" 480 s4_learned
+S4_STORED=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT statement || ' ## ' || evidence::text FROM cc_learned_signals
+   WHERE action_type='$S4_ACTION' AND scope_type='cohort'")
+for S4_FACT in "$SITE_B" "$S4_B_FAILURES" "$S4_TOTAL attempts" "across 2 sites"; do
+  echo "$S4_STORED" | grep -q -- "$S4_FACT" || {
+    echo "CONTROL failed: the stored cohort signal does not carry '$S4_FACT'" >&2; exit 1; }
+done
+echo "  the engine stored site B's id, its $S4_B_FAILURES failures, '$S4_TOTAL attempts' and 'across 2 sites' on a COHORT row"
+
+step "A6-4B0b-S4/BH: the owner reads what is stored; a site-A principal reads the bounded conclusion"
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+s4_read() {  # $1 token, $2 owner | scoped
+  python3 - "$1" "$2" "$S4_ACTION" "$SITE_A" "$SITE_B" "$S4_A_FAILURES" "$S4_B_FAILURES" "$S4_TOTAL" <<'PY'
+import json, subprocess, sys
+token, who, action, A, B, a_n, b_n, total = sys.argv[1:9]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+signal = next(s for s in get("/api/learning/signals")["signals"]
+              if s["action_type"] == action and s["scope_type"] == "cohort")
+pattern = next(p for p in get("/api/outcomes/patterns")["patterns"]
+               if p["pattern_type"] == "cross_site_batch"
+               and p["affected_scope"].get("action_type") == action)
+cycle = next(c for c in get("/api/learning/cycles")["cycles"]
+             if c["pattern_id"] == pattern["pattern_id"])
+ev = signal["evidence"]
+if who == "owner":
+    assert ev["site_failure_counts"] == {A: int(a_n), B: int(b_n)}, ev
+    assert ev["total"] == int(total) and ev["sites_affected"] == 2, ev
+    assert f"{total} attempts" in signal["statement"] and "across 2 sites" in signal["statement"]
+    assert f"({total}/{total})" in pattern["description"], pattern["description"]
+    assert B in pattern["affected_scope"]["sites"]
+    assert cycle["outcomes_before"]["total"] == int(total), cycle
+    assert "projection" not in ev
+else:
+    assert ev["site_failure_counts"] == {A: int(a_n)}, ev          # its OWN site, kept
+    assert ev["projection"] == "scoped" and ev["partial"] == ["site_failure_counts"], ev
+    assert {"total", "failures", "sites_affected"} <= set(ev["withheld"]), ev
+    assert ev["failure_rate"] == 1.0, ev                            # the CONCLUSION, kept
+    assert signal["statement"] == f"{action} on {signal['vendor']} {signal['model']} fails about 100% of the time.", signal["statement"]
+    assert pattern["affected_scope"]["sites"] == A, pattern
+    assert "more than one site" in pattern["description"] and "(" not in pattern["description"]
+    assert cycle["sites_distributed"] is None and cycle["devices_applied"] is None, cycle
+    assert "total" not in cycle["outcomes_before"], cycle
+print(f"    {who}: statement = {signal['statement']!r}")
+print(f"    {who}: pattern   = {pattern['description']!r}")
+PY
+}
+echo "  CONTROL (tenant owner):"; s4_read "$TOKEN" owner
+echo "  site-A principal:";       s4_read "$S3_A" scoped
+for S4_PATH in /api/learning/signals /api/outcomes/patterns "/api/outcomes/patterns?limit=1" \
+               /api/learning/cycles /api/attention/ /api/autonomy/; do
+  [ "$(s4_numbers "$S3_A" "$S4_PATH" "$SITE_B" "$S4_B_FAILURES" "$S4_TOTAL")" = "clean" ] || {
+    echo "$S4_PATH told a site-A principal about site B: $(s4_numbers "$S3_A" "$S4_PATH" "$SITE_B" "$S4_B_FAILURES" "$S4_TOTAL")" >&2; exit 1; }
+done
+echo "  signals, patterns, ?limit=1, cycles, attention and autonomy carry no site-B id, count or tenant total"
+
+step "A6-4B0b-S4/BI: attention and incident detail still LEARN -- the conclusion, for the reader's own device"
+python3 - "$S3_A" "$S4_ACTION" "$S4_DEVICE_A" "$SITE_B" <<'PY'
+import json, subprocess, sys
+token, action, device, B = sys.argv[1:5]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+item = next(i for i in get("/api/attention/")["items"] if i["agent_id"] == device)
+learned = [s for s in item["evidence"]["learned_signals"] if s["action_type"] == action]
+assert learned, "attention lost the cohort conclusion for the reader's own device"
+for s in learned:
+    assert s["evidence"].get("projection") == "scoped" and B not in json.dumps(s), s
+    assert "about 100%" in s["statement"], s["statement"]
+patterns = [p for p in item["evidence"]["fleet_patterns"] if action in p.get("description", "")]
+assert patterns and all("(" not in p["description"] for p in patterns), patterns
+print(f"    attention: {len(learned)} learned signal(s) and {len(patterns)} pattern(s) for {device}, bounded")
+incidents = [i for i in get("/api/incidents/?status=")["incidents"] if i.get("device_agent_id") == device]
+if incidents:
+    prior = get(f"/api/incidents/{incidents[0]['incident_id']}")["prior_learning"]
+    mine = [s for s in prior if s["action_type"] == action]
+    assert mine and all(s["evidence"].get("projection") == "scoped" for s in mine), prior
+    assert B not in json.dumps(prior)
+    print(f"    incident {incidents[0]['incident_id']}: prior_learning carries {len(mine)} bounded signal(s)")
+else:
+    print("    (no incident on this device in this run; prior_learning is proven in the unit and PostgreSQL suites)")
+PY
+
+step "A6-4B0b-S4/BJ: what crossed CC->SM is one site's bounded payload PER SITE, marked -- Central Command still holds the whole"
+S4_PATTERN=$(s1_cc "SELECT id FROM cc_fleet_patterns WHERE pattern_type='cross_site_batch'
+                    AND affected_scope::jsonb->>'action_type'='$S4_ACTION' LIMIT 1")
+# A30.29: the store is keyed (site, pattern). The sites that RECEIVE the
+# pattern are those whose fleet holds the cohort, and both A and B do (the
+# S1 steps seeded Dell R750s at B), so the ONE Site Manager serving both
+# must end up with a row per site -- each bounded to its own facts and each
+# marked as projected for its own Central Command site id. Before A30.29
+# the second push overwrote the first.
+S4_TARGETS=$(s1_cc "SELECT string_agg(DISTINCT site_id, ',') FROM cc_fleet_cache
+                    WHERE vendor='$S4_VENDOR' AND model='$S4_MODEL'")
+echo "$S4_TARGETS" | tr ',' '\n' | grep -qx "$SITE_A" || { echo "site A does not hold the cohort" >&2; exit 1; }
+echo "$S4_TARGETS" | tr ',' '\n' | grep -qx "$SITE_B" || { echo "site B does not hold the cohort" >&2; exit 1; }
+S4_EXPECTED=$(echo "$S4_TARGETS" | tr ',' '\n' | sort -u | wc -l)
+s4_pushed() {
+  [ "$(s1_sm "SELECT count(*) FROM sm_site_fleet_patterns sp JOIN sites s ON s.id = sp.site_id
+              WHERE sp.pattern_id='$S4_PATTERN' AND s.cc_site_id IN (
+                SELECT unnest(string_to_array('$S4_TARGETS', ',')))")" = "$S4_EXPECTED" ]
+}
+wait_for "the distribution loop to push the pattern to EVERY receiving site of the Site Manager" 480 s4_pushed
+S4_CC_ROW=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT description || ' ## ' || evidence::text FROM cc_fleet_patterns WHERE id='$S4_PATTERN'")
+echo "$S4_CC_ROW" | grep -q "across 2 sites ($S4_TOTAL/$S4_TOTAL)" || {
+  echo "CONTROL failed: Central Command's own pattern row lost its evidence" >&2; exit 1; }
+# Every per-site row: no count, no other site, and a marker naming ITS site.
+S4_SM_BAD=$(s1_sm "SELECT count(*) FROM sm_site_fleet_patterns sp JOIN sites s ON s.id = sp.site_id
+   WHERE sp.pattern_id='$S4_PATTERN' AND (
+      sp.description LIKE '%across%' OR sp.description LIKE '%(%/%)%'
+   OR sp.evidence::jsonb ? 'total' OR sp.evidence::jsonb ? 'failures' OR sp.evidence::jsonb ? 'sites_affected'
+   OR (SELECT count(*) FROM jsonb_object_keys(
+         COALESCE(sp.evidence::jsonb->'site_failure_counts', '{}'::jsonb))) > 1
+   OR sp.affected_scope::jsonb->>'sites' LIKE '%,%'
+   OR (sp.affected_scope::jsonb->>'sites' <> '' AND sp.affected_scope::jsonb->>'sites' <> s.cc_site_id)
+   OR sp.visibility IS NULL
+   OR sp.visibility::jsonb->>'scope' <> 'site'
+   OR sp.visibility::jsonb->>'site_id' <> s.cc_site_id
+   OR (sp.visibility::jsonb->>'projection_version')::int <> 1)")
+[ "$S4_SM_BAD" = "0" ] || {
+  echo "a Site Manager row for $S4_PATTERN carries another site's facts or a wrong marker:" >&2
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -c \
+    "SELECT s.cc_site_id, sp.description, sp.affected_scope, sp.evidence, sp.visibility
+     FROM sm_site_fleet_patterns sp JOIN sites s ON s.id = sp.site_id
+     WHERE sp.pattern_id='$S4_PATTERN'" >&2
+  exit 1; }
+# The two rows are DIFFERENT rows: site A's names A's count, site B's names B's.
+S4_A_ROW=$(s1_sm "SELECT sp.evidence::jsonb->'site_failure_counts'->>'$SITE_A' FROM sm_site_fleet_patterns sp
+                  JOIN sites s ON s.id = sp.site_id WHERE sp.pattern_id='$S4_PATTERN' AND s.cc_site_id='$SITE_A'")
+S4_B_ROW=$(s1_sm "SELECT sp.evidence::jsonb->'site_failure_counts'->>'$SITE_B' FROM sm_site_fleet_patterns sp
+                  JOIN sites s ON s.id = sp.site_id WHERE sp.pattern_id='$S4_PATTERN' AND s.cc_site_id='$SITE_B'")
+[ "$S4_A_ROW" = "$S4_A_FAILURES" ] || { echo "site A's row does not carry A's own count: '$S4_A_ROW'" >&2; exit 1; }
+[ "$S4_B_ROW" = "$S4_B_FAILURES" ] || { echo "site B's row does not carry B's own count: '$S4_B_ROW'" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'")" = "0" ] || {
+  echo "this release wrote the LEGACY store" >&2; exit 1; }
+echo "  $S4_EXPECTED per-site row(s) for $S4_PATTERN on ONE Site Manager: A's carries $S4_A_ROW, B's carries $S4_B_ROW, each marked for its own site; legacy store untouched"
+
+step "A6-4B0b-S4/BK: this proof owns its state"
+# The A30.21 lesson. The engine's in-process aggregate keeps what it counted
+# until Central Command restarts; nothing after this step reads learning.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_outcome_history WHERE action_id LIKE '$S4_RUN-%';
+   DELETE FROM cc_learned_signals WHERE action_type='$S4_ACTION';
+   DELETE FROM cc_learning_cycles WHERE pattern_id IN (
+       SELECT id FROM cc_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION');
+   DELETE FROM cc_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_site_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION';
+   DELETE FROM sm_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$S4_RUN-%'")" = "0" ] || {
+  echo "the seeded outcomes were not removed" >&2; exit 1; }
+echo "  the seeded outcomes and everything the engine learned from them are removed"
+
+# ===========================================================================
+# A6-4B0b-S4 remediation (spec A30.29): generated content inherits the
+# projection it was generated from. The compose stack runs no language
+# model, so the GENERATION path is proven at unit level against the real
+# IngestService; what the live stack proves is the read policy over real
+# Keycloak identities and real grants, the wire (BJ above: the marker on
+# every per-site row), and both upgrades on the live databases.
+# ===========================================================================
+
+step "A6-4B0b-S4/BL: the HISTORICAL attack -- a diagnosis and a candidate with no provenance"
+S4_INC="gate-a3029-inc-$(date +%s)"
+S4_CAND="gate-a3029-cand-$(date +%s)"
+S4_SECRET="SECRET_SITE_C"
+S4_PHRASE="30 of 40 attempts across 2 sites"
+S4_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title, device_agent_id,
+        subsystem, confidence, inferred, explanation, opened_at, first_seen_at, last_seen_at)
+   VALUES ('$S4_INC', '$S4_TENANT', '$SITE_A', 'device', 'open', 'Fan duty rising', '$S4_DEVICE_A',
+        'fan', 0.9, false,
+        '{\"provider\": \"llm\", \"confidence\": 0.8,
+          \"summary\": \"Fleet-wide: $S4_SECRET -- $S4_PHRASE\",
+          \"suggested_action\": \"Replace the PSU as at $S4_SECRET\",
+          \"reasoning_steps\": [\"$S4_PHRASE\", \"compared with $S4_SECRET\"],
+          \"operator_notes\": \"$S4_SECRET\",
+          \"evidence_cited\": [\"fan-health: 3 of 5 fans failed\"],
+          \"similar_past_incidents\": []}'::jsonb, now(), now(), now());
+   INSERT INTO cc_candidate_skills (skill_id, tenant_id, site_id, yaml_text, source_device, source_component,
+        validation_state, warnings, dry_run_matches, status, generated_at, received_at)
+   VALUES ('$S4_CAND', '$S4_TENANT', '$SITE_A',
+        'name: fan-x' || chr(10) || 'description: $S4_SECRET $S4_PHRASE' || chr(10),
+        '$S4_DEVICE_A', 'fan:Fan1', 'valid', '[\"rule quotes $S4_SECRET\"]'::jsonb, 2, 'received',
+        now(), now())" > /dev/null
+s4_generated() {  # $1 token, $2 owner | withheld | absent
+  python3 - "$1" "$2" "$S4_INC" "$S4_CAND" "$S4_SECRET" "$S4_PHRASE" <<'PYEOF'
+import json, subprocess, sys
+token, who, inc, cand, secret, phrase = sys.argv[1:7]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-w", "\n%{http_code}", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    body, code = out.rsplit("\n", 1)
+    return int(code), (json.loads(body) if code == "200" else None)
+def leaves(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from leaves(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from leaves(v)
+    else:
+        yield node
+def taint(body):
+    return [l for l in leaves(body) if isinstance(l, str) and (secret in l or phrase in l)]
+code, detail = get(f"/api/incidents/{inc}")
+lcode, listed = get("/api/incidents/?status=all")
+ccode, cands = get("/api/learning/candidates")
+if who == "absent":
+    assert code == 404, code
+    for body in (listed, cands):
+        assert body is None or taint(body) == [], taint(body)
+    print("    no row, and nothing tainted anywhere")
+    sys.exit(0)
+assert code == 200, (code, detail)
+diag = detail["diagnosis"]
+# The candidate LIST is a fleet.view read; a reader holding the incident
+# through incident.view alone does not see the row at all, which is the
+# canonical read shape and not this step's subject.
+mine = next((c for c in (cands or {"candidates": []})["candidates"] if c["skill_id"] == cand), None)
+if who == "owner":
+    assert secret in diag["generated"]["summary"] and diag["generated"]["withheld"] is False
+    assert diag["generation_visibility"] is None      # nothing recorded; nothing invented
+    assert mine is not None
+    assert secret in mine["yaml_text"] and mine["generated_withheld"] is False and mine["warnings"]
+    print("    owner: canonical generated text kept, provenance reported as not recorded")
+else:
+    for body in (detail, listed, cands):
+        assert body is None or taint(body) == [], taint(body)
+    assert diag["generated"]["withheld"] is True and diag["generation_visibility"] is None
+    assert diag["generated"]["suggested_action"] == "" and diag["generated"]["reasoning_steps"] == []
+    assert "operator_notes" not in diag["generated"]
+    assert detail["title"] == "Fan duty rising" and "3 of 5 fans" in diag["evidence_cited"][0]
+    if mine is not None:
+        assert mine["yaml_text"] == "" and mine["warnings"] == [] and mine["generated_withheld"] is True
+        assert mine["dry_run_matches"] == 2            # the candidate's own facts survive
+        print("    " + who + ": row present, local facts intact, generated block and YAML withheld, no sentinel")
+    else:
+        print("    " + who + ": incident present, generated block withheld, candidate row not a fleet.view read for this reader, no sentinel")
+PYEOF
+}
+echo "  CONTROL (tenant owner):";  s4_generated "$TOKEN" owner
+echo "  site-A human:";            s4_generated "$S3_A" withheld
+echo "  device-scoped human (gate-s3-device; F1 open -> no row, nothing tainted):"
+S3_DEV=$(tenant_token gate-s3-device@demo gate-s3-device)
+s4_generated "$S3_DEV" absent
+# A MACHINE principal scoped to site A with the incidents read binding.
+S4_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a3029-reader $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"read\",\"capability_ref\":\"attention\"},
+                        {\"kind\":\"read\",\"capability_ref\":\"incidents\"}]}" \
+  http://localhost:8090/api/operational-agents/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+S4_SECRET_M=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$S4_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+S4_MTOKEN=$(curl -sf -X POST "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$S4_AGENT&client_secret=$S4_SECRET_M" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$S4_MTOKEN" ] || { echo "no machine token for the A30.29 reader" >&2; exit 1; }
+echo "  machine principal (site A):"
+python3 - "$S4_MTOKEN" "$S4_INC" "$S4_SECRET" "$S4_PHRASE" <<'PYEOF'
+import json, subprocess, sys
+token, inc, secret, phrase = sys.argv[1:5]
+out = subprocess.run(["curl", "-s", "-w", "\n%{http_code}", "-H", f"Authorization: Bearer {token}",
+                      f"http://localhost:8090/api/incidents/{inc}"], capture_output=True, text=True).stdout
+body, code = out.rsplit("\n", 1)
+assert code == "200", (code, body)
+assert secret not in body and phrase not in body
+d = json.loads(body)["diagnosis"]
+assert d["generated"]["withheld"] is True and d["generation_visibility"] is None
+print("    machine: row 200, generated withheld, no sentinel on MACHINE_SURFACE")
+PYEOF
+
+step "A6-4B0b-S4/BM: a marker is evidence, not authority -- current reach decides on every read"
+# Mark the SAME stored artifacts as generated from site A's projection.
+# The site-A human sees them now; a marker for site B on an incident AT
+# site A is withheld from them without naming B; revoking their grant
+# withholds again (the row stays readable through a second, incident-only
+# grant); restoring it shows the same artifact, unchanged.
+s4_mark() {  # $1 cc site id | tenant
+  if [ "$1" = "tenant" ]; then
+    S4_MARK='{"scope": "tenant", "site_id": null, "projection_version": 1}'
+  else
+    S4_MARK="{\"scope\": \"site\", \"site_id\": \"$1\", \"projection_version\": 1}"
+  fi
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "UPDATE cc_incidents SET explanation = explanation::jsonb || '{\"generation_visibility\": $S4_MARK}'::jsonb
+      WHERE incident_id='$S4_INC';
+     UPDATE cc_candidate_skills SET generation_visibility = '$S4_MARK'::jsonb WHERE skill_id='$S4_CAND'" > /dev/null
+}
+s4_sees() {  # $1 token, $2 expected marker site id
+  python3 - "$1" "$S4_INC" "$S4_CAND" "$S4_SECRET" "$2" <<'PYEOF'
+import json, subprocess, sys
+token, inc, cand, secret, site = sys.argv[1:6]
+def get(path):
+    return json.loads(subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+        "http://localhost:8090" + path], capture_output=True, text=True).stdout)
+d = get(f"/api/incidents/{inc}")["diagnosis"]
+assert secret in d["generated"]["summary"] and d["generated"]["withheld"] is False, d["generated"]
+assert d["generation_visibility"] == {"scope": "site", "site_id": site, "projection_version": 1}, d["generation_visibility"]
+c = next(c for c in get("/api/learning/candidates")["candidates"] if c["skill_id"] == cand)
+assert secret in c["yaml_text"] and c["generated_withheld"] is False and c["generation_visibility"]["site_id"] == site
+print(f"    visible: generated block and YAML shown, projection recorded for {site[:12]}...")
+PYEOF
+}
+s4_mark "$SITE_A"
+echo "  marked for site A -- site-A human:"; s4_sees "$S3_A" "$SITE_A"
+echo "  marked for site A -- org/site-set human holding A and B:"; s4_sees "$S3_AB" "$SITE_A"
+s4_mark "$SITE_B"
+echo "  marked for site B (an incident AT site A) -- site-A human:"; s4_generated "$S3_A" withheld
+s2_get "$S3_A" "/api/incidents/$S4_INC" | grep -q "$SITE_B" && {
+  echo "the withheld response named the site the marker names" >&2; exit 1; }
+echo "  marked for site B -- tenant owner:"; s4_sees "$TOKEN" "$SITE_B"
+s4_mark tenant
+echo "  marked tenant -- site-A human:"; s4_generated "$S3_A" withheld
+echo "  marked tenant -- A+B human:";    s4_generated "$S3_AB" withheld
+# Revoke / restore, on an identity THIS step owns (the A30.21 lesson).
+s4_mark "$SITE_A"
+tenant_realm_user "gate-a3029@demo" "gate-a3029" site_admin
+S4_RR=$(tenant_token gate-a3029@demo gate-a3029)
+S4_RR_SUB=$(s1_sub "$S4_RR")
+# The row-holding grant is a DIFFERENT row (an org-unit grant narrowed to
+# incident.view) from the site grant revoked below.
+S4_ORG=$(s1_cc "SELECT org_unit_id FROM cc_sites WHERE id='$SITE_A'")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+   -d "{\"principal_ref\":\"$S4_RR_SUB\",\"scope_type\":\"org_unit\",\"scope_ref\":\"$S4_ORG\",
+        \"role\":\"site_admin\",\"permission_subset\":[\"incident.view\"]}" \
+   http://localhost:8090/api/scope-grants/)" = "201" ] || { echo "row-holding grant refused" >&2; exit 1; }
+S4_FULL=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+   -d "{\"principal_ref\":\"$S4_RR_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\",\"role\":\"site_admin\"}" \
+   http://localhost:8090/api/scope-grants/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "  fresh reader with fleet.view at A:";   s4_sees "$S4_RR" "$SITE_A"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8090/api/scope-grants/$S4_FULL)" = "200" ] || { echo "revoke refused" >&2; exit 1; }
+echo "  the site grant REVOKED (row still held through the org grant):"; s4_generated "$S4_RR" withheld
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+   -d "{\"principal_ref\":\"$S4_RR_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\",\"role\":\"site_admin\"}" \
+   http://localhost:8090/api/scope-grants/)" = "201" ] || { echo "restore refused" >&2; exit 1; }
+echo "  the site grant RESTORED:";             s4_sees "$S4_RR" "$SITE_A"
+[ "$(s1_cc "SELECT explanation::jsonb->'generation_visibility'->>'site_id' FROM cc_incidents WHERE incident_id='$S4_INC'")" = "$SITE_A" ] || {
+  echo "the stored marker changed under a read" >&2; exit 1; }
+echo "  the stored artifact and its marker are unchanged throughout"
+
+step "A6-4B0b-S4/BN: both live databases cross the A30.29 upgrades with rows present, backfilling nothing"
+# CC 0026 -> 0027 with the candidate seeded above present. Same shape as
+# the A23-2 step: the column is dropped and the chain re-run on the LIVE
+# database, and the window is one statement wide.
+CC_HEAD=$(ls "$_REPO_ROOT"/services/central_command/src/harkeniq_cc/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
+SM_HEAD=$(ls "$_REPO_ROOT"/services/site_manager/src/harkeniq_sm/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
+S4_CANDS_BEFORE=$(s1_cc "SELECT count(*) FROM cc_candidate_skills")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  alter table cc_candidate_skills drop column generation_visibility;
+  update alembic_version set version_num='0026';" > /dev/null
+docker compose exec -T central-command sh -c \
+  "cd /app/services/central_command && alembic upgrade head" 2>&1 | tail -1
+[ "$(s1_cc "SELECT version_num FROM alembic_version")" = "$CC_HEAD" ] || { echo "CC did not reach head" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_candidate_skills")" = "$S4_CANDS_BEFORE" ] || { echo "candidate rows changed" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_candidate_skills WHERE generation_visibility IS NOT NULL")" = "0" ] || {
+  echo "the CC upgrade backfilled a marker" >&2; exit 1; }
+echo "  CC $CC_HEAD on PostgreSQL: $S4_CANDS_BEFORE candidate row(s), every generation_visibility NULL"
+# SM 0010 -> 0011: a LEGACY pattern row present (written the way the old
+# release wrote it), the per-site table and the candidate column removed,
+# then the chain re-run. The legacy row stays where it is and is copied
+# under no site; the per-site table comes back empty.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc "
+  INSERT INTO sm_fleet_patterns (pattern_id, pattern_type, description, confidence, detected_at, received_at)
+  VALUES ('gate-a3029-legacy', 'cross_site_batch', 'SEL_CLEAR fails at 65% across 3 sites (35/54)', 0.9, '1', now())
+  ON CONFLICT (pattern_id) DO NOTHING;
+  drop table sm_site_fleet_patterns;
+  alter table sm_candidate_skills drop column generation_visibility;
+  update alembic_version set version_num='0010';" > /dev/null
+docker compose exec -T site-manager sh -c \
+  "cd /app/sm && alembic upgrade head" 2>&1 | tail -1
+[ "$(s1_sm "SELECT version_num FROM alembic_version")" = "$SM_HEAD" ] || { echo "SM did not reach head" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='gate-a3029-legacy'")" = "1" ] || {
+  echo "the legacy row did not survive" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_site_fleet_patterns")" = "0" ] || { echo "the SM upgrade invented per-site rows" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM information_schema.columns WHERE table_name='sm_candidate_skills' AND column_name='generation_visibility'")" = "1" ] || {
+  echo "sm_candidate_skills.generation_visibility missing after upgrade" >&2; exit 1; }
+echo "  SM $SM_HEAD on PostgreSQL: legacy row kept, copied under no site; per-site store present and empty"
+
+step "A6-4B0b-S4/BO: this proof owns its state"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_incidents WHERE incident_id='$S4_INC';
+   DELETE FROM cc_candidate_skills WHERE skill_id='$S4_CAND'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_fleet_patterns WHERE pattern_id='gate-a3029-legacy';
+   DELETE FROM devices WHERE agent_id='gate-agent-s4'" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_incidents WHERE incident_id='$S4_INC'")" = "0" ] || { echo "seeded incident not removed" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM devices WHERE agent_id='gate-agent-s4'")" = "0" ] || { echo "site B's cohort device not removed" >&2; exit 1; }
+echo "  the seeded incident, candidate, legacy pattern row and site B's cohort device are removed"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

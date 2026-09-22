@@ -83,11 +83,15 @@ async def make_state(config: SMConfig) -> AppState:
     state.sessionmaker = make_sessionmaker(state.engine)
     state.ingest = IngestService(state.sessionmaker, config)
 
-    # QA-033: reload CC-pushed fleet patterns into the enrichment mirror
-    from harkeniq_sm.db.repos import SMFleetPatternRepo
+    # QA-033: reload CC-pushed fleet patterns into the enrichment mirror.
+    # A30.29: per site, marker included -- a site's reasoning consumes the
+    # projection pushed FOR that site. The legacy store (keyed without a
+    # site, pushed before the marker existed) is loaded as UNMARKED rows,
+    # consulted only where a site holds no row of its own for a pattern.
+    from harkeniq_sm.db.repos import SMFleetPatternRepo, SMSitePatternRepo
     async with state.sessionmaker() as session:
-        for row in await SMFleetPatternRepo(session).list_all():
-            state.ingest.fleet_patterns[row.pattern_id] = {
+        for row in await SMSitePatternRepo(session).list_all():
+            pattern = {
                 "pattern_id": row.pattern_id,
                 "pattern_type": row.pattern_type,
                 "description": row.description,
@@ -96,6 +100,19 @@ async def make_state(config: SMConfig) -> AppState:
                 "evidence": row.evidence,
                 "detected_at": row.detected_at,
             }
+            if row.visibility is not None:
+                pattern["generation_visibility"] = row.visibility
+            state.ingest.fleet_patterns.put(row.site_id, pattern)
+        for row in await SMFleetPatternRepo(session).list_all():
+            state.ingest.fleet_patterns.put_legacy({
+                "pattern_id": row.pattern_id,
+                "pattern_type": row.pattern_type,
+                "description": row.description,
+                "affected_scope": row.affected_scope,
+                "confidence": row.confidence,
+                "evidence": row.evidence,
+                "detected_at": row.detected_at,
+            })
 
     # QA-021: instantiate the autonomy chain that R3a built but never
     # constructed. Leases are now signed with a persisted SM keypair and

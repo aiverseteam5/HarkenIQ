@@ -11,6 +11,7 @@ import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson } from "../api";
+import { generatedView, type GeneratedBlock } from "../generatedContent";
 
 /* S4 — Incidents & Diagnosis.
  *
@@ -25,11 +26,10 @@ interface Diagnosis {
   origin: string;
   trust: string;
   confidence: number;
-  generated: {
-    summary: string;
-    suggested_action: string;
-    reasoning_steps: string[];
-  };
+  /** A30.29: the server may WITHHOLD this block for a reader whose
+   *  current reach does not cover the projection it was generated from.
+   *  `generatedView` applies the server's flag; the page never decides. */
+  generated: GeneratedBlock;
   evidence_cited: string[];
   similar_past_incidents: { title?: string; resolution?: string }[];
 }
@@ -331,10 +331,17 @@ export default function Incidents() {
             <div style={sectionTitle}>Why</div>
             {detail.diagnosis ? (
               <>
-                <div style={diagnosisBox}>
-                  {detail.diagnosis.generated.summary || "No summary produced."}
-                </div>
-                {detail.diagnosis.trust === "untrusted_generated" && (
+                {generatedView(detail.diagnosis.generated).withheld ? (
+                  <div style={provenanceNote} data-testid="diagnosis-withheld">
+                    {generatedView(detail.diagnosis.generated).note}
+                  </div>
+                ) : (
+                  <div style={diagnosisBox}>
+                    {generatedView(detail.diagnosis.generated).summary || "No summary produced."}
+                  </div>
+                )}
+                {detail.diagnosis.trust === "untrusted_generated" &&
+                  !generatedView(detail.diagnosis.generated).withheld && (
                   <div style={provenanceNote}>
                     Written by the reasoning model from this device's telemetry
                     ({Math.round(detail.diagnosis.confidence * 100)}% confidence).
@@ -352,11 +359,11 @@ export default function Incidents() {
                   </>
                 )}
 
-                {detail.diagnosis.generated.reasoning_steps.length > 0 && (
+                {generatedView(detail.diagnosis.generated).reasoningSteps.length > 0 && (
                   <>
                     <div style={sectionTitle}>Reasoning</div>
                     <ol style={{ fontSize: "0.8125rem", paddingLeft: "1.2rem", lineHeight: 1.6 }}>
-                      {detail.diagnosis.generated.reasoning_steps.map((s, i) => (
+                      {generatedView(detail.diagnosis.generated).reasoningSteps.map((s, i) => (
                         <li key={i}>{s}</li>
                       ))}
                     </ol>

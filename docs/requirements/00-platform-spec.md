@@ -3954,3 +3954,538 @@ the SM outcome-identity fallback; the composite projections and the
 hygiene outside this slice, `tests/unit/cc/test_warranty.py`'s hard-coded
 `2027-01-01`, the same wall-clock class as the checkpoint fixtures fixed in
 PR #46. B0c, B1, B2 and the taxonomy remain not started.
+
+**A30.26 — A6-4B0b-S3: autonomy scope isolation (decided: Vinod; recorded
+2026-09-20, BEFORE the code).** *Numbering: A30.25 is the general B0b
+amendment. That slice is complete on its own branch and waits on this one,
+so its number is reserved and not reused here.* General B0b's live gate
+found a second pre-existing defect, **P2 — FAIL-OPEN information
+disclosure across the site boundary, present since S5 and only partly
+closed by A23-1.** `build_autonomy` folds EVERY site's safety state into
+the contract and `narrow_to_sites` then filtered the top-level lists whose
+items carry a `site_id`. It never looked at an aggregate, because an
+aggregate has no `site_id`. Reproduced on `main` with three sites and a
+site-A reader: `safety_state.error_budgets` and every class's
+`safety.error_budget` read `total 81, sites_dropped_back [site-C]`;
+`safety.suppressed_domains` named `fault-A, fault-B, SECRET-C`;
+`safety.site_budget_remaining` was keyed by all three site ids;
+`posture.stop_switch.sites_reporting_active`, `safety_state.reported`, the
+outcome `evidence` and `advancement` counted site C; and the class
+`disposition` itself read `requires_approval` BECAUSE site C had dropped
+back. The Phase-1 inventory found two further faces of the same defect.
+**(a) A probe oracle:** `site_id` is a query parameter and the composer
+honours it before narrowing, so the same reader calling
+`/api/autonomy/?site_id=site-C` received site C IN ISOLATION — its error
+budget (47 outcomes, 14.89 %), its suppressed fault domain, its remaining
+budget, its stop switch — a targeted read of any site in the tenant.
+**(b) Persisted copies:** the evaluator copies the tenant-wide class row's
+`blocking_conditions` and learned signals onto every proposal it admits, so
+a proposal at site A carries `error_budget_dropped_back / site-C` and
+`domain_suppressed / site-C / SECRET-C`, and seven projections return them
+unfiltered: the approval queue, both approval-decision responses, the
+Operational Agent detail and proposal list, the dry-run, the machine
+submission response and the machine receipts — the last five reachable by
+an external runtime whose grant names one site. **Classification.** In HarkenIQ site
+and org scope are a security boundary; this is a scope isolation defect,
+not a display one. **The invariant, LOCKED.** For any autonomy projection
+returned to principal P, EVERY site-derived fact is derived only from
+sites covered by P's current canonical effective scope:
+`visible_autonomy_fact(P, fact)` requires ALL site inputs contributing to
+`fact` to be inside P's authorized reach. It is not satisfied by narrowing
+the outer site list while keeping a global aggregate, by keeping a hidden
+site's name in suppression or fault data, by computing a budget over hidden
+sites, by presenting site safety state through a tenant-level-looking
+structure, or by treating contextual site ancestry as authority. **The
+authority source is the one that already exists.** A site-derived autonomy
+fact is a `fleet.view` fact — that is the permission `/api/autonomy/` is
+read under — and it stays one wherever it is projected, so the authorized
+set is `read_reach(scope, "fleet.view")` (A30.24) on EVERY projection,
+including those whose route is guarded by another permission: an approver
+holding `action.approve` at a site without `fleet.view` there reads the
+proposal and not that site's safety rows, which is what stops a
+subset-narrowed grant carrying these facts out through a different route.
+`tenant_wide` means the whole tenant, otherwise exactly `site_ids` — site
+grants and org-expanded sites, from grants that carry the permission. No
+second resolver, no autonomy-specific authority model, no separate
+interpretation of site membership; a `device` or `device_class` grant
+contributes no site (R4), an inert, expired, revoked or subset-narrowed
+grant contributes nothing, and a contextual site (general B0b, R10) is not
+an input because `ReadReach` has no field that could carry one. **Field
+ownership.** *Tenant-owned, unchanged for every reader:* contract version,
+actor block, the tenant stop switch, configured level and its source,
+budget limit / period / used, device-scoped budget rows, the ladder, each
+class's risk, required permissions, grant level, `budget_mapped`,
+`never_budget_grantable`, the approval policy block, and tenant-scoped
+blocking conditions. *Site-owned:* `scope.sites`, `sites_reporting`,
+`sites_not_reporting`, `suppressions`, `site_stop_switches`, site- and
+domain-scoped blocking conditions, each class's `safety.suppressed_domains`
+and `safety.site_budget_remaining`, `sites_dropped_back`, site-scoped
+learned signals. *Aggregates derived from sites:*
+`stop_switch.sites_reporting_active`, `safety_state.reported` and each
+class's `safety.reported`, `safety_state.error_budgets` and each class's
+`safety.error_budget`, and — because they are folded from those — each
+class's `disposition`, `disposition_reason`, `approval.required`,
+`evidence` and `advancement`. **The rule: SELECT, then aggregate.** The
+composer selects its site inputs — safety rows, sites, outcomes and
+site-scoped learned signals — for the authorized set BEFORE anything is
+folded, and then folds only what was selected; a hidden site's row is never
+read past its site id. Computing the tenant-wide value and hiding labels
+afterwards is the defect, so `narrow_to_sites` is REMOVED rather than
+repaired: a function whose input is a composed contract cannot satisfy the
+rule. The composer already had this shape for one site (`site_id`); S3
+generalizes that selection to a set, and `site_id` now narrows WITHIN the
+authorized selection and can never widen it — a site outside the caller's
+reach composes over nothing and is indistinguishable from a site that does
+not exist. **Principal behaviour.** Tenant-wide: tenant-wide aggregates,
+byte-identical to before. Org-scoped: the authorized subtree's sites only.
+Site-scoped: that site only. `device` / `device_class` only, and every
+principal whose reach is empty (no grant under strict, expired, revoked,
+inert, or a subset without the permission): NO site-derived error budget,
+stop or safety internal, suppressed fault domain or drop-back state — the
+site-derived part of the contract is composed over nothing, so it is empty
+by construction rather than zeroed, `reported` reads false (unreported is
+UNKNOWN, never safe), and tenant-owned posture is preserved because it is
+genuinely tenant-owned and not reconstructed from hidden sites. B1
+publishes safe conclusions for such principals later; nothing here does.
+**Persisted verdicts are narrowed where they are READ.** A proposal's
+stored `blocking_conditions` and `evidence.learned_signals` keep what the
+evaluator recorded; every projection returns a row that names a site only
+when that site is inside the reader's `fleet.view` reach, and keeps
+tenant-scoped rows. One implementation, asked by all seven projections,
+through a typed view that only the canonical scope can construct and that
+every projection REQUIRES, so a new projection cannot omit it and cannot
+be handed "unrestricted" by mistake; applied
+at read time so rows written before this slice are covered and no write or
+decision path changes. **A stored REASON follows its row.** The evaluator
+copies a verdict's `disposition_reason` from a blocking row's own text, so a
+reason can BE the text of a row the reader may not read — and a
+domain-scoped row's text names its fault domain. Where the stored reason is
+the text of a withheld row and of no row the reader keeps, it is replaced by
+one neutral sentence saying the verdict rests on a governance condition
+outside the reader's authorized scope. It states that something is withheld
+and not what; a tenant-wide reader reads the reason as recorded. **What S3 deliberately does NOT change — internal
+decisions.** Five consumers use the contract to DECIDE and never return it:
+the CC-resident evaluator, the ingress re-derivation, the dry-run's
+reasoning (A22.6: it must reason exactly as the runtime does), campaign
+submission and the activation preflight. They keep the tenant-wide
+composition, named by an explicit `reach=None` that a structural test
+allow-lists by call site, so execution semantics are byte-identical.
+**Ambiguous, REPORTED and not changed (Vinod's to rule).** *E1 — the
+tenant-wide disposition fold is execution semantics:* S5 made a drop-back
+at ANY site require a human for that class at EVERY site, while E0.2 made
+the Site Manager's enforcement per site. A proposal at site A can therefore
+be `requires_approval` because of site C, and its `disposition` and status,
+the preflight's unattended / attended class lists and its
+`safety_reported` flag still reflect that; they name no site and say
+nothing about which condition or where, and removing the inference needs
+per-site evaluation, which WIDENS autonomy at Central Command and is a
+product decision. *E2 — tenant-wide
+outcome statistics persisted on a proposal* (`evidence.outcome_evidence`
+and the sentence `_rationale` writes from it) cannot be recomputed for a
+reader after the fact; closing it changes what the evaluator WRITES. *E3 —
+cohort learned signals* are fleet knowledge by A23's ratified decision and
+name a vendor and model, never a site; they stay visible. **What a human
+can see change:** only org-, site-, device- and class-scoped readers, and
+only by reading LESS — the facts, totals, booleans and dispositions of sites
+they do not hold. **Machine plane:** unchanged in shape; a machine
+principal's agent view, dry-run, submission response and receipts stop
+naming sites outside its grants. **General B0b is NOT changed by this
+slice** and its branch is not touched: no device or device_class repository
+filter, contextual site projection, incident, approval or outcome
+ownership, campaign logic, S1 or S2. When B0b merges `main` it drops its
+own `narrow_to_sites` edit (R4 for a reader holding no site is now true by
+construction), inverts the test that pins P2 open, and re-verifies.
+**Unchanged:** the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE` (13), every route (zero
+added) and response SHAPE, the schema (CC head `0026`), `resolve()`,
+`permits()`, `read_reach`, every mutation gate, the `server | switch`
+vocabulary. B0c, B1, B2 and the taxonomy remain not started.
+
+**A30.27 — The S3-E1 / S3-E2 / S3-E3 architecture decision package
+(decided: Vinod, 2026-09-21; RECORDED here, NOT implemented).** A30.26
+reported three things it did not change. The package was produced read-only
+on `a5f9549` after S3 closed and ratified as R1–R7. They are recorded so
+that the slice which implements them starts from a ratified text, and so
+that S4 (A30.28) can say exactly what it is not. *Naming: S3-E1/E2/E3, never
+bare "E1" — that collides with the Enterprise Governance slices E1.1–E1.4.*
+**R1 — Model C:** a proposal is assessed against its TARGET SITE (the S3
+primitive already yields that row: the composer over the device's own site)
+plus a CLOSED, typed global safety gate; the tenant-wide disposition fold
+stops being the assessment. **R2 — option A:** the gate's hidden-derived
+membership is EMPTY — no condition at a site the target does not belong to
+enters the gate. Established by execution: the fold globalises only
+`error_budget_dropped_back` and `budget_window_exhausted`; a site's Site
+Manager stop switch and an unreported site do not affect disposition today,
+suppression is already per target site, and the Site Manager enforces
+drop-back and site stop per the device's OWN site. **R3:** a target site
+that has not reported is REQUIRES_APPROVAL (unreported is unknown, never
+safe); a target-site Site Manager stop is a LOCAL denial. **R4:** a campaign
+is autonomous only if EVERY site in its own immutable plan assesses
+autonomous AND the gate passes. **R5:** the activation preflight assesses
+over the AGENT's own reach, and `safety_reported` means every in-reach site
+reported — which also removes the one non-monotone input the package found
+(a hidden site reporting flipped the dimension UNKNOWN → READY). **R6 — E2
+dual evidence:** `decision_evidence_at_creation` is immutable and
+`viewer_projected_evidence` is what a reader is shown; the rationale is
+rendered from typed facts, not stored as a sentence. **R7:** E3-F1 is fixed
+BEFORE general B0b (PR #48) is refreshed. **Sequencing, unchanged:** R1–R6
+change what Central Command DECIDES and could widen autonomy; they are
+implemented after general B0b merges and main-verifies, in their own slice
+with their own boundary. **A23 is NOT reopened by E3:** a vendor/model
+cohort conclusion is tenant knowledge. What the package demonstrated is a
+PAYLOAD defect under that ruling, which is A30.28.
+
+**A30.28 — A6-4B0b-S4: learned-signal and fleet-pattern payload isolation
+(decided: Vinod, 2026-09-21; closes E3-F1).** *Ordering truth: the
+ratification preceded all code; an interrupted session then drafted the
+production change in the working tree before this text was committed.
+Nothing had been committed or pushed, so this docs commit is still the
+first commit of the slice and no history was rewritten to make it so.*
+**The defect, E3-F1 — FAIL-OPEN disclosure across the site boundary,
+pre-existing since S3's learning substrate, missed by the A23-1 sweep and
+by A30.26's sentinels because every seeded signal carried
+`evidence = {}`.** A fleet pattern is detected over the whole tenant, and
+`derive_signals` copies its whole `evidence` — for a `cross_site_batch`,
+`site_failure_counts` keyed by SITE ID, `sites_affected`, `total`,
+`failures` — onto the cohort signal and onto every site signal. Readers
+selected ROWS by scope and returned their CONTENT as stored. Demonstrated
+over HTTP under STRICT: a site-1 operator read hidden site-3's id and its
+count of 27 on a cohort row they were entitled to see, through
+`/api/learning/signals`, `/api/attention/` (`evidence.learned_signals[]`,
+and ON `MACHINE_SURFACE`) and incident `prior_learning`; the statement said
+"30 of 40 attempts, across 2 sites". `/api/outcomes/patterns` had a
+route-local `_narrow_sites` that filtered two keys and only when they were
+a dict or list — production writes `affected_scope.sites` as a
+comma-joined STRING, so it passed whole — and never touched
+`sites_affected`, the totals or `description`. **A23 is RETAINED, exactly:**
+the vendor/model cohort CONCLUSION is tenant knowledge and every reader
+keeps it; a site-scoped signal follows its site; a pattern whose named
+sites are all outside the reader's scope is absent (A23-1's read rule).
+**S4 fixes payload isolation ONLY** — no decision path, no stored row, no
+selection rule changes. **The invariant, LOCKED.** The cohort conclusion is
+tenant knowledge; site-specific SUPPORTING evidence is scope-filtered. A
+scoped principal must not recover a hidden site's identity, count, or the
+size of the hidden estate through structured evidence, a pattern payload,
+statement or description text, a rationale, a distribution payload,
+`evidence_cited`, a learning cycle, a counter, a percentage, a rank, row
+order, list length, site cardinality, attempts or totals. **Three S4
+decisions (Vinod).** *(1) Bounded bands.* For a reader who is not
+tenant-wide, a RATE is the conclusion and is kept rounded to the nearest
+5 %; CONFIDENCE is rounded to a 0.25 grid; EVERY COUNT is withheld — total,
+failures, attempts, model total, `sites_affected`, a hidden site's entry —
+and the payload says so in an explicit `withheld` list rather than
+inventing a smaller number. Exact values are not kept because they are
+counts in disguise: `batch_failure` confidence is `min(1, total/20)`,
+`reliability` `min(1, total/30)`, `cross_site_batch`
+`min(1, total/20 + 0.1·sites)`, so exact confidence plus a three-decimal
+rate plus the reader's own site count recovers the hidden estate's totals
+exactly. A site-keyed map keeps only the reader's own sites and is ALWAYS
+marked `partial`, dropped-or-not, so the marker says nothing about sites
+the reader does not hold. Field types and response shapes are unchanged;
+a tenant-wide reader's payload is byte-identical. A band is permitted only
+because an exact hidden-estate value cannot be reconstructed from it; it is
+not a licence to publish a coarser count. *(2) Source patterns are IN S4*,
+through ONE canonical projection (`harkeniq_cc.learning_projection`) that
+serves signals AND patterns; `_narrow_sites` is deleted, not repaired. It
+names what may pass, never what may not (A25.3): an evidence key the
+projection does not recognise is withheld. *(3) The reach rule is
+`fleet.view` on EVERY projection* — A30.26's rule applied to learning — so
+the authorized set is `read_reach(scope, "fleet.view")` (A30.24) wherever
+learned knowledge is shown, including incident detail under
+`incident.view`. No second resolver; the view is a TYPE
+(`LearningView`) every projection REQUIRES, so a new projection cannot
+omit it or be handed "unrestricted" by mistake, and the composer's
+`learning` argument is REQUIRED with no default: a `LearningView` for a
+principal, `None` for the internal decision paths (evaluator, dry-run
+reasoning, ingress re-derivation), allow-listed by call site in a
+structural test. **TEXT FOLLOWS ITS EVIDENCE.** Where typed evidence
+exists, a statement or description is RE-RENDERED from the PROJECTED
+evidence by the generator that wrote it (`render_statement` is that one
+generator, and every number in it comes from its `evidence` argument), so
+text cannot state what the structure withheld. Where none exists — the
+frozen copy on a proposal keeps the statement and not the evidence; a Site
+Manager cites a pattern by description — the stored text is reduced through
+the two generators' small fixed grammar and then PROVEN: anything still
+shaped like a count replaces the whole text with one neutral sentence.
+Fail closed. **Three further ratifications (Vinod), all IN S4.**
+*(A) Distribution payload.* `PushPolicy.learned_patterns_json` carried the
+whole tenant pattern to every Site Manager whose fleet held the cohort, so
+site A's Site Manager durably stored site C's id and count. A receiving
+site is a reader that holds exactly itself and gets the SAME projection by
+the SAME function; it is still told about a cohort it holds and is not yet
+failing on (R-C2 is why the loop exists), and told the bounded conclusion
+only. The Site Manager upserts by pattern id and the distribution ledger is
+in-process, so a Central Command restart re-pushes and overwrites what an
+earlier release delivered: no Site Manager change, no migration. A hidden
+site's facts do not survive merely because the pattern crossed CC→SM.
+*(B) `evidence_cited`.* A Site Manager's diagnosis cites the patterns it
+reasoned with, by description, and that text rides back inside a diagnosis
+for a device the reader DOES hold — including text pushed before this
+slice. Bounded at READ, by the same projection, and ONLY for an entry that
+cites a fleet pattern: the rest of that list is the device's own telemetry
+("3 of 5 fans") and reducing it would destroy the diagnosis to protect
+nothing. No second redaction model. *(C) `/api/learning/cycles`* names no
+site, which is why it was declared UNSCOPED on the strength of "counts
+only" — and a hidden-estate count is exactly what a scoped reader may not
+be handed. `sites_distributed` and `devices_applied` are withheld (null,
+and named in `withheld`), `outcomes_before/after` take the evidence
+projection, `improvement_pct` is rounded to 5 points; the route is
+re-declared READ_SCOPED so the contract describes runtime truth. Rows are
+not filtered (none names a site) and the stored ledger is untouched.
+**Same-band ordering protection.** Two hidden-estate states that fall in
+one band must not be told apart by a deterministic secondary channel. The
+repository orders signals by the EXACT stored confidence, so two signals in
+one band were still ranked by the value the band withholds. A scoped
+reader's rows are ordered by what they are SHOWN — banded confidence, then
+the signal's own key — on every path: the signal list, the autonomy
+contract's `learning[]`, attention's per-device signals and the two quoted
+into `reasons[]`, incident `prior_learning`, and the frozen copy on a
+proposal, which the evaluator wrote in exact order and which is re-ordered
+at read, never rewritten. **A second ordering channel, found by the
+slice's own twin estates and corrected here before the code landed.**
+`OutcomeAggregator.get_metrics` sorts cohorts by their tenant attempt
+TOTAL; the detector stamps each pattern with `time.time()` in that order,
+and the pass opens its cycles and upserts its signals in it. So within one
+engine pass DETECTION ORDER IS A RANK BY HIDDEN TOTAL, and it reached a
+scoped reader five ways: the pattern list (`ORDER BY detected_at DESC`),
+the cycle list (`started_at DESC`), the sub-second part of every learning
+timestamp, the caller-controlled `?limit=` on `/api/outcomes/patterns`
+(cut in SQL over the exact instant, `limit=1` returned the cohort with the
+SMALLEST tenant total), and the order patterns are pushed to — and
+therefore cited by — a Site Manager. Demonstrated: a site-A reader who
+knows POWER_CYCLE's 15 attempts are all their own read whether hidden
+BMC_RESET totalled more or fewer than 15 from which row came first. For a
+reader who is not tenant-wide: patterns, cycles, the pushed payload and the
+pattern citations inside `evidence_cited` are ordered by what is SHOWN
+(floored instant, then the cohort the row names; a random id only makes
+the order total); learning timestamps are FLOORED TO THE MINUTE, stored
+type kept; and `limit` is applied AFTER projection. *Stated limit:* a pass
+that straddles a minute boundary still orders its two halves — the pass is
+in-memory and takes milliseconds, so this is a one-bit residue at roughly
+1-in-10⁴ passes, and removing it needs a per-pass instant at WRITE, which
+changes stored rows and is not this slice. **Frozen copies** keep what the evaluator
+recorded; A30.26 drops a site-scoped entry whose site the reader does not
+hold, and S4 bounds the entries that survive. **Proof obligations.** Two
+hidden estates that deliberately collapse to the same band, a scoped reader
+who holds the same site in both, and byte equality of everything that
+reader is returned — values, confidence, rate, order, rank, count,
+statement text, payload shape, nested evidence, list length — with a
+non-vacuity guard proving the tenant-wide reader DOES tell them apart;
+positive controls proving the cohort conclusion stays visible and the
+tenant-wide payload is byte-identical to `main`. **Named follow-ups,
+deliberately NOT pulled in** — each is a different semantic, none carries
+E3-F1's payload: *WHEN, at minute grain and coarser* — `detected_at`,
+`last_confirmed_at`, `observation_count`, and the order of rows from
+DIFFERENT engine passes say when the tenant concluded something, which is
+a property of the conclusion A23 publishes (the sub-minute part was proven
+to carry a hidden rank and IS in this slice, above); *the unprojected
+window* — the signal (500) and cycle (200) repositories cut in SQL before
+projection, which matters only to a tenant holding more rows than that, and
+is not caller-controlled; *the Site Manager's pattern store is keyed by
+pattern id with no site* — on a multi-site Site Manager (E1.3) the last
+push wins, so after this slice the row holds ONE receiving site's bounded
+payload (the conclusion, and at most that site's own count) rather than a
+row per site; nothing reads it back through a site-scoped API today, and
+making it per-site is a Site Manager schema change; *(closed by A30.29, below — the
+independent review showed the site's reasoning consuming another site's
+projection is a live disclosure path, not a storage nicety)*; *predictive `cohort_failure_rate` / `outcomes_considered`* are
+tenant-wide OUTCOME statistics — S3-E2's family, decided by R6 and
+implemented with it; *Site Manager explanation free text* other than a
+pattern citation is model- or rule-authored prose about the reader's own
+device. *(This reasoning was WRONG and is corrected by A30.29: the prose is
+generated from a prompt that carried the unbounded pattern description.)* **E1 and E2 are NOT implemented by this slice.** **General B0b is
+NOT changed and PR #48 is not touched**; when it consumes `main` it takes
+this projection for attention's signals as it takes S3's composer.
+**Unchanged:** the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE` (13), every route (zero
+added; ONE treatment re-declared, UNSCOPED → READ_SCOPED), every migration
+head (CC `0026`, Console `0004`, SM `0010`), `resolve()`, `permits()`,
+`read_reach`, every stored row, every decision path, S1, S2, S3. Only
+readers who are not tenant-wide change, and only by reading LESS. B0c, B1,
+B2 and the taxonomy remain not started.
+
+**A30.29 — A6-4B0b-S4 remediation: generated content inherits the
+projection it was generated from (decided: Vinod, 2026-09-22; closes the
+independent review's HIGH on PR #51 at `540a0cd`).** *Ordering truth: the
+review verdict was FIX BEFORE MERGE; the finding was reproduced by
+execution before this text was written; this text is committed before the
+remediation code.* **The HIGH.** A30.28 bounded a pattern CITATION at read
+and left the PROSE the same pattern was quoted into as stored. A Site
+Manager feeds every matching fleet pattern's `description` into the
+reasoning prompt (`ingest._matching_fleet_patterns` →
+`reasoning._build_messages`), persists `summary = completion[:500]`, and
+then feeds that summary and the same evidence into the skill prompt whose
+YAML is persisted as `yaml_text`. Central Command's `_diagnosis` bounded
+`evidence_cited` only and returned `generated.*` verbatim;
+`/api/learning/candidates` returned `yaml_text` verbatim. Reproduced on the
+S4 estate: a site-A principal read "SEL_CLEAR fails at 65% on Dell R750
+across 3 sites (35/54)" through `GET /api/incidents/{id}` and through the
+candidate list, at 200. The review overstated one detail — the LLM
+provider's `reasoning_steps` are deterministic templates and its
+`suggested_action` is always empty — and the correction changes nothing:
+the block is DECLARED generated, and a future provider may populate every
+field of it. **The window is not "pre-S4 rows".** A Site Manager reloads
+its pattern mirror from `sm_fleet_patterns` at boot, so after an upgrade it
+keeps generating from an unbounded payload until Central Command re-pushes,
+which happens on a restart and not on a clock; and on a multi-site Site
+Manager the store is keyed by pattern id alone, so site B's projected
+payload overwrites site A's and a site-A diagnosis quotes site B's own
+count — a LIVE post-S4 source, not history. **Ratified: Option A —
+explicit generation provenance and fail-closed scoped projection. Option
+B (withhold generated text from every scoped reader unconditionally) is
+REJECTED — it takes LLM Explain from the persona it was built for. A clock
+cutoff is REJECTED — the boot reload makes the clock wrong. Regex or text
+sanitisation of model output is REJECTED — it cannot be proven.** **The
+invariant, LOCKED.** *Generated content inherits the confidentiality
+boundary of the evidence projection it was generated from.* A scoped
+reader may receive generated content ONLY when HarkenIQ can PROVE that the
+generation projection is covered by that reader's CURRENT canonical reach.
+Unknown, missing or ambiguous provenance FAILS CLOSED for scoped readers.
+Historical canonical content stays stored unchanged; a tenant-wide
+authorized reader retains it. **The provenance model.** One durable,
+structured marker, `generation_visibility`, describes the AUTHORIZATION
+BOUNDARY of the evidence projection an artifact was generated from —
+never the evidence: `{"scope": "site" | "tenant", "site_id": <canonical
+Central Command site id> | null, "projection_version": 1}`. It carries no
+site list, no count, no total, no fault name, no metric, no rationale, no
+signal content. Its vocabulary and its algebra live ONCE, in
+`harkeniq.generation_provenance`, the package both services already
+import, so the writer at the Site Manager and the reader at Central
+Command cannot hold two rules: the visibility of an artifact generated
+from several inputs is their JOIN — unknown anywhere is unknown; `tenant`
+anywhere is `tenant`; one site throughout is that site; two different
+sites is `tenant` (only tenant-wide authority covers evidence of more than
+one site, and the vocabulary deliberately has no multi-site form). A
+marker is never inferred from prose. **Site-generated content.** Central
+Command's per-site distribution payload (A30.28 (A)) now MARKS every
+pattern as projected for that canonical site. The Site Manager preserves
+the marker from the projected pattern through the reasoning evidence to
+the diagnosis, the persisted explanation, candidate generation and the
+persisted candidate. The visibility of a diagnosis is the join of the
+device's own site (the device's telemetry and its own history are that
+site's facts) with the marker of every fleet pattern the reasoning
+consumed; the candidate generated from that diagnosis and that evidence
+carries the same visibility. A device whose site is not bound to a Central
+Command identity (E0.2) has no canonical site to name, so nothing is
+written and the artifact reads UNKNOWN. **Tenant-generated content.** A
+pattern consumed WITHOUT a marker — pushed by a Central Command older than
+this amendment, or reloaded from the pre-A30.29 store — is an unbounded
+tenant payload, and an artifact generated from it is marked `tenant`. That
+is the truth about its inputs, is never downgraded to a site afterwards,
+and a non-tenant-wide reader does not receive that artifact's generated
+text because the containing incident is otherwise readable. **Historical
+and unknown provenance.** No backfill, because none is mechanically
+provable: a pre-A30.29 explanation or candidate reads UNKNOWN, a
+tenant-wide reader keeps its canonical content, a scoped reader gets the
+generated fields WITHHELD. No stored row is rewritten. Independently safe
+fields — the incident row itself, its title, status, components,
+correlation, `confidence`, `evidence_cited` (A30.28 (B)),
+`similar_past_incidents` (the device's own history), a candidate's site,
+device, component, validation state and match count — remain available.
+**Current reach at read time.** Provenance is evidence of how an artifact
+was created; it is NOT an authorization token. At read, the marker is
+compared against the reader's CURRENT canonical reach — A30.28's
+`LearningView`, which is S2's `read_reach(scope, "fleet.view")`, on every
+projection including incident detail under `incident.view` — so a reader
+who held site A when the artifact was generated and no longer does is
+withheld on the next read, and is shown it again when A is restored.
+Nothing hardcodes "reader site == generated site": an org or site-set
+reader receives a site-generated artifact when the recorded site is
+covered by their current reach; a `device` or `device_class` reader holds
+no site in that reach until general B0b (F1, deliberately open) and is
+withheld, fail closed, under this contract; contextual ancestry never
+synthesises authority (A30.5). **Incident projection.** The policy covers
+the ENTIRE generated block — `summary`, `suggested_action`,
+`reasoning_steps`, and any field a future provider adds — by naming what
+may pass, never what may not: for a reader the marker does not cover, the
+block is `{"summary": <one neutral sentence>, "suggested_action": "",
+"reasoning_steps": [], "withheld": true}`, and the response never names
+the site the marker names. The sentence is the same whether the marker
+names another site or is missing, because "recorded for a site you do not
+hold" is itself a fact about the hidden estate. Two ADDITIVE fields on the
+diagnosis for every reader: `generated.withheld` and
+`generation_visibility` (the marker when the reader is covered, `null`
+otherwise). **Candidate projection.** `yaml_text` — and the validation
+`warnings`, which are derived from it — are withheld the same way
+(`yaml_text: ""`, `warnings: []`, `generated_withheld: true`,
+`generation_visibility` as above). A candidate being site-owned does NOT
+make its generated content site-safe; the generation provenance is
+authoritative for this decision. **Generated content and provenance are
+one atomic security unit.** A candidate ingest that changes `yaml_text`,
+validation `warnings`, or any equivalent protected generated content MUST
+replace `generation_visibility` from that same incoming artifact in the
+same repository transaction. Missing, null, malformed or otherwise invalid
+incoming provenance on changed content stores UNKNOWN (`NULL`) so every
+scoped projection fails closed; an earlier marker never survives content it
+did not describe. A byte-identical replay may preserve the existing marker,
+but identity (`skill_id`) alone never proves content equivalence. Concurrent
+same-id writes are serialized so the durable row is always one complete
+content/provenance pair, never content from one writer with the other
+writer's marker. **Multi-site Site Manager store — fixed
+here, not deferred.** A30.28 named `sm_fleet_patterns` keyed by pattern id
+as a follow-up; truthful provenance depends on the site's reasoning
+consuming the site's own projection, so it is part of this remediation.
+`sm_site_fleet_patterns` is keyed `(site_id, pattern_id)` and stores the
+marker as pushed; `PushPolicy` resolves the receiving site by Central
+Command's site id (E0.2 — an unresolved site is REFUSED, never guessed),
+refuses a payload whose marker names a different site than the one it is
+being stored under, stores an unmarked payload with `visibility = NULL`
+(an older Central Command — the artifact then reads `tenant`), and one
+site's push can neither replace nor be replaced by another site's row.
+Reasoning for a device consumes ITS site's rows; a legacy
+`sm_fleet_patterns` row is consumed only where the site holds no row for
+that pattern id, as unmarked evidence, so an upgraded Site Manager
+degrades to `tenant`-visibility artifacts rather than to fleet-blind
+diagnoses until Central Command re-pushes; a re-push supersedes the legacy
+row for that site. The legacy table is not rewritten and not dropped.
+`sm_candidate_skills.site_id` (E1.3) had no writer — the snapshot joined
+through the device instead — and is written now, from the same resolved
+site. **Migration and protocol, additive and rolling-upgrade safe.** SM
+migration **0011**: `sm_site_fleet_patterns` (new; FK `sites.id`), and
+`sm_candidate_skills.generation_visibility` JSON nullable, no backfill. CC
+migration **0027**: `cc_candidate_skills.generation_visibility` JSON
+nullable, no backfill. Proto: `CandidateSkill.generation_visibility_json`
+(tag 9, additive). The incident explanation is a JSON document at both
+services and the marker is a key INSIDE it, written in the same assignment
+as the generated text, so an explanation cannot exist with text and
+without the provenance of its own creation; no incident migration. *Old
+CC / new SM:* the push carries no marker → stored `NULL` → artifacts read
+`tenant` → withheld from scoped readers at a new CC, and the old CC's
+reads are what they were. *New CC / old SM:* the marker is an unknown key
+the old upsert drops; the old SM writes no provenance; the new CC reads
+UNKNOWN → withheld. *Old CC ingesting a new SM's snapshot:* tag 9 is an
+unknown field it never decodes; the explanation key rides inside the JSON
+it stores verbatim and its `_diagnosis` ignores it. Every combination is
+either the old behaviour or fail-closed, and each is tested. **Unchanged:**
+the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE` (13), `ROUTE_CONTRACT`
+(zero routes added), `resolve()`, `permits()`, `read_reach`, every
+decision path, every S4 projection A30.28 already ratified, S1, S2, S3;
+the Site Manager's own site-token API (E1.3's site-authority plane, not a
+tenant RBAC surface) returns the site's rows as stored and is out of this
+amendment's scope, recorded as a limit. A tenant-wide reader's content is
+unchanged and gains two fields. **Proof obligations.** *Historical attack:*
+an incident persisted with NO provenance whose `summary` carries
+`SECRET_SITE_C` and whose generated fields carry "30 of 40 attempts across
+2 sites", and a candidate whose YAML carries the same — a site human, a
+device human, a device-class human and a machine principal receive the
+row where independently authorized, its safe local facts, and neither
+sentinel through list or detail; the tenant-wide reader receives the
+original. *New-write matrix:* site-A projected evidence → artifact marked
+A; a current covering site reader, an org reader covering A and the
+tenant-wide reader see it; a site-B reader and an org reader not covering
+A are withheld; revoking A withholds on the next read and restoring A
+shows it again. *Multi-site Site Manager:* one Site Manager owning A and
+B, pattern P pushed projected for A and for B with distinct sentinels — A's
+diagnosis consumed A's projection only, B's consumed B's, neither push
+overwrote the other, and each persisted artifact's provenance matches the
+projection actually consumed. *Provider-independent:* every generated
+field withheld even when a hypothetical provider populates all of them,
+including a field this amendment does not name. *Compatibility:* each
+producer/consumer pairing above. *Real PostgreSQL:* both upgrades on
+databases holding rows, backfilling none; JSONB marker round-trip. *Live:*
+the compose gate's multi-site Site Manager receives two per-site rows with
+their markers, the historical attack on the live stack, and both live
+databases upgraded from the previous heads with rows present. E1 and E2
+remain not implemented; general B0b and PR #48 untouched; B0c, B1, B2 and
+the taxonomy not started.

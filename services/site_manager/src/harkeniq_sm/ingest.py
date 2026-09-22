@@ -13,6 +13,14 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
+from harkeniq.generation_provenance import (
+    KEY as GENERATION_VISIBILITY_KEY,
+    GenerationVisibility,
+    combine,
+    parse as parse_visibility,
+    site_visibility,
+    tenant_visibility,
+)
 from harkeniq_sm.config import SMConfig
 from harkeniq_sm.db.repos import (
     DeviceRepo,
@@ -35,6 +43,50 @@ def _normalize(severity: str) -> str:
     return "OK" if severity in _OK_VALUES else severity
 
 
+class PatternMirror:
+    """In-memory mirror of the pattern stores the enrichment path reads.
+
+    A30.29: keyed by the site a pattern was pushed FOR. `for_site` is the
+    ONLY read, and it answers with the site's own rows first; a legacy row
+    (`sm_fleet_patterns`, pushed before the store was per-site, carrying
+    no site and no marker) is consulted only where the site holds no row
+    for that pattern id. Each entry says whether it is marked, because an
+    artifact generated from an unmarked payload must be recorded as
+    `tenant`-visible (the truth about an unbounded payload) and one from a
+    marked payload as whatever the marker says.
+    """
+
+    def __init__(self) -> None:
+        self._by_site: dict[str, dict[str, dict]] = {}
+        self._legacy: dict[str, dict] = {}
+
+    def put(self, site_id: str, pattern: dict) -> None:
+        """A pattern as pushed to `site_id` (its `generation_visibility` key,
+        if any, rides inside the dict exactly as pushed)."""
+        self._by_site.setdefault(site_id, {})[str(pattern.get("pattern_id", ""))] = dict(pattern)
+
+    def put_legacy(self, pattern: dict) -> None:
+        self._legacy[str(pattern.get("pattern_id", ""))] = dict(pattern)
+
+    def for_site(self, site_id: str) -> list[tuple[dict, Optional[GenerationVisibility]]]:
+        """(pattern, its parsed marker or None) for every pattern this
+        site's reasoning may consume. `None` is an unmarked payload."""
+        own = self._by_site.get(site_id, {})
+        out: list[tuple[dict, Optional[GenerationVisibility]]] = []
+        for pattern_id, pattern in own.items():
+            out.append((pattern, parse_visibility(pattern.get("generation_visibility"))))
+        for pattern_id, pattern in self._legacy.items():
+            if pattern_id not in own:
+                out.append((pattern, None))
+        return out
+
+    def __len__(self) -> int:
+        return sum(len(rows) for rows in self._by_site.values()) + len(self._legacy)
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+
 class IngestService:
     """Persists agent-reported telemetry; one commit per event."""
 
@@ -48,9 +100,10 @@ class IngestService:
         # R3b-1 C1: reasoning pipeline for LLM enrichment (set by runtime)
         self.reasoning_pipeline = None
         # QA-033: CC-pushed fleet patterns, mirrored in memory for the
-        # (sync-shaped) enrichment path. Loaded from sm_fleet_patterns at
-        # startup; updated live by PushPolicy.
-        self.fleet_patterns: dict[str, dict] = {}
+        # (sync-shaped) enrichment path. Loaded at startup from the
+        # per-site store (and the legacy one); updated live by PushPolicy.
+        # A30.29: keyed by the site the pattern was pushed FOR.
+        self.fleet_patterns = PatternMirror()
         # QA-033 feedback half: candidate skill generation (set by runtime
         # when the LLM is enabled). None = generation off.
         self.skill_generator = None
@@ -256,27 +309,62 @@ class IngestService:
                 severity=severity,
                 evidence=[{"skill": skill_name, "data": evidence}] if evidence else [],
             )
-            # QA-033: fleet knowledge from CC informs the explanation
-            context.evidence.extend(
-                await self._matching_fleet_patterns(agent_id)
+            # QA-033: fleet knowledge from CC informs the explanation.
+            # A30.29: and the explanation records which projection of it
+            # the model saw. The device's own telemetry and history are
+            # its site's facts; every consumed pattern contributes the
+            # marker it was pushed with, or `tenant` if it had none.
+            fleet_evidence, consumed = await self._matching_fleet_patterns(agent_id)
+            context.evidence.extend(fleet_evidence)
+            visibility = combine(
+                [await self._device_visibility(agent_id)]
+                + [marker if marker is not None else tenant_visibility()
+                   for marker in consumed]
             )
             # Check for LLMReasoner in the pipeline and call async directly
             for provider in self.reasoning_pipeline._providers:
                 if isinstance(provider, LLMReasoner):
                     result = await provider.analyze_async(context)
                     if result and result.provider == "llm":
-                        await self._store_explanation(agent_id, sensor_id, result)
+                        await self._store_explanation(
+                            agent_id, sensor_id, result, visibility,
+                        )
                         # QA-033 feedback half: an LLM diagnosis is the
                         # candidate-skill trigger (R3b-1 C2, R-C1).
                         await self._generate_candidate_skill(
                             agent_id, sensor_id, severity, result, context,
+                            visibility,
                         )
                     break
         except Exception as e:
             logger.warning("LLM enrichment failed for %s/%s: %s", agent_id, sensor_id, e)
 
+    async def _device_visibility(self, agent_id: str) -> Optional[GenerationVisibility]:
+        """The projection boundary of a device's OWN facts: its site.
+
+        Named by Central Command's site id (E0.2), because that is what a
+        reader's reach is expressed in. A device at a site that is not
+        bound to a Central Command identity has no canonical site to name;
+        the answer is UNKNOWN and the artifact reads as such. Central
+        Command never ingests from an unbound site anyway.
+        """
+        from harkeniq_sm.db.repos import SiteRepo
+        async with self.sessionmaker() as session:
+            device = await DeviceRepo(session).get_by_agent_id(agent_id)
+            if device is None or not device.site_id:
+                return None
+            site = await SiteRepo(session).get(device.site_id)
+        if site is None or not site.cc_site_id:
+            logger.debug(
+                "device %s: site has no Central Command identity; "
+                "generated content will read as unknown provenance", agent_id,
+            )
+            return None
+        return site_visibility(site.cc_site_id)
+
     async def _generate_candidate_skill(
         self, agent_id: str, sensor_id: str, severity: str, result, context,
+        visibility: Optional[GenerationVisibility] = None,
     ) -> None:
         """Generate, validate, and persist a candidate skill (QA-033).
 
@@ -285,6 +373,11 @@ class IngestService:
         validate_and_promote runs static analysis plus a dry-run against
         the evidence state that triggered generation; failures are logged
         and the candidate is dropped.
+
+        A30.29: `visibility` is the projection boundary of everything the
+        skill prompt carried -- the diagnosis and the same evidence -- and
+        is persisted beside the YAML. None is recorded as NULL (unknown),
+        never guessed.
         """
         if self.skill_generator is None:
             return
@@ -336,14 +429,22 @@ class IngestService:
                 return
 
             async with self.sessionmaker() as session:
+                # E1.3 declared `site_id` and nothing wrote it (the snapshot
+                # joined through the device). The device's own row is the
+                # site, and it is written now.
+                device = await DeviceRepo(session).get_by_agent_id(agent_id)
                 session.add(CandidateSkillRow(
                     skill_id=candidate.skill_id,
+                    site_id=device.site_id if device is not None else None,
                     yaml_text=candidate.yaml_text,
                     source_device=agent_id,
                     source_component=sensor_id,
                     validation_state=package.validation_state.value,
                     warnings=validation.warnings or None,
                     dry_run_matches=validation.dry_run_matches,
+                    generation_visibility=(
+                        visibility.to_dict() if visibility is not None else None
+                    ),
                 ))
                 await session.commit()
             logger.info(
@@ -357,22 +458,31 @@ class IngestService:
                 agent_id, sensor_id, e,
             )
 
-    async def _matching_fleet_patterns(self, agent_id: str) -> list[dict]:
+    async def _matching_fleet_patterns(
+        self, agent_id: str,
+    ) -> tuple[list[dict], list[Optional[GenerationVisibility]]]:
         """Fleet patterns whose scope matches this device (QA-033).
 
         Empty vendor/model in affected_scope is a wildcard. Best-effort:
         any failure returns no extra evidence, never blocks enrichment.
+
+        A30.29: the device's SITE decides which projection is consumed --
+        `PatternMirror.for_site` answers with the rows pushed for that
+        site, and a legacy row only where the site holds none. Returns
+        the evidence in the citation shape A30.28's read grammar knows,
+        and, beside it, the marker of each consumed pattern (None for an
+        unmarked payload) so the caller can record what the model saw.
         """
         if not self.fleet_patterns:
-            return []
+            return [], []
         try:
-            from harkeniq_sm.db.repos import DeviceRepo
             async with self.sessionmaker() as session:
                 device = await DeviceRepo(session).get_by_agent_id(agent_id)
-            if device is None:
-                return []
-            matches = []
-            for pattern in self.fleet_patterns.values():
+            if device is None or not device.site_id:
+                return [], []
+            matches: list[dict] = []
+            consumed: list[Optional[GenerationVisibility]] = []
+            for pattern, marker in self.fleet_patterns.for_site(device.site_id):
                 scope = pattern.get("affected_scope") or {}
                 vendor = scope.get("vendor", "")
                 model = scope.get("model", "")
@@ -386,13 +496,24 @@ class IngestService:
                     "description": pattern.get("description", ""),
                     "confidence": pattern.get("confidence", 0.0),
                 }})
-            return matches
+                consumed.append(marker)
+            return matches, consumed
         except Exception as e:
             logger.debug("Fleet pattern matching failed: %s", e)
-            return []
+            return [], []
 
-    async def _store_explanation(self, agent_id: str, sensor_id: str, result) -> None:
-        """Store the LLM explanation on the open incident for this device+subsystem."""
+    async def _store_explanation(
+        self, agent_id: str, sensor_id: str, result,
+        visibility: Optional[GenerationVisibility] = None,
+    ) -> None:
+        """Store the LLM explanation on the open incident for this device+subsystem.
+
+        A30.29: the explanation carries the projection boundary it was
+        generated from, INSIDE the same document and in the same
+        assignment as the generated text, so an explanation cannot exist
+        with text and without the provenance of its own creation. An
+        unknown boundary is recorded by ABSENCE of the key, never guessed.
+        """
         from harkeniq_sm.db.repos import DeviceRepo, IncidentRepo
         subsystem = sensor_id.split(":", 1)[0]
         async with self.sessionmaker() as session:
@@ -403,7 +524,7 @@ class IngestService:
             incident = await repo.open_device_incident(device.id, subsystem)
             if incident is None:
                 return
-            incident.explanation = {
+            explanation = {
                 "provider": result.provider,
                 "summary": result.diagnosis,
                 "confidence": result.confidence,
@@ -412,6 +533,9 @@ class IngestService:
                 "suggested_action": result.suggested_action,
                 "similar_past_incidents": result.similar_past_incidents,
             }
+            if visibility is not None:
+                explanation[GENERATION_VISIBILITY_KEY] = visibility.to_dict()
+            incident.explanation = explanation
             await session.commit()
             logger.info("LLM explanation stored for incident %s", incident.id)
 
