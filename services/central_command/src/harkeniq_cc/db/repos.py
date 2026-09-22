@@ -1797,32 +1797,70 @@ class CandidateSkillRepo:
     async def upsert(
         self, tenant_id: str, site_id: str, cand: dict,
     ) -> CCCandidateSkill:
-        """Ingest one FleetSnapshot candidate dict; idempotent on skill_id."""
+        """Ingest one FleetSnapshot candidate dict; idempotent on skill_id.
+
+        A30.29: protected generated content and its generation provenance
+        are one atomic security unit. Same-id writers are serialized on
+        PostgreSQL before the row is read, so every update is one complete
+        content/marker pair. A changed unmarked or malformed artifact clears
+        the marker to UNKNOWN; an earlier marker never authorizes replacement
+        content it did not describe. A byte-identical legacy replay may keep
+        the marker already attached to those exact bytes.
+        """
         import json as _json
         from datetime import timezone
 
+        from harkeniq.audit.chain import pg_advisory_chain_lock
+        from harkeniq.generation_provenance import parse as parse_visibility
+
+        skill_id = cand.get("skill_id", "")
+        # Transaction-scoped on PostgreSQL and acquired BEFORE the row read.
+        # This also serializes the first insert, where SELECT FOR UPDATE has
+        # no row to lock. SQLite remains single-writer in production/tests.
+        await pg_advisory_chain_lock(
+            self.session, f"cc.candidate_skill.{tenant_id}.{skill_id}"
+        )
+
         row = await self.session.get(
-            CCCandidateSkill, (cand.get("skill_id", ""), tenant_id)
+            CCCandidateSkill, (skill_id, tenant_id)
         )
         if row is None:
             row = CCCandidateSkill(
-                skill_id=cand.get("skill_id", ""), tenant_id=tenant_id
+                skill_id=skill_id, tenant_id=tenant_id
             )
             self.session.add(row)
+
+        try:
+            incoming_warnings = _json.loads(cand.get("warnings_json") or "[]") or None
+        except (TypeError, ValueError):
+            incoming_warnings = None
+        incoming_yaml = cand.get("yaml_text", "")
+        protected_changed = (
+            (row.yaml_text or "") != incoming_yaml
+            or list(row.warnings or []) != list(incoming_warnings or [])
+        )
+
         row.site_id = site_id
-        row.yaml_text = cand.get("yaml_text", "")
+        row.yaml_text = incoming_yaml
         row.source_device = cand.get("source_device", "")
         row.source_component = cand.get("source_component", "")
         row.validation_state = cand.get("validation_state", "draft")
-        try:
-            row.warnings = _json.loads(cand.get("warnings_json") or "[]") or None
-        except ValueError:
-            row.warnings = None
+        row.warnings = incoming_warnings
         row.dry_run_matches = cand.get("dry_run_matches", 0)
         if cand.get("generated_at_unix"):
             row.generated_at = datetime.fromtimestamp(
                 cand["generated_at_unix"], tz=timezone.utc
             )
+        # Store a canonical valid marker from THIS artifact. When protected
+        # content changed, missing/malformed provenance becomes NULL even if
+        # the old row had a valid marker. For an exact legacy replay only,
+        # preserving the marker is safe because it still describes the same
+        # protected bytes.
+        visibility = parse_visibility(cand.get("generation_visibility"))
+        if visibility is not None:
+            row.generation_visibility = visibility.to_dict()
+        elif protected_changed:
+            row.generation_visibility = None
         await self.session.flush()
         return row
 

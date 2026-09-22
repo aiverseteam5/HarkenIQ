@@ -32,6 +32,7 @@ from harkeniq_cc.db.repos import (
     LearnedSignalRepo,
     SiteRepo,
 )
+from harkeniq_cc.governance import learning_view, require_learning_view
 from harkeniq_cc.learned_signals import signals_for_device
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
@@ -40,31 +41,50 @@ router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 _GENERATED_PROVIDERS = {"llm"}
 
 
-def _diagnosis(explanation: dict | None) -> dict | None:
-    """Shape the reasoning result, with its provenance stated up front."""
+def _diagnosis(explanation: dict | None, view) -> dict | None:
+    """Shape the reasoning result, with its provenance stated up front.
+
+    `view` is the reader's `LearningView` (A30.28). A Site Manager cites
+    the fleet patterns it reasoned with, by their description -- "across 2
+    sites (30/40)" -- and that text rides back here inside a diagnosis for
+    a device the reader DOES hold. The pattern citations are bounded; the
+    device's own telemetry is left exactly as cited.
+
+    A30.29: the GENERATED block was written by a model from a prompt that
+    carried those same patterns, and the sentence does not say which
+    projection it saw. The Site Manager records it (`generation_visibility`
+    inside the explanation) and `view.generated` shows the block only to a
+    reader who holds that projection's site NOW; a tenant-wide reader
+    always; everyone else gets one neutral sentence. Missing or malformed
+    provenance -- every explanation written before A30.29 -- is withheld
+    the same way. The policy is provider-independent: it covers the whole
+    block, not the field the review reproduced.
+    """
+    view = require_learning_view(view)
     if not explanation:
         return None
     provider = explanation.get("provider", "unknown")
     generated = provider in _GENERATED_PROVIDERS
+    block, visibility = view.generated(explanation)
     return {
         "origin": provider,
         # Consumers (especially model-driven ones) must know whether this
         # text was generated from telemetry before they reason with it.
         "trust": "untrusted_generated" if generated else "deterministic",
         "confidence": explanation.get("confidence", 0.0),
-        "generated": {
-            "summary": explanation.get("summary", ""),
-            "suggested_action": explanation.get("suggested_action", ""),
-            "reasoning_steps": explanation.get("reasoning_steps", []),
-        },
+        "generated": block,
+        # The projection boundary the generated block was produced from,
+        # when the reader is covered by it; null otherwise (a marker names
+        # a site, and a reader who does not hold it is not told which).
+        "generation_visibility": visibility,
         # Citations and prior incidents are references the platform itself
         # produced, not free text the model invented.
-        "evidence_cited": explanation.get("evidence_cited", []),
+        "evidence_cited": view.citations(explanation.get("evidence_cited", [])),
         "similar_past_incidents": explanation.get("similar_past_incidents", []),
     }
 
 
-def _incident_dict(row, site_names: dict) -> dict:
+def _incident_dict(row, site_names: dict, view) -> dict:
     return {
         "incident_id": row.incident_id,
         "kind": row.kind,
@@ -82,7 +102,7 @@ def _incident_dict(row, site_names: dict) -> dict:
         # as confirmed.
         "inferred": row.inferred,
         "correlation": row.correlation_meta or {},
-        "diagnosis": _diagnosis(row.explanation),
+        "diagnosis": _diagnosis(row.explanation, view),
         "opened_at": row.opened_at.isoformat() if row.opened_at else None,
         "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
         "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
@@ -109,6 +129,7 @@ async def list_incidents(
     one root cause — exactly what consolidation exists to prevent.
     """
     reach = read_reach(scope, "incident.view")
+    view = learning_view(scope)
     repo = IncidentRepo(session)
     rows = await repo.list_incidents(
         user.tenant_id,
@@ -130,9 +151,9 @@ async def list_incidents(
 
     items = []
     for parent in parents:
-        entry = _incident_dict(parent, site_names)
+        entry = _incident_dict(parent, site_names, view)
         entry["children"] = [
-            _incident_dict(c, site_names)
+            _incident_dict(c, site_names, view)
             for c in children_by_parent.get(parent.incident_id, [])
         ]
         entry["child_count"] = len(entry["children"])
@@ -141,7 +162,7 @@ async def list_incidents(
     # A child whose parent is outside this page (or already resolved) is
     # still shown, rather than disappearing into a parent nobody listed.
     orphans = [
-        _incident_dict(r, site_names)
+        _incident_dict(r, site_names, view)
         for r in rows
         if r.parent_incident_id and r.parent_incident_id not in by_id
     ]
@@ -170,6 +191,7 @@ async def get_incident(
 ) -> dict:
     """One incident with its children, prior learning, and what comes next."""
     reach = read_reach(scope, "incident.view")
+    view = learning_view(scope)
     repo = IncidentRepo(session)
     row = await repo.get(user.tenant_id, incident_id)
     if row is None:
@@ -181,9 +203,9 @@ async def get_incident(
 
     sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
     site_names = {s.id: s.site_name for s in sites}
-    entry = _incident_dict(row, site_names)
+    entry = _incident_dict(row, site_names, view)
     children = await repo.children_of(user.tenant_id, incident_id)
-    entry["children"] = [_incident_dict(c, site_names) for c in children]
+    entry["children"] = [_incident_dict(c, site_names, view) for c in children]
     entry["child_count"] = len(entry["children"])
 
     # S3 -> S4: has the fleet seen this before? Learned signals for the
@@ -196,8 +218,13 @@ async def get_incident(
         device = await FleetCacheRepo(session).get_by_agent_id(row.device_agent_id)
     if device is not None and device.site_id == row.site_id:
         signals = await LearnedSignalRepo(session).list_active(user.tenant_id)
+        # A30.28: learned knowledge is a `fleet.view` fact wherever it is
+        # projected, this `incident.view` route included -- a grant can
+        # carry one at a site and withhold the other. The cohort conclusion
+        # is tenant knowledge and always shows; the evidence is bounded.
         entry["prior_learning"] = signals_for_device(
-            signals, device.vendor, device.model, row.site_id,
+            view.signals(signals),
+            device.vendor, device.model, row.site_id,
         )
     else:
         entry["prior_learning"] = []

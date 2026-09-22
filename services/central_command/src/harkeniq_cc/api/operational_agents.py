@@ -1965,8 +1965,11 @@ async def dry_run_agent(
     agent_scope = agent_reach.scope
     attention = {
         item["agent_id"]: item
+        # A30.28: an INTERNAL DECISION -- the preview reasons as the
+        # runtime does and returns rank/band/driver/score, never the items.
         for item in (await load_attention(
             session, tenant_id=tenant_id, scope=where_reach(agent_scope),
+            learning=None,
         ))["items"]
     }
     # A30.26: an INTERNAL DECISION. A22.6 requires the preview to reason
@@ -2390,8 +2393,10 @@ async def submit_proposal(
         ),
         attention_by_device={
             item["agent_id"]: item
+            # A30.28: an INTERNAL DECISION (the ingress re-derivation).
             for item in (await load_attention(
                 session, tenant_id=tenant_id, scope=where_reach(agent_scope),
+                learning=None,
             ))["items"]
         },
         open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),

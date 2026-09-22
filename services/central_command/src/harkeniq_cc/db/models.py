@@ -625,6 +625,11 @@ class CCCandidateSkill(Base):
     cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    #: A30.29: the projection boundary the YAML was generated from, as the
+    #: Site Manager recorded it (`harkeniq.generation_provenance`). NULL is
+    #: UNKNOWN -- a row from before the marker, or from an older Site
+    #: Manager -- and is withheld from every scoped reader. No backfill.
+    generation_visibility: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
 
     __table_args__ = (
         Index("ix_candidate_skills_tenant_status", "tenant_id", "status"),

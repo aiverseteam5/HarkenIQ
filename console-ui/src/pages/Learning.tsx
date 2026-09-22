@@ -9,6 +9,7 @@ import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { getJson } from "../api";
+import { candidateGeneratedView } from "../generatedContent";
 
 /* S3 — Learning: the governance surface over the learning substrate.
  *
@@ -27,8 +28,10 @@ interface LearningCycle {
   pattern_id: string;
   pattern_type: string;
   skill_id: string | null;
-  sites_distributed: number;
-  devices_applied: number;
+  // A30.28: a scoped reader is not told how many sites or devices the
+  // cohort spans -- Central Command withholds the count (null) and says so.
+  sites_distributed: number | null;
+  devices_applied: number | null;
   outcomes_before: Record<string, number>;
   outcomes_after: Record<string, number>;
   improvement_pct: number | null;
@@ -65,6 +68,9 @@ interface Candidate {
   cycle_id: string | null;
   generated_at: string;
   yaml_text: string;
+  /** A30.29: true when the server withheld the generated YAML (and the
+   *  warnings derived from it) from this reader. */
+  generated_withheld?: boolean;
 }
 
 const STAGE_HELP: Record<string, string> = {
@@ -220,7 +226,11 @@ export default function Learning() {
       ),
     },
     { key: "skill_id", header: "Candidate", render: (r) => r.skill_id ?? "none yet" },
-    { key: "devices_applied", header: "Devices reached" },
+    {
+      key: "devices_applied",
+      header: "Devices reached",
+      render: (r) => r.devices_applied ?? "outside your scope",
+    },
     {
       key: "improvement_pct",
       header: "Measured change",
@@ -444,11 +454,11 @@ export default function Learning() {
               <span style={detailValue}>{selectedCandidate.dry_run_matches}</span>
             </div>
 
-            {selectedCandidate.warnings.length > 0 && (
+            {candidateGeneratedView(selectedCandidate).warnings.length > 0 && (
               <>
                 <div style={sectionTitle}>Warnings</div>
                 <ul style={{ fontSize: "0.8125rem", paddingLeft: "1.1rem" }}>
-                  {selectedCandidate.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  {candidateGeneratedView(selectedCandidate).warnings.map((w, i) => <li key={i}>{w}</li>)}
                 </ul>
               </>
             )}
@@ -461,7 +471,13 @@ export default function Learning() {
             </p>
 
             <div style={sectionTitle}>Proposed behaviour</div>
-            <div style={codeBlock}>{selectedCandidate.yaml_text}</div>
+            {candidateGeneratedView(selectedCandidate).withheld ? (
+              <p style={{ fontSize: "0.8125rem", lineHeight: 1.6 }} data-testid="candidate-withheld">
+                {candidateGeneratedView(selectedCandidate).note}
+              </p>
+            ) : (
+              <div style={codeBlock}>{candidateGeneratedView(selectedCandidate).yamlText}</div>
+            )}
           </>
         )}
       </DetailPanel>

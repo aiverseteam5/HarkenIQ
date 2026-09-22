@@ -14,9 +14,14 @@ from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, re
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import FleetPatternRepo, OutcomeHistoryRepo
+from harkeniq_cc.governance import learning_view
 from harkeniq_cc.outcome_aggregator import OutcomeAggregator
 
 router = APIRouter(prefix="/api/outcomes", tags=["outcomes"])
+
+#: How many patterns a scoped read projects before `limit` is applied; the
+#: route's own maximum.
+_PATTERN_WINDOW = 1000
 
 
 @router.get(
@@ -80,13 +85,25 @@ async def list_patterns(
     reliability), newest first.
 
     A23: a pattern is tenant-level knowledge (a vendor/model cohort), but
-    its evidence names the SITES it was detected across. A scoped caller
-    reads the pattern with the site evidence narrowed to their own sites;
-    a pattern whose named sites are all outside their scope is absent.
+    its evidence names the SITES it was detected across. A pattern whose
+    named sites are all outside the caller's scope is absent.
+
+    A30.28: what a scoped caller reads of a pattern they may see is the
+    BOUNDED projection -- one rule, shared with every reader of a learned
+    signal. The route-local `_narrow_sites` it replaces filtered two keys
+    and only when they were a dict or a list: production writes
+    `affected_scope.sites` as a comma-joined STRING, so it passed through
+    whole, and `sites_affected`, the tenant totals and the `description`
+    sentence ("across 2 sites (30/40)") were never touched.
     """
-    reach = read_reach(scope, "fleet.view")
+    view = learning_view(scope)
     rows = await FleetPatternRepo(session).list_patterns(
-        pattern_type=pattern_type, status=status or None, limit=limit,
+        pattern_type=pattern_type, status=status or None,
+        # A30.28: for a scoped reader `limit` is applied AFTER projection.
+        # In SQL it cuts over the exact `detected_at`, which within one
+        # engine pass ranks cohorts by tenant attempt total -- `?limit=1`
+        # would name the cohort with the smallest hidden total.
+        limit=limit if view.sites is None else _PATTERN_WINDOW,
         tenant_id=user.tenant_id,
     )
     return {
@@ -95,56 +112,13 @@ async def list_patterns(
                 "pattern_id": r.id,
                 "pattern_type": r.pattern_type,
                 "description": r.description,
-                "affected_scope": _narrow_sites(r.affected_scope or {}, reach),
+                "affected_scope": r.affected_scope or {},
                 "confidence": r.confidence,
-                "evidence": _narrow_sites(r.evidence or {}, reach),
+                "evidence": r.evidence or {},
                 "status": r.status,
                 "detected_at": r.detected_at.isoformat() if r.detected_at else None,
             }
-            for r in rows
-            if _pattern_visible(r, reach)
+            for r in view.patterns(rows, limit=limit)
         ],
         "tenant_id": user.tenant_id,
     }
-
-
-_SITE_KEYS = ("sites", "site_failure_counts")
-
-
-def _visible_sites(reach) -> set[str] | None:
-    """`reach` is the caller's `fleet.view` ReadReach (A30.24)."""
-    if reach is None or reach.tenant_wide:
-        return None
-    return set(reach.site_ids)
-
-
-def _narrow_sites(payload: dict, reach) -> dict:
-    """Drop site identifiers the caller may not see from a JSON blob."""
-    visible = _visible_sites(reach)
-    if visible is None:
-        return payload
-    out = dict(payload)
-    for key in _SITE_KEYS:
-        value = out.get(key)
-        if isinstance(value, dict):
-            out[key] = {k: v for k, v in value.items() if k in visible}
-        elif isinstance(value, list):
-            out[key] = [s for s in value if s in visible]
-    return out
-
-
-def _pattern_visible(row, reach) -> bool:
-    """A pattern that names sites is visible when at least one is the
-    caller's; one that names no site is cohort knowledge and visible."""
-    visible = _visible_sites(reach)
-    if visible is None:
-        return True
-    named: set[str] = set()
-    for blob in (row.affected_scope or {}, row.evidence or {}):
-        for key in _SITE_KEYS:
-            value = blob.get(key)
-            if isinstance(value, dict):
-                named |= set(value)
-            elif isinstance(value, list):
-                named |= set(value)
-    return not named or bool(named & visible)

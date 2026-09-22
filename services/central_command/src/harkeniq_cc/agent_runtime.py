@@ -160,8 +160,11 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             agent_scope = reach.scope
             attention = {
                 item["agent_id"]: item
+                # A30.28: an INTERNAL DECISION -- rank, band, driver and
+                # score are read off each item; the payload is not returned.
                 for item in (await load_attention(
                     session, tenant_id=tenant_id, scope=where_reach(agent_scope),
+                    learning=None,
                 ))["items"]
             }
             # A30.26: an INTERNAL DECISION, so the whole tenant -- this
