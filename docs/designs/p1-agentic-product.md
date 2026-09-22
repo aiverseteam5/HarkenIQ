@@ -4236,8 +4236,8 @@ The reconciliation rule was that S3 and S4 win every overlap:
 
 ## §34g — A6-4B0b-S3: autonomy scope isolation (A30.26)
 
-*§34f is general B0b's section. That slice is complete on its own branch
-and waits on this one, so the number is reserved.*
+*§34f is general B0b's section. Its number was reserved here while that
+slice waited on this one; it has since merged (PR #48, `d69105c`, 2026-09-22).*
 
 ### What general B0b's live gate found
 
