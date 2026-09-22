@@ -704,19 +704,45 @@ class TestSiteOwnedDomainsStaySiteOwned:
         assert [k["skill_id"] for k in candidates["candidates"]] == [n("skill-s1")]
         assert [x["id"] for x in autonomy["scope"]["sites"]] == [stack.estate.sites["s1"]]
         sel_clear = next(r for r in autonomy["action_classes"] if r["action_type"] == "SEL_CLEAR")
-        assert sel_clear["safety"]["error_budget"]["total"] == 30
-        assert stack.estate.sites["s1"] in sel_clear["safety"]["site_budget_remaining"]
+        # A30.26 (S3): the contract is COMPOSED over the reader's sites, so a
+        # site holder reads its OWN site's budget (10 at s1) -- not the
+        # tenant total of 30 that the pre-S3 fold handed every site holder.
+        # That was P2, found by this slice's live gate and closed by S3.
+        assert sel_clear["safety"]["error_budget"]["total"] == 10
+        assert sel_clear["safety"]["error_budget"]["sites_dropped_back"] == []
+        assert list(sel_clear["safety"]["site_budget_remaining"]) == [stack.estate.sites["s1"]]
+        text = json.dumps(autonomy)
+        assert n("PDU-s1") in text, "its own suppressed domain is site knowledge it holds"
+        for hidden in ("s2", "s3"):
+            assert stack.estate.sites[hidden] not in text, hidden
+            assert n(f"PDU-{hidden}") not in text, hidden
 
 
 class TestAutonomyNarrowing:
-    """R4 in the one pure function that narrows the governance contract."""
+    """R4 in the one place a reader's reach meets the governance contract.
 
-    def _contract(self):
+    As first written, A30.25 made R4 true by EMPTYING a composed contract
+    for a reader who holds no site (`narrow_to_sites`, `holds_no_site`) and
+    pinned P2 -- that a reader who DOES hold a site still read every other
+    site's drop-back status, suppressed domains and remaining budget -- as
+    an open finding for its own ratified slice. That slice is A30.26 (S3),
+    merged before this one: `narrow_to_sites` is gone, a contract is
+    COMPOSED over the reader's sites (`select_site_inputs`, BEFORE the
+    fold) and never narrowed afterwards. R4 is therefore true by
+    construction, and these tests state this slice's R4 promise against
+    S3's composer with S3's own oracle -- deletion equivalence: a scoped
+    reader of the whole estate reads exactly what a tenant-wide reader
+    reads of an estate in which the hidden sites do not exist.
+    """
+
+    SITES = ("site-MINE", "site-OTHER")
+
+    @staticmethod
+    def _inputs(*sites):
         from datetime import datetime, timezone
         from types import SimpleNamespace as NS
-        from harkeniq_cc.autonomy import build_autonomy
 
-        now = datetime.now(timezone.utc)
+        now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 
         def safety(site_id, dropped):
             return NS(site_id=site_id, as_of=now, sm_stop_switch=dropped,
@@ -726,102 +752,110 @@ class TestAutonomyNarrowing:
                       site_budgets={"SEL_CLEAR": 5},
                       suppressions=[{"domain": f"PDU-at-{site_id}", "reason": "x"}])
 
-        return build_autonomy(
+        estate = {
+            "site-MINE": (safety("site-MINE", False), NS(id="site-MINE", site_name="mine")),
+            "site-OTHER": (safety("site-OTHER", True), NS(id="site-OTHER", site_name="other")),
+        }
+        return dict(
             tenant_id="t", actor_id="kc-x", actor_species="human",
             permissions=["fleet.view"], budgets=[], stop_switch=None, outcomes=[],
-            safety_rows=[safety("site-MINE", False), safety("site-OTHER", True)],
-            sites=[NS(id="site-MINE", site_name="mine"), NS(id="site-OTHER", site_name="other")],
+            safety_rows=[estate[k][0] for k in sites],
+            sites=[estate[k][1] for k in sites],
             learned_signals=[], approval_policies=[], site_id=None,
             action_type=None, now=now,
         )
 
+    def _compose(self, visible, *, estate=SITES):
+        """`visible` is the reader's authorized set (``None`` = tenant-wide);
+        `estate` is which sites EXIST at all."""
+        from harkeniq_cc.autonomy import build_autonomy
+
+        return build_autonomy(**self._inputs(*estate), visible_site_ids=visible)
+
     @staticmethod
-    def _legacy_narrow(contract, visible_site_ids):
-        """`narrow_to_sites` exactly as it stood before A30.25, frozen here
-        as the regression ORACLE for readers who hold a site."""
-        visible = set(visible_site_ids)
+    def _text(contract) -> str:
+        return json.dumps(contract, sort_keys=True, default=str)
 
-        def ok(item):
-            sid = item.get("site_id", "") if isinstance(item, dict) else ""
-            return not sid or sid in visible
-
-        out = dict(contract)
-        scope = dict(out.get("scope") or {})
-        scope["sites"] = [x for x in scope.get("sites", []) if x.get("id") in visible]
-        out["scope"] = scope
-        safety = dict(out.get("safety_state") or {})
-        safety["sites_reporting"] = [x for x in safety.get("sites_reporting", []) if x in visible]
-        safety["sites_not_reporting"] = [x for x in safety.get("sites_not_reporting", []) if x in visible]
-        for key in ("suppressions", "site_stop_switches", "error_budgets"):
-            safety[key] = [x for x in safety.get(key, []) if ok(x)]
-        out["safety_state"] = safety
-        classes = []
-        for row in out.get("action_classes", []):
-            row = dict(row)
-            row["blocking_conditions"] = [b for b in row.get("blocking_conditions", []) if ok(b)]
-            row["learning"] = [
-                sig for sig in row.get("learning", [])
-                if not (isinstance(sig, dict) and sig.get("scope_type") == "site"
-                        and sig.get("scope_ref") not in visible)
-            ]
-            classes.append(row)
-        out["action_classes"] = classes
-        return out
+    @staticmethod
+    def _sel_clear(contract) -> dict:
+        return next(r for r in contract["action_classes"] if r["action_type"] == "SEL_CLEAR")
 
     def test_a_reader_who_holds_no_site_receives_no_site_derived_fact(self):
-        from harkeniq_cc.autonomy import narrow_to_sites
-
-        narrowed = narrow_to_sites(self._contract(), set())
-        text = json.dumps(narrowed)
+        """R4, by construction: an EMPTY set selects nothing (A30.26). It is
+        never read as unrestricted, and nothing is zero-filled -- an
+        unreported estate is UNKNOWN, never safe."""
+        narrowed = self._compose(set())
+        text = self._text(narrowed)
         assert "site-MINE" not in text and "site-OTHER" not in text
         assert "PDU-at-" not in text
+        assert narrowed["scope"]["sites"] == []
         assert narrowed["safety_state"]["error_budgets"] == []
+        assert narrowed["safety_state"]["reported"] is False
         for row in narrowed["action_classes"]:
             assert row["safety"]["error_budget"] is None
             assert row["safety"]["suppressed_domains"] == []
             assert row["safety"]["site_budget_remaining"] == {}
-        # The posture they operate under is untouched.
-        full = self._contract()
-        assert narrowed["posture"] == full["posture"]
-        assert [(r["action_type"], r["disposition"]) for r in narrowed["action_classes"]] == \
-            [(r["action_type"], r["disposition"]) for r in full["action_classes"]]
+        # The posture they operate under is untouched -- except for the one
+        # site-derived count S3 composes inside it: how many of the SELECTED
+        # sites report a stop switch (the first face of P2). None selected,
+        # none reporting; the tenant-wide reader sees site-OTHER's.
+        full = self._compose(None)
+        posture, whole = dict(narrowed["posture"]), dict(full["posture"])
+        ns, fs = dict(posture.pop("stop_switch")), dict(whole.pop("stop_switch"))
+        assert ns.pop("sites_reporting_active") == 0
+        assert fs.pop("sites_reporting_active") == 1
+        assert ns == fs and posture == whole
+        assert [r["action_type"] for r in narrowed["action_classes"]] == \
+            [r["action_type"] for r in full["action_classes"]]
+        # ...and what they read is EXACTLY what a tenant-wide reader reads
+        # of an estate with no sites in it.
+        assert text == self._text(self._compose(None, estate=()))
 
     @pytest.mark.parametrize("visible", [{"site-MINE"}, {"site-OTHER"}, {"site-MINE", "site-OTHER"}])
-    def test_a_reader_who_holds_a_site_reads_byte_identically(self, visible):
-        from harkeniq_cc.autonomy import narrow_to_sites
+    def test_a_reader_who_holds_a_site_reads_what_its_own_sites_say(self, visible):
+        """Deletion equivalence (A30.26's oracle) for the readers A30.25
+        first promised byte-identical PRE-S3 reads to. S3 changed what they
+        read, by ratification: a site holder's contract is composed over
+        its sites, so the fields P2 named describe those sites alone."""
+        held = tuple(k for k in self.SITES if k in visible)
+        assert self._text(self._compose(visible)) == self._text(self._compose(None, estate=held))
+        if visible == set(self.SITES):
+            assert self._text(self._compose(visible)) == self._text(self._compose(None))
 
-        contract = self._contract()
-        assert json.dumps(narrow_to_sites(contract, visible), sort_keys=True, default=str) == \
-            json.dumps(self._legacy_narrow(contract, visible), sort_keys=True, default=str)
+    def test_a_tenant_wide_reader_gets_the_whole_tenant(self):
+        from harkeniq_cc.autonomy import build_autonomy
 
-    def test_a_tenant_wide_reader_gets_the_contract_untouched(self):
-        from harkeniq_cc.autonomy import narrow_to_sites
+        full = build_autonomy(**self._inputs(*self.SITES))
+        assert self._text(self._compose(None)) == self._text(full)
+        assert sorted(x["id"] for x in full["scope"]["sites"]) == sorted(self.SITES)
+        eb = self._sel_clear(full)["safety"]["error_budget"]
+        assert eb["total"] == 20 and eb["sites_dropped_back"] == ["site-OTHER"]
+        assert set(self._sel_clear(full)["safety"]["site_budget_remaining"]) == set(self.SITES)
 
-        contract = self._contract()
-        assert narrow_to_sites(contract, None) is contract
+    def test_P2_is_closed_by_S3(self):
+        """The INVERSE of A30.25's `test_P2_is_recorded_here_not_fixed_here`,
+        inverted by the slice that closed P2 (A30.26), as the F1 pin was.
 
-    def test_P2_is_recorded_here_not_fixed_here(self):
-        """A KNOWN, OPEN finding, asserted so it cannot be forgotten.
-
-        For a reader who DOES hold a site, the fields this function never
-        looked at still describe EVERY site: the folded error-budget
-        aggregate, and each class's `sites_dropped_back`,
-        `suppressed_domains` and `site_budget_remaining`. It predates
-        A6-4B0b (A23-1's narrowing), it was found by this slice's live
-        gate, and it is NOT corrected here: A30.25's regression promise is
-        that tenant, org-unit and site principals read byte-identically.
-        It needs its own ratified narrowing slice. When that lands, this
-        test must be inverted -- exactly as the F1 pin was.
+        A reader who holds site-MINE reads site-MINE's drop-back status,
+        suppressed domain and remaining budget -- and NOTHING that names
+        site-OTHER, which is dropped back and suppressed, so there is
+        something to leak. The function P2 lived in is gone: a contract is
+        composed over fewer sites, never narrowed afterwards.
         """
-        from harkeniq_cc.autonomy import narrow_to_sites
+        from harkeniq_cc import autonomy
 
-        narrowed = narrow_to_sites(self._contract(), {"site-MINE"})
-        sel_clear = next(r for r in narrowed["action_classes"] if r["action_type"] == "SEL_CLEAR")
-        leaked = json.dumps(sel_clear["safety"])
-        assert "site-OTHER" in leaked and "PDU-at-site-OTHER" in leaked, (
-            "P2 has been closed -- invert this test and remove the STATED, NOT "
-            "HIDDEN paragraph from narrow_to_sites"
-        )
+        assert not hasattr(autonomy, "narrow_to_sites")
+        mine = self._sel_clear(self._compose({"site-MINE"}))["safety"]
+        leaked = json.dumps(mine, sort_keys=True)
+        assert "site-OTHER" not in leaked and "PDU-at-site-OTHER" not in leaked
+        assert "PDU-at-site-MINE" in leaked
+        assert mine["error_budget"]["total"] == 10
+        assert mine["error_budget"]["sites_dropped_back"] == []
+        assert list(mine["site_budget_remaining"]) == ["site-MINE"]
+        # The control: a tenant-wide reader IS told that site-OTHER dropped back.
+        whole = self._sel_clear(self._compose(None))["safety"]
+        assert whole["error_budget"]["sites_dropped_back"] == ["site-OTHER"]
+        assert "PDU-at-site-OTHER" in json.dumps(whole, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1039,8 +1073,13 @@ class TestMachineReach:
                 devices = await FleetCacheRepo(session).list_all(TENANT)
                 in_python = {d.agent_id for d in operational_agent.resolve_scope(
                     scope.effective_grants, devices, scope.site_ids)}
+                # A30.28: this is the EVALUATOR's read -- an internal decision
+                # path that reasons over unprojected learning and never
+                # returns the payload (`learning=None`, allow-listed by S4).
                 attention = await load_attention(
-                    session, tenant_id=TENANT, scope=where_reach(scope))
+                    session, tenant_id=TENANT, scope=where_reach(scope),
+                    learning=None,
+                )
             assert {i["agent_id"] for i in attention["items"]} == in_python, rules
             assert n("blank-1") not in in_python or ("site", stack.estate.sites["s1"]) in rules
 

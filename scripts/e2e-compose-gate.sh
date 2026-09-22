@@ -6587,9 +6587,17 @@ PYEOF
 }
 echo "  CONTROL (tenant owner):";  s4_generated "$TOKEN" owner
 echo "  site-A human:";            s4_generated "$S3_A" withheld
-echo "  device-scoped human (gate-s3-device; F1 open -> no row, nothing tainted):"
+# A30.25 (general B0b, F1 closed): gate-s3-device holds THIS incident's
+# device, so it reads the row -- and the generated block is withheld from
+# it exactly as from any reader who holds no site under fleet.view.
+echo "  device-scoped human holding THIS device (gate-s3-device; its own incident, generated withheld, nothing tainted):"
 S3_DEV=$(tenant_token gate-s3-device@demo gate-s3-device)
-s4_generated "$S3_DEV" absent
+s4_generated "$S3_DEV" withheld
+# ...and a device-scoped human holding ANOTHER device (gate-b0b-device, at
+# site B) is not a reader of it at all: no row, nothing tainted anywhere.
+echo "  device-scoped human holding ANOTHER device (gate-b0b-device; not its device -> no row, nothing tainted):"
+B0B_DEVICE=$(tenant_token gate-b0b-device@demo gate-b0b-device)
+s4_generated "$B0B_DEVICE" absent
 # A MACHINE principal scoped to site A with the incidents read binding.
 S4_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"name\":\"a3029-reader $(date +%s)\",

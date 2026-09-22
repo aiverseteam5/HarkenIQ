@@ -376,7 +376,20 @@ class TestNothingHiddenIsNamedOrCounted:
         got = await _surfaces(stack, subject, incident_id=incident_id)
         # `s3-sig-*` fixtures name their site in the row's own scope_ref for
         # readers who hold it; hidden markers are the ones they do not.
-        assert S.hidden_markers(got, holds) == []
+        #
+        # A30.25 (general B0b, F1 closed): a device- or class-scoped reader
+        # now reads its OWN devices' rows, and a device's id -- as a device
+        # identity -- is that reader's reach, not a hidden site named. It is
+        # the ONLY thing excused, and the exemption is not vacuous: such a
+        # reader does now find its devices where before it found nothing.
+        own = S.owned_device_ids(stack, name)
+        assert S.hidden_markers(got, holds, own_devices=own) == []
+        if own:
+            # Without the exemption, what is flagged is those ids and nothing
+            # else -- and it is not empty, or F1 would be open again.
+            flagged = S.hidden_markers(got, holds)
+            assert flagged, "F1 is open again: the reader found none of its devices"
+            assert {f.split(" = ", 1)[1] for f in flagged} <= {repr(d) for d in own}, flagged
         for text in _strings(got):
             for shape in COUNT_SHAPES:
                 assert not shape.search(text), text
