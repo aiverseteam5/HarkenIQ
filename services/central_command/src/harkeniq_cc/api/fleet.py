@@ -154,9 +154,8 @@ async def get_device(
         raise HTTPException(status_code=404, detail="device not found")
     # E1.2 layer 2 on a single object. 404, not 403: a 403 would confirm
     # the device exists, which is itself a leak across a scope boundary.
-    if not reach.covers_device(
-        row.agent_id, row.site_id, row.device_class or "server"
-    ):
+    # A30.25 (R1): the class the row CARRIES, never an inferred `server`.
+    if not reach.covers_device(row.agent_id, row.site_id, row.device_class or ""):
         raise HTTPException(status_code=404, detail="device not found")
     warranty = (
         await WarrantyRepo(session).get_map(

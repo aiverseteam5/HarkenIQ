@@ -340,6 +340,31 @@ class ResolvedScope:
             for g in self.grants if not g.inert
         )
 
+    def permits_owned(
+        self, permission: str, *, site_id: str, target: Any = None
+    ) -> bool:
+        """`permits`, asked of a device-targeted subject by the owner rule.
+
+        Spec A30.25. `target` is the device the subject names as it
+        CURRENTLY RESOLVES at the subject's site (id, site and current
+        class -- `target_authority.AuthorizedTarget`), or None when the
+        subject names no device or names one that does not resolve there.
+        A resolved target is asked as a device, so a `device` grant
+        reaches it by id and a `device_class` grant by its CURRENT class
+        (R6); an unresolved one is the SITE question, so a device or class
+        grant confers nothing over it (R9) while a site, org-unit or
+        tenant grant still does. Still `permits`: the same grant must
+        carry the permission and cover the target.
+        """
+        if target is not None:
+            return self.permits(
+                permission,
+                site_id=target.site_id,
+                device_agent_id=target.device_agent_id,
+                device_class=target.device_class,
+            )
+        return self.permits(permission, site_id=site_id)
+
     # -- coverage, without a permission --------------------------------
 
     def covers_site(self, site_id: str, org_unit_path: str = "") -> bool:
@@ -734,9 +759,14 @@ class ReadReach:
     delegate to the kept grants' own `covers_*`, so it cannot disagree
     with `ResolvedScope.permits`. Contextual ancestry is not an input.
 
-    `device_ids` and `device_classes` are carried, already narrowed by
-    permission, for general A6-4B0b. No repository filter consumes them
-    yet: F1 stays open in this slice.
+    `device_ids` and `device_classes` are narrowed by permission like
+    everything else here, and an EMPTY ref is dropped from both (R1, spec
+    A30.25): a blank is never a wildcard, and ``IN ('')`` would match
+    every row whose device column is blank -- which is exactly the set of
+    SITE-owned rows. The table-aware repository predicates
+    (`repos.scope_fleet_devices`, `repos.scope_device_owned`) consume
+    them; `covers_owned` is the same rule for the few readers that must
+    decide in Python.
     """
 
     tenant_id: str
@@ -771,6 +801,29 @@ class ReadReach:
     def covers_org_unit_id(self, unit_id: str) -> bool:
         path = self.unit_paths.get(unit_id, "")
         return bool(path) and self.covers_org_unit(path)
+
+    def covers_owned(self, site_id: str, target: Any = None) -> bool:
+        """The owner rule (spec A30.25), for a reader that decides in Python.
+
+        `target` is the device a row names AS IT CURRENTLY RESOLVES at
+        that row's site -- an object carrying `device_agent_id`, `site_id`
+        and the CURRENT `device_class` (`target_authority.AuthorizedTarget`)
+        -- or None when the row names no device or names one Central
+        Command cannot identify there. A resolved device OWNS the row and
+        the row is readable when a kept grant covers the device: by site,
+        by id, or by its current class. Otherwise the row is SITE-owned.
+
+        That is what makes a missing device natural zero (R9) rather than
+        a lifecycle event, and keeps a class from ever being inferred
+        (R1): an unresolved device has no class to match. The SQL
+        statement of the same rule is `repos.scope_device_owned`, and a
+        generated matrix holds the two equal.
+        """
+        if target is not None:
+            return self.covers_device(
+                target.device_agent_id, target.site_id, target.device_class,
+            )
+        return self.covers_site(site_id)
 
     def is_empty(self) -> bool:
         return not self.grants
@@ -848,12 +901,16 @@ def _reach(scope: ResolvedScope, wanted: tuple[str, ...]) -> ReadReach:
         tenant_wide=tenant_wide,
         site_ids=frozenset(site_ids),
         org_unit_paths=org_paths,
+        # R1 (A30.25): a blank ref confers nothing. `Grant.covers_device`
+        # already refuses it; the SETS must too, because a repository
+        # filter turns them into ``IN (...)``.
         device_ids=frozenset(
-            g.scope_ref for g in kept if g.scope_type == SCOPE_DEVICE
+            g.scope_ref for g in kept
+            if g.scope_type == SCOPE_DEVICE and g.scope_ref
         ),
         device_classes=frozenset(
             g.scope_ref.lower() for g in kept
-            if g.scope_type == SCOPE_DEVICE_CLASS
+            if g.scope_type == SCOPE_DEVICE_CLASS and g.scope_ref.strip()
         ),
         site_unit_paths=dict(scope.site_unit_paths),
         unit_paths=dict(scope.unit_paths),

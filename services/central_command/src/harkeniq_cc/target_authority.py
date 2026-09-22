@@ -75,6 +75,69 @@ class AuthorizedTarget:
     device_class: str
 
 
+class FleetIndex:
+    """(site, agent id) -> the device as it CURRENTLY resolves there.
+
+    Spec A30.25, the owner rule. S1 decided what a resolved device is for
+    a wave: the fleet row AT THE WAVE'S SITE, its class read as-is and
+    never defaulted. This is the same decision for ONE target, so that a
+    device-bearing read, the single-target approval gate and a wave all
+    mean the same thing by "this device".
+
+    `resolve` returns None for a row that names no device and for a
+    device that has no fleet row at that site -- one that is unknown, has
+    been decommissioned, or has moved sites. None is not an error and not
+    a refusal: it means the row is SITE-owned, so a device or class grant
+    confers nothing over it (R9, natural zero) while a grant covering the
+    site still does. A wave REFUSES an unknown target instead
+    (`wave_targets`), because a set that cannot be identified cannot be
+    signed; a single read simply is not the device's.
+
+    Built from one fleet read per request. The rows are an identity
+    lookup only -- nothing here is returned to a caller.
+    """
+
+    def __init__(self, fleet_rows: Iterable[Any]) -> None:
+        self._by_key: dict[tuple[str, str], Any] = {}
+        for row in fleet_rows:
+            self._by_key[(getattr(row, "site_id", "") or "", str(row.agent_id))] = row
+
+    def resolve(self, site_id: str, device_agent_id: str) -> Optional[AuthorizedTarget]:
+        if not site_id or not device_agent_id:
+            return None
+        row = self._by_key.get((site_id, str(device_agent_id)))
+        if row is None:
+            return None
+        return AuthorizedTarget(
+            device_agent_id=str(row.agent_id),
+            site_id=site_id,
+            device_class=(getattr(row, "device_class", "") or ""),
+        )
+
+
+async def load_fleet_index(session: Any, tenant_id: str) -> FleetIndex:
+    """The tenant's fleet, as an identity lookup. UNSCOPED on purpose: it
+    answers "does this device exist at this site, and what is it", never
+    "may this caller read it" -- that is the reach's question."""
+    from harkeniq_cc.db.repos import FleetCacheRepo
+
+    return FleetIndex(await FleetCacheRepo(session).list_all(tenant_id))
+
+
+async def resolve_target(
+    session: Any, site_id: str, device_agent_id: str
+) -> Optional[AuthorizedTarget]:
+    """One subject's device as it currently resolves, by one indexed read."""
+    if not site_id or not device_agent_id:
+        return None
+    from harkeniq_cc.db.repos import FleetCacheRepo
+
+    row = await FleetCacheRepo(session).get_at_site(site_id, device_agent_id)
+    return FleetIndex([row] if row is not None else []).resolve(
+        site_id, device_agent_id
+    )
+
+
 # ---------------------------------------------------------------------------
 # The immutable target set
 # ---------------------------------------------------------------------------

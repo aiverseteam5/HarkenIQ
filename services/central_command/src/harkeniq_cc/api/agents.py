@@ -87,9 +87,7 @@ async def get_agent(
     if site is None or site.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="agent not found")
     # E1.2: out of scope reads as absent, not as forbidden.
-    if not reach.covers_device(
-        dev.agent_id, dev.site_id, dev.device_class or "server"
-    ):
+    if not reach.covers_device(dev.agent_id, dev.site_id, dev.device_class or ""):
         raise HTTPException(status_code=404, detail="agent not found")
     result = _agent_dict(dev)
     result["site_name"] = site.site_name

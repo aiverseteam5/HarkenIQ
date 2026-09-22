@@ -46,6 +46,21 @@ def _site_dict(site) -> dict:
     }
 
 
+def _contextual_site_dict(site) -> dict:
+    """A site the caller does NOT hold, shown only so a row about one of
+    the caller's own devices can be placed (A30.25, D2).
+
+    Reduced on purpose, and the reduction is the contract: an id, a name
+    and the explicit marker. No Site Manager endpoint, no licence
+    fingerprint, no authoritative state, no org placement, no timestamps --
+    nothing an administrator of the site would act on. `contextual: true`
+    confers nothing: `covers_site()` is false for this site, and every
+    site mutation refuses it. An AUTHORITATIVE row carries no such key and
+    is byte-identical to what it was.
+    """
+    return {"id": site.id, "site_name": site.site_name, "contextual": True}
+
+
 @router.post(
     "/register",
     dependencies=[Depends(require_permission("site.manage"))],
@@ -164,14 +179,26 @@ async def list_sites(
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
-    """List registered sites for the tenant."""
+    """List registered sites for the tenant.
+
+    A30.25 (D2): the sites the caller holds, exactly as before, followed
+    by the sites that merely CONTAIN a device the caller reads -- each
+    reduced and marked `contextual: true`. Context is not authority: the
+    second list comes from a separate repository read and never feeds a
+    scope, a count of held sites, or a decision.
+    """
     reach = read_reach(scope, "fleet.view")
-    sites = await SiteRepo(session).list_all(user.tenant_id, scope=reach)
-    total = len(sites)
+    repo = SiteRepo(session)
+    rows = [_site_dict(s) for s in await repo.list_all(user.tenant_id, scope=reach)]
+    rows += [
+        _contextual_site_dict(s)
+        for s in await repo.list_context(user.tenant_id, scope=reach)
+    ]
+    total = len(rows)
     start = (page - 1) * page_size
     end = start + page_size
     return {
-        "sites": [_site_dict(s) for s in sites[start:end]],
+        "sites": rows[start:end],
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -196,6 +223,12 @@ async def get_site(
         raise HTTPException(status_code=404, detail="site not found")
     # E1.2: out of scope reads as absent.
     if not reach.covers_site(site.id):
+        # A30.25 (D2): a site that contains one of the caller's devices is
+        # readable as CONTEXT -- reduced, marked, and nothing else. No
+        # device count: that is a fact about the site, not about them.
+        contextual = await SiteRepo(session).list_context(user.tenant_id, scope=reach)
+        if any(s.id == site.id for s in contextual):
+            return _contextual_site_dict(site)
         raise HTTPException(status_code=404, detail="site not found")
 
     devices = await FleetCacheRepo(session).list_by_site(site_id)

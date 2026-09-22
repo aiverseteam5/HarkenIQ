@@ -305,7 +305,12 @@ def resolve_scope(
         if dev.site_id in site_ids:
             selected.append(dev)
             continue
-        if (getattr(dev, "device_class", "") or "server").lower() in classes:
+        # A30.25 (R1): a blank class is never a wildcard and is never
+        # reinterpreted as `server`. This is `Grant.covers_device`'s rule,
+        # which this function used to diverge from, and the repository
+        # predicate's (`scope_fleet_devices`).
+        device_class = (getattr(dev, "device_class", "") or "").lower()
+        if device_class and device_class in classes:
             selected.append(dev)
     return selected
 

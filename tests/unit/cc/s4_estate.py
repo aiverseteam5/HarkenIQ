@@ -254,11 +254,45 @@ def walk(payload, path=""):
         yield path, payload
 
 
-def hidden_markers(payload, holds: Iterable[str]) -> list[str]:
-    """Paths at which a site the reader does not hold is NAMED."""
+#: Keys under which a payload names a DEVICE by its identity.
+DEVICE_IDENTITY_KEYS = ("agent_id", "device_agent_id")
+
+
+def owned_device_ids(stack, name: str) -> set[str]:
+    """The device ids a persona reaches by a `device` or `device_class`
+    grant (A30.25, general B0b) -- exactly the devices the owner rule lets
+    it read rows ABOUT, and nothing more. A site, org or tenant grant
+    contributes nothing here: those readers hold sites, and the markers of
+    a held site are never hidden from them in the first place."""
+    own: set[str] = set()
+    for scope_type, ref, _subset in E.PERSONAS[name][0]:
+        if scope_type == "device":
+            own.add(stack.tagged(ref))
+        elif scope_type == "device_class":
+            own.update(stack.device(key) for key, site in E.SITES.items()
+                       if site.device_class == ref)
+    return own
+
+
+def hidden_markers(payload, holds: Iterable[str], *,
+                   own_devices: Iterable[str] = ()) -> list[str]:
+    """Paths at which a site the reader does not hold is NAMED.
+
+    `own_devices` (A30.25, general B0b -- F1 closed): a device- or
+    class-scoped reader reads its OWN devices' rows, so a device id that
+    is EXACTLY one of them, under a device-identity key, is that reader's
+    own reach and not a hidden site named. Every other marker -- a site
+    id, a site name, a fault domain, a reason, a signal, a count, or the
+    same id inside any other string or under any other key -- is still a
+    leak, for that reader as for every other.
+    """
     hidden = [m for key in E.ALL if key not in set(holds) for m in E.MARKERS[key]]
+    own = set(own_devices)
     found = []
     for path, leaf in walk(payload):
-        if isinstance(leaf, str) and any(marker in leaf for marker in hidden):
-            found.append(f"{path} = {leaf!r}")
+        if not (isinstance(leaf, str) and any(marker in leaf for marker in hidden)):
+            continue
+        if leaf in own and path.rsplit(".", 1)[-1] in DEVICE_IDENTITY_KEYS:
+            continue
+        found.append(f"{path} = {leaf!r}")
     return found

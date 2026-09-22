@@ -3799,6 +3799,180 @@ reconciliation, the taxonomy. **Unchanged:** the permission vocabulary
 `0026`), `resolve()`, `permits()`, every mutation gate, S1. General B0b,
 B0c, B1, B2 and the taxonomy remain not started.
 
+**A30.25 — A6-4B0b: canonical reach convergence — F1 closed (decided: Vinod;
+recorded 2026-09-19, BEFORE the code).** All four prerequisites are closed and
+main-verified: S1 (A30.22/A30.23 — a SET of devices is authorized only when
+every device is, on current authority), S2 (A30.24 — a read takes its reach
+from the grants that carry its permission), S3 (A30.26 — a principal's
+autonomy contract is COMPOSED over the sites its reach authorizes, which
+closed P2 below) and S4 (A30.28/A30.29 — learned-signal, fleet-pattern and
+generated-content payloads are projected per reader, which closed E3-F1).
+*Reconciled 2026-09-22: this slice was written against S2 and merged onto S3
+and S4 before its review; wherever its text or code overlapped theirs, S3 and
+S4 win, and the paragraphs below say what that changed.* General B0b is the
+slice A30.11 scoped, and it builds ON S2's `read_reach`:
+`ReadReach.device_ids` and `device_classes` have been permission-narrowed and
+unconsumed since S2, and this amendment consumes them. **F1, restated.** A
+`device` or `device_class` grant satisfies `covers_device()` and `permits()`
+while contributing nothing to `site_ids`, and every device-bearing repository
+read filtered on `site_ids` alone, so such a principal read ZERO list rows
+about devices the platform itself says it reaches — while the device DETAIL
+reads, which ask coverage, already answered. **The ratified decisions.**
+R1–R10 were locked when the boundary was requested and D2–D10 were ratified on
+the boundary report; they are recorded here as the slice's law. **R1** a
+blank, null or empty `device_class` is never a wildcard and is never
+reinterpreted as `server` for an authorization question; a configured row with
+a blank class stays administratively visible and confers zero class reach.
+**R2** correlation never widens reach: a visible child incident does not
+authorize its hidden parent, a sibling, or site-wide correlated fault data.
+**R3** device and device_class scope never expands to site audit —
+`cc_audit_log` has a `site_id` and no device column, so ownership of an entry
+by a device cannot be proven and the read fails closed. **R4** raw site-level
+error budgets, stop-switch configuration and governance aggregates are not
+context; B1 may publish narrow conclusions. **R5** S1 is not redesigned; the
+immutable target-set and plan semantics are unchanged. **R6** a matching
+`device_class` may satisfy the SCOPE dimension of a single-target approval
+where the target canonically belongs to that class; every other approval gate
+stays mandatory and no standalone authority is created. **R7** the broader
+safe approval-evidence projection is a named follow-up. **R8** no
+device-identity width migration. **R9 / D5** a missing or deleted device is
+NATURAL ZERO: the configured grant is never revoked, mutated or made inert
+because the fleet cache cannot currently resolve its target (that would flap
+the grant lifecycle with a cache), it stays administratively visible
+(`target_status` already reports it), and it confers zero operational reach
+until the target resolves canonically. **R10** contextual ancestry never
+participates in authorization. **D2** a device or device_class principal
+receives MINIMAL containing-site context, explicitly marked `contextual: true`
+and reduced to `id` and `site_name` — never the Site Manager endpoint, licence
+fingerprint, authoritative site state, org placement, timestamps, governance
+or administrative configuration. **D3** contextual org-unit ancestry is
+DEFERRED. **D4** a candidate skill is SITE-owned; `source_device` is
+provenance, not ownership. **D6** the ingest compatibility that stores a
+missing class as `server` remains as transitional debt for the datacenter
+taxonomy to replace with UNKNOWN, and no authorization decision in this slice
+depends on an INFERRED class. **D7** `parent_incident_id` is `null` when the
+parent is not independently visible. **D8** approval records follow the owner
+rule and nothing broader. **D9** the campaign-wave approval-queue asymmetry
+(S1 lets a class approver sign a wave the queue does not list) is a named
+follow-up. **D10** the Site Manager's outcome-identity fallback is NOT a
+prerequisite; no read is broadened to accommodate a non-canonical identifier.
+**The owner rule — canonical, and ONE.** A row or subject that names a device
+is DEVICE-OWNED when that device CURRENTLY RESOLVES in the fleet cache AT THE
+ROW'S OWN SITE, and SITE-OWNED otherwise — when it names no device, or names
+one Central Command cannot identify there (S1's rule for waves, A30.22, now
+the rule for every device-bearing read and for the single-target approval
+gate). A device-owned row is readable under permission P when ONE effective
+grant carrying P covers the device: by site (so by org unit or tenant), by
+device id, or by the device's CURRENT class. A site-owned row is readable when
+such a grant covers the site. This is `Grant.covers_device` asked of the
+target as it currently resolves — no second resolver, no taxonomy-driven
+authorization, no contextual authority — and it is what makes R9 natural and
+R1 structural: an unresolved device has no class to match and no identity to
+own a row with. **The predicates — named and table-aware, not one generic
+filter.** `scope_fleet_devices` (the fleet cache itself: site ∪ device id ∪
+`lower(device_class)`), and `scope_device_owned(site_col, device_col)` for
+every other device-bearing table — site, OR a non-empty device column whose
+device resolves in the fleet cache at that row's site and is covered by id or
+by current class (a correlated `EXISTS`, because only `cc_fleet_cache` carries
+`device_class`). Both consume a `ReadReach` and nothing else, refuse a bare
+`ResolvedScope` as S2's filters do, and yield `false()` for an empty reach;
+`read_reach` drops an empty device or class ref so a blank can never become
+`IN ('')`. **Device-owned domains (changed):** the fleet cache (list, filtered
+list and its count, health counts, total); incidents (list, children, detail);
+approval routes (queue and history, plain and paginated); agent proposals
+(awaiting-approval, an agent's own list and receipts); outcome history;
+approval records (the owner rule, D8); and the single-target approval scope
+gate (R6/R9 — the target's id, site and CURRENT class, or the site question
+when it does not resolve). Everything that reads THROUGH those repositories
+converges with them and needs no rule of its own: attention, predictive risk,
+firmware exposure, warranty, the capability registry, fleet summary, the
+Operational Agent view, and the CC-resident evaluator's attention read
+(ordering only — it never gated a proposal). **Incidents (R2/D7).** Children
+are filtered by the same predicate as the list; `parent_incident_id` is `null`
+wherever the parent is not independently visible; and for a caller who sees an
+incident ONLY through device ownership — who does not cover its site —
+`correlation` is withheld (it is an open dict with no bounded contract, A30.7,
+and a device-owned `network_ambiguity` incident stores its peers' ids in it as
+`votes`) and prior learning is narrowed to cohort knowledge, never the site's.
+The attention contract narrows site-scoped learned signals by the same rule.
+Both COMPOSE with S4 (A30.28/A30.29), which is applied first and taken as
+given: the signals are projected through the reader's `LearningView`
+(`fleet.view` reach — a cohort conclusion kept, its evidence bounded, a
+site-scoped signal only for a site held under `fleet.view`), and this slice's
+ownership rule then withholds the incident's site from a caller who reads the
+incident only through device ownership. The diagnosis — its pattern citations
+and its generated block — is projected by that same `LearningView`,
+independently of the owner rule; nothing here restores raw generated text or
+an unbounded payload. **Site-owned domains (deliberately unchanged):** audit
+(R3), campaigns and waves (R5), candidate skills (D4), learned signals and
+fleet patterns (bounded per reader by S4, and not made device-aware here), the
+org tree (D3), and the grant list. **Autonomy (R4) — true by construction
+under S3; P2 CLOSED by A30.26.** As first written, this slice made R4 true by
+EMPTYING a composed contract for a reader who holds no site: `narrow_to_sites`
+(A23-1) filtered the top-level lists whose items carry a `site_id` and never
+looked at the error-budget aggregate FOLDED across sites or at each action
+class's `safety` block, so a reader holding no site still received every
+site's drop-back status, suppressed fault-domain names and per-site budgets.
+It was found by this slice's LIVE gate, where the stack has real safety state
+(the unit estate had none, so the first R4 assertion compared an empty list
+with an empty list; the estate now carries safety state at every site so the
+assertion means something), and it recorded **P2** beside it: a reader who
+DOES hold a site read those same fields about EVERY site, a pre-existing gap
+this slice left for its own ratified narrowing slice (A30.8). That slice is S3
+(A30.26), shipped and merged BEFORE this one: `narrow_to_sites` no longer
+exists, a contract is composed over the reader's authorized sites by
+`select_site_inputs` BEFORE anything is folded and is never narrowed
+afterwards, and a stored verdict is narrowed where it is read, through
+`AutonomyView`. This slice therefore carries NO autonomy change of its own —
+its `holds_no_site` edit and its frozen pre-S3 oracle were dropped in the
+reconciliation, not merged — and R4 holds structurally: an empty reach selects
+nothing and is never read as unrestricted, `reported` is false, nothing is
+zero-filled, and the tenant posture and the ladder the reader operates under
+remain, with the dispositions composed over the selected sites as S3 ratified.
+The pin `test_P2_is_recorded_here_not_fixed_here` is INVERTED, as the F1 pin
+was, into the assertion that a site holder reads only its own site's drop-back
+status, suppressed domains and remaining budget. What a site holder reads
+changed by S3's ratification, not this slice's — its own site's error budget,
+not the tenant total — and the Operational Agent view and every proposal
+projection this slice touches consume S3's `load_autonomy_contract(reach=…)`
+and `autonomy_view(scope)` as given. **Context is not authority (R10/D2).**
+`SiteRepo.list_all` stays AUTHORITATIVE — it is what `sites_count`, site
+reach, delegation and administration are computed from.
+`SiteRepo.list_context` is a separate read of the sites that merely CONTAIN a
+device the caller reads, used for two things only: the contextual rows of
+`/api/sites/` and `/api/sites/{id}`, and site NAMES in payloads about the
+caller's own devices. A contextual id never enters `ResolvedScope`,
+`read_reach`, a delegation ceiling or an approval decision; `covers_site()`
+stays false for it; and every site mutation, already gated on
+`permits(site_id=…)`, refuses it — asserted structurally and by a mutation
+sweep, not left to review. Authoritative site rows are byte-identical to
+before. **R1 alignment.** The authorization call sites that defaulted a blank
+class to `server` — the device detail reads, the campaign preflight
+caller-intersection and `operational_agent.resolve_scope` — stop doing so;
+display projections and the ingest default are untouched (D6). **What a human
+can see change:** only device- and device_class-scoped principals, who gain
+the legitimate reads they were denied. For tenant, org and site principals
+every predicate collapses to the `site_id IN (…)` it replaced, asserted
+differentially against the legacy filter for every read route. **Machine
+plane:** unchanged in shape — `MACHINE_SURFACE` stays at 13, no route reopens,
+the ceiling is unmoved; a device-scoped agent's existing reads now agree with
+its canonical reach. B0c follows immediately and completes their metering.
+**Unchanged:** the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE`, every route (zero added), the
+schema (this slice adds no migration; CC head `0027` and SM head `0011` are
+carried from S4, A30.15), `resolve()`, `permits()`, `ResolvedScope.site_ids`
+(still truthful and permission-neutral — a device grant still contributes
+nothing to it), S1, S2, and the `device_class` vocabulary `server | switch`:
+the datacenter taxonomy is not implemented here. **Named follow-ups:** S3-E1
+and S3-E2 (A30.27 — ratified, NOT implemented, and never inside this slice);
+D3 org-ancestor context; D6 UNKNOWN class at ingest (taxonomy); D9 the
+wave-queue asymmetry; R7 approval-evidence projection; D10 skip-and-warn
+hardening of the SM outcome-identity fallback; the composite projections and
+the `/api/scope-grants/me` self-description recorded by S2; and, as test
+hygiene outside this slice, `tests/unit/cc/test_warranty.py`'s hard-coded
+`2027-01-01`, the same wall-clock class as the checkpoint fixtures fixed in PR
+#46. B0c, B1, B2 and the taxonomy remain not started.
+
 **A30.26 — A6-4B0b-S3: autonomy scope isolation (decided: Vinod; recorded
 2026-09-20, BEFORE the code).** *Numbering: A30.25 is the general B0b
 amendment. That slice is complete on its own branch and waits on this one,

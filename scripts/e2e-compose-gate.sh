@@ -5708,6 +5708,283 @@ echo "  TENANT grant, subset [incident.view]: $S2_SEEN"
   echo "a narrowed tenant grant still read tenant-wide (the tenant_wide shortcut)" >&2; exit 1; }
 
 # ===========================================================================
+# A6-4B0b (A30.25), live: canonical reach convergence -- F1 closed.
+#
+# A `device` or `device_class` grant is real authority and contributed
+# nothing to `site_ids`, which every device-bearing list filtered on, so
+# such a principal read NOTHING about the devices it reaches. Proven here
+# with real Keycloak identities whose REALM ROLE holds every permission
+# (tenant_owner), so the route guard never refuses them and every refusal
+# below is the SCOPE's: the only thing each of them holds is one device, or
+# one device class.
+#
+# Site B has three servers (gate-agent-b/c/d, from the S1 steps). A switch
+# is added beside them so there is a class to be scoped to, and one
+# incident and one pending approval per device so there is something to
+# see -- and something NOT to see.
+#
+# The pending approvals are an Operational Agent's PROPOSALS, not node
+# routes, on purpose: the fleet poller reconciles node routes against the
+# Site Manager every poll and SUPERSEDES one the SM never raised, so a
+# synthetic route is a subject this proof would not own (it vanished
+# between two steps the first time this was written). A proposal is
+# Central Command's own row and goes through the SAME decision function.
+# They sit under a 2-approver policy, so a valid decision is RECORDED
+# (1 of 2) and nothing is dispatched.
+# ===========================================================================
+b0b_json() {  # $1 token, $2 path
+  curl -s -H "Authorization: Bearer $1" "http://localhost:8090$2"
+}
+b0b_code() {  # $1 token, $2 method, $3 path, [$4 json body]
+  if [ -n "${4:-}" ]; then
+    curl -s -o /dev/null -w '%{http_code}' -X "$2" -H "Authorization: Bearer $1" \
+      -H 'Content-Type: application/json' -d "$4" "http://localhost:8090$3"
+  else
+    curl -s -o /dev/null -w '%{http_code}' -X "$2" -H "Authorization: Bearer $1" \
+      "http://localhost:8090$3"
+  fi
+}
+b0b_grant() {  # $1 principal, $2 scope_type, $3 scope_ref
+  curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",\"role\":\"tenant_owner\"}" \
+    http://localhost:8090/api/scope-grants/
+}
+
+step "A6-4B0b/AV: a switch beside the servers, and one incident and one pending approval per device"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                        service_tag, device_class, first_seen_at, last_seen_at)
+   SELECT 'gatedevsw0000000000000000000000', s.id, 'gate-switch-b', 'sw-b1',
+          'Dell', 'S5248F', 'GATESW1', 'switch', now(), now()
+   FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING" > /dev/null
+wait_for "the switch at site B visible at Central Command, as a switch" 180 bash -c \
+  "docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+   \"SELECT device_class FROM cc_fleet_cache WHERE site_id='$SITE_B' AND agent_id='gate-switch-b'\" \
+   | grep -qx ' *switch *'"
+B0B_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_B'")
+for B0B_DEV in gate-agent-b gate-agent-c gate-switch-b; do
+  # RESOLVED, so the poller (which only resolves OPEN incidents it no
+  # longer sees) never touches them; opened now, so they sort first.
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
+         device_agent_id, subsystem, confidence, inferred, opened_at, first_seen_at, last_seen_at)
+     VALUES ('b0b-inc-$B0B_DEV', '$B0B_TENANT', '$SITE_B', 'device', 'resolved',
+             'B0b gate incident', '$B0B_DEV', 'psu', 0, false, now(), now(), now())
+     ON CONFLICT (incident_id) DO NOTHING" > /dev/null
+done
+# A REAL Operational Agent scoped to ONE device. It owns the proposals
+# below, and step BA gives it a credential and reads as it.
+B0B_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"b0b-device-agent $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"device\",\"scope_ref\":\"gate-agent-b\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"},
+         {\"kind\":\"read\",\"capability_ref\":\"incidents\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ -n "$B0B_AGENT" ] || { echo "could not create the device-scoped agent" >&2; exit 1; }
+for B0B_DEV in gate-agent-b gate-agent-c gate-switch-b; do
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_agent_proposals (id, tenant_id, agent_id, actor, agent_version, site_id,
+         device_agent_id, action_type, params, rationale, evidence, disposition,
+         disposition_reason, authorization_basis, status, decided_by, dedupe_key,
+         directive_id, dispatch_reason, outcome, created_at)
+     VALUES ('b0bprop-$B0B_DEV', '$B0B_TENANT', '$B0B_AGENT', 'op-agent:$B0B_AGENT@v1', 1, '$SITE_B',
+             '$B0B_DEV', 'IDENTIFY_LED', '{}'::jsonb, 'B0b gate proposal', '{}'::jsonb,
+             'requires_approval', '', 'human_approval', 'awaiting_approval', '',
+             'b0b-gate:$B0B_DEV', '', '', '', now())
+     ON CONFLICT (id) DO NOTHING" > /dev/null
+done
+B0B_POLICY=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"gate-b0b-dual","action_type":"IDENTIFY_LED","required_approvers":2}' \
+  http://localhost:8090/api/policies/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['policy']['id'])")
+for B0B_P in device class; do
+  tenant_realm_user "gate-b0b-$B0B_P@demo" "gate-b0b-$B0B_P" tenant_owner
+done
+B0B_DEVICE=$(tenant_token gate-b0b-device@demo gate-b0b-device)
+B0B_CLASS=$(tenant_token gate-b0b-class@demo gate-b0b-class)
+[ "$(b0b_grant "$(s1_sub "$B0B_DEVICE")" device gate-agent-b)" = "201" ] || { echo "device grant refused" >&2; exit 1; }
+[ "$(b0b_grant "$(s1_sub "$B0B_CLASS")" device_class switch)" = "201" ] || { echo "class grant refused" >&2; exit 1; }
+echo "site B: servers gate-agent-b/c/d + switch gate-switch-b; DEVICE human holds gate-agent-b; CLASS human holds 'switch'"
+
+b0b_view() {  # $1 token -> what this principal reads, in one line
+  python3 - "$SITE_A" "$SITE_B" <<PY
+import json, subprocess, sys
+A, B = sys.argv[1], sys.argv[2]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-H", "Authorization: Bearer $1",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    return json.loads(out)
+mine = {"gate-agent-b", "gate-agent-c", "gate-agent-d", "gate-switch-b"}
+fleet = get("/api/fleet/?page_size=200")
+devices = sorted(d["agent_id"] for d in fleet["devices"] if d["agent_id"] in mine)
+others = [d["agent_id"] for d in fleet["devices"] if d["agent_id"] not in mine]
+incidents = sorted(i["incident_id"] for i in get("/api/incidents/?status=all&limit=1000")["incidents"]
+                   if i["incident_id"].startswith("b0b-inc-"))
+queue = sorted(a["action_id"] for a in get("/api/approvals/?page_size=200")["actions"]
+               if str(a.get("action_id", "")).startswith("b0bprop-"))
+sites = get("/api/sites/")["sites"]
+ctx = sorted("B" if s["id"] == B else "A" if s["id"] == A else "?" for s in sites if s.get("contextual"))
+held = sorted("B" if s["id"] == B else "A" if s["id"] == A else "?" for s in sites if not s.get("contextual"))
+audit = get("/api/audit/?page_size=200")["total"]
+summary = get("/api/fleet/summary")
+print(f"devices={','.join(devices) or '-'} elsewhere={len(others)} "
+      f"incidents={','.join(i.removeprefix('b0b-inc-') for i in incidents) or '-'} "
+      f"queue={','.join(q.removeprefix('b0bprop-') for q in queue) or '-'} "
+      f"held={''.join(held) or '-'} contextual={''.join(ctx) or '-'} "
+      f"sites_count={summary['sites_count']} audit={audit}")
+PY
+}
+
+step "A6-4B0b/AW: a DEVICE-scoped human reads its device -- and nothing beside it"
+B0B_SEEN=$(b0b_view "$B0B_DEVICE")
+echo "  DEVICE human (gate-agent-b): $B0B_SEEN"
+[ "$B0B_SEEN" = "devices=gate-agent-b elsewhere=0 incidents=gate-agent-b queue=gate-agent-b held=- contextual=B sites_count=0 audit=0" ] || {
+  echo "a device-scoped human did not read exactly its own device (F1), or read beyond it" >&2; exit 1; }
+# The contextual site is REDUCED: id, name and the explicit marker.
+b0b_json "$B0B_DEVICE" "/api/sites/" | SITE_B=$SITE_B python3 -c "
+import sys, json, os
+(site,) = json.load(sys.stdin)['sites']
+assert set(site) == {'id', 'site_name', 'contextual'} and site['contextual'] is True, site
+assert site['id'] == os.environ['SITE_B'], site
+print('  contextual site B carries exactly:', sorted(site))"
+[ "$(b0b_code "$B0B_DEVICE" GET "/api/sites/$SITE_A")" = "404" ] || { echo "site A readable with no device there" >&2; exit 1; }
+[ "$(b0b_code "$B0B_DEVICE" GET "/api/agents/gate-agent-c")" = "404" ] || { echo "a SIBLING device at the same site was readable" >&2; exit 1; }
+[ "$(b0b_code "$B0B_DEVICE" GET "/api/incidents/b0b-inc-gate-agent-c")" = "404" ] || { echo "a sibling's incident was readable" >&2; exit 1; }
+[ "$(b0b_code "$B0B_DEVICE" GET "/api/incidents/b0b-inc-gate-agent-b")" = "200" ] || { echo "its own incident was not readable" >&2; exit 1; }
+
+step "A6-4B0b/AX: context is not authority -- the contextual site refuses every site-level act"
+# The realm role is tenant_owner: the route guard passes. The SCOPE refuses.
+B0B_UNIT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/org-units/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['tree'][0]['id'])")
+for B0B_CASE in \
+  "PUT|/api/sites/$SITE_B/org-unit|{\"org_unit_id\":\"$B0B_UNIT\"}|re-place the site" \
+  "POST|/api/scope-grants/|{\"principal_ref\":\"kc-b0b-nobody\",\"scope_type\":\"site\",\"scope_ref\":\"$SITE_B\",\"role\":\"viewer\"}|delegate the site" \
+  "POST|/api/campaigns/|{\"name\":\"b0b-ctx\",\"description\":\"\",\"action_type\":\"IDENTIFY_LED\",\"params\":{\"target\":\"Drive 0\"},\"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_B\"}]}|run a campaign at the site" \
+  "POST|/api/approvals/b0bprop-gate-agent-c/approve||approve a SIBLING device's action"; do
+  IFS='|' read -r B0B_M B0B_PATH B0B_BODY B0B_WHAT <<< "$B0B_CASE"
+  B0B_RC=$(b0b_code "$B0B_DEVICE" "$B0B_M" "$B0B_PATH" "$B0B_BODY")
+  case "$B0B_RC" in 403|404) echo "  refused ($B0B_RC): $B0B_WHAT" ;;
+    *) echo "context was accepted as authority: $B0B_WHAT -> $B0B_RC" >&2; exit 1 ;; esac
+done
+b0b_json "$B0B_DEVICE" "/api/scope-grants/me" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['site_ids'] == [] and d['tenant_wide'] is False, d
+assert d['device_ids'] == ['gate-agent-b'], d
+print('  the scope itself holds NO site:', d['site_ids'], '| devices:', d['device_ids'])"
+# R4, against REAL safety state: this stack has live error budgets, which is
+# what showed the first version of this assertion to be false.
+[ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE error_budgets IS NOT NULL AND error_budgets::text <> '[]'")" -ge 1 ] || {
+  echo "no site has reported an error budget: the R4 check below would be vacuous" >&2; exit 1; }
+b0b_json "$B0B_DEVICE" "/api/autonomy/" | SITE_A=$SITE_A SITE_B=$SITE_B python3 -c "
+import sys, json, os
+raw = sys.stdin.read()
+d = json.loads(raw)
+assert d['scope']['sites'] == [], d['scope']
+for key in ('sites_reporting', 'sites_not_reporting', 'site_stop_switches', 'error_budgets', 'suppressions'):
+    assert d['safety_state'][key] == [], (key, d['safety_state'][key])
+for row in d['action_classes']:
+    s = row['safety']
+    assert s['error_budget'] is None and s['suppressed_domains'] == [] and s['site_budget_remaining'] == {}, (row['action_type'], s)
+assert os.environ['SITE_A'] not in raw and os.environ['SITE_B'] not in raw, 'a site id reached a principal who holds no site'
+assert d['posture']['ladder'] and all(r['disposition'] for r in d['action_classes'])
+print('  R4: no site-derived safety fact, in', len(d['action_classes']), 'action classes; the posture it operates under is intact')"
+# ...and the tenant owner still reads the real thing, so the emptiness above is the SCOPE's.
+b0b_json "$TOKEN" "/api/autonomy/" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['safety_state']['error_budgets'], 'the control has nothing to withhold'
+print('  control (tenant owner):', len(d['safety_state']['error_budgets']), 'error-budget aggregate(s) present')"
+
+step "A6-4B0b/AY: a DEVICE_CLASS human reads its class, and may decide a subject of that class (R6)"
+B0B_SEEN=$(b0b_view "$B0B_CLASS")
+echo "  CLASS human (switch): $B0B_SEEN"
+[ "$B0B_SEEN" = "devices=gate-switch-b elsewhere=0 incidents=gate-switch-b queue=gate-switch-b held=- contextual=B sites_count=0 audit=0" ] || {
+  echo "a class-scoped human did not read exactly its class" >&2; exit 1; }
+B0B_RC=$(curl -s -o /tmp/b0b_class.json -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $B0B_CLASS" "http://localhost:8090/api/approvals/b0bprop-gate-switch-b/approve")
+[ "$B0B_RC" = "200" ] || { echo "a class approver could not decide a switch subject ($B0B_RC)" >&2; cat /tmp/b0b_class.json >&2; exit 1; }
+python3 -c "
+import json
+d = json.load(open('/tmp/b0b_class.json'))
+assert d['recorded'] is True and d['decision'] is None and d['approval']['remaining'] == 1, d
+print('  switch subject: decision RECORDED, 1 of 2 -- every other gate still stands')"
+[ "$(b0b_code "$B0B_CLASS" POST "/api/approvals/b0bprop-gate-agent-b/approve")" = "403" ] || {
+  echo "a SWITCH approver decided a SERVER's action" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='b0bprop-gate-switch-b' AND scope_ok")" = "1" ] || {
+  echo "the class approver's record is missing or out of scope" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='b0bprop-gate-agent-b'")" = "0" ] || {
+  echo "a refused decision was recorded" >&2; exit 1; }
+[ "$(b0b_code "$B0B_CLASS" PUT "/api/sites/$SITE_B/org-unit" "{\"org_unit_id\":\"$B0B_UNIT\"}")" = "403" ] || {
+  echo "a class grant conferred site authority" >&2; exit 1; }
+echo "  server subject refused and unrecorded; no site authority"
+
+step "A6-4B0b/AZ: tenant and site humans read exactly what they read before"
+b0b_json "$TOKEN" "/api/sites/" | SITE_A=$SITE_A SITE_B=$SITE_B python3 -c "
+import sys, json, os
+sites = json.load(sys.stdin)['sites']
+assert {os.environ['SITE_A'], os.environ['SITE_B']} <= {s['id'] for s in sites}
+assert not any('contextual' in s for s in sites), 'an authoritative row gained a field'
+assert all('sm_endpoint' in s and 'org_unit_id' in s for s in sites)
+print('  TENANT human:', len(sites), 'held site(s), full rows, no contextual marker')"
+B0B_SEEN=$(b0b_view "$TOKEN")
+echo "  TENANT human: $B0B_SEEN"
+case "$B0B_SEEN" in "devices=gate-agent-b,gate-agent-c,gate-agent-d,gate-switch-b "*" contextual=- "*) ;;
+  *) echo "the tenant owner's reads changed" >&2; exit 1 ;; esac
+# The S2 control auditor holds site A and site B as SITES: both held, none contextual.
+S2_CONTROL=$(tenant_token gate-s2-control@demo gate-s2-control)
+B0B_SEEN=$(b0b_view "$S2_CONTROL" 2>/dev/null || true)
+echo "  SITE human (auditor, sites A+B): $B0B_SEEN"
+case "$B0B_SEEN" in "devices=gate-agent-b,gate-agent-c,gate-agent-d,gate-switch-b "*" held=AB contextual=- sites_count=2 "*) ;;
+  *) echo "a site-scoped human's reads changed" >&2; exit 1 ;; esac
+
+step "A6-4B0b/BA: a device-scoped MACHINE reads what it canonically reaches; the plane is unchanged"
+# The agent created in AV, scoped to the ONE device gate-agent-b.
+B0B_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0B_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+B0B_MACHINE=$(curl -sf -X POST \
+  "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$B0B_AGENT&client_secret=$B0B_SECRET" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$B0B_MACHINE" ] || { echo "no machine token for the device-scoped agent" >&2; exit 1; }
+b0b_json "$B0B_MACHINE" "/api/attention/" | python3 -c "
+import sys, json
+items = json.load(sys.stdin)['items']
+assert [i['agent_id'] for i in items] == ['gate-agent-b'], [i['agent_id'] for i in items]
+print('  machine attention: exactly', items[0]['agent_id'], 'at', repr(items[0]['site_name']))"
+b0b_json "$B0B_MACHINE" "/api/incidents/?status=all&limit=1000" | python3 -c "
+import sys, json
+rows = [i for i in json.load(sys.stdin)['incidents'] if i['incident_id'].startswith('b0b-inc-')]
+assert [i['incident_id'] for i in rows] == ['b0b-inc-gate-agent-b'], rows
+assert rows[0]['correlation'] == {} and rows[0]['parent_incident_id'] is None
+print('  machine incidents: its own device only; correlation withheld')"
+# Its OWN proposals: three are attributed to it, ONE is about the device it
+# holds. Before A30.25 this read asked the site alone and showed it none.
+b0b_json "$B0B_MACHINE" "/api/operational-agents/$B0B_AGENT/proposals" | python3 -c "
+import sys, json
+seen = sorted(p['proposal_id'] for p in json.load(sys.stdin)['proposals'])
+assert seen == ['b0bprop-gate-agent-b'], seen
+print('  machine reads its own proposals: exactly the one about gate-agent-b (of 3 attributed to it)')"
+for B0B_OFF in /api/fleet/ /api/sites/ /api/autonomy/ /api/audit/ /api/capabilities/; do
+  [ "$(b0b_code "$B0B_MACHINE" GET "$B0B_OFF")" = "403" ] || {
+    echo "an off-plane route reopened to a machine: $B0B_OFF" >&2; exit 1; }
+done
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.route_contract import MACHINE_SURFACE
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+assert len(MACHINE_SURFACE) == 13, len(MACHINE_SURFACE)
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  MACHINE_SURFACE = 13, ceiling unchanged, 5 off-plane routes still refused')"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/policies/$B0B_POLICY" > /dev/null
+
 # A6-4B0b-S3 (A30.26), live: autonomy scope isolation. General B0b's gate
 # found P2 here, on this stack, against real error budgets -- so this is
 # where it is shown closed. `build_autonomy` folded EVERY site's safety state
@@ -6310,9 +6587,17 @@ PYEOF
 }
 echo "  CONTROL (tenant owner):";  s4_generated "$TOKEN" owner
 echo "  site-A human:";            s4_generated "$S3_A" withheld
-echo "  device-scoped human (gate-s3-device; F1 open -> no row, nothing tainted):"
+# A30.25 (general B0b, F1 closed): gate-s3-device holds THIS incident's
+# device, so it reads the row -- and the generated block is withheld from
+# it exactly as from any reader who holds no site under fleet.view.
+echo "  device-scoped human holding THIS device (gate-s3-device; its own incident, generated withheld, nothing tainted):"
 S3_DEV=$(tenant_token gate-s3-device@demo gate-s3-device)
-s4_generated "$S3_DEV" absent
+s4_generated "$S3_DEV" withheld
+# ...and a device-scoped human holding ANOTHER device (gate-b0b-device, at
+# site B) is not a reader of it at all: no row, nothing tainted anywhere.
+echo "  device-scoped human holding ANOTHER device (gate-b0b-device; not its device -> no row, nothing tainted):"
+B0B_DEVICE=$(tenant_token gate-b0b-device@demo gate-b0b-device)
+s4_generated "$B0B_DEVICE" absent
 # A MACHINE principal scoped to site A with the incidents read binding.
 S4_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"name\":\"a3029-reader $(date +%s)\",

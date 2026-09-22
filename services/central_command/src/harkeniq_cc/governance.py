@@ -559,7 +559,18 @@ async def load_attention(
         tenant_id, scope=scope,
     )
     patterns = await FleetPatternRepo(session).list_patterns(tenant_id=tenant_id)
-    sites = await SiteRepo(session).list_all(tenant_id, scope=scope)
+    # A30.25: the AUTHORITATIVE sites decide what site knowledge may be
+    # attached; the sites that merely contain one of the caller's devices
+    # only lend their NAME to a row about that device (D2, R10).
+    site_repo = SiteRepo(session)
+    authoritative_sites = list(await site_repo.list_all(tenant_id, scope=scope))
+    sites = authoritative_sites + list(
+        await site_repo.list_context(tenant_id, scope=scope)
+    )
+    authoritative_site_ids = (
+        None if scope is None or scope.tenant_wide
+        else frozenset(s.id for s in authoritative_sites)
+    )
     learned = await LearnedSignalRepo(session).list_active(tenant_id)
     if learning is not None:
         view = require_learning_view(learning)
@@ -601,6 +612,7 @@ async def load_attention(
         tenant_id=tenant_id,
         learned_signals=learned,
         incidents=open_incidents,
+        authoritative_site_ids=authoritative_site_ids,
     )
     # AFTER ranking, never before. Rank is assigned over the principal's
     # whole scope, so "rank 1" always means first in that scope.
