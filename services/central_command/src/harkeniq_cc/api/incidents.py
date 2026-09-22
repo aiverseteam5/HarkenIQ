@@ -47,25 +47,36 @@ def _diagnosis(explanation: dict | None, view) -> dict | None:
     `view` is the reader's `LearningView` (A30.28). A Site Manager cites
     the fleet patterns it reasoned with, by their description -- "across 2
     sites (30/40)" -- and that text rides back here inside a diagnosis for
-    a device the reader DOES hold. Only the pattern citations are bounded;
-    the device's own telemetry is left exactly as cited.
+    a device the reader DOES hold. The pattern citations are bounded; the
+    device's own telemetry is left exactly as cited.
+
+    A30.29: the GENERATED block was written by a model from a prompt that
+    carried those same patterns, and the sentence does not say which
+    projection it saw. The Site Manager records it (`generation_visibility`
+    inside the explanation) and `view.generated` shows the block only to a
+    reader who holds that projection's site NOW; a tenant-wide reader
+    always; everyone else gets one neutral sentence. Missing or malformed
+    provenance -- every explanation written before A30.29 -- is withheld
+    the same way. The policy is provider-independent: it covers the whole
+    block, not the field the review reproduced.
     """
     view = require_learning_view(view)
     if not explanation:
         return None
     provider = explanation.get("provider", "unknown")
     generated = provider in _GENERATED_PROVIDERS
+    block, visibility = view.generated(explanation)
     return {
         "origin": provider,
         # Consumers (especially model-driven ones) must know whether this
         # text was generated from telemetry before they reason with it.
         "trust": "untrusted_generated" if generated else "deterministic",
         "confidence": explanation.get("confidence", 0.0),
-        "generated": {
-            "summary": explanation.get("summary", ""),
-            "suggested_action": explanation.get("suggested_action", ""),
-            "reasoning_steps": explanation.get("reasoning_steps", []),
-        },
+        "generated": block,
+        # The projection boundary the generated block was produced from,
+        # when the reader is covered by it; null otherwise (a marker names
+        # a site, and a reader who does not hold it is not told which).
+        "generation_visibility": visibility,
         # Citations and prior incidents are references the platform itself
         # produced, not free text the model invented.
         "evidence_cited": view.citations(explanation.get("evidence_cited", [])),

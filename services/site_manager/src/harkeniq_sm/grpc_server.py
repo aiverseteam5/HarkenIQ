@@ -1144,6 +1144,13 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                             generated_at_unix=_ts(cand.generated_at),
                             warnings_json=_json.dumps(cand.warnings or []),
                             dry_run_matches=cand.dry_run_matches,
+                            # A30.29: the projection boundary the YAML was
+                            # generated from. Empty when the row predates
+                            # the marker -- Central Command reads UNKNOWN.
+                            generation_visibility_json=(
+                                _json.dumps(cand.generation_visibility)
+                                if cand.generation_visibility else ""
+                            ),
                         )
                     )
                     cand.reported_to_cc = True
@@ -1325,6 +1332,11 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             )
         # QA-033: fleet patterns land durably (idempotent upsert) and in
         # the ingest mirror the enrichment path reads.
+        # A30.29: keyed by the site the push is FOR. Central Command's
+        # site id resolves the site the way every other RPC's does
+        # (E0.2) -- an unresolved site is refused, never guessed at, and
+        # a payload whose own marker names a different site is refused
+        # rather than stored under this one.
         if request.learned_patterns_json:
             try:
                 patterns = json.loads(request.learned_patterns_json)
@@ -1337,17 +1349,52 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 if isinstance(p, dict) and p.get("pattern_id")
             ]
             if patterns:
-                from harkeniq_sm.db.repos import SMFleetPatternRepo
+                from harkeniq.generation_provenance import (
+                    KEY as VISIBILITY_KEY, SCOPE_SITE, parse as parse_visibility,
+                )
+                from harkeniq_sm.db.repos import SMSitePatternRepo
                 async with self.sessionmaker() as session:
-                    repo = SMFleetPatternRepo(session)
+                    site = await SiteRepo(session).get_by_cc_id(request.site_id)
+                    if site is None or site.status != "active":
+                        reason = (
+                            f"no active site bound to Central Command site id "
+                            f"{request.site_id!r} at this Site Manager; learned "
+                            f"patterns are stored per site and not stored at all "
+                            f"for a site that cannot be resolved"
+                        )
+                        logger.warning("PushPolicy patterns refused: %s", reason)
+                        return harkeniq_pb2.PolicyAck(accepted=False, reason=reason)
                     for pattern in patterns:
-                        await repo.upsert(pattern)
+                        marker = pattern.get(VISIBILITY_KEY)
+                        if marker is not None:
+                            parsed = parse_visibility(marker)
+                            if (parsed is None or parsed.scope != SCOPE_SITE
+                                    or parsed.site_id != request.site_id):
+                                reason = (
+                                    f"pattern {pattern['pattern_id']!r} is marked "
+                                    f"as projected for {marker!r}, which is not a "
+                                    f"projection for site {request.site_id!r}; "
+                                    f"refused rather than stored under the wrong site"
+                                )
+                                logger.warning("PushPolicy patterns refused: %s", reason)
+                                return harkeniq_pb2.PolicyAck(
+                                    accepted=False, reason=reason,
+                                )
+                    repo = SMSitePatternRepo(session)
+                    for pattern in patterns:
+                        await repo.upsert(
+                            site.id, pattern,
+                            pattern.get(VISIBILITY_KEY)
+                            if isinstance(pattern.get(VISIBILITY_KEY), dict) else None,
+                        )
                     await session.commit()
+                    site_row_id = site.id
                 if self.ingest is not None:
                     for pattern in patterns:
-                        self.ingest.fleet_patterns[pattern["pattern_id"]] = pattern
+                        self.ingest.fleet_patterns.put(site_row_id, pattern)
                 logger.info(
-                    "Stored %d fleet pattern(s) from CC", len(patterns)
+                    "Stored %d fleet pattern(s) from CC for site %s",
+                    len(patterns), request.site_id,
                 )
 
         if not request.autonomy_budgets_json:

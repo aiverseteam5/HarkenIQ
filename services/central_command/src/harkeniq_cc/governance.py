@@ -26,9 +26,11 @@ from harkeniq_cc.autonomy import (
 )
 from harkeniq_cc.capabilities import build_capability_registry
 from harkeniq_cc.learning_projection import (
+    project_candidate,
     project_citations,
     project_cycles,
     project_frozen_signals,
+    project_generated,
     project_patterns,
     project_signals,
 )
@@ -352,6 +354,15 @@ class LearningView:
 
     def cycles(self, payloads) -> list:
         return project_cycles(payloads, self.sites)
+
+    def generated(self, explanation) -> tuple[dict, Optional[dict]]:
+        """An incident diagnosis's generated block (A30.29): shown only when
+        its recorded projection is one of THIS reader's sites now."""
+        return project_generated(explanation, self.sites)
+
+    def candidate(self, row) -> dict:
+        """A candidate skill's generated fields (A30.29), same rule."""
+        return project_candidate(row, self.sites)
 
 
 def learning_view(scope) -> LearningView:

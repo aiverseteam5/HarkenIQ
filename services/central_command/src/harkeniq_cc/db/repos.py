@@ -1823,6 +1823,12 @@ class CandidateSkillRepo:
             row.generated_at = datetime.fromtimestamp(
                 cand["generated_at_unix"], tz=timezone.utc
             )
+        # A30.29: stored as received, interpreted at read (fail closed).
+        # A re-poll from an older Site Manager carries none and must not
+        # erase what a newer one recorded, so only a present marker writes.
+        visibility = cand.get("generation_visibility")
+        if isinstance(visibility, dict):
+            row.generation_visibility = dict(visibility)
         await self.session.flush()
         return row
 

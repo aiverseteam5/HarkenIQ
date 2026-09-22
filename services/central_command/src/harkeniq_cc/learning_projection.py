@@ -39,6 +39,19 @@ anything else (the exact set of held sites, possibly empty)
 
 Naming what may pass, never what may not (the A25.3 lesson): an evidence
 key this module does not recognise is withheld.
+
+GENERATED CONTENT INHERITS ITS PROJECTION (A30.29). A Site Manager's LLM
+diagnosis and the candidate YAML generated from it were written by a model
+from a prompt that carried whichever pattern payload the Site Manager
+held -- one site's bounded projection since A30.28, the whole tenant's
+before it, and on a multi-site Site Manager possibly ANOTHER site's. The
+text does not say which. The writer records it as a `generation_visibility`
+marker (`harkeniq.generation_provenance`), and `project_generated` /
+`project_candidate` show a scoped reader the generated fields only when
+that marker names a site the reader holds NOW. Missing, malformed,
+`tenant`, or another site: the whole block is withheld, by construction --
+the withheld shape is built from constants, so a field a future provider
+adds cannot survive.
 """
 
 from __future__ import annotations
@@ -49,6 +62,9 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Iterable, Optional
 
+from harkeniq.generation_provenance import KEY as GENERATION_VISIBILITY_KEY
+from harkeniq.generation_provenance import covers as generation_covers
+from harkeniq.generation_provenance import parse as parse_generation_visibility
 from harkeniq_cc.learned_signals import SCOPE_SITE, render_statement
 
 #: Grid a scoped reader's rates are rounded to.
@@ -764,3 +780,108 @@ def project_cycles(payloads: Iterable[dict],
         str(c.get("cycle_id") or ""),
     ))
     return projected
+
+
+# ---------------------------------------------------------------------------
+# Generated content: a diagnosis block, a candidate's YAML (A30.29)
+# ---------------------------------------------------------------------------
+
+#: The generated fields of an incident diagnosis. Named so that the
+#: VISIBLE shape and the WITHHELD shape are built from the same list and
+#: cannot drift; a provider that writes a field outside this list does
+#: not get it shown to anyone through `project_generated` -- it is not in
+#: the contract.
+GENERATED_FIELDS = ("summary", "suggested_action", "reasoning_steps")
+
+#: What a scoped reader is told in place of a generated block whose
+#: projection they are not proven to hold. One sentence for "recorded for
+#: a site you do not hold" and for "not recorded": which of the two it is
+#: would itself be a fact about the hidden estate.
+WITHHELD_GENERATED = (
+    "the generated explanation is withheld: it was produced from evidence "
+    "whose projection is outside your authorized scope or was not recorded"
+)
+
+#: The withheld block. Constants only -- nothing from the stored document
+#: is copied into it, which is what makes the withholding structural.
+WITHHELD_GENERATED_BLOCK: dict[str, Any] = {
+    "summary": WITHHELD_GENERATED,
+    "suggested_action": "",
+    "reasoning_steps": [],
+    "withheld": True,
+}
+
+
+def generation_visible(marker: Any, visible: Optional[Iterable[str]]) -> bool:
+    """May THIS reader be shown content generated under `marker`?
+
+    A tenant-wide reader: always. Anyone else: only a marker that parses
+    and names a site they hold now. The rule is `generation_provenance.
+    covers`; this is the one place the projection asks it.
+    """
+    held = _frozen(visible)
+    return generation_covers(marker, None if held is None else held)
+
+
+def project_generation_visibility(marker: Any, visible: Optional[Iterable[str]]) -> Optional[dict]:
+    """The marker as the reader may see it: the parsed marker when the
+    reader is covered by it (or tenant-wide), else ``None``. A marker
+    names a site, and a reader who does not hold that site is not told
+    which site it is."""
+    if not generation_visible(marker, visible):
+        return None
+    parsed = parse_generation_visibility(marker)
+    return parsed.to_dict() if parsed is not None else None
+
+
+def project_generated(explanation: Optional[dict],
+                      visible: Optional[Iterable[str]]) -> tuple[dict, Optional[dict]]:
+    """(the `generated` block, the visible marker) of an incident diagnosis.
+
+    The visible block is built by NAMING `GENERATED_FIELDS` -- a field the
+    provider wrote outside that list is not carried -- plus
+    `withheld: False`. The withheld block is `WITHHELD_GENERATED_BLOCK`,
+    constants only. A tenant-wide reader gets the stored fields whatever
+    the marker says, including when there is none.
+    """
+    stored = explanation or {}
+    marker = stored.get(GENERATION_VISIBILITY_KEY)
+    if not generation_visible(marker, visible):
+        return dict(WITHHELD_GENERATED_BLOCK), None
+    block: dict[str, Any] = {
+        "summary": stored.get("summary", ""),
+        "suggested_action": stored.get("suggested_action", ""),
+        "reasoning_steps": stored.get("reasoning_steps", []),
+        "withheld": False,
+    }
+    return block, project_generation_visibility(marker, visible)
+
+
+#: A candidate's generated fields: the YAML, and the validation warnings
+#: derived from it.
+CANDIDATE_GENERATED_FIELDS = ("yaml_text", "warnings")
+
+
+def project_candidate(row: Any, visible: Optional[Iterable[str]]) -> dict:
+    """The generated part of one candidate row, for one reader.
+
+    Returns `{"yaml_text", "warnings", "generated_withheld",
+    "generation_visibility"}`. Withheld: empty text, no warnings, `True`,
+    ``None`` -- constants, nothing copied. The row's own site, device,
+    component, validation state and match count are not generated and
+    are the caller's to return.
+    """
+    marker = getattr(row, "generation_visibility", None)
+    if not generation_visible(marker, visible):
+        return {
+            "yaml_text": "",
+            "warnings": [],
+            "generated_withheld": True,
+            "generation_visibility": None,
+        }
+    return {
+        "yaml_text": getattr(row, "yaml_text", "") or "",
+        "warnings": list(getattr(row, "warnings", None) or []),
+        "generated_withheld": False,
+        "generation_visibility": project_generation_visibility(marker, visible),
+    }

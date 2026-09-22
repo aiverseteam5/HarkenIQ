@@ -330,10 +330,15 @@ class ActionRow(Base):
 
 
 class SMFleetPatternRow(Base):
-    """QA-033 (R-C1): fleet patterns pushed from CC via PushPolicy.
+    """QA-033 (R-C1): fleet patterns pushed from CC via PushPolicy -- LEGACY.
 
-    Upserted by pattern_id so re-pushes are idempotent; consumed by the
-    reasoning enrichment path as fleet evidence.
+    Keyed by pattern id alone, which on a multi-site Site Manager (E1.3)
+    meant the last push won: site B's projection overwrote site A's, and
+    site A's next diagnosis quoted site B's own facts (A30.29). This
+    release never writes here. The rows are read once at boot as UNMARKED
+    evidence -- an unbounded tenant payload, as everything pushed before
+    A30.28 was -- and are consulted for a site only until that site holds
+    its own row in `sm_site_fleet_patterns`. Not rewritten, not dropped.
     """
 
     __tablename__ = "sm_fleet_patterns"
@@ -345,6 +350,34 @@ class SMFleetPatternRow(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     detected_at: Mapped[str] = mapped_column(String(64), default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SMSitePatternRow(Base):
+    """A fleet pattern as pushed to ONE site of this Site Manager (A30.29).
+
+    Central Command distributes a pattern per receiving site, projected for
+    that site (A30.28 (A)), and marks the payload with the projection it
+    applied. The row is keyed by the site it was pushed FOR, so two sites
+    on one Site Manager hold two rows for one pattern and a site's
+    reasoning consumes its own. `visibility` is the marker as pushed
+    (`harkeniq.generation_provenance`); NULL means the pushing Central
+    Command predates the marker, and an artifact generated from the row
+    is then recorded as `tenant`-visible, which is the truth about an
+    unbounded payload.
+    """
+
+    __tablename__ = "sm_site_fleet_patterns"
+
+    site_id: Mapped[str] = mapped_column(ForeignKey("sites.id"), primary_key=True)
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pattern_type: Mapped[str] = mapped_column(String(64), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    affected_scope: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    detected_at: Mapped[str] = mapped_column(String(64), default="")
+    visibility: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -404,6 +437,11 @@ class CandidateSkillRow(Base):
     dry_run_matches: Mapped[int] = mapped_column(Integer, default=0)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     reported_to_cc: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: A30.29: the projection boundary the YAML was generated from
+    #: (`harkeniq.generation_provenance`). NULL for a candidate written
+    #: before the marker existed -- UNKNOWN, which Central Command withholds
+    #: from every scoped reader. No backfill: none is provable.
+    generation_visibility: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
 
     __table_args__ = (
         Index("ix_candidate_skills_source", "source_device", "source_component"),

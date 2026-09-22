@@ -131,10 +131,17 @@ def site_payload(patterns: list[FleetPattern], site_id: str) -> str:
     about any other site. `hide_unnamed=False` because a site that holds
     the cohort and is not failing yet is who this loop exists to tell.
 
-    The Site Manager upserts by pattern id and this ledger is in-process,
-    so a Central Command restart re-pushes and OVERWRITES what an earlier
-    release delivered -- no Site Manager migration is needed.
+    This ledger is in-process, so a Central Command restart re-pushes
+    what an earlier release delivered; the Site Manager keys what it
+    stores by the site it was pushed FOR (A30.29).
+
+    A30.29: every pattern in the payload is MARKED as projected for this
+    canonical site (`generation_visibility`), because the Site Manager
+    will generate text from it and must record which projection the
+    model saw. The marker names the authorization boundary of the
+    projection and nothing about the evidence.
     """
+    from harkeniq.generation_provenance import KEY, site_visibility
     from harkeniq_cc.learning_projection import pattern_order, project_pattern
 
     # Ordered by what the site is shown. The caller's order is detection
@@ -145,6 +152,7 @@ def site_payload(patterns: list[FleetPattern], site_id: str) -> str:
          for pattern in patterns),
         key=pattern_order,
     )
+    marker = site_visibility(site_id).to_dict()
     payload = []
     for p in projected:
         payload.append({
@@ -155,6 +163,7 @@ def site_payload(patterns: list[FleetPattern], site_id: str) -> str:
             "confidence": p.confidence,
             "evidence": p.evidence,
             "detected_at": p.detected_at,
+            KEY: dict(marker),
         })
     return json.dumps(payload)
 

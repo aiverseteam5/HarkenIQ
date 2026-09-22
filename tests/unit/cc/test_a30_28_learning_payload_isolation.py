@@ -566,7 +566,12 @@ class TestTheDistributionPayload:
             payload = json.loads(raw)
             for p in payload:
                 assert {"pattern_id", "pattern_type", "description", "affected_scope",
-                        "confidence", "evidence", "detected_at"} == set(p)   # what the SM reads
+                        "confidence", "evidence", "detected_at",
+                        "generation_visibility"} == set(p)   # what the SM reads
+                # A30.29: marked as projected for THIS site, and the marker
+                # is a boundary, not evidence -- three keys, no more.
+                assert p["generation_visibility"] == {
+                    "scope": "site", "site_id": SITES["A"].id, "projection_version": 1}
             pushed[variant] = S.canonical(payload, await S.aliases(stack))
         assert pushed["X"] == pushed["Y"]
 

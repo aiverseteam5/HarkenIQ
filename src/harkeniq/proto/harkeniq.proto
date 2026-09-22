@@ -355,6 +355,14 @@ message CandidateSkill {
   int64 generated_at_unix = 6;
   string warnings_json = 7;       // validation warnings, JSON array
   int32 dry_run_matches = 8;
+  // A30.29: the projection boundary this candidate's YAML was generated
+  // from -- {"scope": "site"|"tenant", "site_id": <cc site id>|null,
+  // "projection_version": 1} -- as `harkeniq.generation_provenance`
+  // defines it. Empty means the Site Manager recorded none, which Central
+  // Command reads as UNKNOWN and withholds from every scoped reader. It
+  // describes the authorization boundary of the evidence, never the
+  // evidence: no site list, count or total may ride in it.
+  string generation_visibility_json = 9;
 }
 
 // S5: live autonomy SAFETY STATE at the site. Before this, suppression

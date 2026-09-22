@@ -34,8 +34,17 @@ async def list_candidates(
 
     A23: a candidate carries the site and device it was generated from,
     so the read is site-scoped like every other site-anchored row.
+
+    A30.29: the ROW being the reader's does not make its YAML theirs. The
+    YAML was generated from a prompt that carried whichever pattern
+    payload the Site Manager held, and `view.candidate` returns it -- and
+    the validation warnings derived from it -- only when the recorded
+    generation projection is a site the reader holds now. Unknown
+    provenance (every candidate written before A30.29) is withheld from
+    a scoped reader and kept for a tenant-wide one.
     """
     reach = read_reach(scope, "fleet.view")
+    view = learning_view(scope)
     rows = await CandidateSkillRepo(session).list_candidates(
         user.tenant_id, status=status, scope=reach,
     )
@@ -47,13 +56,12 @@ async def list_candidates(
                 "source_device": r.source_device,
                 "source_component": r.source_component,
                 "validation_state": r.validation_state,
-                "warnings": r.warnings or [],
                 "dry_run_matches": r.dry_run_matches,
                 "status": r.status,
                 "cycle_id": r.cycle_id,
                 "generated_at": r.generated_at.isoformat(),
                 "received_at": r.received_at.isoformat(),
-                "yaml_text": r.yaml_text,
+                **view.candidate(r),
             }
             for r in rows
         ],

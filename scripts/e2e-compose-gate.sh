@@ -6128,28 +6128,60 @@ else:
     print("    (no incident on this device in this run; prior_learning is proven in the unit and PostgreSQL suites)")
 PY
 
-step "A6-4B0b-S4/BJ: what crossed CC->SM is one site's bounded payload -- Central Command still holds the whole"
+step "A6-4B0b-S4/BJ: what crossed CC->SM is one site's bounded payload PER SITE, marked -- Central Command still holds the whole"
 S4_PATTERN=$(s1_cc "SELECT id FROM cc_fleet_patterns WHERE pattern_type='cross_site_batch'
                     AND affected_scope::jsonb->>'action_type'='$S4_ACTION' LIMIT 1")
-s4_pushed() { [ "$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'")" = "1" ]; }
-wait_for "the distribution loop to push the pattern to the Site Manager" 480 s4_pushed
+# A30.29: the store is keyed (site, pattern). The sites that RECEIVE the
+# pattern are those whose fleet holds the cohort, and both A and B do (the
+# S1 steps seeded Dell R750s at B), so the ONE Site Manager serving both
+# must end up with a row per site -- each bounded to its own facts and each
+# marked as projected for its own Central Command site id. Before A30.29
+# the second push overwrote the first.
+S4_TARGETS=$(s1_cc "SELECT string_agg(DISTINCT site_id, ',') FROM cc_fleet_cache
+                    WHERE vendor='$S4_VENDOR' AND model='$S4_MODEL'")
+echo "$S4_TARGETS" | tr ',' '\n' | grep -qx "$SITE_A" || { echo "site A does not hold the cohort" >&2; exit 1; }
+echo "$S4_TARGETS" | tr ',' '\n' | grep -qx "$SITE_B" || { echo "site B does not hold the cohort" >&2; exit 1; }
+S4_EXPECTED=$(echo "$S4_TARGETS" | tr ',' '\n' | sort -u | wc -l)
+s4_pushed() {
+  [ "$(s1_sm "SELECT count(*) FROM sm_site_fleet_patterns sp JOIN sites s ON s.id = sp.site_id
+              WHERE sp.pattern_id='$S4_PATTERN' AND s.cc_site_id IN (
+                SELECT unnest(string_to_array('$S4_TARGETS', ',')))")" = "$S4_EXPECTED" ]
+}
+wait_for "the distribution loop to push the pattern to EVERY receiving site of the Site Manager" 480 s4_pushed
 S4_CC_ROW=$(docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "SELECT description || ' ## ' || evidence::text FROM cc_fleet_patterns WHERE id='$S4_PATTERN'")
 echo "$S4_CC_ROW" | grep -q "across 2 sites ($S4_TOTAL/$S4_TOTAL)" || {
   echo "CONTROL failed: Central Command's own pattern row lost its evidence" >&2; exit 1; }
-S4_SM_BAD=$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN' AND (
-      description LIKE '%across%' OR description LIKE '%(%/%)%'
-   OR evidence::jsonb ? 'total' OR evidence::jsonb ? 'failures' OR evidence::jsonb ? 'sites_affected'
+# Every per-site row: no count, no other site, and a marker naming ITS site.
+S4_SM_BAD=$(s1_sm "SELECT count(*) FROM sm_site_fleet_patterns sp JOIN sites s ON s.id = sp.site_id
+   WHERE sp.pattern_id='$S4_PATTERN' AND (
+      sp.description LIKE '%across%' OR sp.description LIKE '%(%/%)%'
+   OR sp.evidence::jsonb ? 'total' OR sp.evidence::jsonb ? 'failures' OR sp.evidence::jsonb ? 'sites_affected'
    OR (SELECT count(*) FROM jsonb_object_keys(
-         COALESCE(evidence::jsonb->'site_failure_counts', '{}'::jsonb))) > 1
-   OR affected_scope::jsonb->>'sites' LIKE '%,%')")
+         COALESCE(sp.evidence::jsonb->'site_failure_counts', '{}'::jsonb))) > 1
+   OR sp.affected_scope::jsonb->>'sites' LIKE '%,%'
+   OR (sp.affected_scope::jsonb->>'sites' <> '' AND sp.affected_scope::jsonb->>'sites' <> s.cc_site_id)
+   OR sp.visibility IS NULL
+   OR sp.visibility::jsonb->>'scope' <> 'site'
+   OR sp.visibility::jsonb->>'site_id' <> s.cc_site_id
+   OR (sp.visibility::jsonb->>'projection_version')::int <> 1)")
 [ "$S4_SM_BAD" = "0" ] || {
-  echo "the Site Manager stores another site's facts for $S4_PATTERN:" >&2
+  echo "a Site Manager row for $S4_PATTERN carries another site's facts or a wrong marker:" >&2
   docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -c \
-    "SELECT description, affected_scope, evidence FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'" >&2
+    "SELECT s.cc_site_id, sp.description, sp.affected_scope, sp.evidence, sp.visibility
+     FROM sm_site_fleet_patterns sp JOIN sites s ON s.id = sp.site_id
+     WHERE sp.pattern_id='$S4_PATTERN'" >&2
   exit 1; }
-echo "  Site Manager row: $(docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-  "SELECT description FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'" | sed 's/^ *//')"
+# The two rows are DIFFERENT rows: site A's names A's count, site B's names B's.
+S4_A_ROW=$(s1_sm "SELECT sp.evidence::jsonb->'site_failure_counts'->>'$SITE_A' FROM sm_site_fleet_patterns sp
+                  JOIN sites s ON s.id = sp.site_id WHERE sp.pattern_id='$S4_PATTERN' AND s.cc_site_id='$SITE_A'")
+S4_B_ROW=$(s1_sm "SELECT sp.evidence::jsonb->'site_failure_counts'->>'$SITE_B' FROM sm_site_fleet_patterns sp
+                  JOIN sites s ON s.id = sp.site_id WHERE sp.pattern_id='$S4_PATTERN' AND s.cc_site_id='$SITE_B'")
+[ "$S4_A_ROW" = "$S4_A_FAILURES" ] || { echo "site A's row does not carry A's own count: '$S4_A_ROW'" >&2; exit 1; }
+[ "$S4_B_ROW" = "$S4_B_FAILURES" ] || { echo "site B's row does not carry B's own count: '$S4_B_ROW'" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='$S4_PATTERN'")" = "0" ] || {
+  echo "this release wrote the LEGACY store" >&2; exit 1; }
+echo "  $S4_EXPECTED per-site row(s) for $S4_PATTERN on ONE Site Manager: A's carries $S4_A_ROW, B's carries $S4_B_ROW, each marked for its own site; legacy store untouched"
 
 step "A6-4B0b-S4/BK: this proof owns its state"
 # The A30.21 lesson. The engine's in-process aggregate keeps what it counted
@@ -6161,10 +6193,246 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
        SELECT id FROM cc_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION');
    DELETE FROM cc_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-  "DELETE FROM sm_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
+  "DELETE FROM sm_site_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION';
+   DELETE FROM sm_fleet_patterns WHERE affected_scope::jsonb->>'action_type'='$S4_ACTION'" > /dev/null
 [ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$S4_RUN-%'")" = "0" ] || {
   echo "the seeded outcomes were not removed" >&2; exit 1; }
 echo "  the seeded outcomes and everything the engine learned from them are removed"
+
+# ===========================================================================
+# A6-4B0b-S4 remediation (spec A30.29): generated content inherits the
+# projection it was generated from. The compose stack runs no language
+# model, so the GENERATION path is proven at unit level against the real
+# IngestService; what the live stack proves is the read policy over real
+# Keycloak identities and real grants, the wire (BJ above: the marker on
+# every per-site row), and both upgrades on the live databases.
+# ===========================================================================
+
+step "A6-4B0b-S4/BL: the HISTORICAL attack -- a diagnosis and a candidate with no provenance"
+S4_INC="gate-a3029-inc-$(date +%s)"
+S4_CAND="gate-a3029-cand-$(date +%s)"
+S4_SECRET="SECRET_SITE_C"
+S4_PHRASE="30 of 40 attempts across 2 sites"
+S4_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title, device_agent_id,
+        subsystem, confidence, inferred, explanation, opened_at, last_seen_at)
+   VALUES ('$S4_INC', '$S4_TENANT', '$SITE_A', 'device', 'open', 'Fan duty rising', '$S4_DEVICE_A',
+        'fan', 0.9, false,
+        '{\"provider\": \"llm\", \"confidence\": 0.8,
+          \"summary\": \"Fleet-wide: $S4_SECRET -- $S4_PHRASE\",
+          \"suggested_action\": \"Replace the PSU as at $S4_SECRET\",
+          \"reasoning_steps\": [\"$S4_PHRASE\", \"compared with $S4_SECRET\"],
+          \"operator_notes\": \"$S4_SECRET\",
+          \"evidence_cited\": [\"fan-health: 3 of 5 fans failed\"],
+          \"similar_past_incidents\": []}'::jsonb, now(), now());
+   INSERT INTO cc_candidate_skills (skill_id, tenant_id, site_id, yaml_text, source_device, source_component,
+        validation_state, warnings, dry_run_matches, status, generated_at, received_at)
+   VALUES ('$S4_CAND', '$S4_TENANT', '$SITE_A',
+        'name: fan-x' || chr(10) || 'description: $S4_SECRET $S4_PHRASE' || chr(10),
+        '$S4_DEVICE_A', 'fan:Fan1', 'valid', '[\"rule quotes $S4_SECRET\"]'::jsonb, 2, 'received',
+        now(), now())" > /dev/null
+s4_generated() {  # $1 token, $2 owner | withheld | absent
+  python3 - "$1" "$2" "$S4_INC" "$S4_CAND" "$S4_SECRET" "$S4_PHRASE" <<'PYEOF'
+import json, subprocess, sys
+token, who, inc, cand, secret, phrase = sys.argv[1:7]
+def get(path):
+    out = subprocess.run(["curl", "-s", "-w", "\n%{http_code}", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True).stdout
+    body, code = out.rsplit("\n", 1)
+    return int(code), (json.loads(body) if code == "200" else None)
+def leaves(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from leaves(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from leaves(v)
+    else:
+        yield node
+def taint(body):
+    return [l for l in leaves(body) if isinstance(l, str) and (secret in l or phrase in l)]
+code, detail = get(f"/api/incidents/{inc}")
+lcode, listed = get("/api/incidents/?status=all")
+ccode, cands = get("/api/learning/candidates")
+if who == "absent":
+    assert code == 404, code
+    for body in (listed, cands):
+        assert body is None or taint(body) == [], taint(body)
+    print("    no row, and nothing tainted anywhere")
+    sys.exit(0)
+assert code == 200, (code, detail)
+diag = detail["diagnosis"]
+mine = next(c for c in cands["candidates"] if c["skill_id"] == cand)
+if who == "owner":
+    assert secret in diag["generated"]["summary"] and diag["generated"]["withheld"] is False
+    assert diag["generation_visibility"] is None      # nothing recorded; nothing invented
+    assert secret in mine["yaml_text"] and mine["generated_withheld"] is False and mine["warnings"]
+    print("    owner: canonical generated text kept, provenance reported as not recorded")
+else:
+    for body in (detail, listed, cands):
+        assert taint(body) == [], taint(body)
+    assert diag["generated"]["withheld"] is True and diag["generation_visibility"] is None
+    assert diag["generated"]["suggested_action"] == "" and diag["generated"]["reasoning_steps"] == []
+    assert "operator_notes" not in diag["generated"]
+    assert detail["title"] == "Fan duty rising" and "3 of 5 fans" in diag["evidence_cited"][0]
+    assert mine["yaml_text"] == "" and mine["warnings"] == [] and mine["generated_withheld"] is True
+    assert mine["dry_run_matches"] == 2                # the candidate's own facts survive
+    print("    " + who + ": row present, local facts intact, generated block and YAML withheld, no sentinel")
+PYEOF
+}
+echo "  CONTROL (tenant owner):";  s4_generated "$TOKEN" owner
+echo "  site-A human:";            s4_generated "$S3_A" withheld
+echo "  device-scoped human (gate-s3-device; F1 open -> no row, nothing tainted):"
+S3_DEV=$(tenant_token gate-s3-device@demo gate-s3-device)
+s4_generated "$S3_DEV" absent
+# A MACHINE principal scoped to site A with the incidents read binding.
+S4_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"a3029-reader $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"read\",\"capability_ref\":\"attention\"},
+                        {\"kind\":\"read\",\"capability_ref\":\"incidents\"}]}" \
+  http://localhost:8090/api/operational-agents/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+S4_SECRET_M=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$S4_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+S4_MTOKEN=$(curl -sf -X POST "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials&client_id=op-agent-$S4_AGENT&client_secret=$S4_SECRET_M" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$S4_MTOKEN" ] || { echo "no machine token for the A30.29 reader" >&2; exit 1; }
+echo "  machine principal (site A):"
+python3 - "$S4_MTOKEN" "$S4_INC" "$S4_SECRET" "$S4_PHRASE" <<'PYEOF'
+import json, subprocess, sys
+token, inc, secret, phrase = sys.argv[1:5]
+out = subprocess.run(["curl", "-s", "-w", "\n%{http_code}", "-H", f"Authorization: Bearer {token}",
+                      f"http://localhost:8090/api/incidents/{inc}"], capture_output=True, text=True).stdout
+body, code = out.rsplit("\n", 1)
+assert code == "200", (code, body)
+assert secret not in body and phrase not in body
+d = json.loads(body)["diagnosis"]
+assert d["generated"]["withheld"] is True and d["generation_visibility"] is None
+print("    machine: row 200, generated withheld, no sentinel on MACHINE_SURFACE")
+PYEOF
+
+step "A6-4B0b-S4/BM: a marker is evidence, not authority -- current reach decides on every read"
+# Mark the SAME stored artifacts as generated from site A's projection.
+# The site-A human sees them now; a marker for site B on an incident AT
+# site A is withheld from them without naming B; revoking their grant
+# withholds again (the row stays readable through a second, incident-only
+# grant); restoring it shows the same artifact, unchanged.
+s4_mark() {  # $1 cc site id | tenant
+  if [ "$1" = "tenant" ]; then
+    S4_MARK='{"scope": "tenant", "site_id": null, "projection_version": 1}'
+  else
+    S4_MARK="{\"scope\": \"site\", \"site_id\": \"$1\", \"projection_version\": 1}"
+  fi
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "UPDATE cc_incidents SET explanation = explanation::jsonb || '{\"generation_visibility\": $S4_MARK}'::jsonb
+      WHERE incident_id='$S4_INC';
+     UPDATE cc_candidate_skills SET generation_visibility = '$S4_MARK'::jsonb WHERE skill_id='$S4_CAND'" > /dev/null
+}
+s4_sees() {  # $1 token, $2 expected marker site id
+  python3 - "$1" "$S4_INC" "$S4_CAND" "$S4_SECRET" "$2" <<'PYEOF'
+import json, subprocess, sys
+token, inc, cand, secret, site = sys.argv[1:6]
+def get(path):
+    return json.loads(subprocess.run(["curl", "-s", "-H", f"Authorization: Bearer {token}",
+        "http://localhost:8090" + path], capture_output=True, text=True).stdout)
+d = get(f"/api/incidents/{inc}")["diagnosis"]
+assert secret in d["generated"]["summary"] and d["generated"]["withheld"] is False, d["generated"]
+assert d["generation_visibility"] == {"scope": "site", "site_id": site, "projection_version": 1}, d["generation_visibility"]
+c = next(c for c in get("/api/learning/candidates")["candidates"] if c["skill_id"] == cand)
+assert secret in c["yaml_text"] and c["generated_withheld"] is False and c["generation_visibility"]["site_id"] == site
+print(f"    visible: generated block and YAML shown, projection recorded for {site[:12]}...")
+PYEOF
+}
+s4_mark "$SITE_A"
+echo "  marked for site A -- site-A human:"; s4_sees "$S3_A" "$SITE_A"
+echo "  marked for site A -- org/site-set human holding A and B:"; s4_sees "$S3_AB" "$SITE_A"
+s4_mark "$SITE_B"
+echo "  marked for site B (an incident AT site A) -- site-A human:"; s4_generated "$S3_A" withheld
+s2_get "$S3_A" "/api/incidents/$S4_INC" | grep -q "$SITE_B" && {
+  echo "the withheld response named the site the marker names" >&2; exit 1; }
+echo "  marked for site B -- tenant owner:"; s4_sees "$TOKEN" "$SITE_B"
+s4_mark tenant
+echo "  marked tenant -- site-A human:"; s4_generated "$S3_A" withheld
+echo "  marked tenant -- A+B human:";    s4_generated "$S3_AB" withheld
+# Revoke / restore, on an identity THIS step owns (the A30.21 lesson).
+s4_mark "$SITE_A"
+tenant_realm_user "gate-a3029@demo" "gate-a3029" site_admin
+S4_RR=$(tenant_token gate-a3029@demo gate-a3029)
+S4_RR_SUB=$(s1_sub "$S4_RR")
+# The row-holding grant is a DIFFERENT row (an org-unit grant narrowed to
+# incident.view) from the site grant revoked below.
+S4_ORG=$(s1_cc "SELECT org_unit_id FROM cc_sites WHERE id='$SITE_A'")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+   -d "{\"principal_ref\":\"$S4_RR_SUB\",\"scope_type\":\"org_unit\",\"scope_ref\":\"$S4_ORG\",
+        \"role\":\"site_admin\",\"permission_subset\":[\"incident.view\"]}" \
+   http://localhost:8090/api/scope-grants/)" = "201" ] || { echo "row-holding grant refused" >&2; exit 1; }
+S4_FULL=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+   -d "{\"principal_ref\":\"$S4_RR_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\",\"role\":\"site_admin\"}" \
+   http://localhost:8090/api/scope-grants/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "  fresh reader with fleet.view at A:";   s4_sees "$S4_RR" "$SITE_A"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8090/api/scope-grants/$S4_FULL)" = "200" ] || { echo "revoke refused" >&2; exit 1; }
+echo "  the site grant REVOKED (row still held through the org grant):"; s4_generated "$S4_RR" withheld
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+   -d "{\"principal_ref\":\"$S4_RR_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\",\"role\":\"site_admin\"}" \
+   http://localhost:8090/api/scope-grants/)" = "201" ] || { echo "restore refused" >&2; exit 1; }
+echo "  the site grant RESTORED:";             s4_sees "$S4_RR" "$SITE_A"
+[ "$(s1_cc "SELECT explanation::jsonb->'generation_visibility'->>'site_id' FROM cc_incidents WHERE incident_id='$S4_INC'")" = "$SITE_A" ] || {
+  echo "the stored marker changed under a read" >&2; exit 1; }
+echo "  the stored artifact and its marker are unchanged throughout"
+
+step "A6-4B0b-S4/BN: both live databases cross the A30.29 upgrades with rows present, backfilling nothing"
+# CC 0026 -> 0027 with the candidate seeded above present. Same shape as
+# the A23-2 step: the column is dropped and the chain re-run on the LIVE
+# database, and the window is one statement wide.
+CC_HEAD=$(ls "$_REPO_ROOT"/services/central_command/src/harkeniq_cc/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
+SM_HEAD=$(ls "$_REPO_ROOT"/services/site_manager/src/harkeniq_sm/db/migrations/versions/[0-9]*.py \
+  | sed 's|.*/\([0-9]\{4\}\)_.*|\1|' | sort | tail -1)
+S4_CANDS_BEFORE=$(s1_cc "SELECT count(*) FROM cc_candidate_skills")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  alter table cc_candidate_skills drop column generation_visibility;
+  update alembic_version set version_num='0026';" > /dev/null
+docker compose exec -T central-command sh -c \
+  "cd /app/services/central_command && alembic upgrade head" 2>&1 | tail -1
+[ "$(s1_cc "SELECT version_num FROM alembic_version")" = "$CC_HEAD" ] || { echo "CC did not reach head" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_candidate_skills")" = "$S4_CANDS_BEFORE" ] || { echo "candidate rows changed" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_candidate_skills WHERE generation_visibility IS NOT NULL")" = "0" ] || {
+  echo "the CC upgrade backfilled a marker" >&2; exit 1; }
+echo "  CC $CC_HEAD on PostgreSQL: $S4_CANDS_BEFORE candidate row(s), every generation_visibility NULL"
+# SM 0010 -> 0011: a LEGACY pattern row present (written the way the old
+# release wrote it), the per-site table and the candidate column removed,
+# then the chain re-run. The legacy row stays where it is and is copied
+# under no site; the per-site table comes back empty.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc "
+  INSERT INTO sm_fleet_patterns (pattern_id, pattern_type, description, confidence, detected_at, received_at)
+  VALUES ('gate-a3029-legacy', 'cross_site_batch', 'SEL_CLEAR fails at 65% across 3 sites (35/54)', 0.9, '1', now())
+  ON CONFLICT (pattern_id) DO NOTHING;
+  drop table sm_site_fleet_patterns;
+  alter table sm_candidate_skills drop column generation_visibility;
+  update alembic_version set version_num='0010';" > /dev/null
+docker compose exec -T site-manager sh -c \
+  "cd /app/sm && alembic upgrade head" 2>&1 | tail -1
+[ "$(s1_sm "SELECT version_num FROM alembic_version")" = "$SM_HEAD" ] || { echo "SM did not reach head" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_fleet_patterns WHERE pattern_id='gate-a3029-legacy'")" = "1" ] || {
+  echo "the legacy row did not survive" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_site_fleet_patterns")" = "0" ] || { echo "the SM upgrade invented per-site rows" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM information_schema.columns WHERE table_name='sm_candidate_skills' AND column_name='generation_visibility'")" = "1" ] || {
+  echo "sm_candidate_skills.generation_visibility missing after upgrade" >&2; exit 1; }
+echo "  SM $SM_HEAD on PostgreSQL: legacy row kept, copied under no site; per-site store present and empty"
+
+step "A6-4B0b-S4/BO: this proof owns its state"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_incidents WHERE incident_id='$S4_INC';
+   DELETE FROM cc_candidate_skills WHERE skill_id='$S4_CAND'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_fleet_patterns WHERE pattern_id='gate-a3029-legacy'" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_incidents WHERE incident_id='$S4_INC'")" = "0" ] || { echo "seeded incident not removed" >&2; exit 1; }
+echo "  the seeded incident, candidate and legacy pattern row are removed"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

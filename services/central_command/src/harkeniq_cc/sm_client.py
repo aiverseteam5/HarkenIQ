@@ -238,6 +238,18 @@ class SMClient:
                 })
             candidate_skills = []
             for cand in snap.candidate_skills:
+                # A30.29: the projection boundary the YAML was generated
+                # from. Empty (an older Site Manager) or malformed decodes
+                # to None, which the reader treats as UNKNOWN and withholds
+                # from every scoped reader -- never as "site-safe".
+                visibility = None
+                if cand.generation_visibility_json:
+                    try:
+                        decoded = json.loads(cand.generation_visibility_json)
+                    except (ValueError, TypeError):
+                        decoded = None
+                    if isinstance(decoded, dict):
+                        visibility = decoded
                 candidate_skills.append({
                     "skill_id": cand.skill_id,
                     "yaml_text": cand.yaml_text,
@@ -247,6 +259,7 @@ class SMClient:
                     "generated_at_unix": cand.generated_at_unix,
                     "warnings_json": cand.warnings_json,
                     "dry_run_matches": cand.dry_run_matches,
+                    "generation_visibility": visibility,
                 })
             # S5: live safety state. An SM that predates the field leaves
             # `reported` false, which CC stores and renders as UNKNOWN —

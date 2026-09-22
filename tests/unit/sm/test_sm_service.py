@@ -402,38 +402,115 @@ class TestPushPolicy:
         assert servicer.autonomy.stop_switch_active is False
 
     async def test_learned_patterns_stored_and_mirrored(self, sm_env, db):
-        """QA-033: pushed fleet patterns land in sm_fleet_patterns AND in
-        the ingest mirror the enrichment path reads."""
-        from harkeniq_sm.db.repos import SMFleetPatternRepo
+        """QA-033: pushed fleet patterns land durably AND in the ingest
+        mirror the enrichment path reads. A30.29: keyed by the site the
+        push is FOR, resolved by Central Command's site id (E0.2), with
+        the marker as pushed."""
+        from harkeniq_sm.db.repos import SMFleetPatternRepo, SMSitePatternRepo
         from harkeniq_sm.ingest import IngestService
 
         servicer = sm_env["servicer"]
         servicer.ingest = IngestService(db, _config())
+        marker = {"scope": "site", "site_id": "cc-site-1", "projection_version": 1}
         pattern = {
             "pattern_id": "pat-9", "pattern_type": "batch_failure",
             "description": "Dell R750 PSU batch failing",
             "affected_scope": {"vendor": "Dell", "model": "R750"},
             "confidence": 0.9, "evidence": {"failures": 7},
             "detected_at": 1700000000.0,
+            "generation_visibility": marker,
         }
         request = harkeniq_pb2.PolicyUpdate(
-            tenant_id="t1", site_id="s1",
+            tenant_id="t1", site_id="cc-site-1",
             learned_patterns_json=json.dumps([pattern]),
         )
         ack = await servicer.PushPolicy(request, None)
-        assert ack.accepted is True
+        assert ack.accepted is True, ack.reason
         async with db() as session:
-            rows = await SMFleetPatternRepo(session).list_all()
+            rows = await SMSitePatternRepo(session).list_all()
+            legacy = await SMFleetPatternRepo(session).list_all()
+        assert legacy == [], "this release never writes the legacy store"
         assert len(rows) == 1
         assert rows[0].pattern_id == "pat-9"
+        assert rows[0].site_id == sm_env["site_id"]
         assert rows[0].affected_scope["vendor"] == "Dell"
-        assert servicer.ingest.fleet_patterns["pat-9"]["confidence"] == 0.9
+        assert rows[0].visibility == marker
+        mirrored = servicer.ingest.fleet_patterns.for_site(sm_env["site_id"])
+        assert [(p["confidence"], m.site_id) for p, m in mirrored] == [(0.9, "cc-site-1")]
 
         # Re-push is an idempotent upsert, never a duplicate
         ack = await servicer.PushPolicy(request, None)
         assert ack.accepted is True
         async with db() as session:
-            assert len(await SMFleetPatternRepo(session).list_all()) == 1
+            assert len(await SMSitePatternRepo(session).list_all()) == 1
+
+    async def test_unmarked_patterns_stored_with_null_visibility(self, sm_env, db):
+        """An older Central Command pushes no marker: stored, NULL, so an
+        artifact generated from it is recorded as tenant-unbounded."""
+        from harkeniq_sm.db.repos import SMSitePatternRepo
+        from harkeniq_sm.ingest import IngestService
+
+        servicer = sm_env["servicer"]
+        servicer.ingest = IngestService(db, _config())
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="cc-site-1",
+            learned_patterns_json=json.dumps([{
+                "pattern_id": "pat-old", "affected_scope": {},
+                "description": "x fails 75% (30 of 40 attempts), across 2 sites",
+            }]),
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is True, ack.reason
+        async with db() as session:
+            (row,) = await SMSitePatternRepo(session).list_all()
+        assert row.visibility is None
+        ((_, marker),) = servicer.ingest.fleet_patterns.for_site(sm_env["site_id"])
+        assert marker is None
+
+    async def test_patterns_for_an_unresolved_site_are_refused(self, sm_env, db):
+        """E0.2 applied to the push: a site this Site Manager cannot
+        resolve gets nothing stored anywhere -- not under a guess, not
+        under 'the' site."""
+        from harkeniq_sm.db.repos import SMSitePatternRepo
+
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="not-a-bound-site",
+            learned_patterns_json=json.dumps([{"pattern_id": "pat-x"}]),
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is False
+        assert "not-a-bound-site" in ack.reason and "per site" in ack.reason
+        async with db() as session:
+            assert await SMSitePatternRepo(session).list_all() == []
+
+    async def test_a_payload_marked_for_another_site_is_refused(self, sm_env, db):
+        """A marker naming site B, pushed for site A, is not stored under
+        A: the marker and the row would disagree about which projection
+        the site's reasoning consumes."""
+        from harkeniq_sm.db.repos import SMSitePatternRepo
+
+        servicer = sm_env["servicer"]
+        request = harkeniq_pb2.PolicyUpdate(
+            tenant_id="t1", site_id="cc-site-1",
+            learned_patterns_json=json.dumps([{
+                "pattern_id": "pat-b", "affected_scope": {},
+                "generation_visibility": {"scope": "site", "site_id": "cc-site-2",
+                                          "projection_version": 1},
+            }]),
+        )
+        ack = await servicer.PushPolicy(request, None)
+        assert ack.accepted is False
+        assert "cc-site-2" in ack.reason and "wrong site" in ack.reason
+        async with db() as session:
+            assert await SMSitePatternRepo(session).list_all() == []
+        # A tenant marker is a projection for no site, and is refused too.
+        request.learned_patterns_json = json.dumps([{
+            "pattern_id": "pat-t", "affected_scope": {},
+            "generation_visibility": {"scope": "tenant", "site_id": None,
+                                      "projection_version": 1},
+        }])
+        assert (await servicer.PushPolicy(request, None)).accepted is False
 
     async def test_invalid_patterns_json_rejected(self, sm_env):
         servicer = sm_env["servicer"]
