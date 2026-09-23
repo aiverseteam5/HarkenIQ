@@ -6929,6 +6929,10 @@ print(f"  {LIMIT} served in one window ({elapsed:.1f}s); attention 429, incident
       f" operator sees used={throttle['used']}/{throttle['limit']} exhausted")
 while int(time.time() // 60 * 60) == window:
     time.sleep(0.2)
+# A FRESH connection: uvicorn closes an idle keep-alive after 5 s, and this
+# one has been idle for most of a minute.
+conn.close()
+conn = http.client.HTTPConnection("localhost", 8090, timeout=30)
 status, _ = get(conn, "/api/attention/", machine)
 nxt = int(time.time() // 60 * 60)
 assert status == 200, status
@@ -6984,7 +6988,10 @@ from harkeniq_cc.db.base import make_engine, make_sessionmaker
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.route_contract import JOB_METER, MACHINE_SURFACE, ROUTE_CONTRACT, machine_meter, meter_census
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
-engine = make_engine('sqlite+aiosqlite:///:memory:')
+import os
+# The shipped image carries asyncpg and not aiosqlite. Creating an engine
+# connects to nothing; the census only walks the app's routes.
+engine = make_engine(os.environ['HARKEN_CC_DSN'])
 app = create_app(AppState(config=CCConfig(tenant_id='census', insecure=True), engine=engine, sessionmaker=make_sessionmaker(engine)))
 problems = meter_census(app)
 assert problems == [], problems
