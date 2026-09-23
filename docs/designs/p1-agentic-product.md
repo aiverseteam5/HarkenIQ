@@ -4973,3 +4973,211 @@ redesign NOT REQUIRED. Next: A6-4B0c (A30.12; boundary preview in A30.30) →
 A6-4B1 (A30.13) → A6-4B2 (A30.14), one slice at a time, each with its own
 boundary, ratification and review. S3-E1/E2 follow, in their own slice, unless
 a proven fail-open needs containment first.
+
+## §34l — A6-4B0c: machine read metering completion (A30.31)
+
+A30.12 scoped this slice as "served-read metering on the three off-router
+machine routes, and the completeness guard re-anchored onto `MACHINE_SURFACE`".
+The inventory was re-run from unmodified `main` rather than inherited, and it
+found that the three routes were the visible half of a design problem: a meter
+that lives in handlers can only meter requests that reach a handler.
+
+### What the inventory measured
+
+Each declared machine route, driven by a real machine principal on the
+production stack, with the read window read back afterwards:
+
+| Route (all `GET` unless noted) | Surface | Job | Served | Refused | Malformed (422) |
+|---|---|---|---|---|---|
+| `/api/attention/` | both | attention | **0** | 1 (surface) | **0** |
+| `/api/incidents/` | both | incidents | **0** | — | **0** |
+| `/api/incidents/{incident_id}` | both | incidents | **0** | **0** (404) | — |
+| `/api/operational-agents/{agent_id}` | both | self | 1 | 1 (cross-agent) | — |
+| `…/runtime`, `…/identity`, `…/preflight`, `…/ingress` | both | self | 1 | 1 | — |
+| `…/dry-run` | both | self | 1 | 1 | — |
+| `…/proposals` | both | self | 1 | 1 | **0** |
+| `…/proposals/{proposal_id}`, `…/submissions/{submission_id}` | machine | self | 1 | 1 (404) | — |
+| `POST …/proposals` | machine | proposals | attempt ledger | attempt ledger | (recorded) |
+
+Twelve reads, one write. Three reads were never metered at all. And every read
+that takes a query parameter was free when the parameter was invalid — the
+nine that meter included — because FastAPI validates query parameters after it
+has resolved dependencies and before it calls the handler, and the charge was
+the handler's first line. A 422 is an authenticated refusal like any other, and
+A25.10's rule is that an authenticated refusal is never free.
+
+### The guard is the one place every request passes
+
+The CC route table has one choke point, and it was already there: every route
+is guarded by `require_permission` or `require_any_permission`, both of which
+call `enforce_route_surface` before asking about the permission. The write is
+the single exception and is deliberately so (A29.15 put its surface decision
+inside the attempt ledger).
+
+So B0c does not add metering to three routes. It moves the meter to the choke
+point and takes it out of every handler. After that, a served read of an
+on-plane route is metered because it crossed the guard, not because its author
+remembered — which is why `api/attention.py` and `api/incidents.py` do not
+change at all, and why their responses provably cannot have changed either.
+
+It also fixes the ordering by construction. A25.10 required *authenticate,
+derive the machine identity, account, then decide about the target*, and the
+handlers implemented it by calling a helper first. The guard is a dependency:
+FastAPI runs it to completion before any line of any handler, and before query
+validation. Accounting now precedes every target decision because the framework
+cannot run them in any other order.
+
+### The guard runs twice
+
+77 of the 98 declared routes declare their guard twice — once in
+`dependencies=[...]`, once as the `user` parameter — and
+`require_permission(p)` returns a fresh closure on each call, so FastAPI's
+per-request dependency cache treats them as two dependencies. Measured on
+FastAPI 0.141.1: the guard executes twice per request, query validation runs
+after both, and the handler runs last. (Twenty routes declare it once; the
+write declares none.)
+
+A charge at the guard therefore needs per-request idempotence, and it gets it in
+one place: `read_meter.meter_machine_read` records the window it charged on the
+request's own state and returns it to any later caller in the same request. The
+request state is server-side; nothing a caller sends can set it. The memo
+stores the window rather than a flag, so a second guard invocation that falls on
+the far side of a minute boundary does not recompute anything — the A29.16
+lesson, applied one level up.
+
+Merging the two declarations into one would also stop the double execution,
+but it would change 77 route signatures to fix a property that only the meter
+depends on, and the next route written in the house style would reintroduce
+it. The memo is where the dependency is.
+
+### A meter is declared, not remembered
+
+`JOB_METER` gives every typed machine job exactly one meter:
+
+    self       -> read      the A25.6 windowed counter
+    attention  -> read
+    incidents  -> read
+    proposals  -> attempt   the A24.13 ledger
+
+A route's meter is the meter of the job it already declares, so there is no
+second route list to fall out of step with `MACHINE_SURFACE`. It is keyed by
+job because that is the distinction A25.6 draws — polling is not a governed
+attempt — and because the job vocabulary is the A0 binding vocabulary: read
+bindings are read-metered, the ingress binding is attempt-metered, and `self`
+is a principal reading its own record.
+
+The guard reads the declaration at runtime: a served attempt-metered route is
+never read-charged even if a guard were ever put on its path. Everything else a
+machine sends through the guard is charged — an undeclared job included, since
+metering fails closed by charging, never by serving free.
+
+### The census reads the running app
+
+`meter_census(app)` is runtime code beside A23's `census()`, and like it,
+returns violations by name. It is anchored on the two declarations, never on a
+path prefix — the A25 guard it replaces filtered `path.startswith(PREFIX)` and
+was complete for one router only:
+
+* every machine job has a meter, and `JOB_METER` names no job that is not one;
+* a read-metered route is a `GET`, some dependency on its path is a guard that
+  crosses the meter, and its handler does not meter itself;
+* the attempt-metered write is not a `GET`, carries no read-plane guard (its
+  refusals would be read-charged ahead of the attempt ledger), and its handler
+  consumes both the attempt ledger and the surface decision;
+* every OTHER declared route crosses a guard too — because a route that crosses
+  none is machine-reachable in fact: never refused by the surface, never
+  charged. That makes A29.3's default deny a property of the running app, which
+  until now it was only of the declaration.
+
+"Crosses the guard" is answered by walking each route's real dependency tree,
+not by reading source for a name. The two guard factories mark the closures
+they return, and a structural test pins the mark to exactly those two
+factories and requires both marked closures to await `enforce_route_surface`.
+A second structural test pins the path itself: `_charge_machine_read` has one
+caller, `meter_machine_read`, which has one caller, the guard.
+
+The census is proved by mutation, on the real app: strip the guard from
+Attention's dependency tree and it names Attention; put the read guard on the
+write and it names the write; declare a machine route whose job has no meter
+and it names the job; give a human route no guard and it names that route.
+
+### What each outcome records
+
+| Outcome | HTTP | Read window (durable) | Refusal evidence (same row) | Service counter (no identifiers) |
+|---|---|---|---|---|
+| served machine read | 200 | +1 | — | `machine_reads_metered{job}` |
+| not found / narrowed | 404 | +1 | — | `machine_reads_metered{job}` |
+| self rule (another agent) | 403 | +1 | — | + `read_refusals{cross_agent}` |
+| permission refused after the surface admits | 403 | +1 | — | + `read_refusals{permission}` |
+| off-plane route | 403 | +1 | `surface_refused`, `refused_surface_not_allowed`, time | `machine_reads_metered{off_plane}` + `surface_refused{…}` |
+| job not bound | 403 | +1 | `surface_refused`, `refused_job_not_bound`, time | `machine_reads_metered{job}` + `surface_refused{…}` |
+| over the window | 429 | +1 (beyond the limit = the 429s) | — | `read_rate_limited`, `read_refusals{rate_limited}` |
+| malformed / invalid | 422 | +1 | — | `machine_reads_metered{job}` |
+| unauthenticated / invalid token | 401 | — | — | — (`agent_identity.auth_failed` audited where known) |
+| any human request | any | — | — | — |
+
+The durable row has no free-text column, so a refused read of a hidden incident
+cannot put that incident's id into accounting: the only values it holds are the
+tenant, the agent, the window, counts and a timestamp. Polling never enters the
+audit chain.
+
+### Attribution, and the one thing B0 cannot store
+
+The brief asks for attribution to tenant, agent, route/job and window. Three of
+those four are the A25.10 bucket and are durable. The fourth is not, and cannot
+be in this slice: the window row has no job dimension, and adding one is a
+column or a key change. A30.15 forbids any schema change in B0, and nothing in
+A30.12 requires one.
+
+So the job is attributed where it can be without a migration: one bounded
+counter family on `/metrics`, labelled by the route's declared job — a closed
+set derived from `JOB_METER`, carrying no tenant, agent, site, device or path.
+The joint question, *how many Attention reads did this agent make in this
+minute*, is recorded as a follow-up that needs its own amendment.
+
+### The window, against real traffic
+
+The limit is unchanged at 120 reads per 60 seconds per agent, and it is still
+ONE allowance across every machine read, which is what stops the cheapest route
+becoming the unmetered substitute for the others. What changes is that a
+runtime polling Attention or Incidents now spends it.
+
+A30.12 required the window to be set against real traffic before landing. The
+compose gate is the only real machine traffic in the repository — no in-repo
+runtime polls these routes with a machine token; the Console reads them as a
+person — so the gate records the busiest correctly-bound runtime's per-window
+usage and fails if any runtime other than the one it throttles on purpose comes
+near the limit.
+
+### What B0c does not do
+
+No payload changes: neither router whose reads it meters is edited. No new
+limit for humans, and no human request is charged, throttled or reshaped. No
+permission, no ceiling change, no new route, no migration. The write keeps its
+own ledger. B1, B2, S3-E1/E2 and the taxonomy are untouched.
+
+Two pre-existing edges are recorded rather than folded in, because neither is
+metering: the dry-run loads the agent before asking the self rule, so a
+nonexistent id answers 404 where another agent's answers 403 (charged either
+way, so bounded); and a schema-invalid submission body is refused before the
+attempt ledger (bounded by the 16 KiB pre-parse ceiling, already recorded).
+
+### How it is proven
+
+* The matrix, generated from `MACHINE_SURFACE`: every declared read, served,
+  refused and malformed where it takes a query, charges exactly one read — on
+  a fresh stack each, so a double charge reads 2.
+* The census clean on the real app, and failing by name under four mutations.
+* The one-path and one-mark structural tests; the A25 bucket and transaction
+  invariants re-pointed at the moved function, unchanged in substance.
+* The window: within budget served, the next read 429, a new window serves
+  again, the allowance shared across jobs, the minute-boundary memo.
+* Humans: every machine-readable route read as a person writes no window row
+  and never meets a 429.
+* Real PostgreSQL: concurrent machine reads through the real app charge exactly
+  their number.
+* Live, on a wiped stack with real Keycloak: a real machine token reads
+  Attention, the incident list and an incident, each costing exactly one read;
+  a hidden incident is refused and its id appears nowhere in accounting; a real
+  429; an operator's reads leave the agent's window untouched; the removed
+  routes stay removed.
