@@ -4700,9 +4700,10 @@ Polling never enters the audit chain (A25.6). **Attribution.** Durable
 attribution is the A25.10 bucket — tenant, Operational Agent, window — which is
 the attribution an operator needs to find a runtime (A29.16). The ROUTE/JOB is
 attributed at service level by one bounded counter family,
-`harkeniq_cc_machine_reads_metered_total`, labelled by the route's declared
-job (`self`, `attention`, `incidents`), `off_plane` for a refused off-plane
-route, and `other` — a closed vocabulary derived from `JOB_METER`, registered,
+`harkeniq_cc_machine_reads_metered_total`, which moves on every durable charge
+(a 429 included) and is labelled by the route's declared job (`self`,
+`attention`, `incidents`), `off_plane` for a refused off-plane route, and
+`other` — a closed vocabulary derived from `JOB_METER`, registered,
 carrying no tenant, agent, site, device or path (A25.11). Durable per-(agent,
 job) attribution would need a new column or key, which A30.15 forbids in B0;
 it is recorded as a follow-up, not built, and no migration is made. **The

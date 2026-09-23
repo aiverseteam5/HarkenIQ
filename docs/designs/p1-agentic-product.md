@@ -5111,7 +5111,7 @@ and it names the job; give a human route no guard and it names that route.
 | permission refused after the surface admits | 403 | +1 | — | + `read_refusals{permission}` |
 | off-plane route | 403 | +1 | `surface_refused`, `refused_surface_not_allowed`, time | `machine_reads_metered{off_plane}` + `surface_refused{…}` |
 | job not bound | 403 | +1 | `surface_refused`, `refused_job_not_bound`, time | `machine_reads_metered{job}` + `surface_refused{…}` |
-| over the window | 429 | +1 (beyond the limit = the 429s) | — | `read_rate_limited`, `read_refusals{rate_limited}` |
+| over the window | 429 | +1 (beyond the limit = the 429s) | — | `machine_reads_metered{job}` + `read_rate_limited`, `read_refusals{rate_limited}` |
 | malformed / invalid | 422 | +1 | — | `machine_reads_metered{job}` |
 | unauthenticated / invalid token | 401 | — | — | — (`agent_identity.auth_failed` audited where known) |
 | any human request | any | — | — | — |
