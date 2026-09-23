@@ -5149,10 +5149,10 @@ person — so the gate records every machine runtime's peak window and fails if
 any runtime other than the one it throttles on purpose REACHES the limit, which
 is the compatibility fact: no correctly-bound runtime in real traffic met a
 429. The headroom is printed rather than asserted, because it is a
-measurement, not a limit. On the pre-landing wiped runs, across nine machine
-runtimes, the busiest peaked at 38–47 of 120 reads in one window (31–39%); it
-varies with where each run's requests fall across minute boundaries. The window
-stays at 120 per 60 seconds.
+measurement, not a limit. On three wiped runs before landing — two local and
+the CI run at `a5c43ad` — across nine machine runtimes, the busiest peaked at
+32–47 of 120 reads in one window (26–39%); it varies with where each run's
+requests fall across minute boundaries. The window stays at 120 per 60 seconds.
 
 ### What B0c does not do
 

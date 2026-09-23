@@ -4713,9 +4713,9 @@ another. A correctly-bound runtime can now receive 429 from Attention and
 Incidents for the first time; the compose gate measures every real machine
 runtime's peak window before this lands and asserts that no correctly-bound
 runtime in it REACHES the limit (only the one it throttles on purpose may).
-Measured on the pre-landing wiped runs: across 9 machine runtimes the busiest
-peaked at 38–47 of 120 reads in one window (31–39%), so the window is
-unchanged. **Unchanged:** the permission vocabulary
+Measured before landing on three wiped runs of the fixed gate (two local, one
+CI at `a5c43ad`): across 9 machine runtimes the busiest peaked at 32–47 of 120
+reads in one window (26–39%), so the window is unchanged. **Unchanged:** the permission vocabulary
 (25), `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING` `{fleet.view,
 incident.view, proposal.submit}`, `MACHINE_SURFACE` (13; 3 machine-only),
 `ROUTE_CONTRACT` (98; 0 routes added), `evaluate_route_surface`, the refusal
