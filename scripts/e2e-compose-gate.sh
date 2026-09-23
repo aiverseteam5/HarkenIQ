@@ -6884,6 +6884,9 @@ done
 echo "  20 operator reads of the same routes: the agent's meter unmoved, no window for the person"
 
 step "A6-4B0c/BS: a REAL read throttle -- 120 served in one window, then 429, observable, then a new window serves"
+# Both tokens fresh: this step can wait up to two minute boundaries, and a
+# Keycloak access token lives 300 s.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
 B0C_MACHINE=$(b0c_token)
 B0C_RL_BEFORE=$(b0c_metric harkeniq_cc_agent_status_read_rate_limited_total)
 python3 - "$B0C_MACHINE" "$B0C_AGENT" "$B0C_INC" "$TOKEN" <<'PY'
