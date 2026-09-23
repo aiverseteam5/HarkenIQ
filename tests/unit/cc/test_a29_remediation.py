@@ -311,8 +311,9 @@ class TestRefusalsAreAttributableAndBounded:
         Not a fabricated window handed to the recorder -- that tests the
         recorder and proves nothing about the handoff, which is where the
         defect lived. This drives
-        `enforce_route_surface -> _charge_machine_read -> recorder` and
-        makes the clock cross a minute IN BETWEEN.
+        `enforce_route_surface -> meter_machine_read -> _charge_machine_read
+        -> recorder` (A30.31 put the one entry point between the guard and
+        the charge) and makes the clock cross a minute IN BETWEEN.
 
         The probe: `read_window_start` is replaced by one that returns a
         LATER window on every call after the first. An implementation
@@ -345,6 +346,9 @@ class TestRefusalsAreAttributableAndBounded:
             scope = {"route": type("R", (), {"path": "/api/fleet/"})()}
 
         request = _Req()
+        # A Starlette request always carries its own `state`; the A30.31
+        # meter keeps its once-per-request memo there.
+        request.state = type("RequestState", (), {})()
         request.app.state.cc = stack.app.state.cc
         user = type("U", (), {
             "tenant_id": TENANT, "user_id": agent_id, "species": "agent",
@@ -397,7 +401,7 @@ class TestRefusalsAreAttributableAndBounded:
         """
         import inspect
 
-        from harkeniq_cc.api.operational_agents import _charge_machine_read
+        from harkeniq_cc.read_meter import _charge_machine_read
 
         stack = await _stack()
         agent_id, _ = await _ready(stack)
@@ -435,7 +439,7 @@ class TestRefusalsAreAttributableAndBounded:
         """
         import inspect
 
-        from harkeniq_cc.api.operational_agents import _charge_machine_read
+        from harkeniq_cc.read_meter import _charge_machine_read
 
         params = set(inspect.signature(_charge_machine_read).parameters)
         assert params == {"request", "user"}, params

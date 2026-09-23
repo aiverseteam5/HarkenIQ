@@ -184,6 +184,64 @@ def machine_reachable(method: str, path: str) -> bool:
     surface, _job = machine_surface(method, path)
     return surface in (SURFACE_MACHINE, SURFACE_BOTH)
 
+
+# -- the meter each machine job is charged to (A30.31, A6-4B0c) -------------
+#
+# A25.6 separated two kinds of machine traffic and gave each its own
+# bucket: polling is a windowed counter, a governed submission is a row
+# in the attempt ledger. Which one a route belongs to used to be decided
+# by whether its HANDLER happened to call the read meter -- so three
+# on-plane reads called nothing and were served free, and nothing could
+# notice, because the only completeness check read one router's prefix.
+#
+# The answer is declared here instead, per JOB rather than per route, so
+# there is no second route list to fall out of step with `MACHINE_SURFACE`:
+# a route's meter is the meter of the job it already declares. It is the
+# A0 distinction A25.6 draws -- read bindings are read-metered, the one
+# ingress binding is attempt-metered, and `self` is a principal reading
+# its own record. `meter_census` below proves the running app keeps it.
+
+#: A25.6: `cc_agent_read_windows`. One row per (tenant, agent, window), ONE
+#: allowance shared by every machine read (A25.10), charged at the route
+#: guard before anything is decided.
+METER_READ = "read"
+
+#: A24.13: `cc_agent_ingress_attempts`, the governed write's own ledger,
+#: charged inside the handler under the ingress lock (A29.15). Never the
+#: read window: an attempt and a poll are different facts.
+METER_ATTEMPT = "attempt"
+
+METERS = frozenset({METER_READ, METER_ATTEMPT})
+
+#: job -> meter. EVERY machine job decides exactly one; a job missing here
+#: fails `meter_census`, so a new job cannot reach the plane with its cost
+#: undecided.
+JOB_METER: dict[str, str] = {
+    JOB_SELF: METER_READ,
+    JOB_ATTENTION: METER_READ,
+    JOB_INCIDENTS: METER_READ,
+    JOB_PROPOSALS: METER_ATTEMPT,
+}
+
+
+def machine_meter(method: str, path: str) -> str:
+    """The meter a machine request to this route is charged to (A30.31).
+
+    DERIVED from the declaration: the meter of the job the route declares,
+    or "" for a route that is not on the plane at all (a machine request
+    there is refused by the surface, and that refusal is charged to the
+    read window by the guard -- A25.10 -- which is refusal accounting, not
+    a meter this route declares).
+
+    An on-plane route whose job declares no meter answers `METER_READ`.
+    `meter_census` makes that unshippable; at runtime, metering fails
+    closed by CHARGING, never by serving free.
+    """
+    surface, job = machine_surface(method, path)
+    if surface == SURFACE_HUMAN:
+        return ""
+    return JOB_METER.get(job, METER_READ)
+
 #: (method, path) -> (permission, treatment, audited)
 #:
 #: `permission` is what the route guard demands -- layer 1, "could this
@@ -461,18 +519,22 @@ def scope_consumption(handler: Callable[..., Any]) -> ScopeConsumption:
     return ScopeConsumption(declares=declares, consumes=consumes)
 
 
-def route_handlers(app) -> dict[tuple[str, str], Callable[..., Any]]:
-    """(method, path) -> endpoint callable, from the running app."""
+def api_routes(app) -> dict[tuple[str, str], Any]:
+    """(method, path) -> the `APIRoute` serving it, from the running app.
+
+    The route object, not only its endpoint, because A30.31's census has
+    to read the dependency tree FastAPI will actually resolve.
+    """
     from fastapi.routing import APIRoute
 
-    out: dict[tuple[str, str], Callable[..., Any]] = {}
+    out: dict[tuple[str, str], Any] = {}
 
     def walk(routes) -> None:
         for route in routes:
             if isinstance(route, APIRoute):
                 for method in route.methods or ():
                     if method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-                        out[(method, route.path)] = route.endpoint
+                        out[(method, route.path)] = route
                 continue
             # FastAPI >= 0.140 includes routers lazily as `_IncludedRouter`,
             # which keeps the APIRouter it wraps on `original_router`.
@@ -484,6 +546,11 @@ def route_handlers(app) -> dict[tuple[str, str], Callable[..., Any]]:
 
     walk(app.routes)
     return out
+
+
+def route_handlers(app) -> dict[tuple[str, str], Callable[..., Any]]:
+    """(method, path) -> endpoint callable, from the running app."""
+    return {key: route.endpoint for key, route in api_routes(app).items()}
 
 
 def census(app) -> list[str]:
@@ -510,5 +577,180 @@ def census(app) -> list[str]:
             problems.append(
                 f"{method} {path} is {treatment} but its handler "
                 f"{handler.__name__!r} accepts `scope` and never reads it"
+            )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# Metering completeness census (A30.31, A6-4B0c)
+# ---------------------------------------------------------------------------
+#
+# A25's completeness guard walked the OpenAPI table and kept the paths that
+# started with one router's prefix, so it was complete for that router and
+# blind to the three machine reads that joined the plane from two others.
+# This one is anchored on the two declarations -- `MACHINE_SURFACE` and
+# `ROUTE_CONTRACT` -- and reads each route's REAL dependency tree, so it
+# answers "does a machine request to this route cross the one meter" from
+# what FastAPI will resolve, not from what a route's source says.
+
+#: Every name through which code could charge the read window directly.
+#: The guard is the only caller of the first (a structural test pins the
+#: whole chain); a handler calling any of them is a second metering path.
+READ_METER_ENTRY_POINTS = frozenset({
+    "meter_machine_read", "_charge_machine_read", "admit_read",
+})
+
+#: What the attempt-metered write's handler must itself consume (A29.15):
+#: the attempt ledger, and the ONE surface decision, inside that ledger.
+ATTEMPT_METER_REQUIREMENTS = ("admit_attempt", "evaluate_route_surface")
+
+
+def dependency_calls(route) -> list[Callable[..., Any]]:
+    """Every callable FastAPI resolves for this route, depth first.
+
+    Route-level `dependencies=[...]` and parameter dependencies alike, with
+    their own sub-dependencies -- the tree the framework runs, which is the
+    only thing that decides whether a request crosses the guard.
+    """
+    out: list[Callable[..., Any]] = []
+
+    def walk(dependant) -> None:
+        for sub in dependant.dependencies:
+            if sub.call is not None:
+                out.append(sub.call)
+            walk(sub)
+
+    walk(route.dependant)
+    return out
+
+
+def called_names(fn: Callable[..., Any]) -> frozenset[str]:
+    """The names a function's BODY calls -- `f(...)` and `x.f(...)` alike.
+
+    Source-level, like :func:`scope_consumption`, and for the same reason:
+    it answers for every handler at import time and names the one that
+    lies. The body only: a decorator or a default is not a call the
+    handler makes.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+    except (OSError, TypeError):
+        return frozenset()
+    tree = ast.parse(source)
+    node = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))),
+        None,
+    )
+    if node is None:
+        return frozenset()
+    names: set[str] = set()
+    for statement in node.body:
+        for n in ast.walk(statement):
+            if isinstance(n, ast.Call):
+                if isinstance(n.func, ast.Name):
+                    names.add(n.func.id)
+                elif isinstance(n.func, ast.Attribute):
+                    names.add(n.func.attr)
+    return frozenset(names)
+
+
+def meter_census(app) -> list[str]:
+    """Every declared route whose runtime path its meter decision cannot keep.
+
+    Returns human-readable violations; an empty list is the contract
+    holding. It fails when:
+
+    * a machine job has no meter, or `JOB_METER` names something else;
+    * a READ-metered route is not a `GET`, crosses no guard (it would be
+      served unmetered), or its handler meters itself (a second path);
+    * the ATTEMPT-metered write is a `GET`, carries the read-plane guard
+      (its refusals would be read-charged ahead of the attempt ledger,
+      A29.15), or its handler does not consume the attempt ledger and the
+      surface decision;
+    * ANY other declared route crosses no guard -- because such a route is
+      machine-reachable in fact, never refused by the surface and never
+      charged. That is A29.3's default deny checked against the running
+      app, where until now it was checked against the declaration alone.
+    """
+    from harkeniq_cc.api.deps import is_route_surface_guard
+
+    routes = api_routes(app)
+    problems: list[str] = []
+
+    for job in sorted(MACHINE_JOBS - set(JOB_METER)):
+        problems.append(
+            f"machine job {job!r} has no decided meter answer in JOB_METER"
+        )
+    for job, meter in sorted(JOB_METER.items()):
+        if job not in MACHINE_JOBS:
+            problems.append(f"JOB_METER names {job!r}, which is not a machine job")
+        if meter not in METERS:
+            problems.append(f"job {job!r} declares {meter!r}, which is not a meter")
+
+    for (method, path), (_surface, job) in sorted(MACHINE_SURFACE.items()):
+        route = routes.get((method, path))
+        if route is None:
+            problems.append(
+                f"{method} {path} is declared machine-reachable but the "
+                "running app serves no such route"
+            )
+            continue
+        meter = JOB_METER.get(job)
+        if meter is None:
+            continue  # reported once, by job, above
+        guarded = any(is_route_surface_guard(c) for c in dependency_calls(route))
+        calls = called_names(route.endpoint)
+        handler = getattr(route.endpoint, "__name__", "?")
+        if meter == METER_READ:
+            if method != "GET":
+                problems.append(
+                    f"{method} {path} is read-metered (job {job!r}) but is not "
+                    "a GET: a machine write is metered by its own attempt "
+                    "ledger, never the read window"
+                )
+            if not guarded:
+                problems.append(
+                    f"{method} {path} is read-metered but no guard on its path "
+                    "crosses the meter: a machine read of it would be served "
+                    "unmetered"
+                )
+            selfmetering = sorted(calls & READ_METER_ENTRY_POINTS)
+            if selfmetering:
+                problems.append(
+                    f"{method} {path}: handler {handler!r} calls "
+                    f"{selfmetering} -- the guard already charged this "
+                    "request, so that is a second metering path"
+                )
+        elif meter == METER_ATTEMPT:
+            if method == "GET":
+                problems.append(
+                    f"{method} {path} is attempt-metered (job {job!r}) but is "
+                    "a GET: a read is metered by the read window"
+                )
+            if guarded:
+                problems.append(
+                    f"{method} {path} is attempt-metered but carries the "
+                    "read-plane guard: its refusals would be read-charged "
+                    "ahead of the attempt ledger (A29.15)"
+                )
+            for needed in ATTEMPT_METER_REQUIREMENTS:
+                if needed not in calls:
+                    problems.append(
+                        f"{method} {path} is attempt-metered but handler "
+                        f"{handler!r} never calls {needed}"
+                    )
+
+    for (method, path) in sorted(ROUTE_CONTRACT):
+        if (method, path) in MACHINE_SURFACE:
+            continue
+        route = routes.get((method, path))
+        if route is None:
+            continue  # the stale-route test reports it
+        if not any(is_route_surface_guard(c) for c in dependency_calls(route)):
+            problems.append(
+                f"{method} {path} is not on the machine plane and crosses no "
+                "route guard: a machine request to it would be neither "
+                "refused nor metered"
             )
     return problems

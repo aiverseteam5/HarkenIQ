@@ -863,8 +863,12 @@ class TestReadAccountingIsChargedToTheAuthenticatedCaller:
         reads `user.tenant_id` and `user.user_id` and nothing else --
         never the route's `agent_id`, a body field, a query value or a
         proposal id.
+
+        A30.31 moved the charge, unchanged, out of the Operational Agent
+        router into `harkeniq_cc.read_meter`; the property is asserted
+        where the function now lives.
         """
-        from harkeniq_cc.api import operational_agents as mod
+        from harkeniq_cc import read_meter as mod
 
         fn = _body_without_docstring(mod._charge_machine_read)
         params = {a.arg for a in fn.args.args}
@@ -890,19 +894,32 @@ class TestReadAccountingIsChargedToTheAuthenticatedCaller:
     async def test_accounting_runs_before_the_target_decision(self):
         """Structural: the order the invariant names, in one sequence.
 
-        `_machine_self_read` is the ONE place a machine read is admitted
-        outside the receipt gate, and both must charge before deciding
-        anything about the target.
+        A30.31 moved the charge out of `_machine_self_read` and
+        `_machine_read_gate` into the route guard, which FastAPI runs to
+        completion before any handler line. The order is now held by the
+        framework: the guard charges before it returns or refuses, and the
+        two helpers that make the target decisions charge NOTHING -- a
+        charge left in either would be a second metering path, and one
+        placed after the self rule would be the original defect.
         """
+        from harkeniq_cc.api import deps
         from harkeniq_cc.api import operational_agents as mod
 
         for fn in (mod._machine_self_read, mod._machine_read_gate):
             code = ast.unparse(_body_without_docstring(fn))
-            charge = code.index("_charge_machine_read")
-            self_rule = code.index("_enforce_machine_self")
-            assert charge < self_rule, (
-                f"{fn.__name__} decides about the target before charging"
+            assert "_enforce_machine_self" in code, fn.__name__
+            assert "_charge_machine_read" not in code, (
+                f"{fn.__name__} still charges: the guard already did"
             )
+            assert "meter_machine_read" not in code, fn.__name__
+
+        guard = ast.unparse(_body_without_docstring(deps.enforce_route_surface))
+        charge = guard.index("meter_machine_read(")
+        refusal = guard.index("raise HTTPException(status_code=403")
+        assert charge < refusal, (
+            "the guard refuses before it charges: an authenticated refusal "
+            "would be free"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -920,7 +937,7 @@ class TestAccountingOwnsItsOwnTransaction:
         commit or roll back the caller's work because it never receives
         it. The durability proof is the PostgreSQL test.
         """
-        from harkeniq_cc.api import operational_agents as mod
+        from harkeniq_cc import read_meter as mod
 
         fn = _body_without_docstring(mod._charge_machine_read)
         assert {a.arg for a in fn.args.args} == {"request", "user"}
@@ -933,13 +950,33 @@ class TestAccountingOwnsItsOwnTransaction:
         assert "accounting.commit()" in code
 
     def test_no_route_hands_the_caller_session_to_the_meter(self):
-        """A single call site passing `session` would undo the whole fix."""
-        from harkeniq_cc.api import operational_agents as mod
+        """A single call site passing `session` would undo the whole fix.
 
-        src = inspect.getsource(mod)
-        for line in src.splitlines():
-            if "_charge_machine_read(" in line and "async def" not in line:
-                assert "session" not in line, line.strip()
+        A30.31: swept over EVERY Central Command module, not one router --
+        the meter's caller is the route guard now -- and over every call
+        into it, by the AST rather than by line.
+        """
+        import pathlib
+
+        import harkeniq_cc
+
+        root = pathlib.Path(harkeniq_cc.__file__).parent
+        calls = 0
+        for path in sorted(root.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = getattr(node.func, "id", getattr(node.func, "attr", ""))
+                if name not in ("_charge_machine_read", "meter_machine_read"):
+                    continue
+                calls += 1
+                handed = [ast.unparse(a) for a in node.args] + [
+                    ast.unparse(k.value) for k in node.keywords
+                ]
+                assert not any("session" in h for h in handed), (
+                    f"{path.name}:{node.lineno} hands a session to the meter"
+                )
+        assert calls, "the meter has no callers at all"
 
     async def test_the_counter_still_does_not_roll_back_its_caller(self):
         """The repo-level contract A6-2 already had, unchanged."""
