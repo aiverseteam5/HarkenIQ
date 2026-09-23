@@ -242,6 +242,7 @@ def machine_meter(method: str, path: str) -> str:
         return ""
     return JOB_METER.get(job, METER_READ)
 
+
 #: (method, path) -> (permission, treatment, audited)
 #:
 #: `permission` is what the route guard demands -- layer 1, "could this

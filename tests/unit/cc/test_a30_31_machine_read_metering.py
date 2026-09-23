@@ -744,7 +744,10 @@ class TestRefusalAccounting:
             assert not any(PLANTED in v for v in values), values
         async with stack.client() as c:
             text = (await c.get("/metrics")).text
-        for leaked in (PLANTED, e.agent_id, e.hidden_incident_id, TENANT + "-"):
+        # The unit tenant id ("t1") is too short to be a meaningful probe;
+        # the live gate checks the real one.
+        for leaked in (PLANTED, e.agent_id, e.other_id, e.site_id,
+                       e.hidden_incident_id):
             assert leaked not in text, leaked
 
     async def test_the_counter_vocabulary_is_closed_and_registered(self):
@@ -868,19 +871,24 @@ class TestHumansAreUntouched:
         """Even with every machine bucket spent, a person reads on."""
         stack = await _stack()
         e = await _estate(stack)
-        window = read_window_start()
-        async with stack.sessionmaker() as session:
-            for row in (await session.execute(
-                    sa.select(CCAgentReadWindow))).scalars():
-                row.reads = READ_MAX_PER_WINDOW * 10
-            await session.commit()
+        # One frozen window, so no minute boundary can empty the bucket
+        # between spending it and proving it is spent.
+        window = read_window_start(datetime.now(timezone.utc)) + timedelta(days=4)
+        monkeypatch.setattr(
+            ingress_limits, "read_window_start", lambda now=None: window,
+        )
+        for agent in (e.agent_id, e.other_id):
+            await _spend(stack, agent, window, READ_MAX_PER_WINDOW * 10)
+        # The premise, proved: the agents themselves are refused for rate.
+        for agent in (e.agent_id, e.other_id):
+            async with stack.as_machine(agent, permissions=EVERYTHING).client() as c:
+                assert (await c.get("/api/attention/")).status_code == 429, agent
         stack.as_person()
         async with stack.client() as c:
             for _ in range(3):
                 for url in ("/api/attention/", "/api/incidents/", "/api/incidents/inc-1",
                             f"/api/operational-agents/{e.agent_id}/runtime"):
                     assert (await c.get(url)).status_code == 200, url
-        assert window  # the fixture really was at the limit, above
 
     async def test_a_person_moves_no_machine_counter(self):
         stack = await _stack()
