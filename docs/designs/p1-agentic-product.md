@@ -5145,9 +5145,14 @@ runtime polling Attention or Incidents now spends it.
 A30.12 required the window to be set against real traffic before landing. The
 compose gate is the only real machine traffic in the repository — no in-repo
 runtime polls these routes with a machine token; the Console reads them as a
-person — so the gate records the busiest correctly-bound runtime's per-window
-usage and fails if any runtime other than the one it throttles on purpose comes
-near the limit.
+person — so the gate records every machine runtime's peak window and fails if
+any runtime other than the one it throttles on purpose REACHES the limit, which
+is the compatibility fact: no correctly-bound runtime in real traffic met a
+429. The headroom is printed rather than asserted, because it is a
+measurement, not a limit. On the pre-landing wiped runs, across nine machine
+runtimes, the busiest peaked at 38–47 of 120 reads in one window (31–39%); it
+varies with where each run's requests fall across minute boundaries. The window
+stays at 120 per 60 seconds.
 
 ### What B0c does not do
 

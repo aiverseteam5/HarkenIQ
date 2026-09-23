@@ -4710,9 +4710,12 @@ it is recorded as a follow-up, not built, and no migration is made. **The
 window.** Unchanged: 120 reads per 60 s per agent, ONE allowance shared by
 every machine read (A25.10), so no route is the unmetered substitute for
 another. A correctly-bound runtime can now receive 429 from Attention and
-Incidents for the first time; the compose gate measures the busiest real
-runtime's per-window usage before this lands and asserts no correctly-bound
-runtime in it approaches the limit. **Unchanged:** the permission vocabulary
+Incidents for the first time; the compose gate measures every real machine
+runtime's peak window before this lands and asserts that no correctly-bound
+runtime in it REACHES the limit (only the one it throttles on purpose may).
+Measured on the pre-landing wiped runs: across 9 machine runtimes the busiest
+peaked at 38–47 of 120 reads in one window (31–39%), so the window is
+unchanged. **Unchanged:** the permission vocabulary
 (25), `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING` `{fleet.view,
 incident.view, proposal.submit}`, `MACHINE_SURFACE` (13; 3 machine-only),
 `ROUTE_CONTRACT` (98; 0 routes added), `evaluate_route_surface`, the refusal
