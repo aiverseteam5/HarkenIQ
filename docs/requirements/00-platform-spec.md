@@ -4729,3 +4729,224 @@ another agent's answers 403 — charged, so bounded, and every other `self`
 route asks the self rule first); a schema-invalid submission BODY refused
 before the attempt ledger (already recorded, bounded by the 16 KiB pre-parse
 ceiling); B1, B2, S3-E1/E2 and the taxonomy, none started.
+
+**A30.32 — A6-4B1: governed capability and parameter discovery (implements
+A30.13; architecture checkpoint delivered 2026-09-24 and RATIFIED by Vinod
+the same day as D1–D6 with two semantic amendments; recorded BEFORE the
+code).** **What the checkpoint measured on unmodified `main` (`8c561e2`).**
+Every source B1 composes already exists: `action_facts()` (risk,
+reversibility, inverse, implementing protocols and the A22.2 parameter
+contract, read from each protocol's own declaration),
+`load_capability_registry` (per-class reach over a principal's devices),
+the tenant condition catalogue with `CAMPAIGN_ONLY_CLASSES`, the agent's A0
+bindings, and `load_autonomy_contract(reach=…)` followed by
+`effective_disposition` (S3). No existing route could be reused: the
+machine agent view computes approval completion for up to 50 proposals,
+answers 404 to an agent whose grants have all lapsed (A30.20), publishes
+`scope.rules` (grant construction, against A29.9) and covers bound classes
+only; `/api/autonomy/`, `/api/capabilities/*` and `/api/scope-grants/me`
+are human compositions; the dry-run stays the DECISION preview (A22.14)
+and the only source of `candidate_ref`. Findings, those marked reproduced
+re-executed against the pure functions: **G1** (= F5) the mandatory
+`autonomy` binding reaches nothing, and the builder catalogue still names
+`/api/autonomy`, which is human; **G2** (reproduced) INTERFACE_DISABLE is
+catalogue-addressable and risk `high`, so it is DENIED and every agent
+proposal for it is stored `blocked` and never reaches a human, while A21.5
+says newly addressable classes require a named human — the gate "proved"
+A21.5 through the tenant contract's `approval.required`, which is true
+even for a denied class; **G3** (reproduced) `parameter_contract` reports
+FIRMWARE_UPDATE `agent_resolvable: true` while `resolve_action_params`
+refuses it — `target_version` is supplied only by campaign orchestration —
+and reports an unknown class resolvable while `resolve_action_params`
+refuses it; **G4** (reproduced) the agent view's `capability.implemented`
+is hard-coded `true` (INTERFACE_RESET and CLEAR_COUNTERS read `true` there
+and `false` in `action_facts()`), and its `requires_approval` is `true` for
+a denied class; **G5** `govern_proposal`'s `capability_unimplemented`
+refusal is unreachable, because the contract describes all 14 classes;
+**G6** an agent grant may carry a `permission_subset` that narrows its
+HTTP read reach and is ignored by its WHERE-only operational reach; **G7**
+the machine agent view publishes `scope.rules`; **G8** the parameter
+contract has no canonical enums or ranges — constraints are prose; **G9**
+the human catalogue route's `reachable_devices` is always null (read, never
+written on that path); **G10** two species vocabularies, neither
+validated (= F6); **G11** per-input freshness cannot be published without
+enumerating devices.
+
+**D1 — RATIFIED: one machine-only route on job `autonomy` (J1).**
+`GET /api/operational-agents/{agent_id}/discovery`: permission `fleet.view`,
+treatment `READ_SCOPED`, surface `MACHINE`, job `autonomy`, metered by the
+EXISTING B0c read meter at the route guard (exactly one read, charged
+before any decision), self-only, served `Cache-Control: no-store` with no
+ETag. The job is the existing A0 read binding `autonomy`, which
+`REQUIRED_READS` has injected into every agent since A0 and which reached
+nothing after A6-4A (F5): the mandatory binding now names a real route, so
+G1 closes and the builder catalogue's description of it is corrected. No
+new permission, no ceiling change, no migration, no persistence. The route
+enters `MACHINE_SURFACE`, `JOB_METER` and `meter_census` by declaration
+alone. Expected counts, to be VERIFIED rather than forced:
+`ROUTE_CONTRACT` 98 → 99, `MACHINE_SURFACE` 13 → 14, machine-only routes
+3 → 4, machine jobs 4 → 5. Any material deviation from this route stops
+for ratification.
+
+**D2 — RATIFIED WITH AMENDMENT: the third fact is ADDRESSABLE, and the
+field name `reachable` is not published.** The checkpoint named fact 3
+`reachable`, but its semantic is catalogue addressability, not execution
+reach, and "reachable" invites exactly that confusion. The field is
+`addressable`, and it means one thing: **the action class is addressable
+by the tenant's ENABLED condition catalogue, or by the campaign-only
+mechanism** (`CAMPAIGN_ONLY_CLASSES`). It MUST NOT mean in scope,
+permitted, autonomous, executable or currently operable, and the response
+states the path (`condition_catalogue` | `campaign_only` | `none`) so a
+campaign-only class is never read as agent-proposable. The rest of D2 as
+checkpointed: in effective scope is measured over the agent's READABLE
+reach; currently operable includes the node allow list as a reported
+blocker and excludes live safety state and halted Site Manager sites;
+self-scope is published as reach sets, never construction.
+
+**D3 — RATIFIED WITH AMENDMENT: governance over the agent's own reach, and
+no optimistic conclusion before S3-E1.** Governance is composed over the
+Operational Agent's own canonical current reach with S3 semantics —
+`load_autonomy_contract(reach=read_reach(scope, "fleet.view"))`, then
+`effective_disposition` — never over the tenant (a tenant-wide composition
+would break A30.26's deletion equivalence). **The amendment:** until S3-E1
+is implemented, admission still folds TENANT-WIDE state (A30.26's internal
+decision paths), so a machine whose reach is not tenant-wide must never be
+told that approval is definitively not required when hidden tenant state
+may still add a restriction at admission. The approval requirement is a
+CLOSED state of four values:
+
+* `required` — a definitive current conclusion;
+* `not_required` — only when the conclusion is definitive under current
+  production semantics;
+* `unknown` — no approval requirement is visible within the discovery
+  composition, but current pre-E1 admission semantics may still add one;
+* `not_applicable` — denied, or not applicable to this agent.
+
+`currently_operable.state` is likewise closed — `operable`,
+`not_operable`, `unknown` — and for a non-tenant-wide machine before S3-E1
+a known blocker is `not_operable`, definitive operability is `operable`,
+and anything else is `unknown`: `operable` is never published from local,
+current-reach evidence alone when hidden current-production admission
+semantics may still restrict progression. Because a condition outside the
+agent's reach can only ADD a restriction at admission (A30.26: more sites
+fold more blocking conditions, and DENIED arises only from tenant-level
+facts every reader sees), a composed `requires_approval` is definitive
+(`required`) and a composed `denied` is definitive (`not_applicable`);
+only a composed `autonomous` can be overturned, so only it becomes
+`unknown`. When S3-E1 lands, B1 consumes its definitive split —
+site-local assessment plus the closed global gate — and these `unknown`
+states reduce; nothing of S3-E1 is implemented here.
+
+**D4 — RATIFIED: two truthfulness fixes to the sources B1 publishes
+from, and no more.** (a) `parameter_contract` agrees with
+`resolve_action_params`: a class is `agent_resolvable` exactly when some
+reported evidence lets `resolve_action_params` build its payload. A
+required parameter that only campaign orchestration supplies is
+unsatisfiable for an agent, as a required `unavailable` one already was,
+and an unknown class resolves nothing. FIRMWARE_UPDATE therefore reads
+`agent_resolvable: false` with its reason named — on `/api/capabilities/`,
+in discovery, and in the activation preflight's `capabilities` dimension
+(a truthful WARN for an agent bound to it beside other classes, BLOCKED
+for one bound to nothing else, because it would propose nothing). No
+parameter, enum or range is invented. (b) The agent view sources
+`capability.implemented` from `action_facts()` rather than hard-coding
+`true`, and an unimplemented class reads reach `unimplemented` there, as
+it does in the Registry; this changes output only for an agent bound to
+an unimplemented class before A17's binding check. The denied-class
+`requires_approval` half of G4 is NOT changed (it is G2's, recorded).
+
+**D5 — RATIFIED: the canonical autonomy actor-species declaration.**
+`autonomy.py`, which owns the field, declares `ACTOR_HUMAN = "human"`,
+`ACTOR_AGENT = "agent"`, `ACTOR_CAMPAIGN = "campaign"` and the closed
+`ACTOR_SPECIES`; `build_autonomy` refuses any other value; `actor.py`
+gains the one mapping `actor_species_of(user)`, derived from the existing
+`UserContext.species` (`user` → `human`, `agent` → `agent`, anything else
+refused). All ten literals are replaced by the constants with identical
+values — seven `actor_species=` arguments and three `species` fields on
+agent payloads — so no output changes. A structural test refuses a new
+literal. `UserContext.species` is unchanged; this is NOT a second identity
+system.
+
+**D6 — RATIFIED: machine-only.** Discovery is served to a machine
+principal reading ITSELF. A person is refused by the route surface (A29);
+human parity is a future PX concern.
+
+**The locked contract: eight facts, kept separate.** Per action class —
+every governed class, plus any bound class the platform does not govern —
+the response carries eight independent facts and NEVER synthesizes
+`allowed`, `authorized`, `can_execute`, `safe_to_execute` or any
+equivalent authority boolean:
+
+1. `exists` — the class is in the governed `ActionType` vocabulary;
+2. `implemented` — `action_facts()`: a protocol this build ships
+   implements it, and which;
+3. `addressable` — D2, above, with its path and the enabled condition
+   subsystems that name it;
+4. `bound` — an A0 `action_class` binding names it;
+5. `in_effective_scope` — `load_capability_registry(scope=read_reach(scope,
+   "fleet.view"))`: counts of devices in the agent's readable reach, of
+   those implementing the class, of those whose node allow list permits it,
+   and of those undeclared, with one state from the agent view's existing
+   vocabulary (`unimplemented`, `no_devices_in_scope`, `available`,
+   `not_permitted_on_any_node`, `no_effective_reach`, `unknown`), derived by
+   ONE function the agent view shares;
+6. `governance` — for a bound, governed class: the conclusion
+   (`autonomous` | `requires_approval` | `denied`) of `effective_disposition`
+   over the reach-composed contract, the contract's own blocking reason
+   codes (an allow-list of codes that already exist, with a site id only
+   for an in-reach site and never a fault-domain id or free text), whether
+   the class is budget-mapped, its grant level, and whether it is
+   never budget-grantable; `null` for an unbound or ungoverned class;
+7. `approval_required` — D3's closed state with a closed basis;
+8. `currently_operable` — D3's closed state with the closed codes that
+   block it or leave it unknown, a Central Command readiness conclusion at
+   `generated_at` and never a statement that execution will succeed.
+
+**The authority rule.** Discovery is descriptive only; nothing in the
+response is authority. At proposal `govern_proposal` re-derives every
+fact, at approval the approval policy is evaluated normally, at dispatch
+current authorization is revalidated (A30.17), and at the node its own
+funnel remains final. No discovery field, digest, timestamp, version or
+response object is accepted back as authorization proof: the response
+carries no `candidate_ref`, digest, signature or ETag, and the ingress
+request model forbids every field it does not name (A24.2).
+
+**Self-scope.** Only `read_reach(scope, "fleet.view")`, published as
+effective reach in its NATIVE types — `tenant_wide`, the org units, sites,
+devices and device classes the reach covers, each list the reach of its own
+type — with a device count, and never flattened into `site_ids`: a device-
+or class-scoped agent's containing sites are not listed and no contextual
+site authority is synthesized (A30.5). Withheld: `scope.rules`, raw grants,
+permission subsets, org-unit paths and grant construction, contextual
+units, inert targets and reasons, `previously_granted`, `synthesis` and
+`administered` (A29.9). An agent whose grants have all lapsed is answered
+by the self rule alone — 200 with empty reach — which is the A30.20
+alignment of machine self-visibility.
+
+**Parameters.** `ACTION_PARAMETERS` through `parameter_contract` is the
+client contract: names, types, required flags, supplying source, prose
+constraints and the missing input where one is unavailable. Parameters are
+resolved by Central Command from reported evidence and the ingress accepts
+none (A24.2), so executor defaults are not published. No enum or range is
+invented (G8).
+
+**S3 and S4.** The governance composition passes A30.26's deletion
+equivalence over the agent's authorized sites; the discovery caller of
+`load_autonomy_contract` names its reader, so the set of whole-tenant
+decision paths is unchanged. Discovery contains no learned signal,
+pattern, outcome evidence, advancement story, generated text or any other
+S4-protected payload — the contract's `learning`, `evidence` and
+`advancement` are never named — and structural tests assert it.
+
+**What B1 does not do.** It does not pull in G2 (the denied-class policy
+inconsistency), G5, G6, G7 or G9, S3-E1 or S3-E2, the datacenter taxonomy,
+or B2 (attention and incident projections); each is recorded and each
+stops the slice for a report if it becomes a direct blocker for truthful
+discovery. It changes no admission, approval, dispatch or node behaviour,
+and no human read other than the corrected catalogue description and D4's
+two source fixes. **Unchanged:** the permission vocabulary (25),
+`ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING` `{fleet.view,
+incident.view, proposal.submit}`, the machine permissions a binding
+implies, every existing route, response shape and handler's
+authorization, `resolve()`, `permits()`, `read_reach`, S1–S4, B0b, B0c,
+A23 and A26; no migration (CC `0027`, SM `0011`, Console `0004`).

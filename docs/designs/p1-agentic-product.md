@@ -5186,3 +5186,209 @@ attempt ledger (bounded by the 16 KiB pre-parse ceiling, already recorded).
   a hidden incident is refused and its id appears nowhere in accounting; a real
   429; an operator's reads leave the agent's window untouched; the removed
   routes stay removed.
+
+## §34m — A6-4B1: governed capability and parameter discovery (A30.32)
+
+A30.13 scoped the additive half of A6-4B: an external runtime should be able to
+ask what it may address, where, under which governance conclusion and with
+which parameters, without that answer ever becoming authority. The checkpoint
+was re-run from unmodified `main` (`8c561e2`), ratified by Vinod as D1–D6 with
+two semantic amendments, and recorded before the code.
+
+### Why a new route, and why this one
+
+Every fact B1 publishes already has a canonical source; the gap was that no
+machine-readable surface composed them. The machine agent view is the closest
+thing and is the wrong shape for five reasons: it computes approval completion
+for up to fifty proposals, answers 404 to an agent whose grants have all
+lapsed, publishes `scope.rules` (grant construction), covers bound classes
+only, and carries two conflated fields. The human compositions
+(`/api/autonomy/`, `/api/capabilities/*`, `/api/scope-grants/me`) carry device
+and site lists, `stop_switch.changed_by`, policy ids, approver counts, evidence
+and learning. And the dry-run is a DECISION preview — the only source of
+`candidate_ref` — which discovery must never become.
+
+So B1 adds one route, `GET /api/operational-agents/{agent_id}/discovery`, and
+declares it on the job the mandatory `autonomy` binding already names. Every
+agent has held that binding since A0 (`REQUIRED_READS`), and since A6-4A it
+reached nothing: an agent was issued a required binding and no route honoured
+it (F5). Declaring discovery there costs nothing, closes F5, and puts all
+eight facts in one snapshot for one read. The two alternatives — splitting
+facts 1–5 onto `self` and 6–8 onto `autonomy`, or declaring everything on
+`self` — either split one answer across two snapshots and two reads, or leave
+the mandatory binding decorative.
+
+### The response
+
+```jsonc
+{ "view": "machine", "discovery_version": "1", "generated_at": "…",
+  "agent": { "id", "species": "agent", "configuration_version", "status",
+             "paused", "autonomy_ceiling", "require_approval_always",
+             "execution_budget": { "limit", "used", "remaining", "period", "exhausted" },
+             "proposal_budget":  { "limit_per_day", "used_today", "remaining_today" } },
+  "scope":  { "permission": "fleet.view", "enforcement", "empty",
+              "reach": { "tenant_wide", "org_unit_ids", "site_ids",
+                         "device_ids", "device_classes" },
+              "devices_in_reach" },
+  "governance_basis": { "discovery_composed_over": "tenant|authorized_sites",
+                        "admission_composed_over": "tenant",
+                        "matches_admission", "sites_in_composition",
+                        "tenant_stop_switch", "configured_level",
+                        "safety_reported", "sites_not_reporting", "sites_halted" },
+  "action_classes": [ {
+      "action_type", "exists", "risk", "reversibility", "inverse_action",
+      "implemented":        { "value", "by": ["redfish", …] },
+      "addressable":        { "value", "path": "condition_catalogue|campaign_only|none",
+                              "conditions": ["log", …] },
+      "bound",
+      "in_effective_scope": { "state", "devices_in_scope", "implementing_devices",
+                              "permitting_devices", "undeclared_devices" },
+      "parameters":         { "required", "resolvable", "unresolvable_reason",
+                              "items": [{ "name", "type", "required", "source",
+                                          "constraint", "missing_input" }] },
+      "governance":         { "conclusion", "reason_codes": [{ "code", "scope", "site_id"? }],
+                              "budget_mapped", "granted_at_level",
+                              "never_budget_grantable" } | null,
+      "approval_required":  { "state", "basis": [ … ] },
+      "currently_operable": { "state", "blocked_by": [ … ], "unknown": [ … ] } } ],
+  "contract": { … } }
+```
+
+Every block is built by naming what may pass (A25.9). There is no `allowed`,
+`authorized`, `can_execute`, `safe_to_execute` or anything equivalent: the
+eight facts stay eight, and the only field that combines them — `currently_
+operable` — says which facts block it rather than collapsing them.
+
+### Addressable is not reachable
+
+The checkpoint called fact 3 `reachable`. Vinod's amendment renamed it, and the
+reason is worth keeping: its source is the tenant's condition catalogue, so it
+answers "is there a governed path by which this class could be asked for" —
+not "can it reach a device", "is it permitted", "will it run". A class is
+addressable when an ENABLED catalogue row names it (the path an agent's
+proposals take) or when it is campaign-only (FIRMWARE_UPDATE,
+FIRMWARE_ROLLBACK, whose path is an S6 campaign). The path is published, so a
+runtime can never mistake a campaign-only class for one it may propose;
+`currently_operable` blocks it as `campaign_only`.
+
+### Approval: four states, and why `autonomous` alone can become `unknown`
+
+S3 composes the contract over the agent's authorized sites. Admission does not:
+until S3-E1, `govern_proposal` reasons over the TENANT-WIDE contract, so a site
+the agent cannot see can still add an approval requirement — an error-budget
+drop-back or a spent site budget folds tenant-wide today. The direction of that
+effect is what makes the table decidable: more sites can only add blocking
+conditions, and DENIED comes only from facts every reader sees (the class's
+risk, the tenant stop switch). So a composed `requires_approval` stays
+`requires_approval` at admission, a composed `denied` stays `denied`, and only a
+composed `autonomous` can be overturned.
+
+| governance conclusion | reach | also | `approval_required` | basis |
+|---|---|---|---|---|
+| — (unbound) | any | | `not_applicable` | `not_bound` |
+| — (not governed) | any | | `not_applicable` | `not_governed` |
+| `denied` | any | | `not_applicable` | `governance_denied` |
+| `requires_approval` | any | | `required` | `governance_requires_approval` |
+| `autonomous` | any | the agent's execution budget is spent | `required` | `execution_budget_exhausted` |
+| `autonomous` | not tenant-wide | | `unknown` | `admission_beyond_reach` |
+| `autonomous` | any | a fault domain is suppressed at an in-reach site | `unknown` | `depends_on_target_site` |
+| `autonomous` | tenant-wide | none of the above | `not_required` | `governance_autonomous` |
+
+The execution-budget row is D2 of A19 read truthfully: a spent budget does not
+stop proposing, it returns autonomous work to a human at dispatch, so "not
+required" would be an over-promise. The suppression row is `govern_proposal`'s
+own per-target rule: a target at a suppressed site requires a human, so a
+class-level answer that depends on the target cannot be `not_required`.
+"Tenant-wide" is the reach's own `tenant_wide`, because that is the only case in
+which `authorized_sites` returns the whole tenant and the composition is
+provably the one admission reads.
+
+### Operability: known blockers, definitive answers, and the rest
+
+`currently_operable` is Central Command readiness at `generated_at`. It is never
+"execution will succeed": the Site Manager's lease, preconditions, blast radius
+and site stop switch, and the node's own allow list, decide that at execution
+time, and D2 keeps live safety state and halted sites out of this fact (they
+are reported in `governance_basis`).
+
+Blocked by (a known blocker, in this order): `agent_not_active`,
+`agent_paused`, `proposal_budget_exhausted`, `not_governed`, `not_implemented`,
+`not_bound`, `not_addressable`, `campaign_only`, `parameters_unavailable`,
+`no_devices_in_scope`, `no_effective_reach`, `not_permitted_on_any_node`,
+`governance_denied`. Unknown because: `executor_reach_undeclared` (devices in
+reach have not declared, A17.4), `admission_beyond_reach` (the approval state
+is `unknown` for the D3 reason). Any blocker → `not_operable`; else any unknown
+→ `unknown`; else `operable`. That is exactly the amendment's rule: a composed
+`requires_approval` class is operable definitively — admission can only add
+further reasons for the human it already needs — while a composed
+`autonomous` class for a non-tenant-wide agent is `unknown`, because hidden
+state may still move it onto the human path.
+
+### The E1 seam
+
+Nothing of S3-E1 is built. The one place hidden admission state enters B1 is
+a single function that asks whether admission reads beyond the agent's reach.
+When S3-E1 lands, discovery consumes its definitive result there — the target
+site's local assessment plus the closed global gate — `GLOBAL_SAFETY_
+CONSTRAINT` joins the reason-code allow-list, `safety_reported` and halted
+sites fold into the conclusion as S3-E1's R3 and (f) specify, and the
+`unknown` states reduce. Until then, the governance reason codes are exactly
+the codes the contract and `effective_disposition` already emit.
+
+### Self-scope without construction
+
+The reach is `read_reach(scope, "fleet.view")` and nothing else, published in
+its native types. `site_ids` are the sites the reach covers (site grants,
+org-expanded sites, or all of them for a tenant grant); `device_ids` and
+`device_classes` are reach BY IDENTITY and BY CLASS and are never flattened
+into sites, so a device-scoped agent's containing site does not appear — the
+reach has no field a contextual site could arrive through (A30.5).
+`org_unit_ids` are the units the reach covers, which is reach, not the
+materialized paths or the ancestors that make up construction. An agent whose
+every grant lapsed is answered by the self rule alone: 200, `empty: true`,
+nothing covered — the alignment A30.20 left for this slice.
+
+### Parameters
+
+`parameter_contract` is the client contract, and D4(a) makes it agree with
+`resolve_action_params` — the function that actually builds payloads — for
+every class: `agent_resolvable` is true exactly when some reported evidence
+lets the resolver succeed. The one disagreement the checkpoint reproduced was
+FIRMWARE_UPDATE (a required `target_version` only a campaign supplies), and the
+unknown-class case behaves the same way. Discovery publishes each parameter's
+name, type, required flag, source, prose constraint and missing input. It does
+not publish executor defaults: Central Command resolves parameters, the ingress
+accepts none, and `source: default` already says no input is needed.
+
+### What does not move
+
+No permission, no ceiling change, no migration, no persistence: the handler
+reads, composes, rolls back the catalogue's lazy seed exactly as the dry-run
+does, and returns. The guard charges one read before the handler runs; the
+handler meters nothing itself, which `meter_census` enforces. No admission,
+approval, dispatch or node behaviour changes. G2, G5, G6, G7, G9, S3-E1/E2, the
+taxonomy and B2 are recorded, not built.
+
+### How it is proven
+
+* The eight facts, per persona, on the production stack with persisted agent
+  grants under STRICT: tenant-, org-unit-, site-, device- and
+  device_class-scoped machines, empty reach, lapsed grants.
+* Every fact's edge: an unbound class, an unimplemented one, a campaign-only
+  one, a node that does not permit a class, undeclared executor reach,
+  resolvable and unresolvable (firmware) parameters, and each governance
+  conclusion with its approval and operability states — including the
+  non-tenant-wide `autonomous` case, which is then shown to be overturned by
+  real admission (the dry-run) through a hidden site's drop-back: `unknown` was
+  the only honest answer.
+* The plane: a person refused, another agent refused (no existence oracle),
+  exactly one read per request, the 429 at the window, the census clean.
+* Nothing written: a table snapshot around the read, including a tenant whose
+  catalogue has never been seeded.
+* Nothing accepted back: every discovery field is refused by the submit
+  model, and nothing is created.
+* S3 deletion equivalence over the agent's authorized sites, the sentinel walk
+  for hidden topology, and S4's exclusion by key and by planted value.
+* D4 as an equivalence over all fourteen classes; D5 as a structural refusal
+  of any new literal; E1 absent by structure and by behaviour.
+* Real PostgreSQL, and the live compose gate with a real machine credential.
