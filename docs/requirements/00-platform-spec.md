@@ -4858,10 +4858,15 @@ an unimplemented class before A17's binding check. The denied-class
 **D5 — RATIFIED: the canonical autonomy actor-species declaration.**
 `autonomy.py`, which owns the field, declares `ACTOR_HUMAN = "human"`,
 `ACTOR_AGENT = "agent"`, `ACTOR_CAMPAIGN = "campaign"` and the closed
-`ACTOR_SPECIES`; `build_autonomy` refuses any other value; `actor.py`
-gains the one mapping `actor_species_of(user)`, derived from the existing
-`UserContext.species` (`user` → `human`, `agent` → `agent`, anything else
-refused). All ten literals are replaced by the constants with identical
+`ACTOR_SPECIES`; `build_autonomy` refuses any other value; and the one
+mapping `actor_species_of(user)` sits BESIDE the declaration, derived from
+the existing `UserContext.species` (`user` → `human`, `agent` → `agent`,
+anything else refused). The checkpoint placed it in `actor.py`; the suite
+refused that, rightly — A23-2 pins `actor.py` to exactly one public helper,
+`actor_of`, which answers WHICH principal acted, and this answers which
+KIND of actor a contract describes. The ratified D5 names no module, so the
+declaration and its mapping live together and A23-2 is untouched. All ten
+literals are replaced by the constants with identical
 values — seven `actor_species=` arguments and three `species` fields on
 agent payloads — so no output changes. A structural test refuses a new
 literal. `UserContext.species` is unchanged; this is NOT a second identity
