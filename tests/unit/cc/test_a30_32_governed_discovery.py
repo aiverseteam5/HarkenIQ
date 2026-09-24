@@ -255,8 +255,13 @@ class TestThePlane:
         assert "/api/autonomy)" not in text
 
     def test_metered_by_the_existing_read_meter(self):
+        from harkeniq_cc.metrics import MACHINE_READ_METER_LABELS
+
         assert JOB_METER[JOB_AUTONOMY] == METER_READ
         assert machine_meter(*ROUTE) == METER_READ
+        # The per-job counter label is DERIVED from the declaration (A30.31):
+        # nobody had to remember to add it.
+        assert JOB_AUTONOMY in MACHINE_READ_METER_LABELS
 
     def test_the_counts_moved_by_exactly_one_route(self):
         """Verified, not forced (A30.32 D1)."""

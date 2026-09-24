@@ -5979,9 +5979,11 @@ docker compose exec -T central-command python -c "
 import sys; sys.path.insert(0, '/app/services/central_command/src')
 from harkeniq_cc.route_contract import MACHINE_SURFACE
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
-assert len(MACHINE_SURFACE) == 13, len(MACHINE_SURFACE)
+# 13 at B0b; A30.32 (A6-4B1) declared exactly one more machine read,
+# governed discovery. The five routes above stay off the plane.
+assert len(MACHINE_SURFACE) == 14, len(MACHINE_SURFACE)
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  MACHINE_SURFACE = 13, ceiling unchanged, 5 off-plane routes still refused')"
+print('  MACHINE_SURFACE = 14 (13 + B1 discovery), ceiling unchanged, 5 off-plane routes still refused')"
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/policies/$B0B_POLICY" > /dev/null
 
