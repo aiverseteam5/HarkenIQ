@@ -5369,6 +5369,20 @@ handler meters nothing itself, which `meter_census` enforces. No admission,
 approval, dispatch or node behaviour changes. G2, G5, G6, G7, G9, S3-E1/E2, the
 taxonomy and B2 are recorded, not built.
 
+### Found while proving it (G12, pre-existing, recorded)
+
+The live gate's tenant-wide machine could not be issued a credential: any
+agent holding a `tenant`-scope grant makes every agent-administration route
+(`PATCH`, bindings, preflight, acknowledge, identity issue/rotate/revoke,
+activate/pause/retire) answer 500, because those routes rebuild the agent's
+configured rows as `ScopeRule` models whose `scope_ref` must be non-empty and
+a tenant grant's is empty. It predates B1 — the grant route has accepted
+tenant-scope agent grants since E1.2 — and it fails closed: the request does
+nothing, and revoking the tenant grant restores the routes. Discovery never
+takes that path, so the slice records it rather than fixing it: the gate
+issues the identity before the grant, and a strict `xfail` keeps the defect
+visible until its own fix lands.
+
 ### How it is proven
 
 * The eight facts, per persona, on the production stack with persisted agent

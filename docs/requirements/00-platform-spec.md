@@ -4943,11 +4943,27 @@ pattern, outcome evidence, advancement story, generated text or any other
 S4-protected payload — the contract's `learning`, `evidence` and
 `advancement` are never named — and structural tests assert it.
 
+**G12 — found by B1's live gate, PRE-EXISTING, recorded and NOT fixed
+here.** `POST /api/scope-grants/` accepts a `tenant`-scope grant for an
+agent (A30.1 F1: all five scope types, for users and agents alike), and
+every Operational Agent administration route re-reads the agent's
+configured rows as `ScopeRule` models (`_agent_scope_rules`) whose
+`scope_ref` requires at least one character — so for any agent holding a
+tenant grant, `PATCH /{id}`, `PUT /{id}/bindings`, `POST /{id}/preflight`,
+`/acknowledge`, `/identity`, `/identity/rotate`, `/identity/revoke` and
+`/{transition}` (activate, pause, retire) each answer 500. It fails CLOSED
+(the request does nothing), and revoking the tenant grant restores every
+route; but identity revocation and retirement are safety controls, so it
+is recorded with that weight. It does not touch discovery, which reads a
+tenant-wide agent truthfully; the gate issues that agent's credential
+before granting it the tenant, and a strict `xfail` pins the defect so the
+suite says so the day it is fixed.
+
 **What B1 does not do.** It does not pull in G2 (the denied-class policy
-inconsistency), G5, G6, G7 or G9, S3-E1 or S3-E2, the datacenter taxonomy,
-or B2 (attention and incident projections); each is recorded and each
-stops the slice for a report if it becomes a direct blocker for truthful
-discovery. It changes no admission, approval, dispatch or node behaviour,
+inconsistency), G5, G6, G7, G9 or G12, S3-E1 or S3-E2, the datacenter
+taxonomy, or B2 (attention and incident projections); each is recorded and
+each stops the slice for a report if it becomes a direct blocker for
+truthful discovery. It changes no admission, approval, dispatch or node behaviour,
 and no human read other than the corrected catalogue description and D4's
 two source fixes. **Unchanged:** the permission vocabulary (25),
 `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING` `{fleet.view,
