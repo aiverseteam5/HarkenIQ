@@ -1318,3 +1318,33 @@ class TestE1IsNotImplemented:
         }
         assert whole_tenant == INTERNAL_DECISIONS
         assert ("api/operational_agents.py", "agent_discovery") not in whole_tenant
+
+
+# ---------------------------------------------------------------------------
+# 13. Recorded, not fixed (A30.32 G12)
+# ---------------------------------------------------------------------------
+
+
+class TestRecordedNotFixed:
+    @pytest.mark.xfail(strict=True, reason=(
+        "G12 (A30.32, pre-existing): an agent holding a tenant-scope grant "
+        "cannot be administered -- _agent_scope_rules rebuilds its rows as "
+        "ScopeRule models whose scope_ref must be non-empty. Recorded, not "
+        "fixed in B1; this flips to XPASS (and fails, strict) when it is."
+    ))
+    async def test_an_agent_with_a_tenant_grant_can_be_administered(self):
+        stack = await _estate(("A",))
+        await _agent(stack, "b1-g12")
+        await _grant(stack, "b1-g12", "tenant")
+        stack.as_person()
+        async with stack.client() as c:
+            res = await c.patch(f"{PREFIX}/b1-g12", json={"description": "g12"})
+        assert res.status_code == 200, res.status_code
+
+    async def test_discovery_is_unaffected_by_it(self):
+        """The same agent, the same grant: discovery answers truthfully."""
+        stack = await _estate(("A",))
+        await _agent(stack, "b1-g12")
+        await _grant(stack, "b1-g12", "tenant")
+        body = await _discover(stack, "b1-g12")
+        assert body["scope"]["reach"]["tenant_wide"] is True

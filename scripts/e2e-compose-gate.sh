@@ -7225,11 +7225,16 @@ b1_polled() {
 wait_for "the poller to carry site B's BMC_RESET drop-back into cc_safety_state" 180 b1_polled
 B1_TW=$(b1_agent "b1-tenant-wide" "[]")
 [ -n "$B1_TW" ] || { echo "could not create the tenant-wide agent" >&2; exit 1; }
+# The credential is issued BEFORE the tenant grant, deliberately: G12
+# (A30.32, pre-existing, recorded) -- every agent-administration route,
+# identity issue included, answers 500 for an agent holding a tenant-scope
+# grant. Discovery never takes that path; this proof is about discovery.
+B1_TW_SECRET=$(b1_issue "$B1_TW")
+[ -n "$B1_TW_SECRET" ] || { echo "no identity for the tenant-wide agent" >&2; exit 1; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
      -H 'Content-Type: application/json' \
      -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$B1_TW\",\"scope_type\":\"tenant\",\"scope_ref\":\"\"}" \
      http://localhost:8090/api/scope-grants/)" = "201" ] || { echo "the tenant grant was refused" >&2; exit 1; }
-B1_TW_SECRET=$(b1_issue "$B1_TW")
 B1_TW_MACHINE=$(b1_token "$B1_TW" "$B1_TW_SECRET")
 B1_MACHINE=$(b1_token "$B1_AGENT" "$B1_SECRET")
 [ "$(b1_disc "$B1_TW_MACHINE" "$B1_TW")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; exit 1; }
