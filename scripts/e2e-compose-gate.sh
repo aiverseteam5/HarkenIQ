@@ -7292,17 +7292,27 @@ body = json.load(open("/tmp/b1_disc.json"))
 fields = set(body) | set(body["action_classes"][0]) | set(body["scope"]) \
     | set(body["governance_basis"]) | set(body["action_classes"][0]["currently_operable"])
 conn = http.client.HTTPConnection("localhost", 8090, timeout=30)
-for i, field in enumerate(sorted(fields)):
-    payload = {"candidate_ref": "cand_00000000000000000000000000000000",
-               "idempotency_key": f"b1-gate-{i:04d}-{field}"[:120],
-               field: body.get(field, True)}
+def post(payload):
     conn.request("POST", f"/api/operational-agents/{agent}/proposals",
                  body=json.dumps(payload),
                  headers={"Authorization": f"Bearer {machine}",
                           "Content-Type": "application/json"})
     res = conn.getresponse(); res.read()
-    assert res.status == 422, (field, res.status)
-print(f"  {len(fields)} discovery fields each submitted back to the ingress: 422 every time")
+    return res.status
+# (a) The submit MODEL forbids every discovery field NAME (A24.2's
+# extra="forbid"): a small placeholder isolates the name from the size.
+for i, field in enumerate(sorted(fields)):
+    status = post({"candidate_ref": "cand_00000000000000000000000000000000",
+                   "idempotency_key": f"b1-gate-{i:04d}-{field}"[:120], field: True})
+    assert status == 422, (field, status)
+# (b) A whole discovery response replayed as a submission is refused too --
+# 413 at the 16 KiB pre-parse ceiling (A24) when it is that large, else 422.
+whole = dict(body, candidate_ref="cand_00000000000000000000000000000000",
+             idempotency_key="b1-gate-whole-response")
+status = post(whole)
+assert status in (413, 422), status
+print(f"  {len(fields)} discovery field names each refused by the submit model (422);"
+      f" the whole response replayed: {status}")
 PY
 b1_counts() {  # every row discovery could write about ITS agent; other agents keep running
   s1_cc "SELECT (SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$B1_AGENT')

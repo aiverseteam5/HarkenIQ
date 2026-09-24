@@ -1035,13 +1035,21 @@ class TestNoAuthorityToken:
         assert not vocabulary & set(SubmitProposal.model_fields)
         before = await _table_counts(stack)
         async with stack.as_machine("b1-site_a").client() as c:
+            # The model forbids every field NAME; a placeholder value keeps
+            # the body small so the name, not the size, is what is refused.
             for field in sorted(vocabulary):
                 res = await c.post(f"{PREFIX}/b1-site_a/proposals", json={
                     "candidate_ref": "cand_0000000000000000",
                     "idempotency_key": f"b1-{field}"[:120].ljust(8, "x"),
-                    field: body.get(field, True),
+                    field: True,
                 })
                 assert res.status_code == 422, (field, res.status_code)
+            # And the whole response, replayed: refused at the 16 KiB
+            # pre-parse ceiling when that large (A24), else by the model.
+            whole = dict(body, candidate_ref="cand_0000000000000000",
+                         idempotency_key="b1-whole-response")
+            res = await c.post(f"{PREFIX}/b1-site_a/proposals", json=whole)
+            assert res.status_code in (413, 422), res.status_code
         after = await _table_counts(stack)
         assert before["cc_agent_proposals"] == after["cc_agent_proposals"]
         assert before["cc_agent_submissions"] == after["cc_agent_submissions"]
