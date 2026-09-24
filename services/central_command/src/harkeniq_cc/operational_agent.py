@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from harkeniq.capabilities import (
+    action_facts,
     effective_actions,
     parameter_contract,
     resolve_action_params,
@@ -56,9 +57,11 @@ from harkeniq.capabilities import (
 from harkeniq_cc.agent_activation import activation_provenance
 from harkeniq_cc.capabilities import (
     implemented_actions,
+    reach_state,
     reachable_action_classes,
 )
 from harkeniq_cc.autonomy import (
+    ACTOR_AGENT,
     AUTONOMOUS,
     DENIED,
     NOT_BUDGET_MAPPED,
@@ -161,7 +164,13 @@ INGRESS_CAPABILITIES: dict[str, str] = {
 #: nothing that the caller's RBAC does not already allow.
 READ_CAPABILITIES: dict[str, str] = {
     "attention": "Ranked attention with evidence (/api/attention)",
-    "autonomy": "The tenant's autonomy contract (/api/autonomy)",
+    # A30.32 (D1, closing F5): this used to name `/api/autonomy`, which is a
+    # human surface -- every agent held a mandatory binding to a route it
+    # could not read. It names the one machine read the binding reaches.
+    "autonomy": (
+        "Governed discovery: what this agent may address, where, and under "
+        "which governance conclusion (/api/operational-agents/{id}/discovery)"
+    ),
     "incidents": "Open incidents and their diagnosis (/api/incidents)",
     "learning": "Learned signals and outcome evidence (/api/learning)",
     "fleet": "Fleet inventory and health (/api/fleet)",
@@ -825,6 +834,19 @@ def candidate_ref(tenant_id: str, dedupe_key: str) -> str:
     return "cand_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
+def proposal_budget_left(agent, proposals_today: int) -> int:
+    """How many more proposals this agent may make today. ONE rule.
+
+    The evaluator stops at zero, and so does the ingress re-derivation
+    that runs it; discovery reports the same number (A30.32), so a
+    runtime is told it is out of proposals by the arithmetic that will
+    actually stop it.
+    """
+    return max(
+        0, int(getattr(agent, "max_proposals_per_day", 0) or 0) - int(proposals_today)
+    )
+
+
 def _refused(code: str, reason: str) -> dict:
     return {
         "admitted": False, "code": code, "reason": reason,
@@ -887,9 +909,7 @@ def evaluate(
         .get("active", False)
     )
 
-    budget_left = max(
-        0, int(getattr(agent, "max_proposals_per_day", 0) or 0) - int(proposals_today)
-    )
+    budget_left = proposal_budget_left(agent, proposals_today)
 
     def _rank(dev) -> tuple:
         item = attention_by_device.get(dev.agent_id) or {}
@@ -950,7 +970,7 @@ def evaluate(
 
 
 def _capability_view(
-    action_type: str, in_scope: list, reach: dict
+    action_type: str, in_scope: list, reach: dict, *, implemented: bool,
 ) -> dict[str, Any]:
     """Can the devices this agent reaches actually run this class?
 
@@ -967,6 +987,11 @@ def _capability_view(
     whose allow list carries it; `capable_devices` counts nodes whose
     protocol implements it. Bound, capable and nowhere permitted is a
     real and silent-until-now state, and it gets its own name.
+
+    `implemented` is the PLATFORM fact from `action_facts()` (A30.32, D4b).
+    It was hard-coded `True` here, so an agent bound to a class no executor
+    implements -- possible before A17 refused such bindings -- read
+    "implemented" beside a reach that could never become available.
     """
     capable = 0
     permitted = 0
@@ -989,24 +1014,20 @@ def _capability_view(
     # a different remedy from a policy or a reach problem, so it gets its
     # own name rather than being folded into one of theirs.
     contract = parameter_contract(action_type)
-    if not contract["agent_resolvable"]:
+    if implemented and not contract["agent_resolvable"]:
         state = "no_parameter_source"
-    elif permitted:
-        state = "available"
-    elif capable:
-        # The code is there and no node permits it. The agent will
-        # propose, and the node will refuse -- which is the ratified
-        # design, but an operator should not have to discover it from a
-        # failed outcome.
-        state = "not_permitted_on_any_node"
-    elif undeclared:
-        state = "unknown"
-    elif in_scope:
-        state = "no_effective_reach"
     else:
-        state = "no_devices_in_scope"
+        # The ONE reach derivation, shared with discovery (A30.32). A class
+        # the nodes implement and do not permit reads
+        # `not_permitted_on_any_node`: the agent will propose and the node
+        # will refuse -- the ratified design, but an operator should not
+        # have to discover it from a failed outcome.
+        state = reach_state(
+            implemented=implemented, devices_in_scope=len(in_scope),
+            implementing=capable, permitting=permitted, undeclared=undeclared,
+        )
     return {
-        "implemented": True,
+        "implemented": bool(implemented),
         "reach": state,
         "reachable_devices": permitted,
         "capable_devices": capable,
@@ -1066,6 +1087,8 @@ def agent_view(
     # the agent's own in-scope devices from their own declarations --
     # the same fact /api/capabilities reports, read from the same place.
     reach = reachable_action_classes(in_scope)
+    # A30.32 (D4b): implementation is a platform fact, read once per view.
+    platform = action_facts()
 
     can_do: list[dict[str, Any]] = []
     for action_type in sorted(bound_action_classes(capabilities)):
@@ -1107,7 +1130,12 @@ def agent_view(
             "evidence": row.get("evidence"),
             "learning": row.get("learning") or [],
             "advancement": row.get("advancement"),
-            "capability": _capability_view(action_type, in_scope, reach),
+            "capability": _capability_view(
+                action_type, in_scope, reach,
+                implemented=bool(
+                    (platform.get(action_type) or {}).get("implemented")
+                ),
+            ),
         })
 
     by_status: dict[str, int] = {}
@@ -1147,7 +1175,7 @@ def agent_view(
             "execution_budget": int(getattr(agent, "execution_budget", 0) or 0),
             "budget_period": getattr(agent, "budget_period", "daily"),
             "paused_reason": getattr(agent, "paused_reason", "") or None,
-            "species": "agent",
+            "species": ACTOR_AGENT,
             "autonomy_ceiling": agent.autonomy_ceiling,
             "require_approval_always": agent.require_approval_always,
             "max_proposals_per_day": agent.max_proposals_per_day,

@@ -81,8 +81,9 @@ READ_BINDING_PERMISSIONS: dict[str, frozenset[str]] = {
     "attention": frozenset({"fleet.view"}),
     "fleet": frozenset({"fleet.view"}),
     "incidents": frozenset({"incident.view"}),
-    # /api/autonomy/ and /api/learning/* are gated on fleet.view today;
-    # this table says what the ROUTE demands, never what feels related.
+    # The `autonomy` binding's route is governed discovery (A30.32) and
+    # /api/learning/* is human-only; both demand fleet.view. This table
+    # says what the ROUTE demands, never what feels related.
     "autonomy": frozenset({"fleet.view"}),
     "learning": frozenset({"fleet.view"}),
 }

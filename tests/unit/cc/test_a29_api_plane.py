@@ -43,7 +43,7 @@ from harkeniq_cc.operational_agent import (
     INGRESS_CAPABILITIES, READ_CAPABILITIES,
 )
 from harkeniq_cc.route_contract import (
-    JOB_ATTENTION, JOB_INCIDENTS, JOB_SELF, JOBS_WITHOUT_A_BINDING,
+    JOB_ATTENTION, JOB_AUTONOMY, JOB_INCIDENTS, JOB_SELF, JOBS_WITHOUT_A_BINDING,
     MACHINE_JOBS, MACHINE_ONLY_ROUTES, MACHINE_SURFACE, ROUTE_CONTRACT,
     SURFACE_HUMAN, SURFACE_MACHINE, SURFACES, machine_reachable,
     machine_surface,
@@ -162,10 +162,14 @@ class TestDefaultDeny:
         assert declared < by_permission, (
             "the plane is not narrower than permission-implied reach"
         )
-        assert len(by_permission) == 46, (
-            f"the recorded A29.1 baseline moved: {len(by_permission)}"
+        # A29.1 measured 46 of 98. A30.32 (A6-4B1) added exactly one route,
+        # at `fleet.view`, and DECLARED it -- governed discovery -- so the
+        # permission arithmetic and the declared plane each grew by one and
+        # the removed set (TestTheCensusIsFrozen) did not move.
+        assert len(by_permission) == 47, (
+            f"the recorded baseline moved: {len(by_permission)}"
         )
-        assert len(declared) == 13, (
+        assert len(declared) == 14, (
             f"the declared plane changed size to {len(declared)}; A29.13 "
             "requires the count to be stated, not approximated"
         )
@@ -382,10 +386,13 @@ class TestOneJobAtATime:
         targets = (
             "/api/attention/", "/api/incidents/",
             f"{PREFIX}/agent-A/runtime", f"{PREFIX}/agent-A/identity",
+            # A30.32: governed discovery, on the `autonomy` job.
+            f"{PREFIX}/agent-A/discovery",
         )
         expect = {
             JOB_ATTENTION: {"/api/attention/"},
             JOB_INCIDENTS: {"/api/incidents/"},
+            JOB_AUTONOMY: {f"{PREFIX}/agent-A/discovery"},
         }
         for job, on_plane in expect.items():
             # `self` rides with every persona: it is not a binding.

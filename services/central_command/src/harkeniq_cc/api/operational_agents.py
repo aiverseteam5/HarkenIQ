@@ -39,7 +39,7 @@ from harkeniq_cc.auth import UserContext
 from harkeniq.capabilities import action_facts
 from harkeniq_cc.agent_activation import activation_provenance
 from harkeniq_cc.approval_policy import STATE_APPROVED
-from harkeniq_cc.autonomy import LADDER, action_risk_map
+from harkeniq_cc.autonomy import ACTOR_AGENT, LADDER, action_risk_map
 from harkeniq_cc.capabilities import reachable_action_classes
 from harkeniq_cc.db.repos import (
     AgentProposalRepo,
@@ -167,7 +167,7 @@ def _agent_dict(agent, scopes=(), capabilities=()) -> dict:
         "status": agent.status,
         "version": agent.version,
         "actor": attribution_key(agent.id, agent.version),
-        "species": "agent",
+        "species": ACTOR_AGENT,
         "tenant_id": agent.tenant_id,
         "autonomy_ceiling": agent.autonomy_ceiling,
         "require_approval_always": agent.require_approval_always,
@@ -1100,7 +1100,7 @@ async def get_agent(
         session,
         tenant_id=user.tenant_id,
         actor_id=attribution_key(agent.id, agent.version),
-        actor_species="agent",
+        actor_species=ACTOR_AGENT,
         permissions=user.permissions,
         reach=reach,
     )
@@ -2031,7 +2031,7 @@ async def dry_run_agent(
         session,
         tenant_id=tenant_id,
         actor_id=attribution_key(agent_id, agent.version),
-        actor_species="agent",
+        actor_species=ACTOR_AGENT,
         permissions=AGENT_PERMISSIONS,
         reach=None,
     )
@@ -2140,6 +2140,109 @@ async def dry_run_agent(
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# A6-4B1: governed discovery (A30.32)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{agent_id}/discovery",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def agent_discovery(
+    agent_id: str,
+    response: Response,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """What THIS agent may address, where, and under which governance.
+
+    A30.32. Eight facts per action class -- exists, implemented,
+    addressable, bound, in effective scope, governance, approval required,
+    currently operable -- each from its canonical source, never combined
+    into a permission. Descriptive only: nothing here is authority, and
+    nothing in it is ever accepted back as proof.
+
+    MACHINE-ONLY and SELF-ONLY (D6). The route surface refuses a person
+    before this runs; the self rule is asked FIRST here, before the agent is
+    loaded, so another agent's id and an id that does not exist are refused
+    alike -- no existence oracle, which the dry-run's older ordering still
+    has. The agent is then loaded by identity alone, not by the scope
+    visibility helper: an agent whose grants have all lapsed is answered
+    with empty reach rather than refused its own record (A30.20).
+
+    Charged ONE read by the route guard before this handler runs (A30.31),
+    as job `autonomy` (D1); nothing here meters. Writes nothing: the
+    catalogue's lazy seed, if it runs, is rolled back exactly as the
+    dry-run's is. Served `no-store` with no ETag -- a snapshot at
+    `generated_at`, never a cacheable fact.
+    """
+    from types import SimpleNamespace
+
+    from harkeniq_cc.agent_lifecycle import executions_used
+    from harkeniq_cc.db.repos import CapabilityCatalogueRepo
+    from harkeniq_cc.discovery import build_discovery
+    from harkeniq_cc.governance import load_capability_registry
+    from harkeniq_cc.operational_agent import bound_action_classes
+
+    _machine_read_gate(user, agent_id)
+    agent = await _require_agent(session, user.tenant_id, agent_id)
+    tenant_id = user.tenant_id
+
+    # A30.32 self-scope: the canonical READABLE reach and nothing else --
+    # never the configured rows, never the WHERE-only operational scope.
+    reach = read_reach(scope, "fleet.view")
+    registry = await load_capability_registry(
+        session, tenant_id=tenant_id, scope=reach,
+    )
+    # S3 (A30.26): composed over the agent's own authorized sites, and over
+    # no other. This caller names its reader, so the set of whole-tenant
+    # decision paths is unchanged.
+    contract = await load_autonomy_contract(
+        session,
+        tenant_id=tenant_id,
+        actor_id=attribution_key(agent.id, agent.version),
+        actor_species=ACTOR_AGENT,
+        permissions=user.permissions,
+        reach=reach,
+    )
+    bound = bound_action_classes(
+        await OperationalAgentRepo(session).list_capabilities(agent.id)
+    )
+    catalogue = [
+        SimpleNamespace(
+            subsystem=row.subsystem, action_type=row.action_type,
+            enabled=bool(row.enabled),
+        )
+        for row in await CapabilityCatalogueRepo(session).list_for_tenant(
+            tenant_id
+        )
+    ]
+    midnight = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    payload = build_discovery(
+        agent=agent,
+        bound_classes=bound,
+        reach=reach,
+        enforcement=scope.enforcement,
+        registry=registry,
+        contract=contract,
+        catalogue=catalogue,
+        executions_used=await executions_used(session, tenant_id, agent),
+        proposals_today=await AgentProposalRepo(session).count_since(
+            tenant_id, agent.id, midnight,
+        ),
+    )
+    # Composed BEFORE the rollback, which expires the identity map. Nothing
+    # above added or flushed anything but the catalogue's lazy seed, and
+    # discovery must not be the request that seeds it.
+    await session.rollback()
+    response.headers["Cache-Control"] = "no-store"
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -2438,7 +2541,7 @@ async def submit_proposal(
             session,
             tenant_id=tenant_id,
             actor_id=attribution_key(agent_id, agent.version),
-            actor_species="agent",
+            actor_species=ACTOR_AGENT,
             permissions=AGENT_PERMISSIONS,
             reach=None,
         ),

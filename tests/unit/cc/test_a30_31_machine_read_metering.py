@@ -222,12 +222,14 @@ class TestTheMeterIsDeclared:
                 assert machine_meter(*route) == "", route
 
     def test_the_inventory(self):
-        """The Phase-1 inventory, frozen: 12 reads, 1 write, 85 human."""
+        """The Phase-1 inventory, frozen: 12 reads, 1 write, 85 human --
+        and A30.32 (A6-4B1) added exactly one read, governed discovery."""
         assert READ_ROUTES == sorted([
             ("GET", "/api/attention/"),
             ("GET", "/api/incidents/"),
             ("GET", "/api/incidents/{incident_id}"),
             ("GET", "/api/operational-agents/{agent_id}"),
+            ("GET", "/api/operational-agents/{agent_id}/discovery"),
             ("GET", "/api/operational-agents/{agent_id}/dry-run"),
             ("GET", "/api/operational-agents/{agent_id}/identity"),
             ("GET", "/api/operational-agents/{agent_id}/ingress"),
@@ -1034,9 +1036,11 @@ class TestThePlaneDidNotMove:
             {"fleet.view", "incident.view", "proposal.submit"})
 
     def test_the_surface(self):
-        assert len(MACHINE_SURFACE) == 13
-        assert len(MACHINE_ONLY_ROUTES) == 3
-        assert len(ROUTE_CONTRACT) == 98
+        # 13 / 3 / 98 at B0c; A30.32 (A6-4B1) added exactly one machine-only
+        # read -- governed discovery -- and nothing else.
+        assert len(MACHINE_SURFACE) == 14
+        assert len(MACHINE_ONLY_ROUTES) == 4
+        assert len(ROUTE_CONTRACT) == 99
         assert SUBMIT in MACHINE_ONLY_ROUTES
 
     async def test_off_plane_routes_still_refuse(self):

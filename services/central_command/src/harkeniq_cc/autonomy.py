@@ -102,6 +102,61 @@ SCOPE_TENANT = "tenant"
 SCOPE_SITE = "site"
 SCOPE_DOMAIN = "domain"
 
+# ---------------------------------------------------------------------------
+# Actor species (A30.32, D5 -- closing F6)
+# ---------------------------------------------------------------------------
+#
+# WHICH KIND OF ACTOR a contract is composed for. It was passed as a bare,
+# unvalidated string from seven call sites and written as a bare string on
+# three agent payloads. Projection-only -- nothing in `build_autonomy`
+# decides with it -- which is why it was harmless while every contract went
+# to a person, and why it had to be declared before B1 publishes an
+# autonomy conclusion to a machine.
+#
+# This module owns the field, so it owns the vocabulary. It is NOT a second
+# identity system: `UserContext.species` (`user` / `agent`) is unchanged and
+# answers who authenticated; this answers which kind of actor a contract
+# describes, and a campaign is an actor without ever being a principal.
+# `actor_species_of`, below, is the one mapping between the two.
+
+ACTOR_HUMAN = "human"
+ACTOR_AGENT = "agent"
+ACTOR_CAMPAIGN = "campaign"
+
+#: Closed. `build_autonomy` refuses anything else, and a structural test
+#: refuses a string literal wherever the field is written.
+ACTOR_SPECIES: frozenset[str] = frozenset({ACTOR_HUMAN, ACTOR_AGENT, ACTOR_CAMPAIGN})
+
+
+def actor_species_of(principal: Any) -> str:
+    """The autonomy ACTOR species of an authenticated principal (A30.32, D5).
+
+    The ONE mapping between the two vocabularies, derived from
+    `UserContext.species`, which it leaves exactly as it is: a person
+    (`user`) is the actor species `human`, an Operational Agent (`agent`)
+    is `agent`. A campaign is an actor but never a principal, so it has no
+    entry here -- its call site names `ACTOR_CAMPAIGN` itself.
+
+    It lives beside the declaration rather than in `harkeniq_cc.actor`,
+    whose one helper answers WHICH principal acted (A23-2); this answers
+    which KIND of actor a contract describes.
+
+    Refuses anything else rather than defaulting: a principal whose species
+    this function cannot place is a bug to surface, not a person to assume.
+    """
+    from harkeniq_cc.machine_identity import SPECIES_AGENT, SPECIES_USER
+
+    species = getattr(principal, "species", None)
+    if species == SPECIES_AGENT:
+        return ACTOR_AGENT
+    if species == SPECIES_USER:
+        return ACTOR_HUMAN
+    raise ValueError(
+        f"cannot place a principal of species {species!r} in an autonomy "
+        "contract (spec A30.32)"
+    )
+
+
 LADDER: list[dict[str, Any]] = [
     {
         "level": LEVEL_OBSERVE,
@@ -431,7 +486,14 @@ def build_autonomy(
     each list, each total, each boolean, and the dispositions folded from
     them -- is computed from those sites only. It is applied first and
     once, by `select_site_inputs`; nothing here filters a composed value.
+
+    `actor_species` is one of `ACTOR_SPECIES` (A30.32) and nothing else.
     """
+    if actor_species not in ACTOR_SPECIES:
+        raise ValueError(
+            f"actor_species {actor_species!r} is not a declared actor species "
+            f"({', '.join(sorted(ACTOR_SPECIES))}); spec A30.32"
+        )
     now = now or datetime.now(timezone.utc)
     held = set(permissions or ())
     wildcard = "*" in held
