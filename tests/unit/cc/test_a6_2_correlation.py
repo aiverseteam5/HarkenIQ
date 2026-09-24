@@ -454,10 +454,16 @@ class TestReadWindowHousekeeping:
         """A DELETE per GET would cost more than the read it meters."""
         import inspect
 
+        from harkeniq_cc import read_meter
+        from harkeniq_cc.api import deps
         from harkeniq_cc.api import operational_agents as oa
 
+        # A30.31: the request path now runs through the route guard and the
+        # one meter entry point, so they are held to the same rule.
         for handler in (oa.get_submission_receipt, oa.get_proposal_receipt,
-                        oa.list_proposals, oa._charge_machine_read):
+                        oa.list_proposals, read_meter._charge_machine_read,
+                        read_meter.meter_machine_read,
+                        deps.enforce_route_surface):
             assert "prune" not in inspect.getsource(handler)
 
     async def test_it_runs_on_the_existing_pass(self):

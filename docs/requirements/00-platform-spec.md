@@ -4615,3 +4615,117 @@ Vitest and the DSN-gated PostgreSQL proofs not run in CI; D3 / D6 / D9 / R7 /
 D10; `test_warranty.py`'s 2027-01-01. **Unchanged by this amendment:** no
 production code, no migration, no route, no permission, no ceiling; CC head
 `0027`, SM `0011`, Console `0004`.
+
+**A30.31 — A6-4B0c: machine read metering completion (implements A30.12 under
+the A30.30 preview; boundary directed by Vinod's B0c brief, 2026-09-23;
+recorded BEFORE the code).** **The inventory, measured on unmodified `main`
+(`f291af3`), not inherited.** `MACHINE_SURFACE` declares 13 routes: 12 machine
+READS — nine on job `self` (`GET /api/operational-agents/{agent_id}` and its
+`/runtime`, `/identity`, `/preflight`, `/dry-run`, `/ingress`, `/proposals`,
+`/proposals/{proposal_id}`, `/submissions/{submission_id}`), one on
+`attention` (`GET /api/attention/`) and two on `incidents` (`GET
+/api/incidents/`, `GET /api/incidents/{incident_id}`) — and ONE machine WRITE,
+`POST /api/operational-agents/{agent_id}/proposals`, metered by A24.13's
+attempt ledger. The other 85 declared routes are human-only; there are no
+internal routes (A29.5) and two public ones (`/healthz`, `/metrics`).
+Served-read metering held on 9 of 12: each `self` read charged exactly one
+read, and the three F3 routes charged NOTHING — served (200), not found (404)
+and malformed (422) alike. **Two findings beyond F3, both reproduced.** (a) A
+malformed or invalid machine read is free on EVERY machine read route, the
+nine that meter included: FastAPI resolves dependencies, then validates query
+parameters, and only then calls the handler — so `GET .../proposals?limit=99999`
+answered 422 at zero reads, because the charge lived in the handler and the
+handler never ran. It is the free authenticated refusal A25.10 closed, left
+open on the whole plane. (b) 77 of the 98 declared routes declare their guard
+TWICE — `dependencies=[Depends(require_permission(p))]` and
+`user=Depends(require_permission(p))` — and each `require_permission(p)` call
+returns a NEW closure, so FastAPI's dependency cache does not merge them and
+the guard runs twice per request. The guard is nonetheless the plane's one
+choke point: every CC route crosses `require_permission` or
+`require_any_permission`, both of which call `enforce_route_surface`, except
+the write, which consumes `evaluate_route_surface` inside its attempt ledger
+(A29.15). A handler-level charge also left two unreachable charge sites on
+human routes (the binding catalogue and the agent listing) that would
+double-meter the moment either were re-declared on the plane. **The invariant,
+LOCKED.** Every authenticated machine request that crosses the route-surface
+guard is charged exactly ONE read to the (tenant, agent, window) bucket its
+validated token names, BEFORE any decision about surface eligibility,
+permission, scope, object or payload — served, refused, not found, malformed
+or throttled alike — with one exception: a SERVED attempt-metered write, whose
+accounting remains the A24.13 ledger and never the read window (A25.6). An
+unauthenticated request has no bucket and is not metered; the bucket is the
+token's (A25.10). **The mechanism.** (1) The meter moves to the choke point.
+`enforce_route_surface` charges every machine request before it decides, so a
+served read of ANY on-plane route is metered without that route knowing —
+`api/attention.py` and `api/incidents.py` are not modified — and no handler
+meters itself; the `self` helpers keep the self rule and lose the charge. (2)
+One entry point. `harkeniq_cc.read_meter.meter_machine_read` is idempotent per
+request (a memo on the request's own state, which a caller cannot set), so the
+doubly-declared guard charges once; the charge it wraps is A25's
+`_charge_machine_read`, moved UNCHANGED out of the Operational Agent router —
+token-derived bucket, its own transaction, the window computed once and
+returned — and it has exactly one caller. (3) The meter is DECLARED.
+`route_contract.JOB_METER` gives every typed machine job exactly one meter —
+`self`, `attention` and `incidents` → `read` (A25.6's windowed counter);
+`proposals` → `attempt` (A24.13) — so a route's meter is decided by the job it
+already declares, `machine_meter(method, path)` derives it, and the guard
+consults it at runtime: no second, hand-kept route list exists to drift. (4)
+The completeness guard. `route_contract.meter_census(app)`, runtime code beside
+A23's `census()`, walks the RUNNING app's dependency trees and is anchored on
+`MACHINE_SURFACE` and `ROUTE_CONTRACT`, never on a router prefix. It fails
+when: a machine job has no meter; a read-metered route is not a `GET` or no
+guard on its path crosses the meter; a handler meters itself; the
+attempt-metered write is a `GET`, carries the read-plane guard (its refusals
+would be read-charged ahead of the attempt ledger, A29.15) or does not consume
+the attempt ledger and the surface decision; or ANY other declared route
+crosses no guard at all — a route that would be machine-reachable in fact,
+unrefused and unmetered, so A29.3's default deny becomes a property of the
+running app rather than of the declaration alone. A source-level test pins
+the one path: `_charge_machine_read` is called only by `meter_machine_read`,
+which is called only by the guard. **What each outcome records.** Served
+machine read: one read charged. Not found or narrowed (404): one read, exactly
+what a 200 costs; the durable row names no resource — it has no free-text
+column. Cross-agent (403 by the self rule): one read, the `cross_agent`
+counter as today. Permission refused after the surface admits (unreachable for
+today's routes, since `REQUIRED_READS` gives every agent `fleet.view`): one
+read and the `permission` refusal counter. Route-surface refusal (403): one
+read plus the A29.16 evidence on the SAME window row (`surface_refused`, the
+closed per-reason column, `last_surface_refused_at`). Throttled (429): the
+counter moves before the comparison, so reads beyond the limit in a window ARE
+the 429s, plus the rate-limited counters; no evidence row and no payload.
+Malformed or invalid (422): one read (was free). Unauthenticated or invalid
+token (401): not metered; `agent_identity.auth_failed` is audited where the
+subject maps to a known identity, unchanged. A person: nothing, anywhere.
+Polling never enters the audit chain (A25.6). **Attribution.** Durable
+attribution is the A25.10 bucket — tenant, Operational Agent, window — which is
+the attribution an operator needs to find a runtime (A29.16). The ROUTE/JOB is
+attributed at service level by one bounded counter family,
+`harkeniq_cc_machine_reads_metered_total`, which moves on every durable charge
+(a 429 included) and is labelled by the route's declared job (`self`,
+`attention`, `incidents`), `off_plane` for a refused off-plane route, and
+`other` — a closed vocabulary derived from `JOB_METER`, registered,
+carrying no tenant, agent, site, device or path (A25.11). Durable per-(agent,
+job) attribution would need a new column or key, which A30.15 forbids in B0;
+it is recorded as a follow-up, not built, and no migration is made. **The
+window.** Unchanged: 120 reads per 60 s per agent, ONE allowance shared by
+every machine read (A25.10), so no route is the unmetered substitute for
+another. A correctly-bound runtime can now receive 429 from Attention and
+Incidents for the first time; the compose gate measures every real machine
+runtime's peak window before this lands and asserts that no correctly-bound
+runtime in it REACHES the limit (only the one it throttles on purpose may).
+Measured before landing on three wiped runs of the fixed gate (two local, one
+CI at `a5c43ad`): across 9 machine runtimes the busiest peaked at 32–47 of 120
+reads in one window (26–39%), so the window is unchanged. **Unchanged:** the permission vocabulary
+(25), `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING` `{fleet.view,
+incident.view, proposal.submit}`, `MACHINE_SURFACE` (13; 3 machine-only),
+`ROUTE_CONTRACT` (98; 0 routes added), `evaluate_route_surface`, the refusal
+evidence columns and reason vocabulary, every response shape, every handler's
+authorization, the write and its attempt ledger, human reads (no charge, no
+429, no shape change), S1–S4, B0b, A23 and A26; no migration (CC `0027`, SM
+`0011`, Console `0004`). **OUT, and recorded as follow-ups:** durable per-job
+attribution (a schema amendment); the dry-run's pre-existing
+existence-before-self ordering (a nonexistent agent id answers 404 where
+another agent's answers 403 — charged, so bounded, and every other `self`
+route asks the self rule first); a schema-invalid submission BODY refused
+before the attempt ledger (already recorded, bounded by the 16 KiB pre-parse
+ceiling); B1, B2, S3-E1/E2 and the taxonomy, none started.

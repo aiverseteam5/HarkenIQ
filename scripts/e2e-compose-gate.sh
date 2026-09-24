@@ -6747,6 +6747,267 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
 [ "$(s1_sm "SELECT count(*) FROM devices WHERE agent_id='gate-agent-s4'")" = "0" ] || { echo "site B's cohort device not removed" >&2; exit 1; }
 echo "  the seeded incident, candidate, legacy pattern row and site B's cohort device are removed"
 
+# ---------------------------------------------------------------------------
+# A6-4B0c (A30.31): machine read metering completion, live.
+#
+# Before this slice a real machine token read Attention, the incident list
+# and an incident detail for FREE -- and a malformed read of any machine
+# route (422) was free too, because FastAPI validates query parameters
+# after dependencies and the charge lived in the handler. The meter now
+# lives in the route guard every route crosses. These steps own their
+# agent, credential and incidents, and remove the incidents at the end.
+# ---------------------------------------------------------------------------
+
+b0c_reads() {  # $1 agent -> every read this agent has been charged, any window
+  s1_cc "SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='$1'"
+}
+b0c_metric() {  # $1 metric name -> its value on /metrics (unauthenticated)
+  curl -s http://localhost:8090/metrics | awk -v n="$1" '$1 == n {print $2}'
+}
+b0c_cost() {  # $1 token, $2 path, $3 expected status -> asserts ONE read charged
+  B0C_BEFORE=$(b0c_reads "$B0C_AGENT")
+  B0C_CODE=$(curl -s -o /tmp/b0c_body.json -w '%{http_code}' \
+    -H "Authorization: Bearer $1" "http://localhost:8090$2")
+  B0C_AFTER=$(b0c_reads "$B0C_AGENT")
+  [ "$B0C_CODE" = "$3" ] || {
+    echo "machine GET $2 -> $B0C_CODE, want $3" >&2; head -c 300 /tmp/b0c_body.json >&2; exit 1; }
+  [ "$((B0C_AFTER - B0C_BEFORE))" = "1" ] || {
+    echo "machine GET $2 ($B0C_CODE) was charged $((B0C_AFTER - B0C_BEFORE)) reads, want exactly 1" >&2
+    exit 1; }
+  printf '  %-58s %s  charged 1\n' "$2" "$B0C_CODE"
+}
+
+step "A6-4B0c/BP: a REAL machine token reads Attention, the incident list and an incident -- each costs EXACTLY one read"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+B0C_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+B0C_DEVICE_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' ORDER BY agent_id LIMIT 1")
+B0C_DEVICE_B=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_B' ORDER BY agent_id LIMIT 1")
+[ -n "$B0C_DEVICE_A" ] && [ -n "$B0C_DEVICE_B" ] || { echo "no device at site A or B" >&2; exit 1; }
+B0C_PLANTED="b0cSECRETplanted$(date +%s)"
+B0C_INC="b0c-inc-a-$(date +%s)"
+B0C_HIDDEN="b0c-inc-$B0C_PLANTED"
+# RESOLVED, so the poller (which only resolves OPEN incidents it no longer
+# sees) never touches them. One at the agent's site; one at a site it does
+# not reach, whose id is planted and must never reach accounting.
+for B0C_ROW in "$B0C_INC|$SITE_A|$B0C_DEVICE_A" "$B0C_HIDDEN|$SITE_B|$B0C_DEVICE_B"; do
+  IFS='|' read -r B0C_ID B0C_SITE B0C_DEV <<EOF
+$B0C_ROW
+EOF
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
+         device_agent_id, subsystem, confidence, inferred, opened_at, first_seen_at, last_seen_at)
+     VALUES ('$B0C_ID', '$B0C_TENANT', '$B0C_SITE', 'device', 'resolved',
+             'B0c gate incident', '$B0C_DEV', 'psu', 0, false, now(), now(), now())
+     ON CONFLICT (incident_id) DO NOTHING" > /dev/null
+done
+B0C_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"b0c-metering-agent $(date +%s)\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"},
+         {\"kind\":\"read\",\"capability_ref\":\"incidents\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ -n "$B0C_AGENT" ] || { echo "could not create the B0c agent" >&2; exit 1; }
+B0C_SECRET=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$B0C_AGENT/identity" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
+b0c_token() {
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=client_credentials&client_id=op-agent-$B0C_AGENT&client_secret=$B0C_SECRET" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+B0C_MACHINE=$(b0c_token)
+[ -n "$B0C_MACHINE" ] || { echo "no machine token for the B0c agent" >&2; exit 1; }
+[ "$(b0c_reads "$B0C_AGENT")" = "0" ] || { echo "a brand-new agent already had reads" >&2; exit 1; }
+B0C_METERED_BEFORE=$(b0c_metric harkeniq_cc_machine_reads_metered_total_attention)
+b0c_cost "$B0C_MACHINE" "/api/attention/" 200
+python3 - "$SITE_A" <<'PY'
+import json, sys
+items = json.load(open("/tmp/b0c_body.json"))["items"]
+assert items, "a site-scoped agent read an empty attention list"
+assert {i["site_id"] for i in items} == {sys.argv[1]}, {i["site_id"] for i in items}
+print(f"  attention: {len(items)} device(s), all at the agent's own site (scope still decides)")
+PY
+b0c_cost "$B0C_MACHINE" "/api/incidents/?status=all&limit=1000" 200
+grep -q "$B0C_INC" /tmp/b0c_body.json || { echo "the agent's own incident is missing from the list" >&2; exit 1; }
+grep -q "$B0C_PLANTED" /tmp/b0c_body.json && { echo "the hidden incident reached the list" >&2; exit 1; }
+b0c_cost "$B0C_MACHINE" "/api/incidents/$B0C_INC" 200
+[ "$(b0c_metric harkeniq_cc_machine_reads_metered_total_attention)" != "$B0C_METERED_BEFORE" ] || {
+  echo "the per-job counter did not move for a served attention read" >&2; exit 1; }
+echo "  served Attention / incident list / incident detail: one read each (all three were free before A30.31)"
+
+step "A6-4B0c/BQ: a denied machine read is charged once -- and represented safely"
+b0c_cost "$B0C_MACHINE" "/api/incidents/$B0C_HIDDEN" 404
+b0c_cost "$B0C_MACHINE" "/api/incidents/does-not-exist-$B0C_PLANTED" 404
+b0c_cost "$B0C_MACHINE" "/api/attention/?limit=$B0C_PLANTED" 422
+b0c_cost "$B0C_MACHINE" "/api/incidents/?limit=$B0C_PLANTED" 422
+b0c_cost "$B0C_MACHINE" "/api/operational-agents/$B0C_AGENT/proposals?limit=$B0C_PLANTED" 422
+# Another agent's record: refused by the self rule, charged to the CALLER,
+# and never to the agent the path names (A25.10).
+B0C_OTHER=$B0B_AGENT
+B0C_OTHER_BEFORE=$(b0c_reads "$B0C_OTHER")
+b0c_cost "$B0C_MACHINE" "/api/operational-agents/$B0C_OTHER/runtime" 403
+[ "$(b0c_reads "$B0C_OTHER")" = "$B0C_OTHER_BEFORE" ] || {
+  echo "the agent named in the path was charged for another agent's refusal" >&2; exit 1; }
+b0c_cost "$B0C_MACHINE" "/api/fleet/?site_id=$B0C_PLANTED" 403
+[ "$(s1_cc "SELECT coalesce(sum(refused_surface_not_allowed),0) FROM cc_agent_read_windows WHERE agent_id='$B0C_AGENT'")" = "1" ] || {
+  echo "the off-plane refusal left no bounded evidence" >&2; exit 1; }
+# The meter's record: every column of every row, as text. Tenant, agent,
+# window, counts and a timestamp -- and nothing a caller supplied.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT row_to_json(w)::text FROM cc_agent_read_windows w" > /tmp/b0c_windows.txt
+grep -q "$B0C_PLANTED" /tmp/b0c_windows.txt && { echo "a planted value reached accounting" >&2; exit 1; }
+curl -s http://localhost:8090/metrics > /tmp/b0c_metrics.txt
+for B0C_LEAK in "$B0C_PLANTED" "$B0C_AGENT" "$B0C_TENANT" "$SITE_A"; do
+  # Identifiers only: a short value could match a metric name by chance.
+  [ "${#B0C_LEAK}" -ge 8 ] || continue
+  grep -q -- "$B0C_LEAK" /tmp/b0c_metrics.txt && { echo "/metrics carries $B0C_LEAK" >&2; exit 1; }
+done
+echo "  404 (hidden and absent), 422 x3, 403 cross-agent, 403 off-plane: one read each;"
+echo "  the planted id is in no accounting row and nowhere on /metrics"
+
+step "A6-4B0c/BR: a person's reads never touch the machine meter"
+B0C_OWNER_SUB=$(s1_sub "$TOKEN")
+B0C_MINE=$(b0c_reads "$B0C_AGENT")
+for _ in 1 2 3 4 5; do
+  for B0C_P in "/api/attention/" "/api/incidents/?status=all" "/api/incidents/$B0C_INC" \
+               "/api/operational-agents/$B0C_AGENT/ingress"; do
+    curl -sf -H "Authorization: Bearer $TOKEN" "http://localhost:8090$B0C_P" > /dev/null || {
+      echo "a person could not read $B0C_P" >&2; exit 1; }
+  done
+done
+[ "$(b0c_reads "$B0C_AGENT")" = "$B0C_MINE" ] || { echo "a person's reads moved the agent's meter" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_agent_read_windows WHERE agent_id='$B0C_OWNER_SUB'")" = "0" ] || {
+  echo "a person acquired a machine read window" >&2; exit 1; }
+echo "  20 operator reads of the same routes: the agent's meter unmoved, no window for the person"
+
+step "A6-4B0c/BS: a REAL read throttle -- 120 served in one window, then 429, observable, then a new window serves"
+# Both tokens fresh: this step can wait up to two minute boundaries, and a
+# Keycloak access token lives 300 s.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+B0C_MACHINE=$(b0c_token)
+B0C_RL_BEFORE=$(b0c_metric harkeniq_cc_agent_status_read_rate_limited_total)
+python3 - "$B0C_MACHINE" "$B0C_AGENT" "$B0C_INC" "$TOKEN" <<'PY'
+import http.client, json, subprocess, sys, time
+machine, agent, inc, operator = sys.argv[1:5]
+LIMIT = 120
+
+def get(conn, path, token):
+    conn.request("GET", path, headers={"Authorization": f"Bearer {token}"})
+    res = conn.getresponse()
+    return res.status, res.read()
+
+def reads_in(window_epoch):
+    sql = (f"SELECT coalesce(sum(reads),0) FROM cc_agent_read_windows WHERE agent_id='{agent}' "
+           f"AND window_start = to_timestamp({window_epoch})")
+    out = subprocess.run(["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "harkeniq",
+                          "-d", "harkeniq_cc", "-tAc", sql], capture_output=True, text=True).stdout
+    return int(out.strip() or 0)
+
+# The top of a fresh minute, so ONE window holds the whole burst.
+while time.time() % 60 > 1.5:
+    time.sleep(0.1)
+start = time.time()
+window = int(start // 60 * 60)
+conn = http.client.HTTPConnection("localhost", 8090, timeout=30)
+codes = [get(conn, f"/api/incidents/{inc}", machine)[0] for _ in range(LIMIT - 1)]
+codes.append(get(conn, "/api/attention/", machine)[0])        # the 120th: inside
+over_attention = get(conn, "/api/attention/", machine)[0]      # the 121st
+over_incidents, body = get(conn, "/api/incidents/", machine)   # the 122nd
+elapsed = time.time() - start
+assert int(time.time() // 60 * 60) == window, f"the burst straddled a minute ({elapsed:.1f}s)"
+assert codes == [200] * LIMIT, sorted(set(codes))
+assert (over_attention, over_incidents) == (429, 429), (over_attention, over_incidents)
+assert b"status reads" in body and b"incidents" not in body, body[:200]
+health = json.loads(get(conn, f"/api/operational-agents/{agent}/ingress", operator)[1])
+throttle = health["read_throttle"]
+assert throttle["exhausted"] is True and throttle["used"] == LIMIT + 2, throttle
+assert reads_in(window) == LIMIT + 2, reads_in(window)
+print(f"  {LIMIT} served in one window ({elapsed:.1f}s); attention 429, incidents 429;"
+      f" operator sees used={throttle['used']}/{throttle['limit']} exhausted")
+while int(time.time() // 60 * 60) == window:
+    time.sleep(0.2)
+# A FRESH connection: uvicorn closes an idle keep-alive after 5 s, and this
+# one has been idle for most of a minute.
+conn.close()
+conn = http.client.HTTPConnection("localhost", 8090, timeout=30)
+status, _ = get(conn, "/api/attention/", machine)
+nxt = int(time.time() // 60 * 60)
+assert status == 200, status
+assert reads_in(nxt) == 1, reads_in(nxt)
+print("  the next window serves again: attention 200, charged 1 in the new window")
+PY
+B0C_RL_AFTER=$(b0c_metric harkeniq_cc_agent_status_read_rate_limited_total)
+python3 -c "b, a = float('$B0C_RL_BEFORE'), float('$B0C_RL_AFTER'); assert a - b == 2, (b, a); print('  /metrics: read_rate_limited +2')"
+
+step "A6-4B0c/BT: the window, measured against the gate's REAL machine traffic"
+# A30.12: a correctly-bound runtime can meet a 429 for the first time now
+# that Attention and Incidents spend the allowance, so the window is set
+# against real traffic before it lands. The compose gate is the only real
+# machine traffic in the repository. Every retained window of every
+# runtime except the one BS throttles on purpose must sit below the limit.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT agent_id || ' ' || max(reads) FROM cc_agent_read_windows
+    WHERE agent_id <> '$B0C_AGENT' GROUP BY agent_id ORDER BY max(reads) DESC" \
+  | sed '/^$/d' > /tmp/b0c_peaks.txt
+python3 - <<'PY'
+rows = [line.split() for line in open("/tmp/b0c_peaks.txt") if line.strip()]
+assert rows, "no machine runtime in the gate left a read window"
+LIMIT = 120
+peaks = [(agent, int(reads)) for agent, reads in rows]
+over = [(a, r) for a, r in peaks if r >= LIMIT]
+assert not over, f"a correctly-bound gate runtime reached the read limit: {over}"
+top_agent, top = peaks[0]
+print(f"  {len(peaks)} machine runtime(s); busiest used {top}/{LIMIT} reads in one window "
+      f"({100 * top // LIMIT}% of the allowance); none reached it -- window unchanged")
+PY
+
+step "A6-4B0c/BU: the plane did not move, and the SHIPPED census is clean"
+B0C_MACHINE=$(b0c_token)
+for B0C_OFF in "/api/fleet/" "/api/learning/signals" "/api/campaigns/" \
+               "/api/outcomes/patterns" "/api/predictive/risk" "/api/warranty/" \
+               "/api/firmware/exposure" "/api/sites/" "/api/agents/" \
+               "/api/policies/" "/api/policies/autonomy" "/api/policies/stop-switch" \
+               "/api/tenant-settings/scope-enforcement" \
+               "/api/tenant-settings/scope-enforcement/impact" \
+               "/api/scope-grants/me" "/api/autonomy/" "/api/capabilities/" \
+               "/api/operational-agents/" "/api/operational-agents/catalogue"; do
+  B0C_OFF_CODE=$(curl -s -o /tmp/b0c_off.json -w '%{http_code}' \
+    -H "Authorization: Bearer $B0C_MACHINE" "http://localhost:8090$B0C_OFF")
+  [ "$B0C_OFF_CODE" = "403" ] && grep -q "External Agent API plane" /tmp/b0c_off.json || {
+    echo "a removed route answered a machine: $B0C_OFF -> $B0C_OFF_CODE" >&2; exit 1; }
+done
+docker compose exec -T central-command python -c "
+import sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.app import create_app
+from harkeniq_cc.config import CCConfig
+from harkeniq_cc.db.base import make_engine, make_sessionmaker
+from harkeniq_cc.runtime import AppState
+from harkeniq_cc.route_contract import JOB_METER, MACHINE_SURFACE, ROUTE_CONTRACT, machine_meter, meter_census
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+import os
+# The shipped image carries asyncpg and not aiosqlite. Creating an engine
+# connects to nothing; the census only walks the app's routes.
+engine = make_engine(os.environ['HARKEN_CC_DSN'])
+app = create_app(AppState(config=CCConfig(tenant_id='census', insecure=True), engine=engine, sessionmaker=make_sessionmaker(engine)))
+problems = meter_census(app)
+assert problems == [], problems
+assert len(MACHINE_SURFACE) == 13 and len(ROUTE_CONTRACT) == 98, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+meters = [machine_meter(*r) for r in ROUTE_CONTRACT]
+assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (12, 1, 85), meters
+print('  shipped image: meter_census clean; 12 read-metered, 1 attempt-metered, 85 human; MACHINE_SURFACE 13; ceiling unchanged')
+"
+echo "  19 removed routes still refuse a real machine token"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_incidents WHERE incident_id IN ('$B0C_INC', '$B0C_HIDDEN')" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_incidents WHERE incident_id IN ('$B0C_INC', '$B0C_HIDDEN')")" = "0" ] || {
+  echo "the B0c incidents were not removed" >&2; exit 1; }
+echo "  this proof's incidents are removed"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

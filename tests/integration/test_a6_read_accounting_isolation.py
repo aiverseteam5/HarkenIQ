@@ -18,9 +18,10 @@ rather than an assumption:
 
 A unit test asserting isolation there would fail whatever the code does,
 and one asserting the sqlite behaviour would pin the wrong thing. So the
-unit suite pins the property STRUCTURALLY -- `_charge_machine_read` takes
-no caller session and cannot commit or roll back what it never received
--- and the durability is proved here, on the engine production runs.
+unit suite pins the property STRUCTURALLY -- `_charge_machine_read` (in
+`harkeniq_cc.read_meter` since A30.31) takes no caller session and cannot
+commit or roll back what it never received -- and the durability is
+proved here, on the engine production runs.
 
 The seven steps the remediation names:
 
@@ -95,7 +96,7 @@ async def _reads(sessionmaker, agent_id: str) -> int:
 @pytest.mark.asyncio
 async def test_accounting_is_durable_while_the_caller_rolls_back():
     """The seven-step proof, on a real engine with real connections."""
-    from harkeniq_cc.api.operational_agents import _charge_machine_read
+    from harkeniq_cc.read_meter import _charge_machine_read
 
     engine = await _engine()
     sm = make_sessionmaker(engine)
@@ -158,7 +159,7 @@ async def test_a_rate_refusal_is_also_durable_and_isolated():
     """
     from fastapi import HTTPException
 
-    from harkeniq_cc.api.operational_agents import _charge_machine_read
+    from harkeniq_cc.read_meter import _charge_machine_read
 
     engine = await _engine()
     sm = make_sessionmaker(engine)

@@ -71,6 +71,48 @@ def record_surface_refusal(reason: str) -> None:
     _inc(M_SURFACE_REFUSED)
     _inc(f"{M_SURFACE_REFUSED}_{reason}")
 
+
+# ---------------------------------------------------------------------------
+# A30.31 (A6-4B0c): every machine read the meter charges, by declared job
+# ---------------------------------------------------------------------------
+
+M_MACHINE_READ_METERED = "harkeniq_cc_machine_reads_metered_total"
+
+#: The label for a machine request refused on a route that is not on the
+#: plane at all: it declares no job to be counted under.
+OFF_PLANE = "off_plane"
+
+
+def _read_metered_jobs() -> frozenset[str]:
+    """The machine jobs the read window meters, from the ONE declaration."""
+    from harkeniq_cc.route_contract import JOB_METER, METER_READ
+
+    return frozenset(job for job, meter in JOB_METER.items() if meter == METER_READ)
+
+
+#: Bounded, and DERIVED from `JOB_METER` so a new read job cannot be
+#: counted as `other` without anyone noticing. The job is a ROUTE fact
+#: from the declaration, never a caller value; no tenant, agent, site,
+#: device or path is a label here (A25.11).
+MACHINE_READ_METER_LABELS: frozenset[str] = (
+    _read_metered_jobs() | {OFF_PLANE, "other"}
+)
+
+
+def record_machine_read_metered(job: str) -> None:
+    """One machine request charged to the read window, by the route's job.
+
+    Moves on EVERY durable charge -- a 429 included, since the counter
+    moves before the limit is compared -- so across the service it mirrors
+    the durable read count exactly. The durable row attributes a charge to
+    its tenant, agent and window; this attributes it to the job, which the
+    row has no column for.
+    """
+    if job not in MACHINE_READ_METER_LABELS:
+        job = "other"
+    _inc(M_MACHINE_READ_METERED)
+    _inc(f"{M_MACHINE_READ_METERED}_{job}")
+
 #: The process-wide registry, set by `create_app`. A module-level handle
 #: exists only so a background loop that holds no app can still count;
 #: the registry itself is per-app, which is the property E0.3 wanted.
@@ -128,6 +170,18 @@ def register_a6_metrics(registry: Any) -> None:
         registry.counter(
             f"{M_READ_REFUSED}_{_reason}",
             f"Machine status read refusals: {_reason}",
+        )
+    # A30.31 (A6-4B0c): registered with every bounded label for the reason
+    # the A29 block above records -- an unregistered suffix is silently
+    # dropped by `MetricsRegistry.inc`.
+    registry.counter(
+        M_MACHINE_READ_METERED,
+        "Machine requests charged to the read window",
+    )
+    for _job in sorted(MACHINE_READ_METER_LABELS):
+        registry.counter(
+            f"{M_MACHINE_READ_METERED}_{_job}",
+            f"Machine requests charged to the read window: {_job}",
         )
 
 

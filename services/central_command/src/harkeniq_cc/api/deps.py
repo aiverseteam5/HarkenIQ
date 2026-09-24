@@ -59,6 +59,22 @@ SURFACE_REASONS = frozenset({
 })
 
 
+#: A30.31 (A6-4B0c): the mark a route guard carries when it crosses
+#: `enforce_route_surface` -- and therefore the plane's one read meter.
+#: `route_contract.meter_census` walks each route's real dependency tree
+#: for it, so "does a machine request to this route get refused and
+#: charged" is answered from what FastAPI will resolve rather than from a
+#: name in the source. Set by exactly the two factories below; a
+#: structural test pins that, and that both marked closures await the
+#: surface guard.
+ROUTE_SURFACE_GUARD = "harkeniq_route_surface_guard"
+
+
+def is_route_surface_guard(call) -> bool:
+    """Is this dependency one of the guards that crosses the meter?"""
+    return getattr(call, ROUTE_SURFACE_GUARD, False) is True
+
+
 def _route_key(request: Request) -> tuple[str, str]:
     """The templated route this request matched, or ("","") if unmatched."""
     route = request.scope.get("route")
@@ -130,56 +146,105 @@ def evaluate_route_surface(
 
 
 async def enforce_route_surface(request: Request, user: UserContext) -> None:
-    """The READ plane's handler for :func:`evaluate_route_surface`.
+    """The READ plane's handler for :func:`evaluate_route_surface` -- and,
+    since A30.31, the plane's one read meter.
 
     A25.10: AN AUTHENTICATED REFUSAL IS NOT FREE. The request is charged
     to the agent the TOKEN names before it is refused, so a runtime cannot
-    probe the plane without spending its own allowance. Charged here
-    rather than in the handler because a refused request never reaches
-    one -- and only on refusal, so a served request is still metered
-    exactly once, by the handler.
+    probe the plane without spending its own allowance.
+
+    A30.31 (A6-4B0c): NOR IS A SERVED READ. Every machine request that
+    crosses this guard is charged here, exactly once, before anything is
+    decided -- served, refused, not found, malformed or throttled alike.
+    It used to charge only refusals and leave a served read to its
+    handler, and a handler can only meter a request that reaches it:
+    Attention and the incident reads charged nothing, and a malformed read
+    of ANY machine route answered 422 for free, because FastAPI validates
+    query parameters after resolving this dependency and before calling
+    the handler. Every CC route crosses this guard, so metering here
+    covers the whole plane without any route knowing; `meter_census`
+    proves it against the running app.
+
+    The one exception is a SERVED attempt-metered route -- the governed
+    write, whose accounting is its own A24.13 ledger and never the read
+    window (A25.6). It does not cross this guard at all (A29.15), and the
+    census keeps it that way; the exception is read from the declaration
+    here too, so the declaration is load-bearing at runtime.
+
+    Exactly once, though 77 routes declare this guard twice:
+    `meter_machine_read` remembers the window on the request itself.
 
     The read window is also the BOUND (A27.13's rule): it is a windowed
     counter, so a flood costs one row per minute and then 429s. The same
-    row now carries bounded, attributable refusal evidence (A29.16) --
-    still one row per (tenant, agent, window), never one per request.
+    row carries bounded, attributable refusal evidence (A29.16) -- still
+    one row per (tenant, agent, window), never one per request.
     """
-    from harkeniq_cc.metrics import record_surface_refusal
+    from harkeniq_cc.machine_identity import is_machine
+    from harkeniq_cc.metrics import OFF_PLANE, record_surface_refusal
 
     reason, detail = evaluate_route_surface(request, user)
+
+    if is_machine(user):
+        from harkeniq_cc.read_meter import (
+            meter_machine_read, record_surface_refusal_window,
+        )
+        from harkeniq_cc.route_contract import (
+            METER_ATTEMPT, SURFACE_HUMAN, machine_meter, machine_surface,
+        )
+
+        method, path = _route_key(request)
+        surface, job = machine_surface(method, path)
+        if reason:
+            # ONE WINDOW for the whole refusal. The charge computes it
+            # once, opens that row, and hands it back; the evidence updates
+            # THAT row. Nothing here computes a window, so nothing can
+            # drift across a minute boundary, and the caller cannot supply
+            # one.
+            try:
+                window = await meter_machine_read(
+                    request, user,
+                    job=job if surface != SURFACE_HUMAN else OFF_PLANE,
+                )
+            except HTTPException as exhausted:
+                # Already over its polling allowance: 429 is the truer
+                # answer, and it is what stops the probe.
+                if exhausted.status_code == 429:
+                    raise
+                window = None
+            if window is not None:
+                # A29.16: durable, attributable, bounded by that same
+                # window -- a process-local counter cannot tell an operator
+                # WHICH runtime is misconfigured, and a row per refusal
+                # would be the amplifier A24.13 and A27.13 both refused.
+                await record_surface_refusal_window(
+                    request, user, reason, window=window,
+                )
+        elif machine_meter(method, path) != METER_ATTEMPT:
+            # Served-side charge: before the permission question, the
+            # scope, the handler and query validation. 429 ends it here.
+            await meter_machine_read(request, user, job=job)
+
     if not reason:
         return
+    record_surface_refusal(reason)
+    raise HTTPException(status_code=403, detail=detail)
 
+
+def _refused_permission(user: UserContext) -> None:
+    """Count a machine request the surface admitted and the permission did not.
+
+    Unreachable for today's routes -- `REQUIRED_READS` gives every agent
+    `fleet.view`, and each on-plane job implies its own route's permission
+    -- but not impossible, so it is observable rather than silent. It was
+    already charged by the guard; this is the bounded service counter
+    beside the charge, never an identifier.
+    """
     from harkeniq_cc.machine_identity import is_machine
 
     if is_machine(user):
-        from harkeniq_cc.api.operational_agents import (
-            _charge_machine_read, _record_surface_refusal_window,
-        )
+        from harkeniq_cc.metrics import record_read_refusal
 
-        # ONE WINDOW for the whole refusal. The charge computes it once,
-        # opens that row, and hands it back; the evidence updates THAT
-        # row. Nothing here computes a window, so nothing can drift across
-        # a minute boundary, and the caller cannot supply one.
-        try:
-            window = await _charge_machine_read(request, user)
-        except HTTPException as exhausted:
-            # Already over its polling allowance: 429 is the truer answer,
-            # and it is what stops the probe. No row was charged, so there
-            # is no row to mark.
-            if exhausted.status_code == 429:
-                raise
-            window = None
-        if window is not None:
-            # A29.16: durable, attributable, bounded by that same window --
-            # a process-local counter cannot tell an operator WHICH runtime
-            # is misconfigured, and a row per refusal would be the
-            # amplifier A24.13 and A27.13 both refused.
-            await _record_surface_refusal_window(
-                request, user, reason, window=window,
-            )
-    record_surface_refusal(reason)
-    raise HTTPException(status_code=403, detail=detail)
+        record_read_refusal("permission")
 
 
 def require_permission(permission: str):
@@ -194,12 +259,14 @@ def require_permission(permission: str):
         # neither can admit anybody the other refuses.
         await enforce_route_surface(request, user)
         if not has_permission(user, permission):
+            _refused_permission(user)
             raise HTTPException(
                 status_code=403,
                 detail=f"missing permission: {permission}",
             )
         return user
 
+    setattr(_check, ROUTE_SURFACE_GUARD, True)
     return _check
 
 
@@ -224,11 +291,13 @@ def require_any_permission(*permissions: str):
         await enforce_route_surface(request, user)
         if any(has_permission(user, p) for p in permissions):
             return user
+        _refused_permission(user)
         raise HTTPException(
             status_code=403,
             detail=f"requires one of: {', '.join(sorted(permissions))}",
         )
 
+    setattr(_check, ROUTE_SURFACE_GUARD, True)
     return _check
 
 
