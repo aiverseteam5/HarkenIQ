@@ -5493,6 +5493,12 @@ still, only through `/api/scope-grants/`.
   tenant, so it revokes a tenant-scoped agent's tenant row (audited, in the
   response). Keeping tenant scope means re-granting it. Narrowing only; a
   product decision.
+* **G12-F3 (pre-existing, unchanged).** The ceiling returns early for an agent
+  with no scope rows, so any `site.manage` holder may administer a scope-less
+  agent that read visibility hides from them (404). It reaches nothing, so no
+  reach moves; but administration without visibility is inconsistent, and
+  G12-F2 can produce such an agent. Aligning the two decides who may finish
+  setting up a draft agent, so it is its own decision.
 
 ### How it is proven
 

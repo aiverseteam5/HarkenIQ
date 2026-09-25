@@ -5062,4 +5062,14 @@ FULL replacement and the agent API cannot express tenant scope, so
 replacing the bindings of a tenant-scoped agent revokes its tenant row
 (audited, visible in the response); keeping tenant scope means re-granting
 it through `/api/scope-grants/`. Both are narrowing-only and are left for
-a product decision rather than widened here.
+a product decision rather than widened here. (G12-F3, found while tracing,
+PRE-EXISTING and unchanged by this slice) `_enforce_delegation_ceiling`
+returns early for an agent with NO scope rows ("nothing to cap", A0/E1.2),
+so any holder of `site.manage` — a site administrator included — may
+configure, credential, pause or retire a scope-less agent, while read
+visibility (`_agent_visible`) treats that same agent as a tenant-level
+object and answers them 404. Such an agent reaches no device, so no reach
+is conferred; but administration without visibility is an inconsistency,
+and G12-F2 is one way to produce such an agent. Aligning the two is an
+authorization change with product consequences (who may finish setting up
+a draft agent), so it is recorded for its own decision, not made here.
