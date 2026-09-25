@@ -7225,10 +7225,11 @@ b1_polled() {
 wait_for "the poller to carry site B's BMC_RESET drop-back into cc_safety_state" 180 b1_polled
 B1_TW=$(b1_agent "b1-tenant-wide" "[]")
 [ -n "$B1_TW" ] || { echo "could not create the tenant-wide agent" >&2; exit 1; }
-# The credential is issued BEFORE the tenant grant, deliberately: G12
-# (A30.32, pre-existing, recorded) -- every agent-administration route,
-# identity issue included, answers 500 for an agent holding a tenant-scope
-# grant. Discovery never takes that path; this proof is about discovery.
+# The credential is issued BEFORE the tenant grant. That order was REQUIRED
+# until A30.33 fixed G12 -- every agent-administration route, identity issue
+# included, answered 500 for an agent holding a tenant-scope grant. G12/CA
+# below proves the other order; this proof is about discovery and keeps its
+# own.
 B1_TW_SECRET=$(b1_issue "$B1_TW")
 [ -n "$B1_TW_SECRET" ] || { echo "no identity for the tenant-wide agent" >&2; exit 1; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
@@ -7361,6 +7362,165 @@ curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ |
 import sys, json
 assert json.load(sys.stdin)['posture']['configured_level'] == 0
 print('  tenant ladder back at level 0; the seeded Site Manager budget and the tenant-wide grant removed')"
+
+# ---------------------------------------------------------------------------
+# A30.33 (G12): a TENANT-SCOPED Operational Agent is administrable, and its
+# safety controls work, through the production routes on a real Keycloak.
+# Before A30.33 every one of these routes answered 500 for such an agent.
+# The steps own their agents, people, credentials and grants, and put the
+# tenant's human administrators back exactly as they found them.
+# ---------------------------------------------------------------------------
+
+g12_agent() {  # $1 name -> a draft, propose-only agent with no scope of its own
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$1 $(date +%s%N)\", \"require_approval_always\":true,
+         \"autonomy_ceiling\":0, \"scopes\":[],
+         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"SEL_CLEAR\"}]}" \
+    http://localhost:8090/api/operational-agents/ \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])"
+}
+g12_tenant_grant() {  # $1 agent id -> HTTP code of granting it the WHOLE tenant, canonically
+  curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$1\",\"scope_type\":\"tenant\",\"scope_ref\":\"\"}" \
+    http://localhost:8090/api/scope-grants/
+}
+g12_code() {  # $1 token, $2 method, $3 path, [$4 json] -> HTTP code; body /tmp/g12.json
+  curl -s -o /tmp/g12.json -w '%{http_code}' -X "$2" -H "Authorization: Bearer $1" \
+    -H 'Content-Type: application/json' -d "${4:-{\}}" "http://localhost:8090$3"
+}
+g12_expect() {  # $1 token, $2 expected code, $3 method, $4 path, [$5 json]
+  local code
+  code=$(g12_code "$1" "$3" "$4" "${5:-}")
+  [ "$code" = "$2" ] || {
+    echo "$3 $4 answered $code, expected $2" >&2; head -c 300 /tmp/g12.json >&2; echo >&2
+    return 1; }
+}
+g12_state() {  # $1 agent id -> "status/identity/active tenant rows/revoked tenant rows"
+  s1_cc "SELECT (SELECT status FROM cc_operational_agents WHERE id='$1')
+           || '/' || coalesce((SELECT status FROM cc_agent_identities WHERE agent_id='$1'), 'none')
+           || '/' || (SELECT count(*) FROM cc_scope_grants WHERE principal_type='agent'
+                        AND principal_ref='$1' AND scope_type='tenant' AND revoked_at IS NULL)
+           || '/' || (SELECT count(*) FROM cc_scope_grants WHERE principal_type='agent'
+                        AND principal_ref='$1' AND scope_type='tenant' AND revoked_at IS NOT NULL)"
+}
+g12_humans() {  # the tenant's standing HUMAN tenant-scope grants, as ids
+  s1_cc "SELECT coalesce(string_agg(id, ',' ORDER BY id), '') FROM cc_scope_grants
+          WHERE principal_type='user' AND scope_type='tenant' AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > now())"
+}
+
+step "G12/CA: a tenant-scoped agent is administered through every route -- tenant grant FIRST, then configure, credential, activate"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+G12_HUMANS_BEFORE=$(g12_humans)
+G12_AGENT=$(g12_agent "g12-tenant")
+[ -n "$G12_AGENT" ] || { echo "could not create the G12 agent" >&2; exit 1; }
+[ "$(g12_tenant_grant "$G12_AGENT")" = "201" ] || { echo "the tenant grant was refused" >&2; exit 1; }
+# The canonical representation, stored: tenant, with an EMPTY reference.
+[ "$(s1_cc "SELECT scope_type || '|' || scope_ref || '|' FROM cc_scope_grants
+            WHERE principal_type='agent' AND principal_ref='$G12_AGENT' AND revoked_at IS NULL")" = "tenant||" ] \
+  || { echo "the tenant grant is not stored canonically" >&2; exit 1; }
+G12_PATH="/api/operational-agents/$G12_AGENT"
+g12_expect "$TOKEN" 200 PATCH "$G12_PATH" '{"description":"g12-live"}'
+g12_expect "$TOKEN" 200 POST "$G12_PATH/preflight"
+g12_expect "$TOKEN" 200 POST "$G12_PATH/acknowledge"
+g12_expect "$TOKEN" 200 POST "$G12_PATH/activate"
+[ "$(g12_code "$TOKEN" POST "$G12_PATH/identity")" = "200" ] || { head -c 300 /tmp/g12.json >&2; exit 1; }
+G12_SECRET=$(python3 -c "import json; print(json.load(open('/tmp/g12.json'))['client_secret'])")
+G12_MACHINE=$(b1_token "$G12_AGENT" "$G12_SECRET")
+[ -n "$G12_MACHINE" ] || { echo "the tenant-scoped agent's identity did not mint" >&2; exit 1; }
+[ "$(b1_disc "$G12_MACHINE" "$G12_AGENT")" = "200" ] || { echo "the live identity cannot read itself" >&2; exit 1; }
+python3 -c "import json; b=json.load(open('/tmp/b1_disc.json')); assert b['scope']['reach']['tenant_wide'] is True, b['scope']"
+[ "$(g12_code "$TOKEN" POST "$G12_PATH/identity/rotate")" = "200" ] || { head -c 300 /tmp/g12.json >&2; exit 1; }
+G12_SECRET=$(python3 -c "import json; print(json.load(open('/tmp/g12.json'))['client_secret'])")
+G12_MACHINE=$(b1_token "$G12_AGENT" "$G12_SECRET")
+[ -n "$G12_MACHINE" ] || { echo "the rotated secret does not mint" >&2; exit 1; }
+g12_expect "$TOKEN" 200 POST "$G12_PATH/pause"
+g12_expect "$TOKEN" 200 POST "$G12_PATH/activate"
+[ "$(g12_state "$G12_AGENT")" = "active/active/1/0" ] || { echo "unexpected state: $(g12_state "$G12_AGENT")" >&2; exit 1; }
+echo "  tenant grant first (stored tenant, empty ref), then PATCH, preflight, acknowledge, activate, identity issued + rotated, pause, activate: all 200"
+echo "  the live identity reads its own discovery as tenant-wide"
+
+# Nobody narrower: a real site administrator, granted site A by the owner.
+tenant_realm_user gate-g12-site@demo gate-g12-site site_admin || true
+G12_SITE_TOKEN=$(tenant_token gate-g12-site@demo gate-g12-site)
+[ "$(s3_grant "$(s1_sub "$G12_SITE_TOKEN")" site "$SITE_A")" = "201" ] || { echo "site grant refused" >&2; exit 1; }
+G12_SITE_TOKEN=$(tenant_token gate-g12-site@demo gate-g12-site)
+G12_BEFORE=$(g12_state "$G12_AGENT")
+g12_expect "$G12_SITE_TOKEN" 403 PATCH "$G12_PATH" '{"description":"narrower"}'
+g12_expect "$G12_SITE_TOKEN" 403 POST "$G12_PATH/identity/revoke"
+g12_expect "$G12_SITE_TOKEN" 403 POST "$G12_PATH/identity/rotate"
+g12_expect "$G12_SITE_TOKEN" 403 POST "$G12_PATH/pause"
+g12_expect "$G12_SITE_TOKEN" 403 POST "$G12_PATH/retire"
+[ "$(g12_state "$G12_AGENT")" = "$G12_BEFORE" ] || { echo "a refused call changed the agent" >&2; exit 1; }
+# ...while the SAME site administrator still administers an agent at their own site.
+G12_SITE_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"g12-site-a $(date +%s%N)\", \"require_approval_always\":true, \"autonomy_ceiling\":0,
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+       \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"SEL_CLEAR\"}]}" \
+  http://localhost:8090/api/operational-agents/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ "$(g12_code "$G12_SITE_TOKEN" PATCH "/api/operational-agents/$G12_SITE_AGENT" '{"description":"mine"}')" = "200" ] \
+  || { echo "the site administrator lost their own site's agent" >&2; exit 1; }
+echo "  a real site-A administrator: 403 on PATCH, revoke, rotate, pause and retire of the tenant-scoped agent, nothing moved; 200 on their own site's agent"
+
+step "G12/CB: identity REVOKE on a tenant-scoped agent -- the unexpired token is refused at once, and no new one can be minted"
+[ "$(b1_disc "$G12_MACHINE" "$G12_AGENT")" = "200" ] || { echo "the token did not work before revocation" >&2; exit 1; }
+[ "$(g12_code "$TOKEN" POST "$G12_PATH/identity/revoke" '{"reason":"G12 live proof"}')" = "200" ] \
+  || { echo "revocation refused" >&2; head -c 300 /tmp/g12.json >&2; exit 1; }
+[ "$(b1_disc "$G12_MACHINE" "$G12_AGENT")" = "401" ] || { echo "a revoked identity's live token still works" >&2; exit 1; }
+[ -z "$(b1_token "$G12_AGENT" "$G12_SECRET" 2>/dev/null)" ] || { echo "a revoked identity could still mint a token" >&2; exit 1; }
+[ "$(g12_state "$G12_AGENT")" = "active/revoked/1/0" ] || { echo "unexpected state: $(g12_state "$G12_AGENT")" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE subject='$G12_AGENT' AND action='agent_identity.revoked'")" = "1" ] \
+  || { echo "the revocation is not audited once" >&2; exit 1; }
+echo "  revoked through POST .../identity/revoke: the live token 401, a new token not mintable, identity revoked, audited once"
+
+step "G12/CC: RETIRE a second tenant-scoped agent -- its identity retires with it and its tenant row is revoked"
+G12_AGENT2=$(g12_agent "g12-retire")
+[ "$(g12_tenant_grant "$G12_AGENT2")" = "201" ] || { echo "the tenant grant was refused" >&2; exit 1; }
+[ "$(g12_code "$TOKEN" POST "/api/operational-agents/$G12_AGENT2/identity")" = "200" ] || { head -c 300 /tmp/g12.json >&2; exit 1; }
+G12_SECRET2=$(python3 -c "import json; print(json.load(open('/tmp/g12.json'))['client_secret'])")
+G12_MACHINE2=$(b1_token "$G12_AGENT2" "$G12_SECRET2")
+[ "$(b1_disc "$G12_MACHINE2" "$G12_AGENT2")" = "200" ] || { echo "the second identity cannot read itself" >&2; exit 1; }
+[ "$(g12_code "$TOKEN" POST "/api/operational-agents/$G12_AGENT2/retire")" = "200" ] \
+  || { echo "retire refused" >&2; head -c 300 /tmp/g12.json >&2; exit 1; }
+[ "$(b1_disc "$G12_MACHINE2" "$G12_AGENT2")" = "401" ] || { echo "a retired agent's live token still works" >&2; exit 1; }
+[ -z "$(b1_token "$G12_AGENT2" "$G12_SECRET2" 2>/dev/null)" ] || { echo "a retired identity could still mint a token" >&2; exit 1; }
+[ "$(g12_state "$G12_AGENT2")" = "retired/retired/0/1" ] || { echo "unexpected state: $(g12_state "$G12_AGENT2")" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE subject='$G12_AGENT2'
+             AND action IN ('agent_identity.retired', 'operational_agent.retired')")" = "2" ] \
+  || { echo "the retirement is not audited" >&2; exit 1; }
+echo "  retired through POST .../retire: the live token 401, a new token not mintable, identity retired, tenant row revoked, audited"
+
+step "G12/CD: another tenant administrator works, another tenant cannot reach in, and the human administrators are as they were"
+tenant_realm_user gate-g12-admin2@demo gate-g12-admin2 tenant_owner || true
+G12_ADMIN2=$(tenant_token gate-g12-admin2@demo gate-g12-admin2)
+[ "$(b0b_grant "$(s1_sub "$G12_ADMIN2")" tenant "")" = "201" ] || { echo "the second administrator's grant was refused" >&2; exit 1; }
+G12_ADMIN2=$(tenant_token gate-g12-admin2@demo gate-g12-admin2)
+[ "$(g12_code "$G12_ADMIN2" PATCH "$G12_PATH" '{"description":"second administrator"}')" = "200" ] \
+  || { echo "the second tenant administrator cannot administer the tenant-scoped agent" >&2; exit 1; }
+[ "$(g12_code "$G12_ADMIN2" POST "$G12_PATH/retire")" = "200" ] \
+  || { echo "the second tenant administrator cannot retire it" >&2; exit 1; }
+[ "$(g12_state "$G12_AGENT")" = "retired/revoked/0/1" ] || { echo "unexpected state: $(g12_state "$G12_AGENT")" >&2; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8090/api/operational-agents/)" = "200" ] || { echo "the owner stopped working" >&2; exit 1; }
+# Another tenant's owner is refused at the realm boundary, not by luck.
+G12_RIVAL=$(curl -sf -X POST "http://localhost:8180/realms/gate-rival/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=harkeniq-console&username=rival@gate&password=rival-pass" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ "$(g12_code "$G12_RIVAL" POST "/api/operational-agents/$G12_SITE_AGENT/identity")" = "401" ] \
+  || { echo "another tenant's owner reached this tenant's agent" >&2; exit 1; }
+# Own the state: the second administrator's grant revoked by the owner (the
+# owner remains, so this is no last-admin event), the site agent retired.
+G12_ADMIN2_GRANT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/?principal_ref=$(s1_sub "$G12_ADMIN2")" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['grants'][0]['id'])")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+     "http://localhost:8090/api/scope-grants/$G12_ADMIN2_GRANT")" = "200" ] || { echo "could not revoke the second administrator" >&2; exit 1; }
+[ "$(g12_code "$TOKEN" POST "/api/operational-agents/$G12_SITE_AGENT/retire")" = "200" ] || { echo "could not retire the site agent" >&2; exit 1; }
+[ "$(g12_humans)" = "$G12_HUMANS_BEFORE" ] || {
+  echo "the human tenant administrators moved: $G12_HUMANS_BEFORE -> $(g12_humans)" >&2; exit 1; }
+echo "  a second tenant administrator administered and retired the tenant-scoped agent; the owner still works"
+echo "  another tenant's owner: 401; the human tenant administrators are exactly as before ($(echo "$G12_HUMANS_BEFORE" | tr ',' '\n' | grep -c .) standing)"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
