@@ -485,6 +485,10 @@ MACHINE_IDENTITY_FIELDS: frozenset[str] = frozenset({
     "policy_id",
     "group_name",
     "group_id",
+    # A30.32: the operator who flipped the tenant stop switch. The raw
+    # autonomy contract carries it, and discovery composes that contract --
+    # so the sweep names it rather than trusting that nothing passes it on.
+    "changed_by",
 })
 
 #: Execution and delivery internals. Absent from every LIFECYCLE/STATUS
@@ -540,6 +544,7 @@ def _machine_action_class(row: dict) -> dict[str, Any]:
 def machine_agent_identity(agent) -> dict[str, Any]:
     """Who this agent is and what state it is in. Never who built it."""
     from harkeniq_cc.agent_activation import activation_provenance
+    from harkeniq_cc.autonomy import ACTOR_AGENT
     from harkeniq_cc.operational_agent import attribution_key
 
     return {
@@ -549,7 +554,7 @@ def machine_agent_identity(agent) -> dict[str, Any]:
         "status": agent.status,
         "version": int(agent.version),
         "actor": attribution_key(agent.id, agent.version),
-        "species": "agent",
+        "species": ACTOR_AGENT,
         **activation_provenance(agent),
         "acknowledgement_current": (
             bool(getattr(agent, "activation_acknowledged_by", ""))

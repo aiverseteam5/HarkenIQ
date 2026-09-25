@@ -5979,9 +5979,11 @@ docker compose exec -T central-command python -c "
 import sys; sys.path.insert(0, '/app/services/central_command/src')
 from harkeniq_cc.route_contract import MACHINE_SURFACE
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
-assert len(MACHINE_SURFACE) == 13, len(MACHINE_SURFACE)
+# 13 at B0b; A30.32 (A6-4B1) declared exactly one more machine read,
+# governed discovery. The five routes above stay off the plane.
+assert len(MACHINE_SURFACE) == 14, len(MACHINE_SURFACE)
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  MACHINE_SURFACE = 13, ceiling unchanged, 5 off-plane routes still refused')"
+print('  MACHINE_SURFACE = 14 (13 + B1 discovery), ceiling unchanged, 5 off-plane routes still refused')"
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/policies/$B0B_POLICY" > /dev/null
 
@@ -6995,11 +6997,13 @@ engine = make_engine(os.environ['HARKEN_CC_DSN'])
 app = create_app(AppState(config=CCConfig(tenant_id='census', insecure=True), engine=engine, sessionmaker=make_sessionmaker(engine)))
 problems = meter_census(app)
 assert problems == [], problems
-assert len(MACHINE_SURFACE) == 13 and len(ROUTE_CONTRACT) == 98, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
+# 13/98 and 12 reads at B0c; A30.32 (A6-4B1) declared exactly one more
+# machine READ -- governed discovery -- and nothing else moved.
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 meters = [machine_meter(*r) for r in ROUTE_CONTRACT]
-assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (12, 1, 85), meters
-print('  shipped image: meter_census clean; 12 read-metered, 1 attempt-metered, 85 human; MACHINE_SURFACE 13; ceiling unchanged')
+assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (13, 1, 85), meters
+print('  shipped image: meter_census clean; 13 read-metered, 1 attempt-metered, 85 human; MACHINE_SURFACE 14; ceiling unchanged')
 "
 echo "  19 removed routes still refuse a real machine token"
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
@@ -7007,6 +7011,356 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
 [ "$(s1_cc "SELECT count(*) FROM cc_incidents WHERE incident_id IN ('$B0C_INC', '$B0C_HIDDEN')")" = "0" ] || {
   echo "the B0c incidents were not removed" >&2; exit 1; }
 echo "  this proof's incidents are removed"
+
+# ---------------------------------------------------------------------------
+# A6-4B1 (A30.32): governed discovery, live.
+#
+# ONE machine-only read on the `autonomy` job: what an agent may address,
+# where, and under which governance conclusion -- eight facts per action
+# class, never an authority boolean. Every step here reads through a REAL
+# machine credential. The steps own their agents, credentials and grants,
+# the one Site Manager budget they seed, and the tenant ladder they raise.
+# ---------------------------------------------------------------------------
+
+b1_agent() {  # $1 name, $2 scopes json -> a draft agent bound to four classes
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$1 $(date +%s%N)\",
+         \"require_approval_always\":false, \"autonomy_ceiling\":2,
+         \"scopes\":$2,
+         \"capabilities\":[
+           {\"kind\":\"action_class\",\"capability_ref\":\"SEL_CLEAR\"},
+           {\"kind\":\"action_class\",\"capability_ref\":\"BMC_RESET\"},
+           {\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"},
+           {\"kind\":\"action_class\",\"capability_ref\":\"FIRMWARE_UPDATE\"}]}" \
+    http://localhost:8090/api/operational-agents/ \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])"
+}
+b1_issue() {  # $1 agent id -> the client secret of its newly issued machine identity
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$1/identity" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])"
+}
+b1_token() {  # $1 agent id, $2 client secret -> a fresh machine access token
+  curl -sf -X POST \
+    "http://localhost:8180/realms/tenant-demo/protocol/openid-connect/token" \
+    -d "grant_type=client_credentials&client_id=op-agent-$1&client_secret=$2" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])"
+}
+b1_disc() {  # $1 token, $2 agent id -> HTTP code; body /tmp/b1_disc.json, headers /tmp/b1_disc.hdr
+  curl -s -D /tmp/b1_disc.hdr -o /tmp/b1_disc.json -w '%{http_code}' \
+    -H "Authorization: Bearer $1" "http://localhost:8090/api/operational-agents/$2/discovery"
+}
+
+step "A6-4B1/BV: a REAL machine token reads its OWN discovery -- eight facts per class, ONE read, no-store"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+B1_AGENT=$(b1_agent "b1-site-a" "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]")
+[ -n "$B1_AGENT" ] || { echo "could not create the B1 agent" >&2; exit 1; }
+B1_SECRET=$(b1_issue "$B1_AGENT")
+B1_MACHINE=$(b1_token "$B1_AGENT" "$B1_SECRET")
+[ -n "$B1_MACHINE" ] || { echo "no machine token for the B1 agent" >&2; exit 1; }
+B1_METERED_BEFORE=$(b0c_metric harkeniq_cc_machine_reads_metered_total_autonomy)
+B1_BEFORE=$(b0c_reads "$B1_AGENT")
+B1_CODE=$(b1_disc "$B1_MACHINE" "$B1_AGENT")
+[ "$B1_CODE" = "200" ] || { head -c 400 /tmp/b1_disc.json >&2; echo "discovery answered its own agent $B1_CODE" >&2; exit 1; }
+[ "$(( $(b0c_reads "$B1_AGENT") - B1_BEFORE ))" = "1" ] || { echo "discovery was not charged exactly one read" >&2; exit 1; }
+[ "$(b0c_metric harkeniq_cc_machine_reads_metered_total_autonomy)" != "$B1_METERED_BEFORE" ] || {
+  echo "the per-job counter did not move for the autonomy job" >&2; exit 1; }
+grep -qi '^cache-control: no-store' /tmp/b1_disc.hdr || { echo "discovery is not served no-store" >&2; exit 1; }
+if grep -qi '^etag:' /tmp/b1_disc.hdr; then echo "discovery carries an ETag" >&2; exit 1; fi
+python3 - "$B1_AGENT" "$SITE_A" <<'PY'
+import json, re, sys
+agent, site_a = sys.argv[1:3]
+body = json.load(open("/tmp/b1_disc.json"))
+assert body["view"] == "machine" and body["agent"]["id"] == agent, body.get("agent")
+assert body["agent"]["species"] == "agent", body["agent"]
+assert body["scope"]["permission"] == "fleet.view"
+assert body["scope"]["reach"] == {"tenant_wide": False, "org_unit_ids": [],
+    "site_ids": [site_a], "device_ids": [], "device_classes": []}, body["scope"]
+rows = {r["action_type"]: r for r in body["action_classes"]}
+assert sorted(rows) == sorted([
+    "BMC_RESET", "CLEAR_COUNTERS", "COLLECT_DIAGNOSTICS", "CONFIG_RESTORE",
+    "FAN_RESET", "FIRMWARE_ROLLBACK", "FIRMWARE_UPDATE", "IDENTIFY_LED",
+    "INTERFACE_DISABLE", "INTERFACE_ENABLE", "INTERFACE_RESET",
+    "POWER_CAP_ADJUST", "POWER_CYCLE", "SEL_CLEAR"]), sorted(rows)
+EIGHT = {"exists", "implemented", "addressable", "bound", "in_effective_scope",
+         "governance", "approval_required", "currently_operable"}
+for name, row in rows.items():
+    assert EIGHT <= set(row), (name, set(row))
+    assert row["exists"] is True, name
+    assert row["approval_required"]["state"] in {
+        "required", "not_required", "unknown", "not_applicable"}, (name, row)
+    assert row["currently_operable"]["state"] in {
+        "operable", "not_operable", "unknown"}, (name, row)
+keys = set()
+def walk(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            keys.add(k); walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            walk(v)
+walk(body)
+authority = re.compile(r"^(allowed|authori[sz]ed|authorization|can_.*|may_.*|"
+                       r"safe_to_.*|executable|permitted)$")
+assert not [k for k in keys if authority.match(k)], sorted(keys)
+forbidden = {"reachable", "rules", "scope_ref", "permission_subset",
+             "previously_granted", "synthesis", "contextual_unit_ids",
+             "changed_by", "created_by", "activated_by", "policy_id",
+             "policy_name", "candidate_ref", "learning", "evidence",
+             "advancement", "statement", "rationale", "params", "default"}
+assert not keys & forbidden, keys & forbidden
+fw = rows["FIRMWARE_UPDATE"]
+assert fw["bound"] and fw["addressable"]["path"] == "campaign_only", fw["addressable"]
+assert fw["parameters"]["resolvable"] is False, fw["parameters"]
+assert "campaign orchestration" in fw["parameters"]["unresolvable_reason"], fw["parameters"]
+assert "campaign_only" in fw["currently_operable"]["blocked_by"], fw["currently_operable"]
+assert rows["INTERFACE_RESET"]["implemented"]["value"] is False
+assert rows["SEL_CLEAR"]["addressable"]["path"] == "condition_catalogue"
+unbound = rows["POWER_CYCLE"]
+assert unbound["bound"] is False and unbound["governance"] is None, unbound
+assert unbound["approval_required"] == {"state": "not_applicable", "basis": ["not_bound"]}
+print("  own discovery: 14 classes x 8 facts; reach = site A only; FIRMWARE_UPDATE"
+      " campaign-only with its unresolvable parameter named; no authority key")
+PY
+echo "  charged exactly ONE read, on job 'autonomy'; Cache-Control: no-store; no ETag"
+
+step "A6-4B1/BW: self-only and machine-only -- another agent's id, an id that does not exist, and a person are refused"
+B1_TARGET_BEFORE=$(b0c_reads "$B0C_AGENT")
+for B1_ID in "$B0C_AGENT" "b1-no-such-agent-$(date +%s)"; do
+  B1_BEFORE=$(b0c_reads "$B1_AGENT")
+  B1_CODE=$(b1_disc "$B1_MACHINE" "$B1_ID")
+  [ "$B1_CODE" = "403" ] && grep -q "its own agent and no other" /tmp/b1_disc.json || {
+    head -c 300 /tmp/b1_disc.json >&2; echo "discovery answered $B1_ID with $B1_CODE" >&2; exit 1; }
+  [ "$(( $(b0c_reads "$B1_AGENT") - B1_BEFORE ))" = "1" ] || {
+    echo "the refusal for $B1_ID was not charged to the caller" >&2; exit 1; }
+done
+[ "$(b0c_reads "$B0C_AGENT")" = "$B1_TARGET_BEFORE" ] || {
+  echo "the agent named in the path was charged for the caller's refusal" >&2; exit 1; }
+B1_OWNER_SUB=$(s1_sub "$TOKEN")
+B1_CODE=$(b1_disc "$TOKEN" "$B1_AGENT")
+[ "$B1_CODE" = "403" ] && grep -q "machine-principal surface" /tmp/b1_disc.json || {
+  echo "a person read an agent's discovery ($B1_CODE)" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_agent_read_windows WHERE agent_id='$B1_OWNER_SUB'")" = "0" ] || {
+  echo "a person acquired a machine read window" >&2; exit 1; }
+echo "  another agent's id and a nonexistent id: 403 alike (no existence oracle), each charged"
+echo "  once to the caller and never to the agent named; a person: 403 at the surface, uncharged"
+
+step "A6-4B1/BX: device and device_class reach stay NATIVE -- no containing site is synthesized -- and a revoked grant answers 200 with nothing"
+B1_DEVICE=$B0C_DEVICE_A
+B1_DEV=$(b1_agent "b1-device" "[{\"scope_type\":\"device\",\"scope_ref\":\"$B1_DEVICE\"}]")
+B1_CLS=$(b1_agent "b1-class" "[{\"scope_type\":\"device_class\",\"scope_ref\":\"server\"}]")
+[ -n "$B1_DEV" ] && [ -n "$B1_CLS" ] || { echo "could not create the device/class agents" >&2; exit 1; }
+B1_DEV_SECRET=$(b1_issue "$B1_DEV")
+B1_CLS_SECRET=$(b1_issue "$B1_CLS")
+B1_DEV_MACHINE=$(b1_token "$B1_DEV" "$B1_DEV_SECRET")
+B1_CLS_MACHINE=$(b1_token "$B1_CLS" "$B1_CLS_SECRET")
+B1_SERVERS=$(s1_cc "SELECT count(*) FROM cc_fleet_cache f JOIN cc_sites s ON s.id = f.site_id
+                   WHERE s.tenant_id='$B0C_TENANT' AND lower(coalesce(f.device_class,''))='server'")
+[ "$(b1_disc "$B1_DEV_MACHINE" "$B1_DEV")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; exit 1; }
+python3 - "$B1_DEVICE" "$SITE_A" <<'PY'
+import json, sys
+device, site_a = sys.argv[1:3]
+body = json.load(open("/tmp/b1_disc.json"))
+assert body["scope"]["reach"] == {"tenant_wide": False, "org_unit_ids": [],
+    "site_ids": [], "device_ids": [device], "device_classes": []}, body["scope"]
+assert body["scope"]["devices_in_reach"] == 1, body["scope"]
+assert body["governance_basis"]["sites_in_composition"] == 0, body["governance_basis"]
+# The device's containing site is context, never authority (A30.5): it is
+# not listed, not composed over, and appears nowhere in the answer.
+assert site_a not in json.dumps(body), "the containing site reached a device-scoped machine"
+print("  device-scoped: reach = that device BY IDENTITY; its site appears nowhere; composed over 0 sites")
+PY
+[ "$(b1_disc "$B1_CLS_MACHINE" "$B1_CLS")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; exit 1; }
+python3 - "$B1_SERVERS" <<'PY'
+import json, sys
+servers = int(sys.argv[1])
+body = json.load(open("/tmp/b1_disc.json"))
+assert body["scope"]["reach"] == {"tenant_wide": False, "org_unit_ids": [],
+    "site_ids": [], "device_ids": [], "device_classes": ["server"]}, body["scope"]
+assert body["scope"]["devices_in_reach"] == servers, (body["scope"], servers)
+print(f"  class-scoped: reach = class 'server' BY CLASS ({servers} device(s)); no site synthesized")
+PY
+B1_GRANT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/?principal_ref=$B1_DEV&principal_type=agent" \
+  | python3 -c "import sys,json; g=json.load(sys.stdin)['grants']; assert len(g)==1, g; print(g[0]['id'])")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+     "http://localhost:8090/api/scope-grants/$B1_GRANT")" = "200" ] || { echo "could not revoke the device grant" >&2; exit 1; }
+B1_DEV_MACHINE=$(b1_token "$B1_DEV" "$B1_DEV_SECRET")
+[ "$(b1_disc "$B1_DEV_MACHINE" "$B1_DEV")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; echo "a revoked agent was refused its own discovery" >&2; exit 1; }
+python3 - "$B1_DEVICE" <<'PY'
+import json, sys
+body = json.load(open("/tmp/b1_disc.json"))
+assert body["scope"]["empty"] is True and body["scope"]["devices_in_reach"] == 0, body["scope"]
+assert sys.argv[1] not in json.dumps(body), "the revoked device still appears"
+row = next(r for r in body["action_classes"] if r["action_type"] == "SEL_CLEAR")
+assert row["currently_operable"]["state"] == "not_operable", row["currently_operable"]
+assert "no_devices_in_scope" in row["currently_operable"]["blocked_by"], row["currently_operable"]
+print("  grant revoked through DELETE /api/scope-grants/{id}: 200, empty reach, the device gone (A30.20)")
+PY
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $B1_DEV_MACHINE" \
+     "http://localhost:8090/api/operational-agents/$B1_DEV")" = "404" ] || {
+  echo "the machine agent view's lapsed-agent answer changed (A30.20 records it as 404)" >&2; exit 1; }
+echo "  (the machine agent view still answers that agent 404, as A30.20 records -- unchanged by B1)"
+
+step "A6-4B1/BY: one Site Manager drop-back at site B, read by a site-A machine and a tenant-wide machine (D3, before S3-E1)"
+# Raise the ladder so BMC_RESET is budget-granted at all; BZ puts it back.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"device_type":"*","level":2,"budget_limit":50,"budget_period":"daily"}' \
+  http://localhost:8090/api/policies/autonomy >/dev/null
+B1_SENTINEL=520052
+B1_SM_SITE_B=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_B'")
+[ -n "$B1_SM_SITE_B" ] || { echo "the Site Manager does not serve site B" >&2; exit 1; }
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO sm_error_budgets (site_id, action_type, success_count, failure_count,
+        total_count, min_success_rate, dropped_back, dropped_back_at, updated_at)
+   VALUES ('$B1_SM_SITE_B', 'BMC_RESET', 3, $((B1_SENTINEL - 3)), $B1_SENTINEL,
+           0.95, true, now(), now())
+   ON CONFLICT (site_id, action_type) DO UPDATE SET success_count = 3,
+        failure_count = $((B1_SENTINEL - 3)), total_count = $B1_SENTINEL,
+        dropped_back = true, dropped_back_at = now(), updated_at = now()" > /dev/null
+b1_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$SITE_B'
+              AND error_budgets::text LIKE '%$B1_SENTINEL%'")" = "1" ]
+}
+wait_for "the poller to carry site B's BMC_RESET drop-back into cc_safety_state" 180 b1_polled
+B1_TW=$(b1_agent "b1-tenant-wide" "[]")
+[ -n "$B1_TW" ] || { echo "could not create the tenant-wide agent" >&2; exit 1; }
+# The credential is issued BEFORE the tenant grant, deliberately: G12
+# (A30.32, pre-existing, recorded) -- every agent-administration route,
+# identity issue included, answers 500 for an agent holding a tenant-scope
+# grant. Discovery never takes that path; this proof is about discovery.
+B1_TW_SECRET=$(b1_issue "$B1_TW")
+[ -n "$B1_TW_SECRET" ] || { echo "no identity for the tenant-wide agent" >&2; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$B1_TW\",\"scope_type\":\"tenant\",\"scope_ref\":\"\"}" \
+     http://localhost:8090/api/scope-grants/)" = "201" ] || { echo "the tenant grant was refused" >&2; exit 1; }
+B1_TW_MACHINE=$(b1_token "$B1_TW" "$B1_TW_SECRET")
+B1_MACHINE=$(b1_token "$B1_AGENT" "$B1_SECRET")
+[ "$(b1_disc "$B1_TW_MACHINE" "$B1_TW")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; exit 1; }
+python3 - "$SITE_B" <<'PY'
+import json, sys
+site_b = sys.argv[1]
+body = json.load(open("/tmp/b1_disc.json"))
+basis = body["governance_basis"]
+assert body["scope"]["reach"]["tenant_wide"] is True, body["scope"]
+assert basis["discovery_composed_over"] == "tenant" and basis["matches_admission"] is True, basis
+row = next(r for r in body["action_classes"] if r["action_type"] == "BMC_RESET")
+gov = row["governance"]
+assert gov["conclusion"] == "requires_approval", gov
+assert {"code": "error_budget_dropped_back", "scope": "site", "site_id": site_b} in gov["reason_codes"], gov
+assert row["approval_required"] == {"state": "required",
+                                    "basis": ["governance_requires_approval"]}, row["approval_required"]
+print("  CONTROL tenant-wide machine: composed over what admission reads -- BMC_RESET"
+      " requires_approval (site B's drop-back), approval REQUIRED, definitively")
+PY
+[ "$(b1_disc "$B1_MACHINE" "$B1_AGENT")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; exit 1; }
+python3 - "$SITE_B" "$B1_SENTINEL" <<'PY'
+import json, sys
+site_b, sentinel = sys.argv[1:3]
+body = json.load(open("/tmp/b1_disc.json"))
+basis = body["governance_basis"]
+assert basis["discovery_composed_over"] == "authorized_sites" and basis["matches_admission"] is False, basis
+row = next(r for r in body["action_classes"] if r["action_type"] == "BMC_RESET")
+gov = row["governance"]
+# Composed over site A alone, site B's drop-back does not exist here (S3) --
+assert gov["conclusion"] == "autonomous", gov
+# -- and admission, which folds the WHOLE tenant until S3-E1, will send it
+# to a human. So discovery may not say `not_required`, and may not say
+# `operable` (D3): the honest answer is `unknown`.
+assert row["approval_required"]["state"] == "unknown", row["approval_required"]
+assert "admission_beyond_reach" in row["approval_required"]["basis"], row["approval_required"]
+operable = row["currently_operable"]
+assert operable["state"] != "operable", operable
+if not operable["blocked_by"]:
+    assert operable == {"state": "unknown", "blocked_by": [],
+                        "unknown": ["admission_beyond_reach"]}, operable
+text = json.dumps(body)
+assert site_b not in text and sentinel not in text, "site B reached the site-A machine"
+print("  site-A machine: BMC_RESET composed autonomous; approval UNKNOWN (admission_beyond_reach);"
+      f" operability {operable['state']} {operable['blocked_by'] or operable['unknown']};"
+      " site B and its sentinel appear nowhere")
+PY
+
+step "A6-4B1/BZ: nothing is accepted back, nothing is written, the window holds -- and this proof owns its state"
+B1_MACHINE=$(b1_token "$B1_AGENT" "$B1_SECRET")
+b1_disc "$B1_MACHINE" "$B1_AGENT" > /dev/null
+python3 - "$B1_MACHINE" "$B1_AGENT" <<'PY'
+import http.client, json, sys
+machine, agent = sys.argv[1:3]
+body = json.load(open("/tmp/b1_disc.json"))
+fields = set(body) | set(body["action_classes"][0]) | set(body["scope"]) \
+    | set(body["governance_basis"]) | set(body["action_classes"][0]["currently_operable"])
+conn = http.client.HTTPConnection("localhost", 8090, timeout=30)
+def post(payload):
+    conn.request("POST", f"/api/operational-agents/{agent}/proposals",
+                 body=json.dumps(payload),
+                 headers={"Authorization": f"Bearer {machine}",
+                          "Content-Type": "application/json"})
+    res = conn.getresponse(); res.read()
+    return res.status
+# (a) The submit MODEL forbids every discovery field NAME (A24.2's
+# extra="forbid"): a small placeholder isolates the name from the size.
+for i, field in enumerate(sorted(fields)):
+    status = post({"candidate_ref": "cand_00000000000000000000000000000000",
+                   "idempotency_key": f"b1-gate-{i:04d}-{field}"[:120], field: True})
+    assert status == 422, (field, status)
+# (b) A whole discovery response replayed as a submission is refused too --
+# 413 at the 16 KiB pre-parse ceiling (A24) when it is that large, else 422.
+whole = dict(body, candidate_ref="cand_00000000000000000000000000000000",
+             idempotency_key="b1-gate-whole-response")
+status = post(whole)
+assert status in (413, 422), status
+print(f"  {len(fields)} discovery field names each refused by the submit model (422);"
+      f" the whole response replayed: {status}")
+PY
+b1_counts() {  # every row discovery could write about ITS agent; other agents keep running
+  s1_cc "SELECT (SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$B1_AGENT')
+           || '/' || (SELECT count(*) FROM cc_agent_submissions WHERE agent_id='$B1_AGENT')
+           || '/' || (SELECT count(*) FROM cc_audit_log
+                       WHERE actor_ref='$B1_AGENT' OR subject='$B1_AGENT')
+           || '/' || (SELECT count(*) FROM cc_capability_catalogue WHERE tenant_id='$B0C_TENANT')"
+}
+B1_WROTE_BEFORE=$(b1_counts)
+B1_BEFORE=$(b0c_reads "$B1_AGENT")
+for _ in 1 2 3 4 5; do
+  [ "$(b1_disc "$B1_MACHINE" "$B1_AGENT")" = "200" ] || { echo "discovery stopped answering" >&2; exit 1; }
+done
+[ "$(b1_counts)" = "$B1_WROTE_BEFORE" ] || {
+  echo "discovery wrote governance state: $B1_WROTE_BEFORE -> $(b1_counts)" >&2; exit 1; }
+[ "$(( $(b0c_reads "$B1_AGENT") - B1_BEFORE ))" = "5" ] || { echo "5 reads were not charged 5" >&2; exit 1; }
+echo "  5 more reads: its proposals/submissions/audit entries and the catalogue unchanged ($B1_WROTE_BEFORE); 5 reads charged"
+# The window, re-measured with discovery polling included (A30.12): every
+# runtime except the one B0c throttles on purpose stays below the limit.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "SELECT agent_id || ' ' || max(reads) FROM cc_agent_read_windows
+    WHERE agent_id <> '$B0C_AGENT' GROUP BY agent_id ORDER BY max(reads) DESC" \
+  | sed '/^$/d' > /tmp/b1_peaks.txt
+python3 - <<'PY'
+rows = [line.split() for line in open("/tmp/b1_peaks.txt") if line.strip()]
+peaks = [(agent, int(reads)) for agent, reads in rows]
+over = [(a, r) for a, r in peaks if r >= 120]
+assert not over, f"a correctly-bound gate runtime reached the read limit: {over}"
+print(f"  window re-measured with discovery included: {len(peaks)} runtime(s), busiest"
+      f" {peaks[0][1]}/120 in one window; none reached it")
+PY
+# Own the state: the ladder back to where the gate found it, the seeded
+# budget removed at the Site Manager, the tenant grant revoked.
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"device_type":"*","level":0,"budget_limit":0,"budget_period":"daily"}' \
+  http://localhost:8090/api/policies/autonomy >/dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM sm_error_budgets WHERE site_id='$B1_SM_SITE_B' AND action_type='BMC_RESET'
+   AND total_count=$B1_SENTINEL" > /dev/null
+B1_TW_GRANT=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/?principal_ref=$B1_TW&principal_type=agent" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['grants'][0]['id'])")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+     "http://localhost:8090/api/scope-grants/$B1_TW_GRANT")" = "200" ] || { echo "could not revoke the tenant grant" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ | python3 -c "
+import sys, json
+assert json.load(sys.stdin)['posture']['configured_level'] == 0
+print('  tenant ladder back at level 0; the seeded Site Manager budget and the tenant-wide grant removed')"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

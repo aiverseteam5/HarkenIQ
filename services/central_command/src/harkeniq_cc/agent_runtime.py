@@ -48,6 +48,7 @@ from harkeniq_cc.governance import (
     load_attention,
     load_autonomy_contract,
 )
+from harkeniq_cc.autonomy import ACTOR_AGENT
 from harkeniq_cc.scope import where_reach
 from harkeniq_cc.proposal_admission import ORIGIN_EVALUATOR, admit_proposal
 from harkeniq_cc.operational_agent import (
@@ -174,7 +175,7 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 session,
                 tenant_id=tenant_id,
                 actor_id=attribution_key(agent.id, agent.version),
-                actor_species="agent",
+                actor_species=ACTOR_AGENT,
                 permissions=AGENT_PERMISSIONS,
                 reach=None,
             )

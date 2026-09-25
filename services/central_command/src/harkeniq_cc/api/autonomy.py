@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
+from harkeniq_cc.autonomy import actor_species_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.governance import load_autonomy_contract
@@ -67,7 +68,7 @@ async def autonomy_contract(
         session,
         tenant_id=user.tenant_id,
         actor_id=f"user:{user.user_id}",
-        actor_species="human",
+        actor_species=actor_species_of(user),
         permissions=user.permissions,
         reach=read_reach(scope, "fleet.view"),
         site_id=site_id,

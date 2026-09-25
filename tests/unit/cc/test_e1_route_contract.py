@@ -179,6 +179,9 @@ class TestMachineOnlyRoutesAreChecked:
             # ingress" -- rather than through the read gate.
             ("POST", "/api/operational-agents/{agent_id}/proposals"):
                 oa.submit_proposal,
+            # A30.32 (D6): governed discovery is machine-only and self-only.
+            ("GET", "/api/operational-agents/{agent_id}/discovery"):
+                oa.agent_discovery,
         }
         for route in MACHINE_ONLY_ROUTES:
             handler = handlers.get(route)

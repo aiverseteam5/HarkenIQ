@@ -255,6 +255,10 @@ MACHINE_ROUTES: dict[str, tuple[int, bool]] = {
     "/{agent_id}/ingress": (200, False),
     "/{agent_id}/identity": (200, False),
     "/{agent_id}/dry-run": (200, True),
+    # A30.32 (A6-4B1): governed discovery. MACHINE-only and self-only; it
+    # carries no lifecycle internal (no params, evidence, rationale,
+    # authorization basis or dispatch detail) and no operator identity.
+    "/{agent_id}/discovery": (200, False),
     "/{agent_id}/proposals": (200, False),
     "/{agent_id}/proposals/{proposal_id}": (200, False),
     "/{agent_id}/submissions/{submission_id}": (200, False),

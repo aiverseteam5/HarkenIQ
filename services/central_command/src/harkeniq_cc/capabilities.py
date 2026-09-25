@@ -61,6 +61,51 @@ REACH_AVAILABLE = "available"
 #: Implemented, and every device in view has yet to declare. Not a "no".
 REACH_UNKNOWN = "unknown"
 
+#: The two further states an AGENT's reach distinguishes (the agent view
+#: since A17, and discovery since A30.32). The Registry folds both into
+#: `no_effective_reach` / `unknown`; an agent needs them apart, because
+#: "nothing in my scope at all" and "the code is there and no node permits
+#: it" call for different operators doing different things.
+REACH_NO_DEVICES = "no_devices_in_scope"
+REACH_NOT_PERMITTED = "not_permitted_on_any_node"
+
+#: Every state `reach_state` can return.
+AGENT_REACH_STATES = frozenset({
+    REACH_UNIMPLEMENTED, REACH_AVAILABLE, REACH_NOT_PERMITTED,
+    REACH_UNKNOWN, REACH_NONE, REACH_NO_DEVICES,
+})
+
+
+def reach_state(
+    *,
+    implemented: bool,
+    devices_in_scope: int,
+    implementing: int,
+    permitting: int,
+    undeclared: int,
+) -> str:
+    """One action class's reach over one agent's devices, as ONE state.
+
+    The agent view and discovery both ask this, from the same four counts,
+    so the two can never describe the same reach differently (A30.32). The
+    order is the Registry's: no code anywhere beats no code on this
+    protocol beats not permitted on this node, and a device that has not
+    declared is unknown, never zero (A17.4).
+    """
+    if not implemented:
+        return REACH_UNIMPLEMENTED
+    if permitting:
+        return REACH_AVAILABLE
+    if implementing:
+        # The code is there and no node permits it. Policy, not capability:
+        # reported, never a reason to refuse a binding (A17.7).
+        return REACH_NOT_PERMITTED
+    if undeclared:
+        return REACH_UNKNOWN
+    if devices_in_scope:
+        return REACH_NONE
+    return REACH_NO_DEVICES
+
 #: Why a class cannot reach a device, in the order the reasons are
 #: checked. Each is actionable and names a different fix.
 WHY_UNIMPLEMENTED = "no_executor_implements_it"

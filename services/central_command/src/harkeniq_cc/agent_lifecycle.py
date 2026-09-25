@@ -34,6 +34,7 @@ from harkeniq_cc.agent_activation import (
     skill_install_targets,
     validate_skill_against_reach,
 )
+from harkeniq_cc.autonomy import ACTOR_AGENT
 from harkeniq_cc.capabilities import implemented_actions, reachable_action_classes
 from harkeniq_cc.db.repos import (
     AgentPreflightRepo,
@@ -229,7 +230,7 @@ async def run_preflight(
     contract = await load_autonomy_contract(
         session, tenant_id=tenant_id,
         actor_id=attribution_key(agent.id, agent.version),
-        actor_species="agent", permissions=["fleet.view"],
+        actor_species=ACTOR_AGENT, permissions=["fleet.view"],
         reach=None,
     )
     class_rows = {

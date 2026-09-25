@@ -94,8 +94,14 @@ JOB_INCIDENTS = "incidents"
 #: A0 ingress binding `proposals` -- the one write on the plane.
 JOB_PROPOSALS = "proposals"
 
+#: A0 read binding `autonomy` -- governed discovery (A30.32, D1). Every agent
+#: has held this binding since A0 (`REQUIRED_READS`), and after A6-4A it
+#: reached nothing (F5): a mandatory binding no route honoured. It now names
+#: the one discovery read.
+JOB_AUTONOMY = "autonomy"
+
 MACHINE_JOBS = frozenset({
-    JOB_SELF, JOB_ATTENTION, JOB_INCIDENTS, JOB_PROPOSALS,
+    JOB_SELF, JOB_ATTENTION, JOB_INCIDENTS, JOB_PROPOSALS, JOB_AUTONOMY,
 })
 
 #: Jobs that must name a real A0 binding. `self` is the one exception and
@@ -150,6 +156,13 @@ MACHINE_SURFACE: dict[tuple[str, str], tuple[str, str]] = {
         (SURFACE_BOTH, JOB_INCIDENTS),
     ("GET", "/api/incidents/{incident_id}"):
         (SURFACE_BOTH, JOB_INCIDENTS),
+
+    # -- job: autonomy. Governed discovery (A30.32). ----------------------
+    # MACHINE, not BOTH (D6): what THIS agent may address, where, and under
+    # which governance conclusion -- read by the agent about itself. A
+    # person reads the same facts through the Console; human parity is PX.
+    ("GET", "/api/operational-agents/{agent_id}/discovery"):
+        (SURFACE_MACHINE, JOB_AUTONOMY),
 
     # -- job: proposals. The ONE write on the plane (A24), unchanged. ----
     # MACHINE: A24 refuses a person here in the handler's own words --
@@ -221,6 +234,8 @@ JOB_METER: dict[str, str] = {
     JOB_ATTENTION: METER_READ,
     JOB_INCIDENTS: METER_READ,
     JOB_PROPOSALS: METER_ATTEMPT,
+    # A30.32: discovery is a read, charged at the guard like every other.
+    JOB_AUTONOMY: METER_READ,
 }
 
 
@@ -416,6 +431,13 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     # a read at `fleet.view`. "Its own and no other" is an object-level
     # gate inside the handler, not a permission.
     ("GET", "/api/operational-agents/{agent_id}/dry-run"):
+        ("fleet.view", READ_SCOPED, False),
+    # A30.32 (A6-4B1): governed discovery. A read at `fleet.view` -- the
+    # permission every agent's mandatory `autonomy` binding already implies,
+    # so no permission and no ceiling moves -- and READ_SCOPED because the
+    # answer is composed over the CALLER's own reach (`read_reach`). Self-
+    # only by identity inside the handler.
+    ("GET", "/api/operational-agents/{agent_id}/discovery"):
         ("fleet.view", READ_SCOPED, False),
     # A3 (spec A20): the machine-identity lifecycle. No new permission.
     ("POST", "/api/operational-agents/{agent_id}/identity"):

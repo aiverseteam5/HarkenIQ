@@ -46,7 +46,7 @@ from harkeniq_cc.api.deps import (
 )
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.autonomy import AUTONOMOUS, DENIED
+from harkeniq_cc.autonomy import ACTOR_CAMPAIGN, AUTONOMOUS, DENIED
 from harkeniq_cc.campaign_runner import (
     acknowledge as run_acknowledge,
     campaign_actor,
@@ -576,7 +576,7 @@ async def submit_campaign(
         session,
         tenant_id=user.tenant_id,
         actor_id=campaign_actor(campaign.id, campaign.version),
-        actor_species="campaign",
+        actor_species=ACTOR_CAMPAIGN,
         permissions=list(user.permissions),
         reach=None,
     )

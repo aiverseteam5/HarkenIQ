@@ -1026,7 +1026,9 @@ class TestMachineReach:
                    for i in incidents["incidents"])
 
     def test_the_machine_surface_is_unchanged(self):
-        assert len(MACHINE_SURFACE) == 13
+        # 13 at B0b; A30.32 (A6-4B1) declared governed discovery. The fleet
+        # and site routes stay off the plane either way.
+        assert len(MACHINE_SURFACE) == 14
         assert ("GET", "/api/fleet/") not in MACHINE_SURFACE
         assert ("GET", "/api/sites/") not in MACHINE_SURFACE
 

@@ -203,7 +203,9 @@ class TestTheWriteConsumesTheDeclaration:
 
     async def test_the_declaration_is_unchanged_by_this_remediation(self):
         assert MACHINE_SURFACE[SUBMIT] == (SURFACE_MACHINE, JOB_PROPOSALS)
-        assert len(MACHINE_SURFACE) == 13
+        # 13 at this remediation; A30.32 (A6-4B1) declared exactly one more
+        # machine READ, governed discovery. The write is untouched.
+        assert len(MACHINE_SURFACE) == 14
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +625,8 @@ class TestTheOperatorCanSeeWhichRuntimeIsRefused:
         assert MACHINE_PRINCIPAL_CEILING == frozenset(
             {"fleet.view", "incident.view", "proposal.submit"}
         )
-        assert len(MACHINE_SURFACE) == 13
+        # A30.32 (A6-4B1) declared exactly one more machine read.
+        assert len(MACHINE_SURFACE) == 14
 
     async def test_reading_the_evidence_does_not_spend_the_allowance(self):
         """A27.9's rule, extended to the new block."""

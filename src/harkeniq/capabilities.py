@@ -245,6 +245,37 @@ def parameter_specs(action_type: str) -> tuple:
         return ()
 
 
+#: Why an agent can never supply a required parameter whose only source is
+#: campaign orchestration. Named once, because `resolve_action_params`
+#: refuses on exactly this and `parameter_contract` must say so too.
+CAMPAIGN_ONLY_PARAMETER = (
+    "only campaign orchestration supplies; it is not proposed in "
+    "response to a fault"
+)
+
+
+def _agent_unsuppliable(spec) -> str:
+    """Why an agent reacting to an observed condition can NEVER supply this
+    parameter, or "" when some reported evidence can.
+
+    THE rule both `parameter_contract` and `resolve_action_params` apply
+    (A30.32, D4a). They used to apply two: the contract counted only a
+    required `unavailable` parameter as unsatisfiable, while the resolver
+    also refused a required `campaign` one -- so FIRMWARE_UPDATE was
+    reported agent-resolvable and refused every time it was resolved.
+    A component-addressed parameter is NOT here: it is satisfiable whenever
+    the Site Manager reports a component, which is a fact about a
+    condition, not about the class.
+    """
+    if not spec.required:
+        return ""
+    if spec.source == SRC_UNAVAILABLE:
+        return spec.missing_input
+    if spec.source == SRC_CAMPAIGN:
+        return CAMPAIGN_ONLY_PARAMETER
+    return ""
+
+
 def parameter_contract(action_type: str) -> dict:
     """The parameter contract as a consumer reads it.
 
@@ -252,11 +283,26 @@ def parameter_contract(action_type: str) -> dict:
     implemented and permitted and still have no way to obtain a truthful
     value for something it requires. That is reported by name, never
     hidden and never presented as executable.
+
+    A30.32 (D4a): `agent_resolvable` agrees with `resolve_action_params`
+    for EVERY input -- it is true exactly when some reported evidence lets
+    the resolver build a payload. An unknown class declares nothing and
+    resolves nothing, as the resolver and `validate_action_params` both
+    already said.
     """
+    try:
+        ActionType(action_type)
+    except ValueError:
+        return {
+            "parameters": [],
+            "required": [],
+            "agent_resolvable": False,
+            "unsatisfiable_reason": (
+                f"{action_type!r} is not an action class this platform governs"
+            ),
+        }
     specs = parameter_specs(action_type)
-    unsatisfiable = [
-        s for s in specs if s.required and s.source == SRC_UNAVAILABLE
-    ]
+    unsatisfiable = [s for s in specs if _agent_unsuppliable(s)]
     return {
         "parameters": [
             {
@@ -281,7 +327,7 @@ def parameter_contract(action_type: str) -> dict:
         "required": [s.name for s in specs if s.required],
         "agent_resolvable": not unsatisfiable,
         "unsatisfiable_reason": (
-            f"{unsatisfiable[0].name}: {unsatisfiable[0].missing_input}"
+            f"{unsatisfiable[0].name}: {_agent_unsuppliable(unsatisfiable[0])}"
             if unsatisfiable else ""
         ),
     }
@@ -433,12 +479,16 @@ def resolve_action_params(
         params[REASON_PARAM.name] = reason
 
     for spec in ACTION_PARAMETERS[action]:
-        if spec.source == SRC_UNAVAILABLE:
-            if spec.required:
-                return None, (
-                    f"{action.value} requires {spec.name!r} and "
-                    f"{spec.missing_input}"
-                )
+        # A30.32 (D4a): refused by the SAME rule `parameter_contract`
+        # reports from, so the contract can never call a class resolvable
+        # that this function refuses every time.
+        never = _agent_unsuppliable(spec)
+        if never:
+            if spec.source == SRC_UNAVAILABLE:
+                return None, f"{action.value} requires {spec.name!r} and {never}"
+            return None, f"{action.value} requires {spec.name!r}, which {never}"
+        if spec.source in (SRC_UNAVAILABLE, SRC_CAMPAIGN):
+            # Optional and not agent-suppliable: left out, never guessed.
             continue
         if spec.source == SRC_COMPONENT:
             if not component:
@@ -448,14 +498,6 @@ def resolve_action_params(
                     f"this condition"
                 )
             params[spec.name] = component
-            continue
-        if spec.source == SRC_CAMPAIGN:
-            if spec.required:
-                return None, (
-                    f"{action.value} requires {spec.name!r}, which only "
-                    f"campaign orchestration supplies; it is not proposed "
-                    f"in response to a fault"
-                )
             continue
         # SRC_DEFAULT: the executor applies the same value. Leaving it out
         # keeps the payload honest about what was actually decided.
