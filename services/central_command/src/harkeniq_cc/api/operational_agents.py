@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import (
     APIRouter, Body, Depends, HTTPException, Query, Request, Response,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc.api.deps import (
@@ -60,6 +60,7 @@ from harkeniq_cc.scope import (
     SCOPE_DEVICE,
     SCOPE_ORG_UNIT,
     SCOPE_SITE,
+    SCOPE_TENANT,
     read_reach,
     where_reach,
 )
@@ -100,8 +101,49 @@ router = APIRouter(prefix="/api/operational-agents", tags=["operational-agents"]
 
 
 class ScopeRule(BaseModel):
-    scope_type: str = Field(..., description="site | device_class | device")
-    scope_ref: str = Field(..., min_length=1, max_length=128)
+    """One scope rule: what a client SENDS, and how a stored row is re-read.
+
+    A30.33 (G12). The reference rule is the platform's own invariant: a
+    `tenant` rule carries the canonical EMPTY reference, and every other
+    scope type -- `org_unit`, `site`, `device`, `device_class`, and any
+    type the platform does not recognise -- requires a non-empty one.
+    `min_length=1` used to apply to every type, so re-reading an agent's
+    tenant grant through this model raised before any authorization
+    decision was reached, and every administration route answered 500
+    for an agent holding one -- identity revoke and retire included.
+
+    Nothing is normalised into a sentinel. A tenant rule stored with a
+    non-empty reference (the grant route writes what it is given, G12-F1)
+    was constructible before and still is. The agent API's own scope
+    vocabulary does NOT gain `tenant`: `_validate_scopes` still refuses
+    one in a request body, so tenant scope reaches an agent only through
+    `/api/scope-grants/`.
+    """
+
+    scope_type: str = Field(
+        ...,
+        description=(
+            "org_unit | site | device_class | device. A tenant rule appears "
+            "only on scope granted through /api/scope-grants/."
+        ),
+    )
+    scope_ref: str = Field(
+        ...,
+        max_length=128,
+        description=(
+            "Required, and non-empty, for every scope type except tenant, "
+            "whose canonical reference is empty."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _reference_required_unless_tenant(self) -> "ScopeRule":
+        if not self.scope_ref and self.scope_type != SCOPE_TENANT:
+            raise ValueError(
+                f"scope_type {self.scope_type!r} requires a non-empty "
+                "scope_ref; only a tenant rule carries the empty reference"
+            )
+        return self
 
 
 class CapabilityBinding(BaseModel):
@@ -636,6 +678,13 @@ def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> 
     because `permits` reads the authority grants and never
     `contextual_unit_ids`.
     """
+    if rule.scope_type == SCOPE_TENANT:
+        # A30.33 (G12): the whole tenant is reached only by tenant-wide
+        # authority holding the permission. Asked explicitly -- it used to
+        # reach this same answer by falling through the device_class
+        # branch below, so a change to how a class is delegated would have
+        # silently changed who may administer a tenant-wide agent.
+        return creator_scope.permits(permission, tenant_object=True)
     if rule.scope_type == SCOPE_SITE:
         return creator_scope.permits(permission, site_id=rule.scope_ref)
     if rule.scope_type == SCOPE_ORG_UNIT:
@@ -649,6 +698,8 @@ def _scope_rule_within(creator_scope, rule, permission: str = "site.manage") -> 
         )
     # `device_class` spans the whole fleet, so only a tenant-wide
     # principal may delegate one. Anything narrower would silently widen.
+    # A type the platform does not recognise lands here too, and so needs
+    # the narrowest set of administrators there is: tenant-wide ones.
     return creator_scope.permits(permission, tenant_object=True)
 
 

@@ -1329,17 +1329,17 @@ class TestE1IsNotImplemented:
 
 
 # ---------------------------------------------------------------------------
-# 13. Recorded, not fixed (A30.32 G12)
+# 13. G12: recorded by A30.32, fixed by A30.33
 # ---------------------------------------------------------------------------
 
 
 class TestRecordedNotFixed:
-    @pytest.mark.xfail(strict=True, reason=(
-        "G12 (A30.32, pre-existing): an agent holding a tenant-scope grant "
-        "cannot be administered -- _agent_scope_rules rebuilds its rows as "
-        "ScopeRule models whose scope_ref must be non-empty. Recorded, not "
-        "fixed in B1; this flips to XPASS (and fails, strict) when it is."
-    ))
+    # G12 (A30.32, pre-existing) was pinned here by a strict xfail: an agent
+    # holding a tenant-scope grant could not be administered, because
+    # _agent_scope_rules rebuilt its rows as ScopeRule models whose
+    # scope_ref had to be non-empty. A30.33 fixed it; this is now plain
+    # regression coverage, and tests/unit/cc/test_a30_33_g12_tenant_scope_
+    # admin.py carries the full proof.
     async def test_an_agent_with_a_tenant_grant_can_be_administered(self):
         stack = await _estate(("A",))
         await _agent(stack, "b1-g12")
