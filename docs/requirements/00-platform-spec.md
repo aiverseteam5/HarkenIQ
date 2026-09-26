@@ -4971,3 +4971,105 @@ incident.view, proposal.submit}`, the machine permissions a binding
 implies, every existing route, response shape and handler's
 authorization, `resolve()`, `permits()`, `read_reach`, S1–S4, B0b, B0c,
 A23 and A26; no migration (CC `0027`, SM `0011`, Console `0004`).
+
+**A30.33 — G12: tenant-scope Operational Agent administration restored
+(decided: Vinod, 2026-09-25, after Codex's independent review of A6-4B1;
+a focused security / control-plane correctness slice sequenced BEFORE
+A6-4B2; recorded BEFORE the code).** **The defect, as traced on `main`
+(`ecd3347`).** `POST /api/scope-grants/` accepts a `tenant`-scope grant for
+an AGENT (A30.1 F1: all five scope types, for users and agents alike) and
+stores the reference it is given — the canonical tenant representation
+being `scope_type = "tenant"` with an empty `scope_ref`, which is what the
+Console and the gate send. Every Operational Agent administration route
+then asks the delegation ceiling (A23-3) over the agent's CONFIGURED rows
+through `_agent_scope_rules()` (`harkeniq_cc/api/operational_agents.py`),
+which rebuilds each stored row as the REQUEST-BODY model `ScopeRule` —
+and `ScopeRule.scope_ref` carried `min_length=1` for every scope type. So
+stored grant → `list_administrative_scope_rows` → `ScopeRule(scope_type=
+"tenant", scope_ref="")` → pydantic `ValidationError` (`string_too_short`)
+→ unhandled → 500, before any authorization decision is reached. **The
+trigger is the ADMINISTERED agent's grant, not the administrator's scope:**
+a tenant-scoped human administrator administering a site-, org-unit-,
+device- or class-scoped agent was never affected; ANY administrator of an
+agent holding a tenant grant was. Eight routes, every one guarded by
+`site.manage` and declared `OBJECT_GATED`, reproduced at runtime (ten
+calls, since one route serves three transitions): `PATCH /{agent_id}`,
+`PUT /{agent_id}/bindings`, `POST /{agent_id}/preflight`,
+`POST /{agent_id}/acknowledge`, `POST /{agent_id}/identity`,
+`POST /{agent_id}/identity/rotate`, `POST /{agent_id}/identity/revoke` and
+`POST /{agent_id}/{transition}` (`activate`, `pause`, `retire`). No other
+path rebuilds stored scope rows into a model: read visibility
+(`_agent_visible`), the dry-run ceiling and every serialiser read the rows
+directly. It is purely a REPRESENTATION defect — the resolver is not
+ambiguous about tenant scope (a tenant `Grant` covers every site, unit and
+device regardless of its ref, and `permits(tenant_object=True)` is true
+only for a non-inert tenant grant carrying the permission). It fails
+CLOSED — the request does nothing — but identity revoke and agent retire
+(which retires the identity, A20.7) are SAFETY CONTROLS, and an agent that
+could not be revoked or retired except by first removing its tenant grant
+through another route is a safety control with impaired availability.
+
+**The fix — the smallest canonical one.** (1) `ScopeRule` stays the ONE
+model, and its reference rule becomes the invariant the platform already
+lives by: **a `tenant` rule may carry the canonical empty reference; every
+other scope type — `org_unit`, `site`, `device`, `device_class`, and any
+type the platform does not recognise — still requires a non-empty
+`scope_ref`.** Nothing is normalised into a sentinel (`"*"`, `"tenant"`,
+`"/"`, a fake site or unit id); an empty reference is valid for tenant and
+for nothing else. A tenant rule stored with a non-empty reference (the
+grant route writes the ref it is given, recorded below) was already
+constructible and stays so, judged exactly as before. (2) `_scope_rule_
+within` answers a `tenant` rule EXPLICITLY — `permits(permission,
+tenant_object=True)`, tenant-wide authority holding the permission —
+instead of reaching that answer by falling through the `device_class`
+branch. The result is identical today; the point is that tenant semantics
+no longer ride on another type's branch, so a future change to how a
+class is delegated cannot silently change who may administer a tenant-wide
+agent. **No authority moves:** a tenant-scoped agent is administered only
+by a principal whose own effective grants are tenant-wide and carry
+`site.manage`; org-unit, site, device and class administrators are refused
+(403) exactly as they are for any other rule outside their reach; a
+revoked, expired or inert grant confers nothing (A23-3/A23-4, unchanged);
+another tenant's principal never reaches the agent (404, unchanged).
+
+**What stays exactly as it is.** The agent API's own scope vocabulary
+(`operational_agent.SCOPE_TYPES`: `org_unit`, `site`, `device_class`,
+`device`) does NOT gain `tenant`: an agent's tenant scope is still granted
+only through `POST /api/scope-grants/`, with its own delegation, self-grant
+and last-admin rules. The one observable request-path consequence is
+therefore a refusal changing its reason: a `{"scope_type":"tenant",
+"scope_ref":""}` rule in a create or bindings body, formerly a 422 for its
+empty reference, is now refused the way a tenant rule with a non-empty
+reference always was — 403 by the delegation ceiling for a caller who is
+not tenant-wide, 400 by `_validate_scopes` for one who is — and it is never
+persisted; the published schema loses `minLength: 1` on
+`ScopeRule.scope_ref` and gains the rule in words. A non-tenant empty
+reference is still a 422. The last-admin count never includes an agent's
+row (`count_tenant_admins` counts `principal_type = user` only), so none of
+the eight routes can touch A23-3's last-admin protection. **Unchanged:**
+the permission vocabulary (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING` `{fleet.view, incident.view,
+proposal.submit}`, `MACHINE_SURFACE` (14), `ROUTE_CONTRACT` (99; no route
+added), B1 discovery, B0c metering, every machine job and the proposal
+paths, `resolve()`, `permits()`, `read_reach`, S1–S4, B0b, A23, A26; no
+migration (CC `0027`, SM `0011`, Console `0004`), no persistence change.
+
+**Recorded, not changed here.** (G12-F1) The grant route stores a tenant
+grant's `scope_ref` verbatim, so a non-empty reference is accepted and
+ignored by the resolver; the canonical form is empty, and enforcing it at
+write is a grant-route change of its own. (G12-F2) `PUT /bindings` is a
+FULL replacement and the agent API cannot express tenant scope, so
+replacing the bindings of a tenant-scoped agent revokes its tenant row
+(audited, visible in the response); keeping tenant scope means re-granting
+it through `/api/scope-grants/`. Both are narrowing-only and are left for
+a product decision rather than widened here. (G12-F3, found while tracing,
+PRE-EXISTING and unchanged by this slice) `_enforce_delegation_ceiling`
+returns early for an agent with NO scope rows ("nothing to cap", A0/E1.2),
+so any holder of `site.manage` — a site administrator included — may
+configure, credential, pause or retire a scope-less agent, while read
+visibility (`_agent_visible`) treats that same agent as a tenant-level
+object and answers them 404. Such an agent reaches no device, so no reach
+is conferred; but administration without visibility is an inconsistency,
+and G12-F2 is one way to produce such an agent. Aligning the two is an
+authorization change with product consequences (who may finish setting up
+a draft agent), so it is recorded for its own decision, not made here.

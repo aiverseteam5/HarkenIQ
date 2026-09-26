@@ -5406,3 +5406,118 @@ visible until its own fix lands.
 * D4 as an equivalence over all fourteen classes; D5 as a structural refusal
   of any new literal; E1 absent by structure and by behaviour.
 * Real PostgreSQL, and the live compose gate with a real machine credential.
+
+## §34n — G12: tenant-scope Operational Agent administration (A30.33)
+
+B1's live gate found it and recorded it (A30.32); Codex's review of B1
+weighed it; Vinod sequenced it as its own focused slice before A6-4B2. It is
+a control-plane correctness fix with a security property to preserve, not a
+feature: nothing an administrator could not do before becomes possible,
+except administering an agent whose scope happens to be the whole tenant.
+
+### The chain, exactly
+
+```text
+POST /api/scope-grants/  {principal_type: agent, scope_type: tenant, scope_ref: ""}
+  -> cc_scope_grants row (tenant, "")                       valid, canonical
+PATCH|PUT|POST /api/operational-agents/{id}/...             any of 8 routes
+  -> _enforce_delegation_ceiling(scope, _agent_scope_rules(repo, id))
+  -> _agent_scope_rules: ScopeRule(scope_type=row.scope_type, scope_ref=row.scope_ref)
+  -> ScopeRule.scope_ref: Field(..., min_length=1)          the REQUEST model
+  -> ValidationError (string_too_short)  ->  500, nothing decided, nothing written
+```
+
+The request model was doing two jobs: validating what a client may SEND, and
+re-validating what the platform has already STORED. The stored row is correct;
+the re-validation was wrong about it. The caller's scope is irrelevant to the
+failure — the owner of the whole tenant hit it as surely as anyone — which is
+why the trigger is "the administered agent holds a tenant grant", not "the
+administrator is tenant-scoped".
+
+### Why not a sentinel, a second model or a bypass
+
+* A sentinel (`"*"`, `"tenant"`, `"/"`) would put a string into the reference
+  that the resolver does not read and every other reader would have to learn
+  to ignore; the canonical representation is already the empty reference.
+* A second rule type for stored rows would be a second scope model, one edit
+  away from diverging from the one the requests use.
+* `model_construct` (no validation) would make the reconstruction accept an
+  empty reference for EVERY type, including a corrupt `site` row that should
+  keep failing closed.
+
+So the one model states the one invariant: **empty is valid for `tenant` and
+for nothing else.** A tenant row with a non-empty reference (the grant route
+writes what it is given) was constructible before and still is.
+
+### Who may administer a tenant-scoped agent
+
+`_scope_rule_within` is the one implementation the delegation ceiling, read
+visibility and the dry-run ceiling all ask. It now answers `tenant`
+explicitly — `permits(permission, tenant_object=True)` — which is what the
+fall-through through the `device_class` branch already returned. The explicit
+branch exists so that tenant semantics cannot change as a side effect of a
+future change to class delegation.
+
+| administrator's effective grant (carrying `site.manage`) | tenant-scoped agent | agent at site A (region ab) | agent at site C (region cd) |
+|---|---|---|---|
+| tenant | administers | administers | administers |
+| org unit `ab` | 403 | administers | 403 |
+| site A | 403 | administers | 403 |
+| device / device_class | 403 | 403 | 403 |
+| tenant, subset without `site.manage` | 403 | 403 | 403 |
+| revoked / expired / inert | 403 | 403 | 403 |
+| another tenant | 404 | 404 | 404 |
+
+Only the first column changes, and only from 500 to the answer every other
+column already gave. Under `legacy_open` a principal who was NEVER granted
+anything is synthesized tenant-wide (A23-4) and so administers as the first
+row does; a revoked, expired or inert one is never synthesized, under either
+posture.
+
+### The request path
+
+The agent API still speaks `org_unit | site | device_class | device`. A tenant
+rule in a create or bindings body is refused as a tenant rule with a
+non-empty reference always was — 403 by the ceiling unless the caller is
+tenant-wide, then 400 by `_validate_scopes` — instead of 422 for its empty
+reference, and is never written. The published schema loses `minLength: 1`
+and says the rule in its description. Tenant scope for an agent is granted,
+still, only through `/api/scope-grants/`.
+
+### Found while tracing it (recorded, not changed)
+
+* **G12-F1.** The grant route stores a tenant grant's reference verbatim; a
+  non-empty one is accepted and ignored. Canonicalising at write is its own
+  grant-route change.
+* **G12-F2.** `PUT /bindings` replaces scopes in full and cannot express
+  tenant, so it revokes a tenant-scoped agent's tenant row (audited, in the
+  response). Keeping tenant scope means re-granting it. Narrowing only; a
+  product decision.
+* **G12-F3 (pre-existing, unchanged).** The ceiling returns early for an agent
+  with no scope rows, so any `site.manage` holder may administer a scope-less
+  agent that read visibility hides from them (404). It reaches nothing, so no
+  reach moves; but administration without visibility is inconsistent, and
+  G12-F2 can produce such an agent. Aligning the two decides who may finish
+  setting up a draft agent, so it is its own decision.
+
+### How it is proven
+
+* The model: tenant empty valid, every other type (unknown included) empty
+  invalid, tenant non-empty still valid; the request bodies still 422 a
+  non-tenant empty reference.
+* The ten calls on a tenant-scoped agent by a tenant administrator, each with
+  its durable effect: configuration and version, stored preflight,
+  acknowledgement, activation, identity issued / rotated / revoked (Keycloak
+  disabled, audited), pause, retire (identity retired, every scope row
+  revoked), bindings replaced.
+* The table above as a persona sweep under STRICT with persisted grants,
+  including lapsed, inert and cross-tenant principals and a tenant grant
+  narrowed away from `site.manage`.
+* A corrupt stored `site` row with an empty reference still refuses, and
+  writes nothing.
+* A23: the last-admin count is untouched by any agent row; delegation and
+  self-grant suites unchanged.
+* Real PostgreSQL for the persisted empty reference and the timestamptz
+  lifecycle; the live compose gate with real Keycloak: grant tenant scope
+  FIRST, then credential, revoke (the unexpired token refused, a new one not
+  mintable), retire, and a second tenant administrator still working.
