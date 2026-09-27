@@ -1906,17 +1906,31 @@ class OutcomeHistoryRepo:
         ).scalars().first()
 
     async def list_device_outcome_dicts(
-        self, tenant_id: str, limit: int = 50000
+        self, tenant_id: str, limit: int = 50000, scope=None,
     ) -> list[dict]:
         """Per-device outcome rows for risk scoring (R4-3 P20).
 
         Uses the ix_outcome_history_device access path; returns dicts
         with device attribution and recorded_at for recency weighting.
+
+        `scope=None` is every caller before A30.35 -- the human attention
+        route and the internal decision paths -- and reads the whole
+        tenant, unchanged. A MACHINE principal's attention (A30.35, D2)
+        passes its `fleet.view` reach: B0b's owner predicate, in the WHERE,
+        BEFORE the row limit, so a row the machine may not read can never
+        displace one it may. A moved device's rows at a site the reader does
+        not hold are SITE-owned there and excluded.
         """
         stmt = (
-            select(CCOutcomeHistory)
-            .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
-            .where(CCSite.tenant_id == tenant_id)
+            _where(
+                select(CCOutcomeHistory)
+                .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
+                .where(CCSite.tenant_id == tenant_id),
+                scope_device_owned(
+                    CCOutcomeHistory.site_id, CCOutcomeHistory.device_agent_id,
+                    scope,
+                ),
+            )
             .order_by(CCOutcomeHistory.recorded_at)
             .limit(limit)
         )
@@ -1963,9 +1977,12 @@ class FleetPatternRepo:
         self,
         pattern_type: Optional[str] = None,
         status: Optional[str] = "active",
-        limit: int = 200,
+        limit: Optional[int] = 200,
         tenant_id: Optional[str] = None,
     ) -> Sequence[CCFleetPattern]:
+        """`limit=None` reads with no window (A30.35): a window cut BEFORE
+        S4 projects the rows would let a pattern the reader may not see
+        take the place of one it may, so machine Attention asks for none."""
         stmt = (
             select(CCFleetPattern)
             .order_by(CCFleetPattern.detected_at.desc())
@@ -2376,8 +2393,10 @@ class LearnedSignalRepo:
 
     async def list_active(
         self, tenant_id: str, scope_type: Optional[str] = None,
-        scope_ref: Optional[str] = None, limit: int = 500,
+        scope_ref: Optional[str] = None, limit: Optional[int] = 500,
     ) -> Sequence[CCLearnedSignal]:
+        """`limit=None` reads with no window (A30.35), for the reason
+        `FleetPatternRepo.list_patterns` gives."""
         stmt = (
             select(CCLearnedSignal)
             .where(CCLearnedSignal.tenant_id == tenant_id)
@@ -2516,7 +2535,13 @@ class IncidentRepo:
         site_id: Optional[str] = None, device_agent_id: Optional[str] = None,
         limit: int = 200,
         scope=None,
+        device_agent_ids: Optional[Iterable[str]] = None,
     ) -> Sequence[CCIncident]:
+        """`device_agent_ids` (A30.35, D3) narrows to incidents about those
+        devices, in the WHERE and so before the limit: machine Attention
+        asks only for the devices whose incidents it may show, so an
+        incident about any other device can never take a place in the
+        window. ``None`` is every earlier caller, unchanged."""
         stmt = _where(
             select(CCIncident).where(CCIncident.tenant_id == tenant_id),
             self._owned(scope),
@@ -2527,6 +2552,11 @@ class IncidentRepo:
             stmt = stmt.where(CCIncident.site_id == site_id)
         if device_agent_id:
             stmt = stmt.where(CCIncident.device_agent_id == device_agent_id)
+        if device_agent_ids is not None:
+            wanted = sorted({d for d in device_agent_ids if d})
+            stmt = stmt.where(
+                CCIncident.device_agent_id.in_(wanted) if wanted else sa_false()
+            )
         stmt = stmt.order_by(CCIncident.opened_at.desc().nullslast()).limit(limit)
         return (await self.session.execute(stmt)).scalars().all()
 

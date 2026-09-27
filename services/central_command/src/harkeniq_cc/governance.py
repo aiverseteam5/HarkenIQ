@@ -14,7 +14,7 @@ So the fetch lives here once. The composition still lives in
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +52,7 @@ from harkeniq_cc.scope import (
     PRINCIPAL_AGENT,
     PRINCIPAL_USER,
     SCOPE_ONLY_MARKER,
+    ReadReach,
     ResolvedScope,
     read_reach,
     resolve,
@@ -489,6 +490,118 @@ async def load_capability_registry(
     )
 
 
+#: The permission a device's attention facts are read under: the route's own
+#: guard. Incident CONTENT inside machine attention is read under
+#: `incident.view` (A30.34 D3), because a composite read must never stand in
+#: for a binding the operator withheld.
+ATTENTION_FACT_PERMISSION = "fleet.view"
+INCIDENT_FACT_PERMISSION = "incident.view"
+
+
+@dataclass(frozen=True)
+class MachineAttentionSelection:
+    """The inputs a MACHINE principal's attention is composed from (A30.35).
+
+    A TYPE for the reason `LearningView` is one. An optional argument whose
+    absence meant "the human selection" would let a caller that forgot it
+    compose a machine's answer from the whole tenant's outcomes and cohort
+    -- and pass its tests, because nothing looks different until a hidden
+    site's history moves a visible device (B2-F5). `load_machine_attention`
+    accepts nothing else, and `machine_attention_selection` is the only
+    constructor outside a test.
+
+    * `fleet` -- `read_reach(scope, "fleet.view")`, the route's own reach:
+      the devices, their outcomes (B0b's owner rule), pending approvals and
+      the sites that name them.
+    * `incidents` -- `read_reach(scope, "incident.view")`: whose incidents
+      may be shown at all (D3). `fleet.view` never substitutes for it.
+    * `learning` -- the reader's `LearningView` (A30.28): signals and
+      patterns are projected before they are attached to a device.
+    """
+
+    fleet: ReadReach
+    incidents: ReadReach
+    learning: LearningView
+
+
+def machine_attention_selection(scope) -> MachineAttentionSelection:
+    """A machine principal's attention inputs, from its OWN resolved scope.
+
+    Every reach here is S2's, asked for the permission that governs what
+    it selects; nothing is synthesised and no set is widened to fit.
+    """
+    return MachineAttentionSelection(
+        fleet=read_reach(scope, ATTENTION_FACT_PERMISSION),
+        incidents=read_reach(scope, INCIDENT_FACT_PERMISSION),
+        learning=learning_view(scope),
+    )
+
+
+def require_machine_attention_selection(selection) -> MachineAttentionSelection:
+    """The boundary of A30.35: a `MachineAttentionSelection`, or a TypeError."""
+    if isinstance(selection, MachineAttentionSelection):
+        return selection
+    raise TypeError(
+        "machine attention is composed from the machine's own selection "
+        "(harkeniq_cc.governance.machine_attention_selection(scope)), not "
+        f"{type(selection).__name__}: the human selection folds every site's "
+        "outcomes into a cohort prior (spec A30.35, D2)"
+    )
+
+
+@dataclass(frozen=True)
+class MachineAttentionComposition:
+    """The ONE composer's answer over a machine's inputs, and what the
+    machine projection needs beside it (A30.35).
+
+    `composed` is `build_attention`'s own answer -- rank, driver, band,
+    basis and the next capability were decided by the composer over the
+    selected inputs, and the projection reads them by name. `devices` are
+    the fleet rows by ``(site_id, agent_id)``, for freshness (D8). `held`
+    are the device ids whose incidents this machine may be shown (D3).
+    `fleet` is the route's reach, for `site_contextual`.
+    """
+
+    composed: dict
+    devices: Mapping[tuple[str, str], Any]
+    held: frozenset
+    fleet: ReadReach
+
+
+def held_devices(devices, incident_reach: ReadReach) -> frozenset:
+    """The device ids whose incident CONTENT a machine may be shown (D3).
+
+    The owner rule, asked of each in-reach fleet row as it resolves at its
+    own site, under the machine's `incident.view` reach -- never its
+    `fleet.view` reach. A device id is held only when EVERY in-reach row
+    carrying it is covered: the composer attaches incidents by device id,
+    and a held list must never be incomplete. (A device seen at two sites
+    is transient -- the poller replaces a site's rows -- and is held at
+    neither while it lasts.)
+    """
+    from harkeniq_cc.target_authority import FleetIndex
+
+    index = FleetIndex(devices)
+    covered: dict[str, bool] = {}
+    for device in devices:
+        site_id = device.site_id or ""
+        agent_id = str(device.agent_id)
+        target = index.resolve(site_id, agent_id)
+        ok = incident_reach.covers_owned(site_id, target)
+        covered[agent_id] = covered.get(agent_id, True) and ok
+    return frozenset(agent for agent, ok in covered.items() if ok)
+
+
+def _machine_device_order(device) -> tuple:
+    """A total input order for the machine composition (A30.35, D2).
+
+    The fleet read orders by name alone, and the engine breaks ties; the
+    composer's sort is stable, so an exact tie would otherwise come out in
+    whatever order a database happened to return. Name, id, site.
+    """
+    return (device.agent_name or "", str(device.agent_id), device.site_id or "")
+
+
 async def load_attention(
     session: AsyncSession,
     *,
@@ -533,6 +646,80 @@ async def load_attention(
     `band` is a PURE FILTER applied AFTER ranking, which is what the
     endpoint's own contract always claimed: rank 1 means first in the
     principal's scope, never first on the page.
+
+    A30.35: a MACHINE principal's attention does not come through here. It
+    comes through `load_machine_attention`, into the same body with its own
+    selection; this entry point is byte-identical to what it was.
+    """
+    result, _devices, _held = await _compose_attention(
+        session, tenant_id=tenant_id, learning=learning, site_id=site_id,
+        scope=scope, band=band, limit=limit, machine=None,
+    )
+    return result
+
+
+async def load_machine_attention(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    selection: MachineAttentionSelection,
+    site_id: Optional[str] = None,
+    band: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> MachineAttentionComposition:
+    """A machine principal's attention: the same body, its own inputs.
+
+    A30.34 D2, as A30.35 implements it: select, THEN compose. Every input
+    the composer folds is selected from what this machine may read BEFORE
+    anything is computed -- the score, the driver, the band, the rank, the
+    `band` filter, the `limit` cut and the next step all come after -- so
+    no value the machine is shown can reflect a site, a device or a row it
+    may not read. Stripping the tenant-wide answer afterwards could not do
+    that: by then a hidden site's outcomes are already folded into the
+    band, the order and the counts.
+    """
+    selection = require_machine_attention_selection(selection)
+    result, devices, held = await _compose_attention(
+        session, tenant_id=tenant_id, learning=selection.learning,
+        site_id=site_id, scope=selection.fleet, band=band, limit=limit,
+        machine=selection,
+    )
+    return MachineAttentionComposition(
+        composed=result,
+        devices={(d.site_id or "", str(d.agent_id)): d for d in devices},
+        held=held,
+        fleet=selection.fleet,
+    )
+
+
+async def _compose_attention(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    learning,
+    site_id: Optional[str],
+    scope,
+    band: Optional[str],
+    limit: Optional[int],
+    machine: Optional[MachineAttentionSelection],
+) -> tuple[dict, list, Optional[frozenset]]:
+    """The ONE body. `machine` is None for every caller before A30.35.
+
+    Where `machine` is given, and only there, the inputs differ (A30.35):
+
+    * outcomes pass B0b's owner predicate under the machine's `fleet.view`
+      reach, in SQL before the row limit;
+    * there is NO cohort prior -- a device is scored on its own visible
+      history or is `insufficient_data`;
+    * incidents are read under the machine's `incident.view` reach, for
+      the devices it holds that reach over (D3);
+    * learned signals and fleet patterns are read with no pre-projection
+      window, so a row the machine may not see cannot take the place of one
+      it may before S4 projects them;
+    * the devices are handed to the composer in a total order.
+
+    Nothing else differs: one composer, one scorer, one sort, one
+    `_recommend`, and `band` and `limit` after ranking.
     """
     from harkeniq_cc.attention import build_attention
     from harkeniq_cc.db.repos import (
@@ -550,7 +737,16 @@ async def load_attention(
     devices = await FleetCacheRepo(session).list_all(tenant_id, scope=scope)
     if site_id:
         devices = [d for d in devices if d.site_id == site_id]
-    outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
+    if machine is not None:
+        devices = sorted(devices, key=_machine_device_order)
+    if machine is None:
+        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
+    else:
+        # D2: only the rows this machine may read, selected in SQL before
+        # the row limit -- never the whole tenant, stripped afterwards.
+        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
+            tenant_id, scope=machine.fleet,
+        )
     warranty_map = await WarrantyRepo(session).get_map(
         [d.service_tag for d in devices], tenant_id=tenant_id,
     )
@@ -558,7 +754,12 @@ async def load_attention(
     pending_routes = await ApprovalRouteRepo(session).list_pending(
         tenant_id, scope=scope,
     )
-    patterns = await FleetPatternRepo(session).list_patterns(tenant_id=tenant_id)
+    if machine is None:
+        patterns = await FleetPatternRepo(session).list_patterns(tenant_id=tenant_id)
+    else:
+        patterns = await FleetPatternRepo(session).list_patterns(
+            tenant_id=tenant_id, limit=None,
+        )
     # A30.25: the AUTHORITATIVE sites decide what site knowledge may be
     # attached; the sites that merely contain one of the caller's devices
     # only lend their NAME to a row about that device (D2, R10).
@@ -571,16 +772,34 @@ async def load_attention(
         None if scope is None or scope.tenant_wide
         else frozenset(s.id for s in authoritative_sites)
     )
-    learned = await LearnedSignalRepo(session).list_active(tenant_id)
+    if machine is None:
+        learned = await LearnedSignalRepo(session).list_active(tenant_id)
+    else:
+        learned = await LearnedSignalRepo(session).list_active(tenant_id, limit=None)
     if learning is not None:
         view = require_learning_view(learning)
         patterns = view.patterns(patterns)
         learned = view.signals(learned)
-    open_incidents = await IncidentRepo(session).list_incidents(
-        tenant_id, status="open", site_id=site_id, limit=1000, scope=scope,
-    )
+    held: Optional[frozenset] = None
+    if machine is None:
+        open_incidents = await IncidentRepo(session).list_incidents(
+            tenant_id, status="open", site_id=site_id, limit=1000, scope=scope,
+        )
+    else:
+        # D3: incident content only where this machine holds `incident.view`
+        # over the device -- asked of the incident reach, never the fleet
+        # reach -- and only for those devices, in SQL before the limit.
+        held = held_devices(devices, machine.incidents)
+        open_incidents = (
+            await IncidentRepo(session).list_incidents(
+                tenant_id, status="open", site_id=site_id, limit=1000,
+                scope=machine.incidents, device_agent_ids=held,
+            )
+            if held else []
+        )
 
-    cohorts = cohort_failure_rates(outcomes)
+    # D2: a machine is never scored on a cohort the whole tenant built.
+    cohorts = cohort_failure_rates(outcomes) if machine is None else {}
     by_device: dict[str, list[dict]] = {}
     for oc in outcomes:
         by_device.setdefault(oc["device_agent_id"], []).append(oc)
@@ -621,4 +840,4 @@ async def load_attention(
     if limit is not None:
         result["items"] = result["items"][:limit]
     result["returned"] = len(result["items"])
-    return result
+    return result, devices, held
