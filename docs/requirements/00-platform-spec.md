@@ -5508,3 +5508,25 @@ enforced halt; the F-7 fix through the real RPC; the Central Command
 differential against a golden recorded from `main`; real PostgreSQL; the live
 gate driving real transitions through the Site Manager's own RPCs and
 controls; mutation testing.
+
+**Found while implementing S3-E1-0 (recorded; no scope change).** (1) The
+Central Command effect runs in BOTH directions. Besides (i)–(iii), F-7 means
+a non-default site's node-path usage and outcomes now reach that site's own
+window and error budget, so they can withhold autonomy there — and, through
+the tenant-wide fold that stays until S3-E1, for the tenant — where before
+they were silently lost. The differential recorded on `main` shows it: site
+beta's three executions raised, its window read untouched, and SEL_CLEAR
+stayed `autonomous`; with S3-E1-0 beta's window is spent and the fold reads
+`requires_approval`. (2) Because the node never reads the lease's
+suppression list (F-9), filtering it per site changes no node decision — only
+what a node at another site is told. (3) The Site Manager keeps every policy
+class it was ever pushed (`update_policy` only adds), so a class the tenant
+withdraws keeps its last window until the process restarts (**F-13**,
+pre-existing, recorded; the live proof retires its synthetic classes by
+making them unlimited). (4) Two existing tests encoded the old semantics and
+were corrected, not weakened: the S5 transport test injected a suppression
+for a fault domain that exists at no site (it now creates the domain at the
+site it reports), and the R3a/QA-021 enforcer tests called the Site
+Manager-wide API (they now name the site). (5) The break-glass read carries
+`site_names` beside `budgets_by_site`, so a window is attributable without a
+second query.

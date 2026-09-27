@@ -6009,3 +6009,22 @@ F-8 directed executions never draw down a window (`ReportDirectiveResult`
 records none); F-9 the node never reads the lease's suppression list; F-10 the
 windows are in memory; F-11 the legacy unknown-device report path; F-12 D6's
 synchronous/background asymmetry. D1, D3–D8, D10 and D11 are S3-E1's.
+
+### Found while implementing
+
+* **Both directions at Central Command.** F-7 makes a non-default site's
+  node-path usage and failures count at that site, so they can now withhold
+  autonomy there (and, via the tenant fold until S3-E1, for the tenant) where
+  `main` lost them: in the recorded differential beta's window moves from
+  "untouched, SEL_CLEAR autonomous" to "spent, requires_approval".
+* **The lease's suppression list is informational today** (F-9): filtering it
+  per site changes no node decision.
+* **F-13:** `update_policy` only ever adds classes, so a withdrawn class keeps
+  its last window until restart; the live proof makes its synthetic classes
+  unlimited rather than pretending to remove them.
+* **Tests that encoded the old semantics** were corrected, not weakened: the
+  S5 transport fixture now creates the fault domain at the site it reports; the
+  R3a/QA-021 enforcer tests name a site.
+* **The live proof uses synthetic, run-tagged budget classes** — the node skips
+  a class it does not know — so nothing real spends them, and the site-B class
+  is itself the sentinel.
