@@ -5890,3 +5890,122 @@ not hold. Mutants re-admit tenant-wide outcomes, the cohort prior, the
   in one transaction, reads site A, then reads the tenant: the tenant read
   proves the poison stood throughout the site-A reads (a poll can only remove
   it), and an interrupted attempt is cleaned up and retried.
+
+## §34q — S3-E1 decisions ratified; S3-E1-0: Site Manager per-site safety truth (A30.36)
+
+The S3-E1 Phase 1 checkpoint traced the ratified model (§34k) against `main`
+at `3323b74` and found the conflation it targets — five internal decision
+paths read one tenant-wide fold (`load_autonomy_contract(reach=None)`) as a
+target's own assessment. It also found that the INPUTS S3-E1 would rely on are
+not what A30.27 R2 assumed on a Site Manager that serves several sites. Vinod
+ratified D1–D11 (A30.36) and put a prerequisite first: S3-E1-0 makes what the
+Site Manager REPORTS per site as true as what it ENFORCES, and touches no
+Central Command code. Nothing of S3-E1's gate, admission, eligibility or
+projections is built here.
+
+### What was wrong, per emission
+
+A Site Manager emits a site's safety facts in two places: the
+`FleetSafetyState` it reports for that site in `GetFleetSnapshot`
+(`_safety_state(session, site_id)`), and the signed lease it issues a device at
+that site on `Heartbeat`.
+
+| fact | enforced (before) | reported for site S (before) | lease to a device at S (before) |
+|---|---|---|---|
+| halt | persisted tenant/site/SM-emergency halt for S, or the in-memory flag (`DispatchAction`, `_agent_site_halted`) | the in-memory flag only — an E1.3 site or emergency halt read `false` | persisted halt for S, or the flag |
+| suppression | nowhere at the node (F-9); Central Command reads it per reporting site | every active suppression the engine holds, for every site it serves | every active suppression, every site |
+| budget window | the lease's per-class remaining | one Site Manager-wide counter per action type | the same Site Manager-wide counter |
+| drop-back | per site (E0.2) | per site | per site |
+
+And one feed was missing: on a multi-site Site Manager a node's `ReportAction`
+from any site but the configured one raised (F-7), so that site's node-path
+executions and outcomes never reached its window or its error budget.
+
+### What changes
+
+**Halt (F-1).** One predicate, `halt_state(S).halted or enforcer.stop_switch_active`,
+is now what the snapshot reports for S — the same two sources the dispatch
+decision refuses on (`site_stop`, `manager_halt`) and the lease already
+carries. A site halt is per site; the tenant push, the Site Manager emergency
+halt and the Site Manager-local break-glass flag halt every site the process
+serves and are reported at every one, because that is what they do.
+
+**Suppression (F-2).** The snapshot for S and the lease for a device at S keep
+only suppressions whose fault domain is one of S's (`DomainRepo.list_for_site`),
+in fault-domain-id order. A suppression whose fault-domain row no longer
+exists belongs to no site and is reported nowhere. The engine is untouched: it
+still evaluates, hair-triggers and recovers per domain.
+
+**Budget windows (F-3).** `SMAutonomyEnforcer` keys counters by
+`(site_id, action_type)`:
+
+| before | after |
+|---|---|
+| `record_execution(action_type)` | `record_execution(site_id, action_type)` — a site is required |
+| `get_budget_for_agent(agent_id)` (ignored the agent) | `budget_for_site(site_id)` |
+| `allows_site_wide(action_type)` | `allows(site_id, action_type)` |
+| `get_state()["budgets"]` (one map) | `site_state(site_id)`; `get_state()["budgets_by_site"]` |
+
+Policies stay per action type (Central Command pushes the tenant's
+`max_per_window` and window to every Site Manager); each site gets its own
+window under that policy, created lazily, updated when the policy changes. A
+completed `ReportAction` draws down the reporting device's own site. The
+Heartbeat lease reads the agent's own site's windows, and — the one edge — a
+device whose site cannot be resolved gets a remaining of `0` for every policy
+class (an unattributable budget is exhausted, never unlimited). The windows
+are still in memory (F-10).
+
+**The node-path report (F-7).** `ApprovalService.report_action` looks the
+device up first: an enrolled device reports under its own site and is touched
+(`last_seen_at`, exactly what the re-registration used to set); an unknown
+device keeps the legacy path — the configured site, created if missing —
+unchanged (F-11).
+
+**The break-glass read.** The Site Manager's `GET /api/autonomy` (site token)
+lists the budget windows of every site it serves under `budgets_by_site`,
+beside the per-site error budgets E0.2 already labelled. No route is added.
+
+### Why no Central Command code changes
+
+Central Command already stores one `cc_safety_state` row per site and folds
+exactly what it is given. Corrected rows change its outputs only where they
+were wrong: a site's suppression stops routing another site's proposals to a
+human and stops appearing in another site's autonomy facts; a site's window
+stops reflecting another site's executions (the tenant fold still globalises
+real exhaustion until S3-E1); posture counts real halts, and the disposition
+still ignores `sm_stop_switch` until S3-E1 makes a halted target a local
+`denied`. The proof is a differential: the same Site Manager RPC sequence run
+on `main` and on this branch, carried into Central Command's own ingest,
+contract and evaluator — equal on a single-site Site Manager with no persisted
+halt, and on a multi-site Site Manager different in exactly those three places.
+
+### Proof
+
+* **Matrix.** Halt, suppression, budget window and drop-back, each A-only and
+  B-only; both, neither; site A's emitted facts (snapshot and lease) compared
+  byte for byte, timestamps removed.
+* **Sequences.** A changes repeatedly while B stays fixed; the inverse; a
+  generated sweep of every site-B mutation, with a site-A mutation as the
+  non-vacuity control.
+* **Sentinels.** Site-B fault domains, trigger reasons and device counts that
+  cannot occur by accident, walked over every key and value of site A's
+  snapshot and lease.
+* **Reported == enforced.** For every halt combination, the snapshot's value
+  equals the lease's and equals whether `DispatchAction` refuses on a halt.
+* **The real wire.** A real Site Manager servicer on a real port, read through
+  Central Command's `SMClient` (the QA-042 lesson).
+* **PostgreSQL.** The per-site fault-domain filter, halts and error budgets on
+  the production engine.
+* **Live.** The gate halts site B through the Site Manager's own control,
+  suppresses a real site-B power domain with real verdicts, and spends and
+  withdraws site B's budget and error budget through real `ReportAction` calls
+  from a site-B device — each while reading site A's snapshot unchanged — then
+  restores what it changed.
+* **Mutation testing** of each fix.
+
+### Findings recorded, not fixed
+
+F-8 directed executions never draw down a window (`ReportDirectiveResult`
+records none); F-9 the node never reads the lease's suppression list; F-10 the
+windows are in memory; F-11 the legacy unknown-device report path; F-12 D6's
+synchronous/background asymmetry. D1, D3–D8, D10 and D11 are S3-E1's.
