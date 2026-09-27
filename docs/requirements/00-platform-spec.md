@@ -5179,7 +5179,15 @@ residue stands. **Found while designing B2-1:** under A22.2's dry-run
 exemption, a candidate's `evidence.observed` and `rationale` carry the
 incident TITLE as free text with no trust envelope — the machine incident
 contract withholds the title, the dry-run does not. B2-1 does not change the
-dry-run; the D10 sweep records the exemption by name. **Unchanged:** the
+dry-run; the D10 sweep records the exemption by name. **Found by the D10
+sweep once it covered the whole plane:** the dry-run's
+`evidence.components_reported` also carries the raw component list, BMC
+strings unenveloped, under the same A22.2 exemption; and the plane's one
+write answers with the resolved `params` of the agent's OWN just-admitted
+candidate (A24) — the values its dry-run already showed it, never another
+party's data. The sweep states both as narrow, named exemptions (the write's
+covers that one key; every other execution internal and every planted value
+is still refused there) rather than exempting either route wholesale. **Unchanged:** the
 permission vocabulary (25), `ROLE_PERMISSIONS`, the machine ceiling,
 `MACHINE_SURFACE` (14), `ROUTE_CONTRACT` (99), every job and meter, B0c
 metering, B1 discovery, `resolve()`, `permits()`, `read_reach`, S1–S4, B0b,

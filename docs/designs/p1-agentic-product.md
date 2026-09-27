@@ -5620,6 +5620,14 @@ detail additionally:
   "next_step": {"code": "review_pending_approval", "refs": [{"type": "device", "id": "…"}]}
 ```
 
+**Order and time.** The list is newest first, never-opened last, the
+incident id breaking ties; `children` are oldest first by the same rule, so a
+page and a detail name one order on every engine. Every timestamp carries its
+offset: the platform stores UTC, and a value an engine or a Site Manager
+hands back without a zone is UTC and is written as such, never as an
+ambiguous local time. A string that is not a timestamp is null, never
+echoed.
+
 **Withheld from every machine:** `title`, `correlation`, `is_parent`,
 `evidence_cited`, `similar_past_incidents`, every `action_id`, every prose
 next-step text, and every field the human DTO grows after this — the
@@ -5692,10 +5700,13 @@ correlation keys and values, generated sentinels, hostile BMC strings,
 operator identities and execution internals; every machine response is
 walked recursively, keys and values. Universal: no operator identity and no
 raw correlation on any route; generated text nowhere outside
-`diagnosis.generated.*`. Per-route: execution internals on lifecycle reads
-(the dry-run keeps its A22.2 exemption, and the sweep names it — including
-the incident title its `observed` evidence carries), and B2's withheld set
-on the incident routes.
+`diagnosis.generated.*`. Per-route: execution internals on lifecycle reads, and
+B2's withheld set on the incident routes. Two exemptions are named by rule,
+never by skipping a route: the dry-run (A22.2 — including the incident title
+its `observed` evidence and `rationale` quote, and the raw component list in
+`evidence.components_reported`), and the one write, whose answer carries the
+resolved `params` of the agent's own just-admitted candidate (A24) and
+nothing else from the internal set.
 
 ### How B2-1 is proven
 
