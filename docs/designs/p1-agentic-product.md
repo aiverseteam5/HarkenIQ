@@ -5521,3 +5521,191 @@ still, only through `/api/scope-grants/`.
   lifecycle; the live compose gate with real Keycloak: grant tenant scope
   FIRST, then credential, revoke (the unexpired token refused, a new one not
   mintable), retire, and a second tenant administrator still working.
+
+## §34o — A6-4B2: operational context projection (A30.34)
+
+The Phase-1 checkpoint (main `aa7f0a9`) found six things, four of them
+reproduced live: a site-holding machine received the raw `correlation` dict
+(B2-F1, A30.7 still open); `recommended_next.summary` promoted raw generated
+`suggested_action` (B2-F2, F4); the diagnosis `trust` label was decided by
+exclusion, so a missing or unrecognised provider read `deterministic`
+(B2-F3); an agent refused `/api/incidents/{id}` read the same incident
+through `/api/attention/` (B2-F4); hidden-site outcomes moved Attention's
+rank, `?limit` cut, band, basis, driver, summary and prose (B2-F5); and the
+A25.9 sweep was prefix-anchored on the Operational Agent router, leaving
+Attention and Incidents unswept (B2-F6). The decision package answered each
+with D1–D10; Vinod ratified all ten on 2026-09-27, amending D9.
+
+### The package, as ratified
+
+| ID | Decision | Slice |
+|---|---|---|
+| D1 | Reuse the three BOTH routes; branch on the TOKEN's species after the metered guard to an allow-listed projection stamped `view`, `contract`, `contract_version`, `as_of`. No caller-selectable view. | B2-1 (incidents), B2-2 (Attention) |
+| D2 | Machine Attention selects its predictive inputs BEFORE the one composer folds them (B0b-scoped outcomes, no cohort prior); publishes `order`, driver and device-history band only. | B2-2 |
+| D3 | Incident content inside machine Attention needs current `incident.view` coverage (else `held:false`); pending approvals as a bounded conclusion. | B2-2 |
+| D4 | Raw `correlation_meta` withheld from every machine; only the independently-visible parent/child relation; correlation-derived confidence null unless the site is covered. | B2-1 |
+| D5 | Four closed trust classes by allow-list, least-trusted input wins, unknown providers `untrusted_generated`; D5b: one derivation feeds the human field too. | B2-1 |
+| D6 | Additive `summary_trust` + `summary_source` on the human incident `recommended_next`, rendered in the Console. | B2-1 |
+| D7 | Machine `next_step {code, refs}` from platform facts only; never `propose_action`, prose, approval fields or action ids. | B2-1 (incident), B2-2 (Attention) |
+| D8 | One freshness function from `/runtime` (`fresh|stale|unknown`, 15 min), existing columns only. | B2-2 |
+| D9 | Site-less incidents tenant-owned on the machine plane; list and detail agree (amended). | B2-1 |
+| D10 | The A25.9 sweep re-anchored on `MACHINE_SURFACE`, with B2's withheld set and a projection-registry completeness check. | B2-1 |
+
+Refinements the package made to the checkpoint, all narrowing: D2 removes
+hidden data at input selection, not by stripping output, and also drops a
+moved device's outcome rows from sites the reader does not hold; D2 reuses
+the composer's own words and never emits `cohort_prior`; the dry-run's
+`evidence.attention` is named as the one machine-plane channel of B2-F5 left
+open (S3-E2's); D5 adds the composition rule; D6 includes the Console
+render; D7's `next_step` carries no approval fields; D8 reuses `/runtime`'s
+words; no incident-level `severity` is synthesized.
+
+### D9, amended — one owner rule for both machine reads
+
+The list already asks the owner predicate (`scope_device_owned`): a
+tenant-wide reach adds no filter, and a narrower one can never match an
+empty site (`site IN (...)` never contains `''`, and the device half
+requires the device to resolve AT the row's site). The DETAIL skipped that
+predicate whenever `site_id` was empty (`if row.site_id and …`) — which is
+PR #48's follow-up A. On the machine path the detail now asks the same
+predicate unconditionally, so:
+
+| machine reach (`incident.view`) | site-less in list | site-less detail |
+|---|---|---|
+| tenant | present | 200, the same item the list shows |
+| org unit / site / device / device_class / mixed / lapsed | absent | 404, body and charge identical to a nonexistent id |
+
+The human path keeps its behaviour (follow-up A, not bundled).
+
+### A6-4B2-1 — the machine incident contract
+
+`GET /api/incidents/` for a machine:
+
+```jsonc
+{ "view": "machine", "contract": "incident_list", "contract_version": "1",
+  "as_of": "…", "returned": 2, "incidents": [ ITEM, … ] }
+```
+
+`GET /api/incidents/{id}` for a machine: the stamp (`contract: "incident"`)
+plus the ITEM's fields plus `prior_learning`, `approvals` and `next_step`.
+
+```jsonc
+ITEM = {
+  "incident_id": "…",
+  "kind": "device",                 // closed: device|shared_power|rack_thermal|
+                                    //   batch_component|network_ambiguity|tor_connectivity|other
+  "status": "open",                 // closed: open|resolved|other
+  "subsystem": "disk",              // closed: disk|fan|memory|psu|thermal|interface|
+                                    //   log|config|os|bmc|""|other
+  "target": {"device_agent_id": "…", "site_id": "…", "site_contextual": false},
+  "labels": {"trust": "operator_supplied", "site_name": "…"},
+  "relation": {"parent_incident_id": null, "children": ["…"], "child_count": 1},
+  "confidence": 0.9,                // null when correlation-derived and the site is not covered
+  "inferred": false,
+  "timeline": {"opened_at": "…", "last_seen_at": "…", "resolved_at": null},
+  "components": {"reported": true, "truncated": false, "items": [
+      {"severity": "critical", "at": "…",
+       "reported": {"trust": "untrusted_telemetry", "component": "Disk.Bay.1", "skill_name": "…"}}]},
+  "diagnosis": {"origin": "llm", "trust": "untrusted_generated", "confidence": 0.8,
+      "generated": {"trust": "untrusted_generated", "withheld": false,
+                    "summary": "…", "suggested_action": "…", "reasoning_steps": ["…"]},
+      "generation_visibility": {"scope": "site", "site_id": "…", "projection_version": 1}}
+}
+detail additionally:
+  "prior_learning": [{"scope_type": "cohort", "site_id": null, "action_type": "SEL_CLEAR",
+                      "statement": {"trust": "untrusted_telemetry", "text": "…"},
+                      "confidence": 0.75, "last_confirmed_at": "…"}],
+  "approvals": {"pending_count": 1,
+                "pending": [{"action_type": "BMC_RESET", "lane": "node", "awaiting_since": "…"}]},
+  "next_step": {"code": "review_pending_approval", "refs": [{"type": "device", "id": "…"}]}
+```
+
+**Withheld from every machine:** `title`, `correlation`, `is_parent`,
+`evidence_cited`, `similar_past_incidents`, every `action_id`, every prose
+next-step text, and every field the human DTO grows after this — the
+projection names what passes, so nothing upstream reaches it by default.
+
+**Relations (D4, R2/D7).** `parent_incident_id` names a parent only when it
+is independently visible; `children` lists only the children the reader
+could read on their own, whatever their status or page — one query with the
+SAME owner predicate for the list, `children_of` for the detail — so the two
+reads report the same relation; `child_count` is the length of the list
+shown. **Confidence** is published when the reader covers the incident's
+site or the incident is the device's own (`kind == device`); a
+`network_ambiguity` peer-vote confidence, and a correlated parent's
+inferred-domain confidence, are null otherwise.
+
+**Components.** From `cc_incidents.components` (A22.4): a NULL row is
+`reported:false` — unknown, never "nothing affected" — and `[]` is
+`reported:true` with no items. At most 32 items (`truncated` says so);
+every string an item carries is device-reported and sits in a
+`untrusted_telemetry` envelope; `severity` is mapped onto the verdict
+vocabulary (`unknown|healthy|trending|warning|critical|other`).
+
+**The diagnosis (D5, and S4 first).** `origin` is closed — the three
+declared providers (`llm`, `deterministic`, `knowledge_base`) or `unknown`,
+never the raw string. `trust` is the D5 class: `llm` is
+`untrusted_generated`; `deterministic` and `knowledge_base` are
+`untrusted_telemetry` (their templates interpolate the device-reported
+component, severity and id); anything else, including a missing, mis-cased
+or non-string provider, is `untrusted_generated`. The generated block is
+S4's projection FIRST (`LearningView.generated`, A30.29: withheld unless the
+marker covers the reader now) and then the machine checks: the three named
+fields only, each type- and length-checked; a withheld or malformed block
+is the constant `{withheld: true}` block with no text at all. Nothing is
+copied out of it and nothing is derived from its content.
+
+**Trust envelopes (D5).** Every string leaf in a machine incident response
+is either a closed code, an opaque id, a timestamp, or free text inside an
+object whose `trust` names its class: `labels` (`operator_supplied`),
+`components[].reported` (`untrusted_telemetry`), `diagnosis.generated`
+(the diagnosis class) and `prior_learning[].statement`
+(`untrusted_telemetry` — the statement interpolates the BMC-reported vendor
+and model). A test walks every leaf against that declaration.
+
+**`next_step` (D7, incident half).** Detail only, from facts in the same
+response: a pending approval for the incident's device →
+`review_pending_approval` with a device ref (never the action id); else a
+diagnosis row → `review_diagnosis`; else `investigate` — both with the
+incident as ref. A diagnosis's CONTENT never decides it: changing only the
+generated text changes nothing outside `diagnosis.generated`.
+
+**The human path (D5b, D6).** `diagnosis.trust` is read from the same
+derivation and projected onto its two values, so only an unknown or
+malformed provider changes (to `untrusted_generated`); `origin` is
+untouched. The incident `recommended_next` gains `summary_trust` and
+`summary_source` (`platform`, or `diagnosis.generated.suggested_action`
+when it quotes the generated suggestion). The Console reads them through
+one typed module that applies the server's rule — an absent or
+unrecognised value renders as an unverified source — and shows the source
+beside the bold summary. Everything else a person reads is byte-identical
+to `main`, proved against a golden recorded from `main`.
+
+### D10 — the sweep, anchored on the declaration
+
+One module generates its targets from `MACHINE_SURFACE` — all 14 routes,
+including the response of the one write — and fails when a declared route
+has no sweep entry. Each entry names the machine projection that answers it;
+Attention is the one route still awaiting its projection and is pinned by a
+strict expected-failure that B2-2 must retire. A poisoned estate plants raw
+correlation keys and values, generated sentinels, hostile BMC strings,
+operator identities and execution internals; every machine response is
+walked recursively, keys and values. Universal: no operator identity and no
+raw correlation on any route; generated text nowhere outside
+`diagnosis.generated.*`. Per-route: execution internals on lifecycle reads
+(the dry-run keeps its A22.2 exemption, and the sweep names it — including
+the incident title its `observed` evidence carries), and B2's withheld set
+on the incident routes.
+
+### How B2-1 is proven
+
+Machine personas on the production stack under STRICT with persisted agent
+grants — tenant, org unit, site, device, device_class, mixed (full at one
+site, a grant withholding `incident.view` at another), revoked, expired,
+ungranted — plus a machine reading itself; hidden parent and hidden
+children; raw-correlation and generated sentinels; malformed generated
+blocks and the provider matrix; hostile BMC strings; site-less list/detail
+consistency and nonexistent-id equivalence with exactly-once B0c charges;
+the generated-text metamorphic test; the recursive payload sweep; the human
+golden; real PostgreSQL for hostile JSONB round trips; and the live gate
+with a real machine token.

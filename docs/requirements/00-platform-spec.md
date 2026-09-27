@@ -5073,3 +5073,114 @@ is conferred; but administration without visibility is an inconsistency,
 and G12-F2 is one way to produce such an agent. Aligning the two is an
 authorization change with product consequences (who may finish setting up
 a draft agent), so it is recorded for its own decision, not made here.
+
+**A30.34 — A6-4B2: operational context projection RATIFIED, with one
+amendment to D9; A6-4B2-1 recorded BEFORE the code (decided: Vinod,
+2026-09-27).** The Phase-1 checkpoint (main `aa7f0a9`, 2026-09-26) and the
+D1–D10 decision package that followed it (design §34o) are ratified: **D1,
+D2, D3, D4, D5, D6, D7, D8 and D10 — YES as recommended; D9 — YES with the
+amendment below.** Package-wide, and binding on both B2 slices: **no
+permission change** (the vocabulary stays at 25), **no machine ceiling
+change** (`MACHINE_PRINCIPAL_CEILING` stays `{fleet.view, incident.view,
+proposal.submit}`), **no route change** (`MACHINE_SURFACE` stays 14,
+`ROUTE_CONTRACT` 99), **no migration** (CC `0027`, SM `0011`, Console
+`0004`), and **no E1/E2 implementation**. Operational context is DESCRIPTIVE
+and must never become authority: nothing in it is a permission, an approval,
+a candidate, a licence, a policy override or Node authority.
+
+**The ratified decisions, as they bind.** (D1) The three BOTH routes
+(`GET /api/attention/`, `GET /api/incidents/`, `GET /api/incidents/{id}`)
+are reused; after the metered guard the handler branches on the
+TOKEN-derived species to a machine projection built by NAMING what may pass
+(A25.9), stamped `view`, `contract`, `contract_version` and `as_of`; the
+caller can never select the view. (D2) For a machine principal, Attention's
+predictive inputs are selected BEFORE the one composer folds them —
+outcomes through B0b's device-owned predicate under `fleet.view` reach, no
+cohort prior — so machine Attention is deletion-equivalent; only `order`,
+the driver and a device-history band are published; the human path and
+every internal decision path stay byte-identical; the dry-run and
+stored-proposal `evidence.attention`, the evaluator's proposal-budget order
+and scoped-human Attention remain recorded residuals owned by S3-E1/E2.
+(D3) Incident content inside machine Attention requires the reader's
+current `incident.view` coverage of that device, else `incidents:
+{held:false}`; pending approvals are a bounded conclusion only (count,
+action type, lane, waiting-since; no handle, no identity). (D4) Raw
+`correlation_meta` is withheld from EVERY machine on every route; the only
+relation is the independently-visible parent/child relation;
+correlation-derived confidence is null unless the reader covers the
+incident's site. (D5) Four closed trust classes — `deterministic`,
+`untrusted_generated`, `untrusted_telemetry`, `operator_supplied` — derived
+by ALLOW-LIST, never by exclusion; a string carries the least-trusted class
+of anything interpolated into it; unknown or malformed providers are
+`untrusted_generated`. D5b: the ONE derivation also feeds the human
+`diagnosis.trust`, which keeps its two values; this is an explicit
+carve-out from A30.14's "human payload changes beyond additive provenance"
+exclusion, and it changes no stored production row (the Site Manager stores
+only `llm` explanations). (D6) The human incident `recommended_next` gains
+additive `summary_trust` and `summary_source`, and the Console renders them
+where it renders the summary; nothing else changes for humans. (D7) A
+machine receives `next_step {code, refs}` from a closed set derived only
+from platform facts shown in the same response — never `propose_action`,
+prose, an approval field or an action id; B1 discovery stays the one answer
+on approval and addressability. (D8) One freshness function extracted from
+`/runtime` (`fresh | stale | unknown`, 15 minutes), over existing columns
+only, with `/runtime` byte-identical. (D10) The A25.9 hostile-serialization
+sweep is re-anchored on `MACHINE_SURFACE` — generated from the declaration,
+never a router prefix — with B2's withheld set and a check that every
+machine route has a registered machine projection.
+
+**D9, as amended (binding).** Site-less incidents are TENANT-OWNED on the
+MACHINE plane, and the machine LIST and DETAIL contracts MUST agree: a
+tenant-wide `incident.view` machine sees a site-less incident in the list
+AND in the detail; an org-, site-, device- or device_class-scoped machine
+finds it absent from the list, and its detail returns the exact same 404
+body, and the exact same B0c charge, as a nonexistent incident. A contract
+in which a tenant-wide machine's detail returns a row its list hides must
+not ship. Human behaviour is unchanged and stays with the existing PR #48
+follow-up A. No permission, route, ceiling or migration is authorized for
+this amendment.
+
+**Delivery: two independently merged slices, each merged and main-verified
+before the next begins.** **A6-4B2-1 — machine incident contract + trust
+boundary** (first). IN: the D1 machine projection for the two incident
+routes; D4; D5 and D5b; D6 with its Console rendering; D7's incident half;
+D9 as amended; D10. OUT: D2, D3, D7's Attention half and D8 (all A6-4B2-2);
+E1; E2; the datacenter taxonomy; the G12 follow-ups. Until B2-2 lands,
+machine Attention keeps serving the human DTO, and the D10 sweep names it as
+the ONE machine route still awaiting its projection, pinned so that B2-2
+must retire the pin. **A6-4B2-2 — Attention context** follows B2-1's merge
+and main verification, under its own review.
+
+**B2-1 security invariants.** (1) The machine incident projection is
+allow-listed — never the human DTO minus fields. (2) The caller cannot
+select the human or machine view. (3) Raw `correlation_meta` appears in no
+machine response, tenant-wide included. (4) Generated text exists only
+under `diagnosis.generated.*`. (5) Generated text can influence no
+`next_step`, order, count, code, ref or structured recommendation. (6)
+Every free-text machine leaf sits inside a trust envelope. (7) Unknown or
+malformed providers fail toward `untrusted_generated`. (8) `next_step`
+carries only closed codes and independently readable refs. (9) Site-less
+ownership is exactly the amended D9. (10) Human responses are byte-identical
+to `main` except the ratified D5b and D6 changes. (11) `MACHINE_SURFACE`
+stays the canonical completeness anchor. (12) No permission, ceiling, route
+or migration change.
+
+**Recorded, not changed by B2-1.** The residuals the package names keep
+their owners: scoped-human Attention still carries B2-F5 (A30.30's
+predictive-cohort family); the dry-run's and stored proposals'
+`evidence.attention` belong to S3-E2's viewer-projected evidence (the
+dry-run is the one machine-plane channel of B2-F5 that B2 leaves open); the
+evaluator's proposal-budget order is allocation influence for the S3-E1
+boundary; Site Manager correlation can decide whether a reader's own device
+has an incident and set its `inferred` flag (accepted, content withheld);
+site-less incidents on the HUMAN path stay with PR #48 follow-up A; a
+diagnosis has no creation time (Site Manager work); S4's minute-boundary
+residue stands. **Found while designing B2-1:** under A22.2's dry-run
+exemption, a candidate's `evidence.observed` and `rationale` carry the
+incident TITLE as free text with no trust envelope — the machine incident
+contract withholds the title, the dry-run does not. B2-1 does not change the
+dry-run; the D10 sweep records the exemption by name. **Unchanged:** the
+permission vocabulary (25), `ROLE_PERMISSIONS`, the machine ceiling,
+`MACHINE_SURFACE` (14), `ROUTE_CONTRACT` (99), every job and meter, B0c
+metering, B1 discovery, `resolve()`, `permits()`, `read_reach`, S1–S4, B0b,
+A23, A26, G12, every migration head.
