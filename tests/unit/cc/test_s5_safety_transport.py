@@ -49,6 +49,13 @@ async def _sm_stack(*, with_safety: bool = True):
         session.add(site)
         await session.flush()
         if with_safety:
+            # S3-E1-0 (A30.36): a suppression is reported for the site its
+            # fault domain belongs to, so the domain has to exist there.
+            from harkeniq_sm.db.models import FaultDomain
+
+            session.add(FaultDomain(
+                id="rack-3", site_id=site.id, name="rack-3", kind="power",
+            ))
             repo = ErrorBudgetRepo(session)
             for _ in range(MIN_OUTCOMES_TO_JUDGE):
                 await repo.record(site.id, "SEL_CLEAR", "FAILURE")

@@ -86,36 +86,40 @@ class TestAgentBudget:
 
 
 class TestSMAutonomy:
+    """The Site Manager's windows are per SITE (S3-E1-0, A30.36, F-3)."""
+
     def test_allows_when_no_policy(self):
         enforcer = SMAutonomyEnforcer()
-        assert enforcer.allows_site_wide("FAN_RESET")
+        assert enforcer.allows("site-1", "FAN_RESET")
 
-    def test_site_wide_budget_tracking(self):
+    def test_per_site_budget_tracking(self):
         enforcer = SMAutonomyEnforcer()
         enforcer.update_policy([{
             "action_type": "POWER_CYCLE",
             "max_per_window": 2,
             "window_seconds": 3600,
         }])
-        assert enforcer.allows_site_wide("POWER_CYCLE")
-        enforcer.record_execution("POWER_CYCLE")
-        enforcer.record_execution("POWER_CYCLE")
-        assert not enforcer.allows_site_wide("POWER_CYCLE")
+        assert enforcer.allows("site-1", "POWER_CYCLE")
+        enforcer.record_execution("site-1", "POWER_CYCLE")
+        enforcer.record_execution("site-1", "POWER_CYCLE")
+        assert not enforcer.allows("site-1", "POWER_CYCLE")
+        # Another site's window is its own.
+        assert enforcer.allows("site-2", "POWER_CYCLE")
 
-    def test_budget_for_agent_lease(self):
+    def test_budget_for_site_lease(self):
         enforcer = SMAutonomyEnforcer()
         enforcer.update_policy([{
             "action_type": "SEL_CLEAR",
             "max_per_window": 10,
             "window_seconds": 3600,
         }])
-        budget = enforcer.get_budget_for_agent("agent-1")
+        budget = enforcer.budget_for_site("site-1")
         assert budget["SEL_CLEAR"] == 10
 
     def test_stop_switch_denies_all(self):
         enforcer = SMAutonomyEnforcer()
         enforcer.activate_stop_switch("admin")
-        assert not enforcer.allows_site_wide("FAN_RESET")
+        assert not enforcer.allows("site-1", "FAN_RESET")
         assert enforcer.stop_switch_active
 
     def test_stop_switch_deactivate(self):
@@ -123,7 +127,7 @@ class TestSMAutonomy:
         enforcer.activate_stop_switch("admin")
         enforcer.deactivate_stop_switch("admin")
         assert not enforcer.stop_switch_active
-        assert enforcer.allows_site_wide("FAN_RESET")
+        assert enforcer.allows("site-1", "FAN_RESET")
 
     def test_state_reporting(self):
         enforcer = SMAutonomyEnforcer()
@@ -132,10 +136,10 @@ class TestSMAutonomy:
             "max_per_window": 1,
             "window_seconds": 14400,
         }])
-        enforcer.record_execution("BMC_RESET")
+        enforcer.record_execution("site-1", "BMC_RESET")
         state = enforcer.get_state()
-        assert state["budgets"]["BMC_RESET"]["remaining"] == 0
-        assert state["budgets"]["BMC_RESET"]["executions"] == 1
+        assert state["budgets_by_site"]["site-1"]["BMC_RESET"]["remaining"] == 0
+        assert state["budgets_by_site"]["site-1"]["BMC_RESET"]["executions"] == 1
 
 
 class TestSiteBudgetCounter:

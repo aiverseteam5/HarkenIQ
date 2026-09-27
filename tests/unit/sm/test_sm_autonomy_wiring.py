@@ -138,7 +138,7 @@ class TestHeartbeatLease:
         assert lease.stop_switch is True
         assert lease.allows_action("IDENTIFY_LED", "low", True) == "deny"
 
-    async def test_lease_carries_policy_budgets(self, lease_env):
+    async def test_lease_carries_policy_budgets(self, lease_env, db):
         lease_env["autonomy"].update_policy([
             {"action_type": "POWER_CYCLE", "max_per_window": 1,
              "window_seconds": 3600, "risk_level": "high"},
@@ -148,23 +148,38 @@ class TestHeartbeatLease:
         assert "POWER_CYCLE" in lease.action_classes
         assert lease.budget_remaining["POWER_CYCLE"] == 1
         assert lease.risk_ceiling == "high"
-        # Draw the budget down: remaining hits 0 in the next lease
-        lease_env["autonomy"].record_execution("POWER_CYCLE")
+        # Draw the budget down at the agent's OWN site (S3-E1-0, A30.36):
+        # remaining hits 0 in the next lease
+        lease_env["autonomy"].record_execution(await _site_id(db), "POWER_CYCLE")
         lease = await _heartbeat_lease(lease_env)
         assert lease.budget_remaining["POWER_CYCLE"] == 0
         assert lease.allows_action("POWER_CYCLE", "high", True) == "propose"
 
-    async def test_lease_carries_suppression_domains(self, lease_env):
+    async def test_lease_carries_suppression_domains(self, lease_env, db):
+        """The agent's OWN site's suppressed fault domains (S3-E1-0, A30.36).
+
+        A fault domain belongs to one site; a suppression the engine holds
+        for a domain that is not this site's -- or that no longer exists --
+        is not this agent's safety state.
+        """
+        from harkeniq_sm.db.models import FaultDomain
         from harkeniq_sm.suppression import CorrelationEvent
         import time
 
-        for device in ("dev-a", "dev-b"):
-            lease_env["suppression"].evaluate(CorrelationEvent(
-                device_id=device, domain_id="dom-1", domain_kind="power",
-                event_family="power", severity="CRITICAL",
-                timestamp=time.time(),
+        async with db() as session:
+            session.add(FaultDomain(
+                id="dom-1", site_id=await _site_id(db), name="pdu-1", kind="power",
             ))
+            await session.commit()
+        for domain_id in ("dom-1", "dom-gone"):
+            for device in ("dev-a", "dev-b"):
+                lease_env["suppression"].evaluate(CorrelationEvent(
+                    device_id=device, domain_id=domain_id, domain_kind="power",
+                    event_family="power", severity="CRITICAL",
+                    timestamp=time.time(),
+                ))
         assert lease_env["suppression"].is_suppressed("dom-1")
+        assert lease_env["suppression"].is_suppressed("dom-gone")
         lease = await _heartbeat_lease(lease_env)
         assert lease.suppression_domains == ["dom-1"]
 
@@ -340,7 +355,8 @@ class TestCompletedActionsDrawBudget:
         )
         ack = await servicer.ReportAction(report, None)
         assert ack.accepted
-        assert autonomy.get_budget_for_agent("agent-x")["FAN_RESET"] == 4
+        # The reporting device's OWN site's window (S3-E1-0, A30.36).
+        assert autonomy.budget_for_site(await _site_id(db))["FAN_RESET"] == 4
 
 
 class TestCorrelationSuppressionHook:

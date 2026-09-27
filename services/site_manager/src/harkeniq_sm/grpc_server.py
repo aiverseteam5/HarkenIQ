@@ -91,8 +91,11 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                     return self.autonomy.stop_switch_active
                 halt = await self.stopswitch.state_for(session, device.site_id)
                 # The persisted halts, OR the in-memory flag: a Site
-                # Manager mid-upgrade may still be carrying one.
-                return halt.halted or self.autonomy.stop_switch_active
+                # Manager mid-upgrade may still be carrying one. The same
+                # predicate the site's reported safety state uses (A30.36).
+                from harkeniq_sm.site_safety import site_halted
+
+                return site_halted(halt, self.autonomy)
         except Exception:
             logger.exception("could not resolve the halt for %s", agent_id)
             # A safety state that cannot be READ is a halt. This is the
@@ -233,14 +236,19 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
         if self.identity_service and accepted:
             try:
                 kwargs: dict = {}
-                if self.autonomy is not None:
-                    from harkeniq.actions.executor import DEFAULT_ALLOW_LIST
+                # S3-E1-0 (A30.36): every safety fact this lease carries is
+                # about the agent's OWN site -- its budget windows, its
+                # drop-back and its suppressed fault domains. Nothing any
+                # other site the Site Manager serves did may move it.
+                from harkeniq_sm.db.repos import ErrorBudgetRepo
+                from harkeniq_sm.site_safety import site_suppressions
 
-                    policy_actions = self.autonomy.policy_actions()
-                    classes = sorted(set(DEFAULT_ALLOW_LIST) | set(policy_actions))
-                    budgets = {a: -1 for a in classes}
-                    budgets.update(
-                        self.autonomy.get_budget_for_agent(request.agent_id)
+                async with self.ingest.sessionmaker() as lease_session:
+                    agent_device = await DeviceRepo(
+                        lease_session
+                    ).get_by_agent_id(request.agent_id)
+                    agent_site = (
+                        agent_device.site_id if agent_device is not None else ""
                     )
                     # S5: a class the error budget has dropped back gets a
                     # remaining budget of 0, which the lease reads as
@@ -250,19 +258,28 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                     # E0.2: the drop-back that gates THIS agent is its own
                     # site's. A failure pattern at another site the Site
                     # Manager serves must not reduce this agent's autonomy.
-                    async with self.ingest.sessionmaker() as budget_session:
-                        from harkeniq_sm.db.repos import ErrorBudgetRepo
-
-                        agent_device = await DeviceRepo(
-                            budget_session
-                        ).get_by_agent_id(request.agent_id)
-                        dropped = (
-                            await ErrorBudgetRepo(
-                                budget_session
-                            ).dropped_back_types(agent_device.site_id)
-                            if agent_device is not None and agent_device.site_id
-                            else set()
+                    dropped = (
+                        await ErrorBudgetRepo(lease_session).dropped_back_types(
+                            agent_site
                         )
+                        if agent_site else set()
+                    )
+                    suppressed = await site_suppressions(
+                        lease_session, self.suppression, agent_site,
+                    )
+                if self.autonomy is not None:
+                    from harkeniq.actions.executor import DEFAULT_ALLOW_LIST
+
+                    policy_actions = self.autonomy.policy_actions()
+                    classes = sorted(set(DEFAULT_ALLOW_LIST) | set(policy_actions))
+                    budgets = {a: -1 for a in classes}
+                    # F-3: this site's windows. A device whose site cannot
+                    # be resolved gets none: an unattributable budget is
+                    # exhausted ("propose"), never unlimited.
+                    budgets.update(
+                        self.autonomy.budget_for_site(agent_site) if agent_site
+                        else {a: 0 for a in policy_actions}
+                    )
                     for action_type in dropped:
                         if action_type in budgets:
                             budgets[action_type] = 0
@@ -283,9 +300,10 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
                         ),
                     }
                 if self.suppression is not None:
-                    kwargs["suppression_domains"] = (
-                        self.suppression.get_suppressed_domains()
-                    )
+                    # F-2: this site's suppressed fault domains only.
+                    kwargs["suppression_domains"] = [
+                        s["domain_id"] for s in suppressed
+                    ]
                 lease_bytes, lease_expiry_unix = (
                     await self.identity_service.issue_lease(
                         agent_id=request.agent_id, **kwargs,
@@ -314,9 +332,23 @@ class AgentServiceServicer(harkeniq_pb2_grpc.AgentServiceServicer):
         if self.approvals is None:
             return harkeniq_pb2.ActionAck(accepted=False)
         accepted = await self.approvals.report_action(request)
-        # QA-021: completed executions draw down the site budget window
+        # QA-021: completed executions draw down the site budget window.
+        # S3-E1-0 (A30.36, F-3): the REPORTING DEVICE's own site's window,
+        # never another site's and never one shared by every site the Site
+        # Manager serves.
         if accepted and self.autonomy is not None and request.status == "COMPLETED":
-            self.autonomy.record_execution(request.type)
+            async with self.ingest.sessionmaker() as session:
+                device = await DeviceRepo(session).get_by_agent_id(
+                    request.agent_id
+                )
+            if device is not None and device.site_id:
+                self.autonomy.record_execution(device.site_id, request.type)
+            else:
+                logger.warning(
+                    "Completed %s from %s cannot be attributed to a site; "
+                    "no site's budget window was drawn down",
+                    request.type, request.agent_id,
+                )
         return harkeniq_pb2.ActionAck(accepted=accepted)
 
     async def PollActionDecisions(self, request, context):
@@ -1183,27 +1215,31 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         """Compose FleetSafetyState for ONE site.
 
         E0.2: error budgets are per site, so a class withdrawn by one
-        site's failures is not reported as withdrawn at another. The
-        stop switch and suppression remain Site Manager wide, because
-        those are properties of the execution boundary itself.
+        site's failures is not reported as withdrawn at another.
+
+        S3-E1-0 (A30.36): so is everything else here. The halt is the
+        halt the Site Manager ENFORCES at this site (F-1), the suppressions
+        are this site's own fault domains' (F-2) and the budget windows are
+        this site's (F-3). A site-local safety fact at this site does not
+        change when only another site's state changes.
         """
         try:
             from harkeniq_sm.db.repos import ErrorBudgetRepo
+            from harkeniq_sm.site_safety import site_halted, site_suppressions
 
-            suppressions = []
-            engine = self.suppression
-            if engine is not None:
-                for domain_id, s in engine.get_state()[
-                    "active_suppressions"
-                ].items():
-                    suppressions.append(harkeniq_pb2.SuppressedDomain(
-                        domain_id=domain_id,
-                        event_family=s.get("event_family", "") or "",
-                        trigger_reason=s.get("trigger_reason", "") or "",
-                        device_count=int(s.get("device_count", 0) or 0),
-                        triggered_at_unix=int(s.get("triggered_at", 0) or 0),
-                        all_clear_at_unix=int(s.get("all_clear_at") or 0),
-                    ))
+            suppressions = [
+                harkeniq_pb2.SuppressedDomain(
+                    domain_id=s["domain_id"],
+                    event_family=s.get("event_family", "") or "",
+                    trigger_reason=s.get("trigger_reason", "") or "",
+                    device_count=int(s.get("device_count", 0) or 0),
+                    triggered_at_unix=int(s.get("triggered_at", 0) or 0),
+                    all_clear_at_unix=int(s.get("all_clear_at") or 0),
+                )
+                for s in await site_suppressions(
+                    session, self.suppression, site_id,
+                )
+            ]
 
             budgets = []
             for row in await ErrorBudgetRepo(session).list_all(site_id=site_id):
@@ -1218,15 +1254,23 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 ))
 
             site_budgets = []
-            stop_switch = False
             if self.autonomy is not None:
-                state = self.autonomy.get_state()
-                stop_switch = bool(state.get("stop_switch"))
-                for action_type, vals in (state.get("budgets") or {}).items():
+                for action_type, remaining in self.autonomy.budget_for_site(
+                    site_id
+                ).items():
                     site_budgets.append(harkeniq_pb2.SiteBudgetRemaining(
                         action_type=action_type,
-                        remaining=int(vals.get("remaining", -1)),
+                        remaining=int(remaining),
                     ))
+            # F-1: the persisted tenant / site / Site Manager-emergency halt
+            # for THIS site, or the in-memory flag that halts every site the
+            # process serves -- the proto has always declared this field
+            # "site-local"; before S3-E1-0 it carried the flag alone, so a
+            # site the Site Manager was refusing to act at read as running.
+            stop_switch = site_halted(
+                await self.stopswitch.state_for(session, site_id),
+                self.autonomy,
+            )
 
             return harkeniq_pb2.FleetSafetyState(
                 reported=True,

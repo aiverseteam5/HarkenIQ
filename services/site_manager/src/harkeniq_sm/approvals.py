@@ -61,10 +61,25 @@ class ApprovalService:
         """Upsert an agent ActionReport; idempotent per (device, action_id)."""
         agent_status = request.status.upper()
         async with self.sessionmaker() as session:
-            site = await SiteRepo(session).get_or_create(self.config.site_name)
-            device = await DeviceRepo(session).upsert_registration(
-                site_id=site.id, agent_id=request.agent_id
-            )
+            devices = DeviceRepo(session)
+            device = await devices.get_by_agent_id(request.agent_id)
+            if device is not None:
+                # S3-E1-0 (A30.36, F-7): an ENROLLED device reports under its
+                # OWN site. This resolved the Site Manager's configured site
+                # for every report and re-registered the device there, so on
+                # a Site Manager serving several sites a device enrolled
+                # anywhere else was refused (E1.3: a device does not move
+                # site by re-registering) and its action, outcome, drop-back
+                # feed and budget use were lost. Touching it records exactly
+                # what the re-registration did for a device already here.
+                await devices.touch(device)
+            else:
+                # An unknown device keeps the legacy single-site path,
+                # unchanged by decision (A30.36, F-11).
+                site = await SiteRepo(session).get_or_create(self.config.site_name)
+                device = await devices.upsert_registration(
+                    site_id=site.id, agent_id=request.agent_id
+                )
             repo = ActionRepo(session)
             audit = AuditRepo(session)
             row = await repo.get_by_agent_action(device.id, request.action_id)

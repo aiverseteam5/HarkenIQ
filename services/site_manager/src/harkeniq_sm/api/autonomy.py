@@ -38,7 +38,8 @@ def _suppression(request: Request):
 
 @router.get("")
 async def autonomy_state(request: Request) -> dict:
-    result = _enforcer(request).get_state()
+    enforcer = _enforcer(request)
+    result = enforcer.get_state()
     engine = getattr(request.app.state.sm, "suppression", None)
     if engine is not None:
         result["suppression"] = engine.get_state()
@@ -70,6 +71,14 @@ async def autonomy_state(request: Request) -> dict:
         ):
             entry["site_id"] = row.site_id
             entry["site_name"] = site_names.get(row.site_id, "")
+        # S3-E1-0 (A30.36, F-3): the budget windows are per site too. Every
+        # site this Site Manager serves is listed, including one that has not
+        # drawn a window down yet -- there is no Site Manager-wide window.
+        for site_id in sorted(site_names):
+            result["budgets_by_site"].setdefault(
+                site_id, enforcer.site_state(site_id),
+            )
+        result["site_names"] = site_names
     return result
 
 

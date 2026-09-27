@@ -1,0 +1,2568 @@
+{
+ "multi": [
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": []
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 3,
+        "cc-beta": 3
+       },
+       "suppressed_domains": []
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-alpha",
+      "disposition": "autonomous",
+      "status": "approved"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-beta",
+      "disposition": "autonomous",
+      "status": "approved"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": []
+    }
+   },
+   "outcomes": [],
+   "sm": {
+    "alpha": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 3
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 3
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 3
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    },
+    "beta": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 3
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "stage": "baseline"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": []
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1,
+        "cc-beta": 1
+       },
+       "suppressed_domains": []
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-alpha",
+      "disposition": "autonomous",
+      "status": "approved"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-beta",
+      "disposition": "autonomous",
+      "status": "approved"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": []
+    }
+   },
+   "outcomes": [
+    [
+     "accepted",
+     "accepted"
+    ]
+   ],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    },
+    "beta": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "stage": "alpha_executes_2"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": []
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1,
+        "cc-beta": 1
+       },
+       "suppressed_domains": []
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-alpha",
+      "disposition": "autonomous",
+      "status": "approved"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-beta",
+      "disposition": "autonomous",
+      "status": "approved"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": []
+    }
+   },
+   "outcomes": [
+    [
+     "error:UNKNOWN",
+     "error:UNKNOWN",
+     "error:UNKNOWN"
+    ]
+   ],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    },
+    "beta": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "stage": "beta_executes_3"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1,
+        "cc-beta": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-beta",
+        ""
+       ]
+      ],
+      "device": "cc-dev-beta",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      },
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-beta",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    },
+    "beta": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    }
+   },
+   "stage": "beta_domain_suppressed"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1,
+        "cc-beta": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-beta",
+        ""
+       ]
+      ],
+      "device": "cc-dev-beta",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      },
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-beta",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    },
+    "beta": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    }
+   },
+   "stage": "beta_halted"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "error_budget_dropped_back",
+        "detail": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+        "scope": "site",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "requires_approval",
+      "disposition_reason": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+      "safety": {
+       "error_budget": {
+        "dropped_back": true,
+        "failure": 5,
+        "sites_dropped_back": [
+         "cc-alpha"
+        ],
+        "success": 0,
+        "success_rate": 0.0,
+        "total": 5
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1,
+        "cc-beta": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-beta",
+        ""
+       ]
+      ],
+      "device": "cc-dev-beta",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure": 5,
+       "sites_dropped_back": [
+        "cc-alpha"
+       ],
+       "success": 0,
+       "success_rate": 0.0,
+       "total": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      },
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-beta",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [
+    [
+     "accepted",
+     "accepted",
+     "accepted",
+     "accepted",
+     "accepted"
+    ]
+   ],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "dropped_back_at_unix": 1790530320,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    },
+    "beta": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    }
+   },
+   "stage": "alpha_bmc_failures"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "error_budget_dropped_back",
+        "detail": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+        "scope": "site",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "requires_approval",
+      "disposition_reason": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+      "safety": {
+       "error_budget": {
+        "dropped_back": true,
+        "failure": 5,
+        "sites_dropped_back": [
+         "cc-alpha"
+        ],
+        "success": 0,
+        "success_rate": 0.0,
+        "total": 5
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5,
+        "cc-beta": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-beta is suppressed (direct_dependency)",
+        "domain_id": "dom-beta",
+        "scope": "domain",
+        "site_id": "cc-beta"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1,
+        "cc-beta": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        },
+        {
+         "device_count": 2,
+         "domain_id": "dom-beta",
+         "event_family": "power",
+         "site_id": "cc-beta",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     },
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-beta"
+       ],
+       [
+        "domain_suppressed",
+        "cc-beta",
+        "dom-beta"
+       ],
+       [
+        "site_suppressed",
+        "cc-beta",
+        ""
+       ]
+      ],
+      "device": "cc-dev-beta",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure": 5,
+       "sites_dropped_back": [
+        "cc-alpha"
+       ],
+       "success": 0,
+       "success_rate": 0.0,
+       "total": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha",
+      "cc-beta"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      },
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "site_id": "cc-beta",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [
+    [
+     "error:UNKNOWN",
+     "error:UNKNOWN",
+     "error:UNKNOWN",
+     "error:UNKNOWN",
+     "error:UNKNOWN"
+    ]
+   ],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    },
+    "beta": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530320,
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "dropped_back_at_unix": 1790530320,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    },
+    "beta": {
+     "as_of_unix": 1790530321,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-beta",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530320
+      }
+     ]
+    }
+   },
+   "stage": "beta_sel_failures"
+  }
+ ],
+ "recorded_from": "main 3323b74 (unmodified), before S3-E1-0",
+ "single": [
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5
+       },
+       "suppressed_domains": []
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 3
+       },
+       "suppressed_domains": []
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-alpha",
+      "disposition": "autonomous",
+      "status": "approved"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha"
+     ],
+     "suppressions": []
+    }
+   },
+   "outcomes": [],
+   "sm": {
+    "alpha": {
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 3
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530321,
+     "error_budgets": [],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 3
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "stage": "baseline"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5
+       },
+       "suppressed_domains": []
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1
+       },
+       "suppressed_domains": []
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "autonomous_grant",
+      "blocking": [],
+      "device": "cc-dev-alpha",
+      "disposition": "autonomous",
+      "status": "approved"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha"
+     ],
+     "suppressions": []
+    }
+   },
+   "outcomes": [
+    [
+     "accepted",
+     "accepted"
+    ]
+   ],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530321,
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": []
+    }
+   },
+   "stage": "alpha_executes_2"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-alpha is suppressed (direct_dependency)",
+        "domain_id": "dom-alpha",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": null,
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-alpha",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-alpha is suppressed (direct_dependency)",
+        "domain_id": "dom-alpha",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-alpha",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-alpha"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530321,
+     "error_budgets": [
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530321
+      }
+     ]
+    }
+   },
+   "stage": "alpha_domain_suppressed"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "error_budget_dropped_back",
+        "detail": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+        "scope": "site",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-alpha is suppressed (direct_dependency)",
+        "domain_id": "dom-alpha",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       }
+      ],
+      "disposition": "requires_approval",
+      "disposition_reason": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+      "safety": {
+       "error_budget": {
+        "dropped_back": true,
+        "failure": 5,
+        "sites_dropped_back": [
+         "cc-alpha"
+        ],
+        "success": 0,
+        "success_rate": 0.0,
+        "total": 5
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-alpha",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-alpha is suppressed (direct_dependency)",
+        "domain_id": "dom-alpha",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-alpha",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-alpha"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure": 5,
+       "sites_dropped_back": [
+        "cc-alpha"
+       ],
+       "success": 0,
+       "success_rate": 0.0,
+       "total": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [
+    [
+     "accepted",
+     "accepted",
+     "accepted",
+     "accepted",
+     "accepted"
+    ]
+   ],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530321,
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "dropped_back_at_unix": 1790530321,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530321
+      }
+     ]
+    }
+   },
+   "stage": "alpha_bmc_failures"
+  },
+  {
+   "cc": {
+    "classes": {
+     "BMC_RESET": {
+      "blocking_conditions": [
+       {
+        "code": "error_budget_dropped_back",
+        "detail": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+        "scope": "site",
+        "site_id": "cc-alpha"
+       },
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-alpha is suppressed (direct_dependency)",
+        "domain_id": "dom-alpha",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       }
+      ],
+      "disposition": "requires_approval",
+      "disposition_reason": "success rate fell below the error budget; autonomy for this class was withdrawn automatically",
+      "safety": {
+       "error_budget": {
+        "dropped_back": true,
+        "failure": 5,
+        "sites_dropped_back": [
+         "cc-alpha"
+        ],
+        "success": 0,
+        "success_rate": 0.0,
+        "total": 5
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 5
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-alpha",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     },
+     "SEL_CLEAR": {
+      "blocking_conditions": [
+       {
+        "code": "domain_suppressed",
+        "detail": "fault domain dom-alpha is suppressed (direct_dependency)",
+        "domain_id": "dom-alpha",
+        "scope": "domain",
+        "site_id": "cc-alpha"
+       }
+      ],
+      "disposition": "autonomous",
+      "disposition_reason": "granted at level 2; tenant is configured at level 2",
+      "safety": {
+       "error_budget": {
+        "dropped_back": false,
+        "failure": 0,
+        "sites_dropped_back": [],
+        "success": 2,
+        "success_rate": 1.0,
+        "total": 2
+       },
+       "reported": true,
+       "site_budget_remaining": {
+        "cc-alpha": 1
+       },
+       "suppressed_domains": [
+        {
+         "device_count": 2,
+         "domain_id": "dom-alpha",
+         "event_family": "power",
+         "site_id": "cc-alpha",
+         "trigger_reason": "direct_dependency"
+        }
+       ]
+      }
+     }
+    },
+    "posture_stop": {
+     "active": false,
+     "changed_by": "",
+     "sites_reporting_active": 0
+    },
+    "proposals": [
+     {
+      "action_type": "SEL_CLEAR",
+      "authorization_basis": "human_approval",
+      "blocking": [
+       [
+        "domain_suppressed",
+        "cc-alpha",
+        "dom-alpha"
+       ],
+       [
+        "site_suppressed",
+        "cc-alpha",
+        ""
+       ]
+      ],
+      "device": "cc-dev-alpha",
+      "disposition": "requires_approval",
+      "status": "awaiting_approval"
+     }
+    ],
+    "safety_state": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure": 5,
+       "sites_dropped_back": [
+        "cc-alpha"
+       ],
+       "success": 0,
+       "success_rate": 0.0,
+       "total": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure": 0,
+       "sites_dropped_back": [],
+       "success": 2,
+       "success_rate": 1.0,
+       "total": 2
+      }
+     ],
+     "reported": true,
+     "site_stop_switches": [],
+     "sites_not_reporting": [],
+     "sites_reporting": [
+      "cc-alpha"
+     ],
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "site_id": "cc-alpha",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "outcomes": [],
+   "sm": {
+    "alpha": {
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency"
+      }
+     ]
+    }
+   },
+   "sm_raw": {
+    "alpha": {
+     "as_of_unix": 1790530322,
+     "error_budgets": [
+      {
+       "action_type": "BMC_RESET",
+       "dropped_back": true,
+       "dropped_back_at_unix": 1790530321,
+       "failure_count": 5,
+       "min_success_rate": 0.95,
+       "success_count": 0,
+       "total_count": 5
+      },
+      {
+       "action_type": "SEL_CLEAR",
+       "dropped_back": false,
+       "dropped_back_at_unix": 0,
+       "failure_count": 0,
+       "min_success_rate": 0.95,
+       "success_count": 2,
+       "total_count": 2
+      }
+     ],
+     "reported": true,
+     "site_budgets": {
+      "BMC_RESET": 5,
+      "SEL_CLEAR": 1
+     },
+     "sm_stop_switch": false,
+     "suppressions": [
+      {
+       "all_clear_at_unix": 0,
+       "device_count": 2,
+       "domain_id": "dom-alpha",
+       "event_family": "power",
+       "trigger_reason": "direct_dependency",
+       "triggered_at_unix": 1790530321
+      }
+     ]
+    }
+   },
+   "stage": "alpha_halted"
+  }
+ ]
+}
