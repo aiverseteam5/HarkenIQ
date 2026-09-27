@@ -2580,6 +2580,30 @@ class IncidentRepo:
             await self.session.execute(stmt.order_by(CCIncident.opened_at))
         ).scalars().all()
 
+    async def children_index(
+        self, tenant_id: str, parent_ids: Iterable[str], scope=None,
+    ) -> dict[str, list[CCIncident]]:
+        """parent id -> the children the caller may read ON THEIR OWN.
+
+        A30.34: the machine LIST names each incident's children, and must
+        name exactly the ones its DETAIL names -- so this asks the SAME
+        predicate as `children_of`, whatever the child's status or page,
+        in one query for a whole page of parents.
+        """
+        wanted = sorted({i for i in parent_ids if i})
+        if not wanted:
+            return {}
+        stmt = _where(
+            select(CCIncident)
+            .where(CCIncident.tenant_id == tenant_id)
+            .where(CCIncident.parent_incident_id.in_(wanted)),
+            self._owned(scope),
+        )
+        out: dict[str, list[CCIncident]] = {}
+        for row in (await self.session.execute(stmt)).scalars().all():
+            out.setdefault(row.parent_incident_id, []).append(row)
+        return out
+
 
 class OperationalAgentRepo:
     """A0: the Operational Agent bundle, its scope, and its bindings.

@@ -281,6 +281,23 @@ def _machine_get_routes(app) -> set:
 
 
 class TestTheMatrixIsComplete:
+    def test_the_machine_answers_follow_the_declaration(self):
+        """A30.34 (D10): this matrix is anchored on a router PREFIX, so it
+        may not decide on its own which of its routes a machine reads. The
+        routes it answers 200 are exactly the GETs `MACHINE_SURFACE`
+        declares under the prefix. The hostile sweep across the WHOLE plane,
+        Attention and Incidents included, is generated from the declaration
+        in `tests/unit/cc/test_a30_34_machine_sweep.py`."""
+        from harkeniq_cc.route_contract import MACHINE_SURFACE
+
+        declared = {
+            path[len(PREFIX):] or "/"
+            for method, path in MACHINE_SURFACE
+            if method == "GET" and path.startswith(PREFIX)
+        }
+        served = {t for t, (status, _) in MACHINE_ROUTES.items() if status == 200}
+        assert served == declared, sorted(served ^ declared)
+
     async def test_every_get_on_this_router_has_a_decided_machine_answer(self):
         stack = await _stack()
         declared = set(MACHINE_ROUTES)

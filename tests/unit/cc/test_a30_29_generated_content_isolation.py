@@ -148,6 +148,35 @@ async def _machine(stack, keys, *, name) -> str:
     return agent_id
 
 
+def _assert_machine_withheld(listed, detail, incident_id):
+    """The same confidentiality through the MACHINE contract (A30.34).
+
+    A machine is not handed the title, the raw citations or the prior
+    incidents at all, and a withheld generated block carries no text --
+    the flag is the answer. What S4 guaranteed still holds, and holds
+    first: neither sentinel, anywhere.
+    """
+    withheld = {
+        "trust": "untrusted_generated", "withheld": True,
+        "summary": "", "suggested_action": "", "reasoning_steps": [],
+    }
+    for body in (listed, detail):
+        if body is not None:
+            assert _sentinels_in(body) == [], _sentinels_in(body)
+            assert body["view"] == "machine"
+    assert detail["incident_id"] == incident_id
+    for withheld_key in ("title", "evidence_cited", "similar_past_incidents"):
+        assert withheld_key not in json.dumps(detail), withheld_key
+    diag = detail["diagnosis"]
+    assert diag["generated"] == withheld
+    assert diag["generation_visibility"] is None
+    assert diag["origin"] == "llm" and diag["trust"] == "untrusted_generated"
+    if listed is not None:
+        for i in listed["incidents"]:
+            if i["incident_id"] == incident_id:
+                assert i["diagnosis"]["generated"] == withheld
+
+
 def _assert_withheld_everywhere(listed, detail, cands, incident_id, skill_id):
     """The row where present, its local facts, and NEITHER sentinel."""
     for body in (listed, detail, cands):
@@ -227,9 +256,9 @@ class TestHistoricalAttack:
         detail = await who.get(f"/api/incidents/{incident_id}")
         listed = await who.get("/api/incidents/", status="all")
         assert detail.status_code == 200, detail.text
-        _assert_withheld_everywhere(
+        _assert_machine_withheld(
             listed.json() if listed.status_code == 200 else None,
-            detail.json(), None, incident_id, skill_id,
+            detail.json(), incident_id,
         )
 
     async def test_tenant_wide_reader_keeps_the_original(self):

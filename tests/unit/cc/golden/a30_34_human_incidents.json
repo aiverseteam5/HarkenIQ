@@ -1,0 +1,2516 @@
+{
+ "h-device-a": {
+  "details": {
+   "b2-inc-a-child": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.7,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "deterministic",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-child",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:32:00",
+     "opened_at": "2026-09-20T08:02:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-disk": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.9,
+     "correlation": {},
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-a-disk",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:30:00",
+     "opened_at": "2026-09-20T08:00:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "disk",
+     "title": "node-s3-a: disk CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-nopro": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.5,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "unknown",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-nopro",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:33:00",
+     "opened_at": "2026-09-20T08:03:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "memory",
+     "title": "node-s3-a: memory WARNING TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-resolved": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-resolved",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:35:00",
+     "opened_at": "2026-09-20T08:05:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": "2026-09-20T10:00:00",
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "resolved",
+     "subsystem": "fan",
+     "title": "node-s3-a: fan CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-weird": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.6,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "LLM",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-weird",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:34:00",
+     "opened_at": "2026-09-20T08:04:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "thermal",
+     "title": "node-s3-a: thermal WARNING TITLESENTINELb2"
+    },
+    "status": 200
+   }
+  },
+  "list": {
+   "diagnosed": 4,
+   "incidents": [
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "device_agent_id": "node-s3-a",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-resolved",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:35:00",
+     "opened_at": "2026-09-20T08:05:00",
+     "parent_incident_id": null,
+     "resolved_at": "2026-09-20T10:00:00",
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "resolved",
+     "subsystem": "fan",
+     "title": "node-s3-a: fan CRITICAL TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.6,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "LLM",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-weird",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:34:00",
+     "opened_at": "2026-09-20T08:04:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "thermal",
+     "title": "node-s3-a: thermal WARNING TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.5,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "unknown",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-nopro",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:33:00",
+     "opened_at": "2026-09-20T08:03:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "memory",
+     "title": "node-s3-a: memory WARNING TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.9,
+     "correlation": {},
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-a-disk",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:30:00",
+     "opened_at": "2026-09-20T08:00:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "disk",
+     "title": "node-s3-a: disk CRITICAL TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {},
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.7,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+       "withheld": true
+      },
+      "generation_visibility": null,
+      "origin": "deterministic",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-child",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:32:00",
+     "opened_at": "2026-09-20T08:02:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+    }
+   ],
+   "tenant_id": "tenant-demo",
+   "total": 5
+  },
+  "siteless_detail": {
+   "body": {
+    "child_count": 0,
+    "children": [],
+    "confidence": 1.0,
+    "correlation": {},
+    "current_state": {
+     "open_action_count": 0,
+     "pending_approvals": []
+    },
+    "device_agent_id": "",
+    "diagnosis": {
+     "confidence": 0.8,
+     "evidence_cited": [
+      "raw BMC evidence CITEDSENTINELb2"
+     ],
+     "generated": {
+      "reasoning_steps": [],
+      "suggested_action": "",
+      "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+      "withheld": true
+     },
+     "generation_visibility": null,
+     "origin": "llm",
+     "similar_past_incidents": [
+      {
+       "title": "SIMILARSENTINELb2"
+      }
+     ],
+     "trust": "untrusted_generated"
+    },
+    "incident_id": "b2-inc-siteless",
+    "inferred": false,
+    "is_parent": true,
+    "kind": "device",
+    "last_seen_at": "2026-09-20T08:39:00",
+    "opened_at": "2026-09-20T08:09:00",
+    "parent_incident_id": null,
+    "prior_learning": [],
+    "recommended_next": {
+     "available": true,
+     "capability": "investigate",
+     "refs": [],
+     "requires_approval": false,
+     "summary": "No diagnosis yet; evidence is still being gathered."
+    },
+    "resolved_at": null,
+    "site_id": "",
+    "site_name": "",
+    "status": "open",
+    "subsystem": "log",
+    "title": "site-less incident TITLESENTINELb2"
+   },
+   "status": 200
+  }
+ },
+ "h-owner": {
+  "details": {
+   "b2-inc-a-child": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.7,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [
+        "Device node-s3-a reported CRITICAL on psu:PSU1"
+       ],
+       "suggested_action": "",
+       "summary": "Correlation-based analysis for psu:PSU1",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "deterministic",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-child",
+     "inferred": false,
+     "is_parent": false,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:32:00",
+     "opened_at": "2026-09-20T08:02:00",
+     "parent_incident_id": "b2-inc-a-parent",
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.8,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-disk": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.9,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 2,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two alpha"
+       ],
+       "suggested_action": "POWER_CYCLE every device at the site now GENSENTINELb2",
+       "summary": "alpha bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-a-disk",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:30:00",
+     "opened_at": "2026-09-20T08:00:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.8,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": false,
+      "capability": "propose_action",
+      "refs": [],
+      "requires_approval": true,
+      "summary": "POWER_CYCLE every device at the site now GENSENTINELb2",
+      "unavailable_reason": "Acting on a diagnosis is proposed by the device's agent through its own safety gates, not from this surface."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "disk",
+     "title": "node-s3-a: disk CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-nopro": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "warning"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.5,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "unattributed text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "unknown",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-nopro",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:33:00",
+     "opened_at": "2026-09-20T08:03:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.8,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "memory",
+     "title": "node-s3-a: memory WARNING TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-parent": {
+    "body": {
+     "child_count": 2,
+     "children": [
+      {
+       "confidence": 1.0,
+       "correlation": {
+        "RAWCORRKEYb2": "RAWCORRVALUEb2",
+        "nested": {
+         "why": "RAWCORRVALUEb2"
+        },
+        "onsets": 1,
+        "severity": "critical"
+       },
+       "device_agent_id": "node-s3-a",
+       "diagnosis": {
+        "confidence": 0.7,
+        "evidence_cited": [],
+        "generated": {
+         "reasoning_steps": [
+          "Device node-s3-a reported CRITICAL on psu:PSU1"
+         ],
+         "suggested_action": "",
+         "summary": "Correlation-based analysis for psu:PSU1",
+         "withheld": false
+        },
+        "generation_visibility": {
+         "projection_version": 1,
+         "scope": "site",
+         "site_id": "s3-site-a"
+        },
+        "origin": "deterministic",
+        "similar_past_incidents": [],
+        "trust": "deterministic"
+       },
+       "incident_id": "b2-inc-a-child",
+       "inferred": false,
+       "is_parent": false,
+       "kind": "device",
+       "last_seen_at": "2026-09-20T08:32:00",
+       "opened_at": "2026-09-20T08:02:00",
+       "parent_incident_id": "b2-inc-a-parent",
+       "resolved_at": null,
+       "site_id": "s3-site-a",
+       "site_name": "s3-alpha",
+       "status": "open",
+       "subsystem": "psu",
+       "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+      },
+      {
+       "confidence": 1.0,
+       "correlation": {
+        "RAWCORRKEYb2": "RAWCORRVALUEb2",
+        "nested": {
+         "why": "RAWCORRVALUEb2"
+        },
+        "onsets": 1,
+        "severity": "critical"
+       },
+       "device_agent_id": "node-s3-b",
+       "diagnosis": null,
+       "incident_id": "b2-inc-b-child",
+       "inferred": false,
+       "is_parent": false,
+       "kind": "device",
+       "last_seen_at": "2026-09-20T08:36:00",
+       "opened_at": "2026-09-20T08:06:00",
+       "parent_incident_id": "b2-inc-a-parent",
+       "resolved_at": null,
+       "site_id": "s3-site-b",
+       "site_name": "s3-bravo",
+       "status": "open",
+       "subsystem": "psu",
+       "title": "node-s3-b: psu CRITICAL TITLESENTINELb2"
+      }
+     ],
+     "confidence": 0.7,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "devices": [
+       "node-s3-a",
+       "PEERSECRETb2"
+      ],
+      "domain": "PDUSECRETb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      }
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-parent",
+     "inferred": true,
+     "is_parent": true,
+     "kind": "shared_power",
+     "last_seen_at": "2026-09-20T08:31:00",
+     "opened_at": "2026-09-20T08:01:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "shared_power at PDUSECRETb2 (2 devices) TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-resolved": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-resolved",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:35:00",
+     "opened_at": "2026-09-20T08:05:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.8,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": "2026-09-20T10:00:00",
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "resolved",
+     "subsystem": "fan",
+     "title": "node-s3-a: fan CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-weird": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 3,
+      "severity": "warning"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.6,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [
+        "because GENSENTINELb2"
+       ],
+       "suggested_action": "",
+       "summary": "model text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "LLM",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-weird",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:34:00",
+     "opened_at": "2026-09-20T08:04:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.8,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "thermal",
+     "title": "node-s3-a: thermal WARNING TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-b-child": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 1,
+      "pending_approvals": [
+       {
+        "action_id": "ACTIONIDSENTINELb2",
+        "action_type": "BMC_RESET"
+       }
+      ]
+     },
+     "device_agent_id": "node-s3-b",
+     "diagnosis": null,
+     "incident_id": "b2-inc-b-child",
+     "inferred": false,
+     "is_parent": false,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:36:00",
+     "opened_at": "2026-09-20T08:06:00",
+     "parent_incident_id": "b2-inc-a-parent",
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.7,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-b",
+       "scope_type": "site",
+       "signal_key": "s3-sig-b",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-B"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "review_pending_approval",
+      "refs": [
+       "ACTIONIDSENTINELb2"
+      ],
+      "requires_approval": true,
+      "summary": "1 action awaiting a human decision."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-b",
+     "site_name": "s3-bravo",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "node-s3-b: psu CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-b-netamb": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.6,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "assessment": "path_suspect",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "votes": {
+       "PEERSECRETb2": "UNRESPONSIVE",
+       "node-s3-a": "ALIVE"
+      }
+     },
+     "current_state": {
+      "open_action_count": 1,
+      "pending_approvals": [
+       {
+        "action_id": "ACTIONIDSENTINELb2",
+        "action_type": "BMC_RESET"
+       }
+      ]
+     },
+     "device_agent_id": "node-s3-b",
+     "diagnosis": null,
+     "incident_id": "b2-inc-b-netamb",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "network_ambiguity",
+     "last_seen_at": "2026-09-20T08:37:00",
+     "opened_at": "2026-09-20T08:07:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.7,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-b",
+       "scope_type": "site",
+       "signal_key": "s3-sig-b",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-B"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "review_pending_approval",
+      "refs": [
+       "ACTIONIDSENTINELb2"
+      ],
+      "requires_approval": true,
+      "summary": "1 action awaiting a human decision."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-b",
+     "site_name": "s3-bravo",
+     "status": "open",
+     "subsystem": "",
+     "title": "node-s3-b: unreachable from SM (path_suspect) TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-c-hidden": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 1,
+      "pending_approvals": [
+       {
+        "action_id": "ACTIONIDSENTINELb2-C",
+        "action_type": "SEL_CLEAR"
+       }
+      ]
+     },
+     "device_agent_id": "node-s3-c",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two SECRET-C"
+       ],
+       "suggested_action": "",
+       "summary": "SECRET-C bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-c"
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-c-hidden",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:38:00",
+     "opened_at": "2026-09-20T08:08:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.6,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-c",
+       "scope_type": "site",
+       "signal_key": "s3-sig-c",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "SECRET-SIGNAL-C"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "review_pending_approval",
+      "refs": [
+       "ACTIONIDSENTINELb2-C"
+      ],
+      "requires_approval": true,
+      "summary": "1 action awaiting a human decision."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-c",
+     "site_name": "s3-charlie",
+     "status": "open",
+     "subsystem": "fan",
+     "title": "node-s3-c: fan CRITICAL SECRET-C TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-siteless": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "warning"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two siteless"
+       ],
+       "suggested_action": "",
+       "summary": "siteless bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "tenant",
+       "site_id": null
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-siteless",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:39:00",
+     "opened_at": "2026-09-20T08:09:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "",
+     "site_name": "",
+     "status": "open",
+     "subsystem": "log",
+     "title": "site-less incident TITLESENTINELb2"
+    },
+    "status": 200
+   }
+  },
+  "list": {
+   "diagnosed": 5,
+   "incidents": [
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "warning"
+     },
+     "device_agent_id": "",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two siteless"
+       ],
+       "suggested_action": "",
+       "summary": "siteless bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "tenant",
+       "site_id": null
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-siteless",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:39:00",
+     "opened_at": "2026-09-20T08:09:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "",
+     "site_name": "",
+     "status": "open",
+     "subsystem": "log",
+     "title": "site-less incident TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "device_agent_id": "node-s3-c",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two SECRET-C"
+       ],
+       "suggested_action": "",
+       "summary": "SECRET-C bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-c"
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-c-hidden",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:38:00",
+     "opened_at": "2026-09-20T08:08:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-c",
+     "site_name": "s3-charlie",
+     "status": "open",
+     "subsystem": "fan",
+     "title": "node-s3-c: fan CRITICAL SECRET-C TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.6,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "assessment": "path_suspect",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "votes": {
+       "PEERSECRETb2": "UNRESPONSIVE",
+       "node-s3-a": "ALIVE"
+      }
+     },
+     "device_agent_id": "node-s3-b",
+     "diagnosis": null,
+     "incident_id": "b2-inc-b-netamb",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "network_ambiguity",
+     "last_seen_at": "2026-09-20T08:37:00",
+     "opened_at": "2026-09-20T08:07:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-b",
+     "site_name": "s3-bravo",
+     "status": "open",
+     "subsystem": "",
+     "title": "node-s3-b: unreachable from SM (path_suspect) TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-resolved",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:35:00",
+     "opened_at": "2026-09-20T08:05:00",
+     "parent_incident_id": null,
+     "resolved_at": "2026-09-20T10:00:00",
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "resolved",
+     "subsystem": "fan",
+     "title": "node-s3-a: fan CRITICAL TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 3,
+      "severity": "warning"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.6,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [
+        "because GENSENTINELb2"
+       ],
+       "suggested_action": "",
+       "summary": "model text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "LLM",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-weird",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:34:00",
+     "opened_at": "2026-09-20T08:04:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "thermal",
+     "title": "node-s3-a: thermal WARNING TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "warning"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.5,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "unattributed text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "unknown",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-nopro",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:33:00",
+     "opened_at": "2026-09-20T08:03:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "memory",
+     "title": "node-s3-a: memory WARNING TITLESENTINELb2"
+    },
+    {
+     "child_count": 2,
+     "children": [
+      {
+       "confidence": 1.0,
+       "correlation": {
+        "RAWCORRKEYb2": "RAWCORRVALUEb2",
+        "nested": {
+         "why": "RAWCORRVALUEb2"
+        },
+        "onsets": 1,
+        "severity": "critical"
+       },
+       "device_agent_id": "node-s3-b",
+       "diagnosis": null,
+       "incident_id": "b2-inc-b-child",
+       "inferred": false,
+       "is_parent": false,
+       "kind": "device",
+       "last_seen_at": "2026-09-20T08:36:00",
+       "opened_at": "2026-09-20T08:06:00",
+       "parent_incident_id": "b2-inc-a-parent",
+       "resolved_at": null,
+       "site_id": "s3-site-b",
+       "site_name": "s3-bravo",
+       "status": "open",
+       "subsystem": "psu",
+       "title": "node-s3-b: psu CRITICAL TITLESENTINELb2"
+      },
+      {
+       "confidence": 1.0,
+       "correlation": {
+        "RAWCORRKEYb2": "RAWCORRVALUEb2",
+        "nested": {
+         "why": "RAWCORRVALUEb2"
+        },
+        "onsets": 1,
+        "severity": "critical"
+       },
+       "device_agent_id": "node-s3-a",
+       "diagnosis": {
+        "confidence": 0.7,
+        "evidence_cited": [],
+        "generated": {
+         "reasoning_steps": [
+          "Device node-s3-a reported CRITICAL on psu:PSU1"
+         ],
+         "suggested_action": "",
+         "summary": "Correlation-based analysis for psu:PSU1",
+         "withheld": false
+        },
+        "generation_visibility": {
+         "projection_version": 1,
+         "scope": "site",
+         "site_id": "s3-site-a"
+        },
+        "origin": "deterministic",
+        "similar_past_incidents": [],
+        "trust": "deterministic"
+       },
+       "incident_id": "b2-inc-a-child",
+       "inferred": false,
+       "is_parent": false,
+       "kind": "device",
+       "last_seen_at": "2026-09-20T08:32:00",
+       "opened_at": "2026-09-20T08:02:00",
+       "parent_incident_id": "b2-inc-a-parent",
+       "resolved_at": null,
+       "site_id": "s3-site-a",
+       "site_name": "s3-alpha",
+       "status": "open",
+       "subsystem": "psu",
+       "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+      }
+     ],
+     "confidence": 0.7,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "devices": [
+       "node-s3-a",
+       "PEERSECRETb2"
+      ],
+      "domain": "PDUSECRETb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      }
+     },
+     "device_agent_id": "",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-parent",
+     "inferred": true,
+     "is_parent": true,
+     "kind": "shared_power",
+     "last_seen_at": "2026-09-20T08:31:00",
+     "opened_at": "2026-09-20T08:01:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "shared_power at PDUSECRETb2 (2 devices) TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.9,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 2,
+      "severity": "critical"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two alpha"
+       ],
+       "suggested_action": "POWER_CYCLE every device at the site now GENSENTINELb2",
+       "summary": "alpha bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-a-disk",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:30:00",
+     "opened_at": "2026-09-20T08:00:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "disk",
+     "title": "node-s3-a: disk CRITICAL TITLESENTINELb2"
+    }
+   ],
+   "tenant_id": "tenant-demo",
+   "total": 8
+  },
+  "siteless_detail": {
+   "body": {
+    "child_count": 0,
+    "children": [],
+    "confidence": 1.0,
+    "correlation": {
+     "RAWCORRKEYb2": "RAWCORRVALUEb2",
+     "nested": {
+      "why": "RAWCORRVALUEb2"
+     },
+     "onsets": 1,
+     "severity": "warning"
+    },
+    "current_state": {
+     "open_action_count": 0,
+     "pending_approvals": []
+    },
+    "device_agent_id": "",
+    "diagnosis": {
+     "confidence": 0.8,
+     "evidence_cited": [
+      "raw BMC evidence CITEDSENTINELb2"
+     ],
+     "generated": {
+      "reasoning_steps": [
+       "step one GENSENTINELb2",
+       "step two siteless"
+      ],
+      "suggested_action": "",
+      "summary": "siteless bearing wear on the fan GENSENTINELb2",
+      "withheld": false
+     },
+     "generation_visibility": {
+      "projection_version": 1,
+      "scope": "tenant",
+      "site_id": null
+     },
+     "origin": "llm",
+     "similar_past_incidents": [
+      {
+       "title": "SIMILARSENTINELb2"
+      }
+     ],
+     "trust": "untrusted_generated"
+    },
+    "incident_id": "b2-inc-siteless",
+    "inferred": false,
+    "is_parent": true,
+    "kind": "device",
+    "last_seen_at": "2026-09-20T08:39:00",
+    "opened_at": "2026-09-20T08:09:00",
+    "parent_incident_id": null,
+    "prior_learning": [],
+    "recommended_next": {
+     "available": true,
+     "capability": "investigate",
+     "refs": [],
+     "requires_approval": false,
+     "summary": "No diagnosis yet; evidence is still being gathered."
+    },
+    "resolved_at": null,
+    "site_id": "",
+    "site_name": "",
+    "status": "open",
+    "subsystem": "log",
+    "title": "site-less incident TITLESENTINELb2"
+   },
+   "status": 200
+  }
+ },
+ "h-site-a": {
+  "details": {
+   "b2-inc-a-child": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.7,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [
+        "Device node-s3-a reported CRITICAL on psu:PSU1"
+       ],
+       "suggested_action": "",
+       "summary": "Correlation-based analysis for psu:PSU1",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "deterministic",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-child",
+     "inferred": false,
+     "is_parent": false,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:32:00",
+     "opened_at": "2026-09-20T08:02:00",
+     "parent_incident_id": "b2-inc-a-parent",
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.75,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-disk": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.9,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 2,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two alpha"
+       ],
+       "suggested_action": "POWER_CYCLE every device at the site now GENSENTINELb2",
+       "summary": "alpha bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-a-disk",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:30:00",
+     "opened_at": "2026-09-20T08:00:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.75,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": false,
+      "capability": "propose_action",
+      "refs": [],
+      "requires_approval": true,
+      "summary": "POWER_CYCLE every device at the site now GENSENTINELb2",
+      "unavailable_reason": "Acting on a diagnosis is proposed by the device's agent through its own safety gates, not from this surface."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "disk",
+     "title": "node-s3-a: disk CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-nopro": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "warning"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.5,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "unattributed text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "unknown",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-nopro",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:33:00",
+     "opened_at": "2026-09-20T08:03:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.75,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "memory",
+     "title": "node-s3-a: memory WARNING TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-parent": {
+    "body": {
+     "child_count": 1,
+     "children": [
+      {
+       "confidence": 1.0,
+       "correlation": {
+        "RAWCORRKEYb2": "RAWCORRVALUEb2",
+        "nested": {
+         "why": "RAWCORRVALUEb2"
+        },
+        "onsets": 1,
+        "severity": "critical"
+       },
+       "device_agent_id": "node-s3-a",
+       "diagnosis": {
+        "confidence": 0.7,
+        "evidence_cited": [],
+        "generated": {
+         "reasoning_steps": [
+          "Device node-s3-a reported CRITICAL on psu:PSU1"
+         ],
+         "suggested_action": "",
+         "summary": "Correlation-based analysis for psu:PSU1",
+         "withheld": false
+        },
+        "generation_visibility": {
+         "projection_version": 1,
+         "scope": "site",
+         "site_id": "s3-site-a"
+        },
+        "origin": "deterministic",
+        "similar_past_incidents": [],
+        "trust": "deterministic"
+       },
+       "incident_id": "b2-inc-a-child",
+       "inferred": false,
+       "is_parent": false,
+       "kind": "device",
+       "last_seen_at": "2026-09-20T08:32:00",
+       "opened_at": "2026-09-20T08:02:00",
+       "parent_incident_id": "b2-inc-a-parent",
+       "resolved_at": null,
+       "site_id": "s3-site-a",
+       "site_name": "s3-alpha",
+       "status": "open",
+       "subsystem": "psu",
+       "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+      }
+     ],
+     "confidence": 0.7,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "devices": [
+       "node-s3-a",
+       "PEERSECRETb2"
+      ],
+      "domain": "PDUSECRETb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      }
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-parent",
+     "inferred": true,
+     "is_parent": true,
+     "kind": "shared_power",
+     "last_seen_at": "2026-09-20T08:31:00",
+     "opened_at": "2026-09-20T08:01:00",
+     "parent_incident_id": null,
+     "prior_learning": [],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "shared_power at PDUSECRETb2 (2 devices) TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-resolved": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-resolved",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:35:00",
+     "opened_at": "2026-09-20T08:05:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.75,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": "2026-09-20T10:00:00",
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "resolved",
+     "subsystem": "fan",
+     "title": "node-s3-a: fan CRITICAL TITLESENTINELb2"
+    },
+    "status": 200
+   },
+   "b2-inc-a-weird": {
+    "body": {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 3,
+      "severity": "warning"
+     },
+     "current_state": {
+      "open_action_count": 0,
+      "pending_approvals": []
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.6,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [
+        "because GENSENTINELb2"
+       ],
+       "suggested_action": "",
+       "summary": "model text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "LLM",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-weird",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:34:00",
+     "opened_at": "2026-09-20T08:04:00",
+     "parent_incident_id": null,
+     "prior_learning": [
+      {
+       "action_type": "SEL_CLEAR",
+       "confidence": 0.75,
+       "evidence": {},
+       "last_confirmed_at": "2026-09-20T08:00:00",
+       "observation_count": 1,
+       "scope_ref": "s3-site-a",
+       "scope_type": "site",
+       "signal_key": "s3-sig-a",
+       "source_cycle_id": null,
+       "source_pattern_id": "",
+       "statement": "signal-A"
+      }
+     ],
+     "recommended_next": {
+      "available": true,
+      "capability": "investigate",
+      "refs": [],
+      "requires_approval": false,
+      "summary": "No diagnosis yet; evidence is still being gathered."
+     },
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "thermal",
+     "title": "node-s3-a: thermal WARNING TITLESENTINELb2"
+    },
+    "status": 200
+   }
+  },
+  "list": {
+   "diagnosed": 3,
+   "incidents": [
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "critical"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-resolved",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:35:00",
+     "opened_at": "2026-09-20T08:05:00",
+     "parent_incident_id": null,
+     "resolved_at": "2026-09-20T10:00:00",
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "resolved",
+     "subsystem": "fan",
+     "title": "node-s3-a: fan CRITICAL TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 3,
+      "severity": "warning"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.6,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [
+        "because GENSENTINELb2"
+       ],
+       "suggested_action": "",
+       "summary": "model text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "LLM",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-weird",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:34:00",
+     "opened_at": "2026-09-20T08:04:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "thermal",
+     "title": "node-s3-a: thermal WARNING TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 1.0,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 1,
+      "severity": "warning"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.5,
+      "evidence_cited": [],
+      "generated": {
+       "reasoning_steps": [],
+       "suggested_action": "",
+       "summary": "unattributed text GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "unknown",
+      "similar_past_incidents": [],
+      "trust": "deterministic"
+     },
+     "incident_id": "b2-inc-a-nopro",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:33:00",
+     "opened_at": "2026-09-20T08:03:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "memory",
+     "title": "node-s3-a: memory WARNING TITLESENTINELb2"
+    },
+    {
+     "child_count": 1,
+     "children": [
+      {
+       "confidence": 1.0,
+       "correlation": {
+        "RAWCORRKEYb2": "RAWCORRVALUEb2",
+        "nested": {
+         "why": "RAWCORRVALUEb2"
+        },
+        "onsets": 1,
+        "severity": "critical"
+       },
+       "device_agent_id": "node-s3-a",
+       "diagnosis": {
+        "confidence": 0.7,
+        "evidence_cited": [],
+        "generated": {
+         "reasoning_steps": [
+          "Device node-s3-a reported CRITICAL on psu:PSU1"
+         ],
+         "suggested_action": "",
+         "summary": "Correlation-based analysis for psu:PSU1",
+         "withheld": false
+        },
+        "generation_visibility": {
+         "projection_version": 1,
+         "scope": "site",
+         "site_id": "s3-site-a"
+        },
+        "origin": "deterministic",
+        "similar_past_incidents": [],
+        "trust": "deterministic"
+       },
+       "incident_id": "b2-inc-a-child",
+       "inferred": false,
+       "is_parent": false,
+       "kind": "device",
+       "last_seen_at": "2026-09-20T08:32:00",
+       "opened_at": "2026-09-20T08:02:00",
+       "parent_incident_id": "b2-inc-a-parent",
+       "resolved_at": null,
+       "site_id": "s3-site-a",
+       "site_name": "s3-alpha",
+       "status": "open",
+       "subsystem": "psu",
+       "title": "node-s3-a: psu CRITICAL TITLESENTINELb2"
+      }
+     ],
+     "confidence": 0.7,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "devices": [
+       "node-s3-a",
+       "PEERSECRETb2"
+      ],
+      "domain": "PDUSECRETb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      }
+     },
+     "device_agent_id": "",
+     "diagnosis": null,
+     "incident_id": "b2-inc-a-parent",
+     "inferred": true,
+     "is_parent": true,
+     "kind": "shared_power",
+     "last_seen_at": "2026-09-20T08:31:00",
+     "opened_at": "2026-09-20T08:01:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "psu",
+     "title": "shared_power at PDUSECRETb2 (2 devices) TITLESENTINELb2"
+    },
+    {
+     "child_count": 0,
+     "children": [],
+     "confidence": 0.9,
+     "correlation": {
+      "RAWCORRKEYb2": "RAWCORRVALUEb2",
+      "nested": {
+       "why": "RAWCORRVALUEb2"
+      },
+      "onsets": 2,
+      "severity": "critical"
+     },
+     "device_agent_id": "node-s3-a",
+     "diagnosis": {
+      "confidence": 0.8,
+      "evidence_cited": [
+       "raw BMC evidence CITEDSENTINELb2"
+      ],
+      "generated": {
+       "reasoning_steps": [
+        "step one GENSENTINELb2",
+        "step two alpha"
+       ],
+       "suggested_action": "POWER_CYCLE every device at the site now GENSENTINELb2",
+       "summary": "alpha bearing wear on the fan GENSENTINELb2",
+       "withheld": false
+      },
+      "generation_visibility": {
+       "projection_version": 1,
+       "scope": "site",
+       "site_id": "s3-site-a"
+      },
+      "origin": "llm",
+      "similar_past_incidents": [
+       {
+        "title": "SIMILARSENTINELb2"
+       }
+      ],
+      "trust": "untrusted_generated"
+     },
+     "incident_id": "b2-inc-a-disk",
+     "inferred": false,
+     "is_parent": true,
+     "kind": "device",
+     "last_seen_at": "2026-09-20T08:30:00",
+     "opened_at": "2026-09-20T08:00:00",
+     "parent_incident_id": null,
+     "resolved_at": null,
+     "site_id": "s3-site-a",
+     "site_name": "s3-alpha",
+     "status": "open",
+     "subsystem": "disk",
+     "title": "node-s3-a: disk CRITICAL TITLESENTINELb2"
+    }
+   ],
+   "tenant_id": "tenant-demo",
+   "total": 5
+  },
+  "siteless_detail": {
+   "body": {
+    "child_count": 0,
+    "children": [],
+    "confidence": 1.0,
+    "correlation": {},
+    "current_state": {
+     "open_action_count": 0,
+     "pending_approvals": []
+    },
+    "device_agent_id": "",
+    "diagnosis": {
+     "confidence": 0.8,
+     "evidence_cited": [
+      "raw BMC evidence CITEDSENTINELb2"
+     ],
+     "generated": {
+      "reasoning_steps": [],
+      "suggested_action": "",
+      "summary": "the generated explanation is withheld: it was produced from evidence whose projection is outside your authorized scope or was not recorded",
+      "withheld": true
+     },
+     "generation_visibility": null,
+     "origin": "llm",
+     "similar_past_incidents": [
+      {
+       "title": "SIMILARSENTINELb2"
+      }
+     ],
+     "trust": "untrusted_generated"
+    },
+    "incident_id": "b2-inc-siteless",
+    "inferred": false,
+    "is_parent": true,
+    "kind": "device",
+    "last_seen_at": "2026-09-20T08:39:00",
+    "opened_at": "2026-09-20T08:09:00",
+    "parent_incident_id": null,
+    "prior_learning": [],
+    "recommended_next": {
+     "available": true,
+     "capability": "investigate",
+     "refs": [],
+     "requires_approval": false,
+     "summary": "No diagnosis yet; evidence is still being gathered."
+    },
+    "resolved_at": null,
+    "site_id": "",
+    "site_name": "",
+    "status": "open",
+    "subsystem": "log",
+    "title": "site-less incident TITLESENTINELb2"
+   },
+   "status": 200
+  }
+ }
+}
