@@ -6835,9 +6835,13 @@ B0C_METERED_BEFORE=$(b0c_metric harkeniq_cc_machine_reads_metered_total_attentio
 b0c_cost "$B0C_MACHINE" "/api/attention/" 200
 python3 - "$SITE_A" <<'PY'
 import json, sys
-items = json.load(open("/tmp/b0c_body.json"))["items"]
+body = json.load(open("/tmp/b0c_body.json"))
+# A30.35: a machine reads the MACHINE Attention contract.
+assert body["view"] == "machine" and body["contract"] == "attention", body.get("contract")
+items = body["items"]
 assert items, "a site-scoped agent read an empty attention list"
-assert {i["site_id"] for i in items} == {sys.argv[1]}, {i["site_id"] for i in items}
+sites = {i["target"]["site_id"] for i in items}
+assert sites == {sys.argv[1]}, sites
 print(f"  attention: {len(items)} device(s), all at the agent's own site (scope still decides)")
 PY
 b0c_cost "$B0C_MACHINE" "/api/incidents/?status=all&limit=1000" 200
