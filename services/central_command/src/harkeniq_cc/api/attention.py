@@ -9,17 +9,36 @@ Governance: `fleet.view` (read-only intelligence). It names governed
 capabilities in `recommended_next` but performs none of them and confers
 no authority — invoking anything still goes through that capability's own
 permission and approval path.
+
+Two projections, one per species (A30.34 D1, A30.35)
+----------------------------------------------------
+A person reads the Console payload, composed exactly as before. An
+Operational Agent reads the machine Attention contract
+(`harkeniq_cc.attention_projection`), composed by the SAME composer from
+inputs selected for that machine BEFORE anything is computed
+(`governance.load_machine_attention`). The branch is on the TOKEN's
+species, after the route guard has already metered the read (B0c);
+nothing in the request selects it.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harkeniq_cc import attention_projection as machine_view
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
-from harkeniq_cc.governance import learning_view, load_attention
+from harkeniq_cc.governance import (
+    learning_view,
+    load_attention,
+    load_machine_attention,
+    machine_attention_selection,
+)
+from harkeniq_cc.machine_identity import is_machine
 
 router = APIRouter(prefix="/api/attention", tags=["attention"])
 
@@ -52,6 +71,22 @@ async def attention(
     read every site. This is also the one read every Operational Agent is
     required to hold, which is why it is the first defect A5 fixes.
     """
+    if is_machine(user):
+        # A30.35: a machine's attention is composed from ITS OWN inputs --
+        # selected before anything is computed (D2), incidents only where it
+        # holds `incident.view` (D3) -- and projected field by field.
+        composition = await load_machine_attention(
+            session,
+            tenant_id=user.tenant_id,
+            selection=machine_attention_selection(scope),
+            site_id=site_id,
+            band=band,
+            limit=limit,
+        )
+        return machine_view.machine_attention(
+            composition, now=datetime.now(timezone.utc),
+        )
+
     reach = read_reach(scope, "fleet.view")
     return await load_attention(
         session,

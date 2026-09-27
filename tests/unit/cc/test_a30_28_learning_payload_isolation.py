@@ -120,6 +120,20 @@ def _learning_of_attention(payload: dict) -> list:
     ]
 
 
+def _learning_of_machine_attention(payload: dict) -> list:
+    """The same, from the machine Attention contract (A30.35): the learned
+    signals and fleet patterns it carries, per device, in order. It carries
+    no reasons prose -- the statements themselves are the sentences."""
+    return [
+        {
+            "agent_id": item["target"]["device_agent_id"],
+            "learned_signals": item["prior_learning"],
+            "fleet_patterns": item["fleet_patterns"],
+        }
+        for item in payload["items"]
+    ]
+
+
 def _learning_of_autonomy(payload: dict) -> dict:
     return {
         row["action_type"]: row.get("learning")
@@ -236,8 +250,10 @@ class TestTwinEstatesAreIndistinguishable:
             assert res.status_code == 200, res.text
             body = res.json()
             assert S.hidden_markers(body, ("A",)) == []
+            # A30.35: a machine reads the machine Attention contract.
+            assert body["view"] == "machine"
             results[variant] = S.canonical(
-                _learning_of_attention(body), await S.aliases(stack))
+                _learning_of_machine_attention(body), await S.aliases(stack))
             assert "about 65%" in results[variant]          # it still LEARNS
         assert results["X"] == results["Y"]
 

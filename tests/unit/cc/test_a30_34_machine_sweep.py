@@ -12,9 +12,10 @@ So this module's targets are generated from `MACHINE_SURFACE` -- all 14
 routes, including the response of the one write -- and the suite fails when
 a declared route has no entry, or an entry names a route the plane does not
 declare. Each entry names the machine projection that answers it, checked
-against the handler the running app actually serves. Attention is the ONE
-route still awaiting its projection; it is pinned by a strict expected
-failure that A6-4B2-2 must retire.
+against the handler the running app actually serves. Attention was the ONE
+route awaiting its projection, pinned by a strict expected failure; A6-4B2-2
+(A30.35) gave it the machine Attention contract and retired the pin, so no
+machine route awaits a projection.
 
 One poisoned estate, one tenant-wide machine principal (the strongest
 reader: it holds every site, so anything withheld from it is withheld by
@@ -28,8 +29,6 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import import_module
-
-import pytest
 
 from harkeniq.capabilities import declare
 from harkeniq_cc.db.models import (
@@ -90,8 +89,8 @@ class Target:
     #: other internal (evidence, rationale, authorization basis, directive,
     #: dispatch detail) is still refused, and so is every planted value.
     own_params: bool = False
-    #: B2's withheld set applies (the incident contract, and Attention once
-    #: B2-2 lands).
+    #: B2's withheld set applies (the incident contract and, since A6-4B2-2,
+    #: the Attention contract).
     b2: bool = False
 
 
@@ -119,7 +118,7 @@ SWEEP: dict[tuple[str, str], Target] = {
     ("GET", "/api/operational-agents/{agent_id}/submissions/{submission_id}"):
         Target((_R + "build_receipt",)),
     ("GET", "/api/attention/"):
-        Target(pending="A6-4B2-2"),
+        Target(("harkeniq_cc.attention_projection.machine_attention",), b2=True),
     ("GET", "/api/incidents/"):
         Target((_IP + "machine_incident_list", _IP + "machine_incident_item"), b2=True),
     ("GET", "/api/incidents/{incident_id}"):
@@ -130,8 +129,9 @@ SWEEP: dict[tuple[str, str], Target] = {
         Target((_OA + "_submission_result",), own_params=True),
 }
 
-#: The routes still awaiting their machine projection. Exactly one, and it
-#: must shrink to none.
+#: The routes still awaiting their machine projection. There were exactly
+#: one (Attention) until A6-4B2-2, and there are none: a route added to the
+#: plane without a projection has to say so here, by name.
 PENDING = {route: t.pending for route, t in SWEEP.items() if t.pending}
 
 
@@ -306,11 +306,9 @@ class TestTheSweepIsTheDeclaration:
         assert len(SWEEP) == 14
         assert {s for s, _ in MACHINE_SURFACE.values()} == {SURFACE_BOTH, SURFACE_MACHINE}
 
-    def test_every_route_but_the_pending_one_names_a_real_projection(self):
+    def test_every_route_names_a_real_projection(self):
         for route, target in SWEEP.items():
-            if target.pending:
-                assert not target.projection, route
-                continue
+            assert not target.pending, f"{route} is still pending ({target.pending})"
             assert target.projection, f"{route} names no machine projection"
             for dotted in target.projection:
                 assert callable(_resolve(dotted)), (route, dotted)
@@ -340,8 +338,9 @@ class TestTheSweepIsTheDeclaration:
                     f"call {name}"
                 )
 
-    def test_exactly_one_route_awaits_its_projection(self):
-        assert PENDING == {("GET", "/api/attention/"): "A6-4B2-2"}
+    def test_no_route_awaits_its_projection(self):
+        """A30.35: the Attention pin is retired, and nothing replaced it."""
+        assert PENDING == {}
 
 
 # ---------------------------------------------------------------------------
@@ -443,22 +442,21 @@ class TestNoMachineRouteLeaks:
         assert B.CORR_VALUE in json.dumps(incident) and B.TITLE in json.dumps(incident)
 
 
-class TestTheOnePendingRoute:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="A6-4B2-2 owes Attention its machine projection (A30.34). "
-               "When it lands this passes, and the strict mark must go.",
-    )
+class TestTheFormerlyPendingRoute:
+    """Attention, which B2-1 pinned with a strict expected failure. A6-4B2-2
+    (A30.35) retired the pin: the same test now passes, as the pin said."""
+
     async def test_attention_withholds_the_b2_set(self):
         stack, ids = await _estate()
         payload = (await _read_all(stack, ids))[("GET", "/api/attention/")]
         keys = {leaf for _p, leaf, is_key in _walk(payload) if is_key}
         assert not (keys & B2_WITHHELD), keys & B2_WITHHELD
         assert payload.get("view") == "machine"
+        assert payload.get("contract") == "attention"
 
-    async def test_attention_already_obeys_the_universal_rules(self):
-        """Pending its projection, Attention still carries no identity, no
-        raw correlation and no generated text -- held today, not deferred."""
+    async def test_attention_obeys_the_universal_rules(self):
+        """No identity, no raw correlation and no generated text -- held
+        before its projection, and still held by it."""
         stack, ids = await _estate()
         payload = (await _read_all(stack, ids))[("GET", "/api/attention/")]
         text = json.dumps(payload)

@@ -44,6 +44,7 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
     StopSwitchRepo,
 )
+from harkeniq_cc.freshness import FRESH, UNKNOWN as FRESHNESS_UNKNOWN, freshness_state
 from harkeniq_cc.governance import (
     load_agent_reach,
     load_autonomy_contract,
@@ -511,12 +512,13 @@ async def runtime_state(session, *, tenant_id: str, agent) -> dict:
     now = _utcnow()
     fresh, stale, unknown_seen = 0, 0, 0
     for device in devices:
-        last_seen = getattr(device, "last_seen_at", None)
-        if last_seen is None:
-            # The site has never reported a reading for this device. The
-            # honest answer is UNKNOWN, not "stale" and not "fresh".
+        # A30.35 (D8): the ONE freshness rule, which machine Attention asks
+        # too. A device the site has never reported a reading for is
+        # UNKNOWN, not "stale" and not "fresh".
+        state = freshness_state(getattr(device, "last_seen_at", None), now)
+        if state == FRESHNESS_UNKNOWN:
             unknown_seen += 1
-        elif (now - last_seen) <= timedelta(minutes=15):
+        elif state == FRESH:
             fresh += 1
         else:
             stale += 1

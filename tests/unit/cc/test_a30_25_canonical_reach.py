@@ -565,9 +565,11 @@ class TestContextIsNotAuthority:
                     if isinstance(node, ast.Attribute) and node.attr in found \
                             and isinstance(node.ctx, ast.Load):
                         found[node.attr].add(f"{path.name}:{fn.name}")
+        # A30.35: `load_attention` and `load_machine_attention` share ONE
+        # body, and the context read moved into it unchanged.
         assert found["list_context"] == {
             "sites.py:list_sites", "sites.py:get_site",
-            "repos.py:names_in_view", "governance.py:load_attention",
+            "repos.py:names_in_view", "governance.py:_compose_attention",
         }, found["list_context"]
         assert found["names_in_view"] == {
             "incidents.py:list_incidents", "incidents.py:get_incident",
@@ -1019,7 +1021,9 @@ class TestMachineReach:
             for off_plane in ("/api/fleet/", "/api/sites/", "/api/autonomy/",
                               "/api/capabilities/", "/api/audit/"):
                 assert (await c.get(off_plane)).status_code == 403, off_plane
-        assert {i["agent_id"] for i in attention["items"]} == {n("node-1")}
+        # A30.35: a machine reads the machine Attention contract.
+        assert attention["view"] == "machine"
+        assert {i["target"]["device_agent_id"] for i in attention["items"]} == {n("node-1")}
         ids = {i["incident_id"] for i in incidents["incidents"]}
         assert ids == {n("child-node-1"), n("inc-node-1")}
         # A30.34: a machine reads the machine incident contract. Raw
