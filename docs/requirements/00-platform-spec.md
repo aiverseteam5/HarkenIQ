@@ -5192,3 +5192,134 @@ permission vocabulary (25), `ROLE_PERMISSIONS`, the machine ceiling,
 `MACHINE_SURFACE` (14), `ROUTE_CONTRACT` (99), every job and meter, B0c
 metering, B1 discovery, `resolve()`, `permits()`, `read_reach`, S1–S4, B0b,
 A23, A26, G12, every migration head.
+
+**A30.35 — A6-4B2-2: the machine Attention contract, implementation
+boundary recorded BEFORE the code (implements A30.34's D1 Attention half, D2,
+D3, D7 Attention half and D8; decided: Vinod, 2026-09-27, as A30.34 — no new
+ratification).** A30.34 ratified this scope and assigned it; this records how
+B2-2 implements it, so review can hold the code to the text. Binding as in
+A30.34: **no permission change** (the vocabulary stays at 25), **no machine
+ceiling change** (`{fleet.view, incident.view, proposal.submit}`), **no route
+change** (`MACHINE_SURFACE` stays 14 — 13 reads, 1 write — `ROUTE_CONTRACT`
+99), **no migration** (CC `0027`, SM `0011`, Console `0004`), **no E1/E2**,
+no taxonomy, no G12 follow-up, and B2-1's incident contract is not reopened.
+Attention is DESCRIPTIVE: nothing in it is a permission, an approval, a
+candidate, a licence, a policy override or Node authority.
+
+**The route (D1).** `GET /api/attention/` keeps its guard (`fleet.view`), job
+(`attention`) and B0c meter; after the metered guard the handler branches on
+the TOKEN-derived species. A person reads exactly what they read before. A
+machine reads a projection stamped `view: "machine"`, `contract: "attention"`,
+`contract_version: "1"`, `as_of`, carrying `returned` and `items` and nothing
+else. No parameter or header selects the view.
+
+**Select, then compose (D2).** There is still ONE composer (`build_attention`),
+ONE scorer (`score_device`) and ONE loader body. `load_attention` — the human
+route and the three internal `learning=None` decision paths (the evaluator,
+the dry-run's reasoning, the ingress re-derivation) — is byte-identical. A
+machine enters the same body through `load_machine_attention`, which accepts
+only a `MachineAttentionSelection`, whose only constructor is
+`machine_attention_selection(scope)`. The selection fixes the inputs BEFORE
+anything is computed: devices under the route's `fleet.view` reach (unchanged
+predicate) in a deterministic input order; outcomes under B0b's device-owned
+predicate at that reach, in SQL before the row limit, so a moved device's rows
+recorded at a site the machine does not hold are excluded; **no cohort
+prior**, so a device is scored on its own visible history (`device_history`)
+or is `insufficient_data`, and `cohort_prior` is never a machine basis;
+pending approvals under the route's own reach (unchanged predicate); incidents
+under `incident.view` reach, restricted in SQL to the machine's in-reach
+devices (D3); learned signals and fleet patterns read with no pre-projection
+window, then S4's `LearningView`, then the composer's per-device selection,
+so a hidden signal or pattern cannot displace a visible one (S4's recorded
+window residual does not reach machine Attention; the human path keeps its
+windows). `band` and `limit` still apply after ranking. Every value a machine
+is shown — which items exist, their order, driver, band, basis, every count,
+the next step, freshness — is therefore computed from what that machine may
+read and from nothing else: deleting everything it may not read changes
+nothing (A30.26's deletion equivalence). The internal paths are not changed:
+they still decide over the whole tenant (the E1 residual below).
+
+**What a machine is shown.** Per item, named field by field and never the human
+DTO minus fields: `order` (the composer's rank over the selected inputs — not
+the evaluator's rank), `target {device_agent_id, site_id, site_contextual}`,
+`labels {trust: operator_supplied, site_name}`, `reported {trust:
+untrusted_telemetry, device_name, vendor, model}`, `device_class`, `health`,
+`observation`, `driver`, `risk {basis, band}`, `cves[{cve_id, severity,
+fix_available, installed {trust: untrusted_telemetry, component,
+version}}]`, `warranty_state`, `prior_learning` (B2-1's
+`machine_prior_learning`, after S4), `fleet_patterns[{pattern_type,
+description {trust: untrusted_telemetry, text}, confidence}]` (after S4),
+`incidents`, `approvals` (B2-1's `machine_approvals`), `freshness`,
+`next_step`. **Withheld:** `risk_score`, `factors`, `sample_count`, the
+confidence prose, `reasons`, `recommended_next`, the `sites[]` rollup, every
+summary total, `tenant_id`, the fleet row id, pattern and signal ids,
+evidence dicts, counts and rates, titles, action ids, and every field the
+human DTO grows after this. A CVE id is published only when it is CVE-shaped
+(the feed is operator-imported and only stripped at import), otherwise
+`null`, never echoed. Every closed vocabulary maps what it does not recognise
+to `other`. Machine Attention carries no generated text at all.
+
+**Incident permission composition (D3).** Incident content in an item requires
+the machine's CURRENT `incident.view` coverage of that device — `read_reach(
+scope, "incident.view")` asked through the owner rule (`covers_owned`); a
+`fleet.view` grant never substitutes for it. Otherwise the item carries
+exactly `incidents: {"held": false}` — UNKNOWN, never "none": no id, count,
+kind or incident-derived next step. A held item carries `{"held": true,
+"open_count", "open": [{incident_id, kind, subsystem, diagnosed,
+opened_at}]}` with `open_count` equal to the list shown — no title, no
+diagnosis content, no correlation. A device id with any in-reach fleet row
+the machine does not cover is held nowhere, so a held list is never
+incomplete. Pending approvals are B2-1's bounded conclusion under the route's
+own reach — `{pending_count, pending[{action_type, lane: "node",
+awaiting_since}]}` — never an action id, requester, approver, group, policy,
+required count or progress; B1 discovery remains the one answer on approval
+requirement.
+
+**The next step (D7, Attention half).** `next_step {code, refs}`. The code is
+the composer's own capability word over the selected inputs, from the closed
+set `review_pending_approval | plan_firmware_remediation | review_diagnosis |
+review_incident | investigate_device | collect_evidence | monitor` (else
+`other`). Refs are typed ids shown in the same item and readable by this
+machine: the device for a pending approval or an investigation, CVE-shaped
+ids for firmware remediation, held incident ids for diagnosis and incident
+review, none otherwise. Never `propose_action`, prose, `requires_approval`,
+`available`, an action id or any authority-shaped field: a code is not a
+candidate, a licence or an approval.
+
+**Freshness (D8).** One function, `harkeniq_cc.freshness.freshness_state(
+last_seen_at, now)`, extracted from `/runtime`: no reading is `unknown`, 15
+minutes or less is `fresh`, anything older is `stale`, a zone-less value is
+UTC. `/runtime` counts through it (its output byte-identical); each machine
+item carries `freshness {state, last_seen_at, snapshot_at}` from the device's
+own fleet row — `last_seen_at` the site's last reading, `snapshot_at` Central
+Command's last copy. Freshness is context: it gates, authorizes and orders
+nothing; unknown is never fresh; a stale item is not unauthorized. No column,
+threshold or authority semantics are added. The decision package's incident
+`timeline.resolution_basis` is not in A30.34's binding D8 text, and the
+incident contract is B2-1's and closed: it is recorded as a follow-up, not
+added here.
+
+**The sweep (D10).** B2-1's strict expected-failure on Attention is retired: the
+sweep names Attention's machine projection, holds it to B2's withheld set,
+and no machine route awaits a projection. B0c's exactly-once metering is
+unchanged — the branch runs after the charge.
+
+**Recorded, not changed by B2-2.** Scoped human Attention keeps B2-F5 (A30.30's
+predictive-cohort family); the dry-run's and stored proposals'
+`evidence.attention` stay S3-E2's; the evaluator's proposal-budget order stays
+tenant-wide (S3-E1), so a machine's `order` may differ from the rank its
+evaluator spends budget by (A22.11 operator-versus-evaluator agreement still
+holds — the human path is unchanged); human Attention keeps S4's
+pre-projection windows; Site Manager correlation can still decide whether a
+device has an incident (content withheld); S4's minute residue stands.
+
+**Proof obligations.** Deletion equivalence for every scoped machine persona —
+org unit, site, device, device_class, mixed grants, `fleet.view` without
+`incident.view`, `incident.view` without `fleet.view` at another site,
+revoked, expired, lapsed-all, ungranted — against a tenant-wide control that
+DOES see the difference and a human composer that still shows B2-F5; hidden
+sentinels walked over every key and value; ordering and every `limit` from 1
+to N; counts; the next step; freshness boundaries through both callers; D3's
+permission shapes; the human payload and the internal paths byte-identical to
+a golden recorded from `main`; structural guards; real PostgreSQL; the live
+gate with a real machine token; mutation testing.

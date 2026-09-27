@@ -5720,3 +5720,145 @@ consistency and nonexistent-id equivalence with exactly-once B0c charges;
 the generated-text metamorphic test; the recursive payload sweep; the human
 golden; real PostgreSQL for hostile JSONB round trips; and the live gate
 with a real machine token.
+
+## §34p — A6-4B2-2: the machine Attention contract (A30.35)
+
+B2-1 gave a machine the incident contract; Attention kept serving it the
+Console's payload, pinned by the D10 sweep's one strict expected-failure.
+That payload is the B2-F5 channel: `load_attention` read every outcome in the
+tenant (`list_device_outcome_dicts(tenant)`), folded them into a vendor/model
+cohort rate, and fell back to that rate for any device with fewer than five
+outcomes of its own — so outcomes at a site the reader does not hold moved a
+visible device's band, basis, driver, rank, the `?band=` and `?limit=` cuts,
+`summary.attention_required`, the site rollup, the next step and the prose
+quoting the rate. It also read open incidents under the route's `fleet.view`
+reach, so an agent without the `incidents` binding read incident ids, titles
+and kinds here (B2-F4). B2-2 closes both for machines, inside the one composer.
+
+### Select, then compose — one body, two selections
+
+`governance.load_attention` becomes a thin caller of one private body; the
+machine enters the same body through `load_machine_attention(session,
+tenant_id=..., selection=MachineAttentionSelection, ...)`. Only the inputs
+differ, and only here:
+
+| input | human route + internal paths (byte-identical) | machine (A30.35) |
+|---|---|---|
+| devices | `FleetCacheRepo.list_all(scope=reach)` | same predicate, then a deterministic input order (name, id, site) |
+| outcomes | `list_device_outcome_dicts(tenant)` — every site | `…(tenant, scope=fleet reach)`: B0b's `scope_device_owned`, in SQL, before the 50 000-row limit |
+| cohort prior | `cohort_failure_rates(outcomes)` | none (`{}`): basis is `device_history` or `insufficient_data` |
+| pending routes | `list_pending(scope=reach)` | unchanged (the route's own reach) |
+| incidents | `list_incidents(scope=fleet reach, limit=1000)` | `list_incidents(scope=incident.view reach, device_agent_ids=held devices, limit=1000)` |
+| learned signals | `list_active(tenant, limit=500)` → S4 | `list_active(tenant, limit=None)` → S4 |
+| fleet patterns | `list_patterns(tenant, limit=200)` → S4 | `list_patterns(tenant, limit=None)` → S4 |
+| sites, warranty, CVE feed | unchanged | unchanged (per in-reach device; the feed is tenant reference data) |
+
+`band` then `limit` apply after ranking on both paths. The composer, the scorer,
+the sort and `_recommend` are untouched; the machine's `order`, driver, band,
+basis and next-step code are the composer's own outputs over the machine's
+inputs, so there is no second ranking or recommendation rule to drift. The
+body returns, for a machine, a `MachineAttentionComposition`: the composed
+answer, the fleet rows by `(site_id, agent_id)` (for freshness), the held
+device ids (D3) and the fleet reach (for `site_contextual`).
+
+### The contract
+
+```jsonc
+{ "view": "machine", "contract": "attention", "contract_version": "1",
+  "as_of": "…", "returned": 2, "items": [ ITEM, … ] }
+
+ITEM = {
+  "order": 1,                                  // composer rank over the machine's inputs
+  "target": {"device_agent_id": "…", "site_id": "…", "site_contextual": false},
+  "labels": {"trust": "operator_supplied", "site_name": "…"},
+  "reported": {"trust": "untrusted_telemetry", "device_name": "…", "vendor": "…", "model": "…"},
+  "device_class": "server",                    // server|switch|other
+  "health": "critical",                        // ok|healthy|trending|warning|critical|unknown|other
+  "observation": "observed",                   // observed|stale|unobserved|unknown|other
+  "driver": "current_failure",                 // current_failure|awaiting_approval|degraded_now|
+                                               //   predicted_risk|insufficient_evidence|other
+  "risk": {"basis": "device_history", "band": "medium"},   // basis: device_history|insufficient_data|other
+  "cves": [{"cve_id": "CVE-2026-1001", "severity": "critical", "fix_available": true,
+            "installed": {"trust": "untrusted_telemetry", "component": "BIOS", "version": "1.5"}}],
+  "warranty_state": "expired",                 // active|expiring|expired|unknown|other
+  "prior_learning": [ /* B2-1's machine_prior_learning shape, after S4 */ ],
+  "fleet_patterns": [{"pattern_type": "anomaly",
+                      "description": {"trust": "untrusted_telemetry", "text": "…"},
+                      "confidence": 0.75}],
+  "incidents": {"held": false},                // or {"held": true, "open_count": 1, "open": [
+                                               //   {"incident_id", "kind", "subsystem", "diagnosed", "opened_at"}]}
+  "approvals": {"pending_count": 1,
+                "pending": [{"action_type": "SEL_CLEAR", "lane": "node", "awaiting_since": "…"}]},
+  "freshness": {"state": "fresh", "last_seen_at": "…", "snapshot_at": "…"},
+  "next_step": {"code": "review_pending_approval", "refs": [{"type": "device", "id": "…"}]}
+}
+```
+
+Every key is named by the projection (`harkeniq_cc.attention_projection`),
+which reads named fields of the composed item and the fleet row and never
+spreads or strips a composer dict. The keys avoid every withheld set the D10
+sweep holds a machine route to: B2's (`rank`, `risk_score`, `factors`,
+`sample_count`, `reasons`, `recommended_next`, `sites`, `device_id`, `title`,
+…) and the A25.9 internals (`evidence`, `rationale`, `params`, …). Timestamps
+carry their offset; a string that is not a timestamp is null.
+
+### D3 — whose incidents, and the held rule
+
+`held` is decided per device id: every in-reach fleet row carrying that id
+must be covered by the machine's `incident.view` reach under the owner rule
+(`ReadReach.covers_owned(site_id, FleetIndex(rows).resolve(site_id,
+agent_id))`). Only held ids are passed to the incident read, so the composer
+can attach incidents only to held items and `_recommend` can derive an
+incident step only for them. A device id seen at two sites (transient — the
+poller replaces a site's rows) with one uncovered row is not held at either,
+because the composer attaches by id and a held list must never be
+incomplete. `held: false` is unknown: it is never rendered as "no incident",
+and nothing incident-derived accompanies it. Pending approvals are not
+incident content: they stay under the route's own reach, attached by device
+id as the composer does, so a machine never re-proposes work already waiting
+on a human.
+
+### D7 — refs by code
+
+| code | refs |
+|---|---|
+| `review_pending_approval` | `[{type: device, id: <this device>}]` — never the action id |
+| `plan_firmware_remediation` | `[{type: cve, id}]` for this item's fixable, CVE-shaped ids |
+| `review_diagnosis` | `[{type: incident, id}]` for this item's held, diagnosed incidents |
+| `review_incident` | `[{type: incident, id}]` for this item's held incidents |
+| `investigate_device` | `[{type: device, id: <this device>}]` |
+| `collect_evidence`, `monitor`, `other` | `[]` |
+
+### D8 — one freshness rule
+
+`freshness_state(last_seen_at, now)`: `None` or a non-timestamp → `unknown`;
+a zone-less value is UTC; `now - last_seen_at <= 15 minutes` → `fresh`;
+otherwise `stale`. `/runtime`'s device counts (`seen_recently`, `stale`,
+`never_reported`) are computed through it. A device whose `snapshot_at` is
+fresh but whose `last_seen_at` is old reads `stale` — the trap the column's own
+docstring names.
+
+### How B2-2 is proven
+
+One declarative estate (`tests/unit/cc/b2_2_estate.py`) on S3's production
+stack — STRICT, persisted agent grants, the real `get_scope` — with several
+devices per site, a moved device whose old outcome rows sit at a hidden site,
+hidden sibling devices, hidden incidents, parents and children, hidden
+approval routes (poisoned handles, a decided route carrying an approver
+sentinel), hidden correlation, hidden learned signals and patterns, hidden
+safety state, operator-imported CVE ids that are not CVE-shaped, and
+freshness at `fresh`, `stale` and `unknown`. An independent oracle — the
+owner rule restated in the estate, not imported — decides what each persona
+may read; the estate can be built with ONLY that, so for every scoped persona
+`machine(full) == machine(only what it may read)` over every band and every
+limit, while the tenant-wide machine's answer differs between the two and the
+unchanged human composer still shows B2-F5 for the same scoped reader
+(non-vacuity). A golden recorded from `main` holds the human payload and the
+three internal paths' `learning=None` output byte-identical. Structural guards
+pin the one body, the selection's single constructor, the call sites, the
+closed vocabularies and the absence of spread or strip. Real PostgreSQL runs
+the SQL-side selection (the owner predicate on outcomes before the limit, the
+held-device incident read, the unwindowed learning reads). The live gate reads
+Attention with a real machine token before and after poisoning a site it does
+not hold. Mutants re-admit tenant-wide outcomes, the cohort prior, the
+`fleet.view` incident read and the learning windows, and each is killed.
