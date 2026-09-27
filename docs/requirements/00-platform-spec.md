@@ -5323,3 +5323,23 @@ to N; counts; the next step; freshness boundaries through both callers; D3's
 permission shapes; the human payload and the internal paths byte-identical to
 a golden recorded from `main`; structural guards; real PostgreSQL; the live
 gate with a real machine token; mutation testing.
+
+**Found while implementing A6-4B2-2 (recorded; no scope change).** (1)
+`/runtime`'s inline freshness comparison subtracted a zone-less reading from
+a zoned clock, which raised `TypeError` on sqlite for any device with a
+reading; production PostgreSQL returns zoned values, where `/runtime`'s output
+is byte-identical. The one D8 rule reads a zone-less value as UTC, so both
+engines answer. (2) The human path's pre-projection learning windows (S4's
+recorded residual) are now demonstrated rather than argued: 210 newer
+patterns naming only a site a PERSON does not hold push a visible cohort
+pattern out of that person's window; machine Attention reads with no window
+and does not move. The human residual stays recorded, not changed. (3) Proofs
+that read a machine's Attention in the Console's shape move to the machine
+contract: B0b's context-read call-site pin (the read now lives in the shared
+body, unchanged) and its device-scoped machine read, S4's twin-estate machine
+read, and gate steps B0b/BA and B0c/BP -- the last found by the first
+fresh-wipe run, not by review. (4) The live proof plants its poison straight
+into Central Command's inputs and reads within seconds, because the poller
+rebuilds a site's fleet rows and supersedes undelivered routes every 30 s; a
+tenant-wide read taken AFTER the site-A reads proves the poison stood
+throughout them, and an attempt a poll interrupts is retried.

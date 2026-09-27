@@ -5862,3 +5862,31 @@ held-device incident read, the unwindowed learning reads). The live gate reads
 Attention with a real machine token before and after poisoning a site it does
 not hold. Mutants re-admit tenant-wide outcomes, the cohort prior, the
 `fleet.view` incident read and the learning windows, and each is killed.
+
+### What implementing B2-2 found
+
+* **A second copy of a threshold is a second answer -- and here it was also a
+  crash.** `/runtime` computed `now - last_seen_at` inline. On sqlite a
+  `DateTime(timezone=True)` column comes back naive, so for any device with a
+  reading the subtraction raised `TypeError`; the only `/runtime` tests seeded
+  never-reported devices, so nothing noticed. PostgreSQL returns zoned values,
+  and there the output is byte-identical. `freshness_state` reads a zone-less
+  value as UTC; both callers now ask it, pinned structurally.
+* **The human window residual, demonstrated.** A unit test floods 210 newer
+  site-C-only patterns and 510 site-C signals at 0.99: the site-A PERSON's
+  windowed read (200 patterns, 500 signals, before S4) loses its visible cohort
+  pattern, while the site-A MACHINE's answer is byte-identical to its baseline.
+  Recorded for people; closed for machines.
+* **Shape moves.** B0b pinned `governance.py:load_attention` as a caller of
+  `list_context`; the call moved, unchanged, into `_compose_attention`. B0b's
+  and S4's machine Attention reads, and gate steps B0b/BA and B0c/BP, read the
+  machine contract now. BP was found by the first fresh-wipe run -- a Python
+  block reading `items[].site_id` inside a step whose other lines only checked
+  charges -- which is why a response-shape change is searched for by KEY, not
+  by route.
+* **A live poison has to outrun the poller.** The poller clears and rebuilds a
+  site's fleet rows every 30 s and supersedes routes the Site Manager no longer
+  holds, so rows planted in Central Command are gone at the next poll. CK plants
+  in one transaction, reads site A, then reads the tenant: the tenant read
+  proves the poison stood throughout the site-A reads (a poll can only remove
+  it), and an interrupted attempt is cleaned up and retried.
