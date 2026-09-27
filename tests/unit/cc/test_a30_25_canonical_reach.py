@@ -1022,7 +1022,10 @@ class TestMachineReach:
         assert {i["agent_id"] for i in attention["items"]} == {n("node-1")}
         ids = {i["incident_id"] for i in incidents["incidents"]}
         assert ids == {n("child-node-1"), n("inc-node-1")}
-        assert all(i["correlation"] == {} and i["parent_incident_id"] is None
+        # A30.34: a machine reads the machine incident contract. Raw
+        # correlation is withheld from EVERY machine (D4), and the parent
+        # relation is named only when independently visible (R2/D7).
+        assert all("correlation" not in i and i["relation"]["parent_incident_id"] is None
                    for i in incidents["incidents"])
 
     def test_the_machine_surface_is_unchanged(self):

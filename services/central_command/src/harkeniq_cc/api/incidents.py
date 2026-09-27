@@ -16,13 +16,24 @@ under a `generated` block. A consumer must treat that content as evidence
 to reason ABOUT, never as instruction to follow.
 
 Read-only: `incident.view`. Nothing here mutates or authorises anything.
+
+Two projections, one per species (A30.34, D1)
+---------------------------------------------
+A person reads the Console payload below. An Operational Agent reads the
+machine incident contract (`harkeniq_cc.incident_projection`), built by
+naming what may pass. The branch is on the TOKEN's species, after the route
+guard has already metered the read (B0c); nothing in the request selects
+it, so a machine cannot ask for the human payload.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harkeniq_cc import incident_projection as machine_view
 from harkeniq_cc.api.deps import forbid_out_of_scope, get_scope, get_session, require_permission
 from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
@@ -34,11 +45,18 @@ from harkeniq_cc.db.repos import (
 )
 from harkeniq_cc.governance import learning_view, require_learning_view
 from harkeniq_cc.learned_signals import signals_for_device
+from harkeniq_cc.machine_identity import is_machine
+from harkeniq_cc.trust import (
+    TRUST_DETERMINISTIC,
+    diagnosis_trust,
+    human_diagnosis_trust,
+)
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
-#: Reasoning providers whose output is model-generated free text.
-_GENERATED_PROVIDERS = {"llm"}
+#: A30.34 (D6): where a human `recommended_next.summary` came from.
+SUMMARY_SOURCE_PLATFORM = "platform"
+SUMMARY_SOURCE_GENERATED = "diagnosis.generated.suggested_action"
 
 
 def _diagnosis(explanation: dict | None, view) -> dict | None:
@@ -64,13 +82,17 @@ def _diagnosis(explanation: dict | None, view) -> dict | None:
     if not explanation:
         return None
     provider = explanation.get("provider", "unknown")
-    generated = provider in _GENERATED_PROVIDERS
     block, visibility = view.generated(explanation)
     return {
         "origin": provider,
         # Consumers (especially model-driven ones) must know whether this
         # text was generated from telemetry before they reason with it.
-        "trust": "untrusted_generated" if generated else "deterministic",
+        #
+        # A30.34 (D5b): read from the ONE allow-list derivation. The label
+        # used to be decided by exclusion -- only a provider of exactly
+        # "llm" was untrusted -- so a missing provider or "LLM" read as
+        # deterministic. The field keeps its two words.
+        "trust": human_diagnosis_trust(provider),
         "confidence": explanation.get("confidence", 0.0),
         "generated": block,
         # The projection boundary the generated block was produced from,
@@ -180,6 +202,30 @@ async def list_incidents(
         )
     )
 
+    if is_machine(user):
+        # A30.34: flat, one item per incident, each naming its relations --
+        # the same children the detail names, by the same predicate.
+        children = await repo.children_index(
+            user.tenant_id, list(by_id), scope=reach,
+        )
+        items = [
+            machine_view.machine_incident_item(
+                row, reach=reach, site_names=site_names,
+                visible_parents=visible_parents,
+                children=[
+                    c.incident_id for c in sorted(
+                        children.get(row.incident_id, []),
+                        key=machine_view.child_order_key,
+                    )
+                ],
+                view=view,
+            )
+            for row in sorted(rows, key=machine_view.order_key)
+        ]
+        return machine_view.machine_incident_list(
+            items, now=datetime.now(timezone.utc),
+        )
+
     def as_dict(row) -> dict:
         return _incident_dict(
             row, site_names, view, reach=reach, visible_parents=visible_parents,
@@ -234,6 +280,7 @@ async def get_incident(
     reach = read_reach(scope, "incident.view")
     view = learning_view(scope)
     repo = IncidentRepo(session)
+    machine = is_machine(user)
     row = await repo.get(user.tenant_id, incident_id)
     if row is None:
         raise HTTPException(status_code=404, detail="incident not found")
@@ -244,7 +291,13 @@ async def get_incident(
     # in SQL -- so the detail and the list cannot disagree about who owns
     # an incident. It used to ask site coverage alone, which refused a
     # device-scoped principal its own device's incident.
-    if row.site_id and incident_id not in await repo.visible_ids(
+    #
+    # A30.34 (D9, amended): on the MACHINE plane a site-less incident is
+    # tenant-owned, and the predicate is asked even when `site_id` is empty
+    # -- so a tenant-wide machine reads it in the list AND here, and a
+    # narrower one gets exactly the 404 a nonexistent id gets. The human
+    # path keeps its short-circuit (PR #48 follow-up A, not bundled).
+    if (row.site_id or machine) and incident_id not in await repo.visible_ids(
         user.tenant_id, [incident_id], scope=reach,
     ):
         raise HTTPException(status_code=404, detail="incident not found")
@@ -257,51 +310,57 @@ async def get_incident(
             user.tenant_id, [row.parent_incident_id or ""], scope=reach,
         )
     )
+    # R2: the children the caller could read on their own, and no others.
+    children = await repo.children_of(user.tenant_id, incident_id, scope=reach)
+    signals = await _prior_learning(session, user.tenant_id, row, reach, view)
+    # What is already waiting on a human for this device. The incident
+    # names the governed next step; it never performs one.
+    pending_routes = [
+        r for r in await ApprovalRouteRepo(session).list_pending(
+            user.tenant_id, scope=reach,
+        )
+        if r.device_agent_id == row.device_agent_id
+    ]
+
+    if machine:
+        item = machine_view.machine_incident_item(
+            row, reach=reach, site_names=site_names,
+            visible_parents=visible_parents,
+            children=[
+                c.incident_id
+                for c in sorted(children, key=machine_view.child_order_key)
+            ],
+            view=view,
+        )
+        approvals = machine_view.machine_approvals(pending_routes)
+        return machine_view.machine_incident_detail(
+            item,
+            prior_learning=machine_view.machine_prior_learning(signals),
+            approvals=approvals,
+            # D7: from facts in THIS response. That a diagnosis exists is
+            # an input; what it says is not.
+            next_step=machine_view.machine_next_step(
+                incident_id=row.incident_id,
+                device_agent_id=row.device_agent_id or "",
+                pending_count=approvals["pending_count"],
+                has_diagnosis=bool(row.explanation),
+            ),
+            now=datetime.now(timezone.utc),
+        )
+
     entry = _incident_dict(
         row, site_names, view, reach=reach, visible_parents=visible_parents,
     )
-    # R2: the children the caller could read on their own, and no others.
-    children = await repo.children_of(user.tenant_id, incident_id, scope=reach)
     entry["children"] = [
         _incident_dict(c, site_names, view, reach=reach, visible_parents=visible_parents)
         for c in children
     ]
     entry["child_count"] = len(entry["children"])
+    entry["prior_learning"] = signals
 
-    # S3 -> S4: has the fleet seen this before? Learned signals for the
-    # affected device's cohort/site are prior knowledge, carried with the
-    # same untrusted/deterministic distinction as the diagnosis.
-    from harkeniq_cc.db.repos import FleetCacheRepo
-
-    device = None
-    if row.device_agent_id:
-        device = await FleetCacheRepo(session).get_at_site(
-            row.site_id, row.device_agent_id,
-        )
-    if device is not None:
-        signals = await LearnedSignalRepo(session).list_active(user.tenant_id)
-        # A30.28: learned knowledge is a `fleet.view` fact wherever it is
-        # projected, this `incident.view` route included -- a grant can
-        # carry one at a site and withhold the other. The cohort conclusion
-        # is tenant knowledge and always shows; the evidence is bounded.
-        # A30.25 (R2): a SITE-scoped signal is site knowledge, and reading
-        # an incident through device ownership does not confer the site.
-        # Such a caller gets the cohort knowledge any scoped reader may
-        # already read, and not the site's.
-        learning_site = row.site_id if reach.covers_site(row.site_id) else ""
-        entry["prior_learning"] = signals_for_device(
-            view.signals(signals),
-            device.vendor, device.model, learning_site,
-        )
-    else:
-        entry["prior_learning"] = []
-
-    # What is already waiting on a human for this device. The incident
-    # names the governed next step; it never performs one.
     pending = [
         {"action_id": r.action_id, "action_type": r.action_type}
-        for r in await ApprovalRouteRepo(session).list_pending(user.tenant_id, scope=reach)
-        if r.device_agent_id == row.device_agent_id
+        for r in pending_routes
     ]
     entry["current_state"] = {
         "pending_approvals": pending,
@@ -311,6 +370,9 @@ async def get_incident(
         entry["recommended_next"] = {
             "capability": "review_pending_approval",
             "summary": f"{len(pending)} action awaiting a human decision.",
+            # A30.34 (D6): where this sentence came from, additively.
+            "summary_trust": TRUST_DETERMINISTIC,
+            "summary_source": SUMMARY_SOURCE_PLATFORM,
             "requires_approval": True,
             "available": True,
             "refs": [p["action_id"] for p in pending],
@@ -321,6 +383,11 @@ async def get_incident(
             # The suggestion is quoted, not executed — and it is generated
             # text, so it stays a human's decision to act on.
             "summary": entry["diagnosis"]["generated"]["suggested_action"],
+            # A30.34 (D6, closing F4 for people): the summary is the
+            # model's words, and says so. The Console renders the source
+            # beside it; the text itself is unchanged.
+            "summary_trust": diagnosis_trust((row.explanation or {}).get("provider")),
+            "summary_source": SUMMARY_SOURCE_GENERATED,
             "requires_approval": True,
             "available": False,
             "unavailable_reason": (
@@ -333,8 +400,42 @@ async def get_incident(
         entry["recommended_next"] = {
             "capability": "investigate",
             "summary": "No diagnosis yet; evidence is still being gathered.",
+            "summary_trust": TRUST_DETERMINISTIC,
+            "summary_source": SUMMARY_SOURCE_PLATFORM,
             "requires_approval": False,
             "available": True,
             "refs": [],
         }
     return entry
+
+
+async def _prior_learning(session, tenant_id: str, row, reach, view) -> list[dict]:
+    """S3 -> S4: has the fleet seen this before? One source, both species.
+
+    Learned signals for the affected device's cohort/site are prior
+    knowledge, carried with the same untrusted/deterministic distinction as
+    the diagnosis. Each species then projects the SAME list its own way.
+    """
+    from harkeniq_cc.db.repos import FleetCacheRepo
+
+    device = None
+    if row.device_agent_id:
+        device = await FleetCacheRepo(session).get_at_site(
+            row.site_id, row.device_agent_id,
+        )
+    if device is None:
+        return []
+    signals = await LearnedSignalRepo(session).list_active(tenant_id)
+    # A30.28: learned knowledge is a `fleet.view` fact wherever it is
+    # projected, this `incident.view` route included -- a grant can
+    # carry one at a site and withhold the other. The cohort conclusion
+    # is tenant knowledge and always shows; the evidence is bounded.
+    # A30.25 (R2): a SITE-scoped signal is site knowledge, and reading
+    # an incident through device ownership does not confer the site.
+    # Such a caller gets the cohort knowledge any scoped reader may
+    # already read, and not the site's.
+    learning_site = row.site_id if reach.covers_site(row.site_id) else ""
+    return signals_for_device(
+        view.signals(signals),
+        device.vendor, device.model, learning_site,
+    )

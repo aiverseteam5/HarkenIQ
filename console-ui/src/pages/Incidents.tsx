@@ -12,6 +12,7 @@ import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson } from "../api";
 import { generatedView, type GeneratedBlock } from "../generatedContent";
+import { summarySourceView, type SummaryProvenance } from "../summaryTrust";
 
 /* S4 — Incidents & Diagnosis.
  *
@@ -68,7 +69,9 @@ interface IncidentDetail extends Incident {
     pending_approvals: { action_id: string; action_type: string }[];
     open_action_count: number;
   };
-  recommended_next: {
+  /** A30.34 (D6): `summary_trust` and `summary_source` say where the
+   *  summary came from. `SummarySourceNote` renders them beside it. */
+  recommended_next: SummaryProvenance & {
     capability: string;
     summary: string;
     requires_approval: boolean;
@@ -118,6 +121,28 @@ const childRow: CSSProperties = {
   padding: "0.5rem 0.75rem", borderLeft: "2px solid var(--border-light)",
   marginLeft: "0.5rem", fontSize: "0.8125rem",
 };
+
+/** A30.34 (D6): the source of "what should happen next", rendered beside
+ *  the summary. A quoted model suggestion is shown as the model's words,
+ *  never as HarkenIQ's; an unstated source is shown as unverified. The
+ *  reading rule is `summarySourceView`'s -- this only draws it. */
+export function SummarySourceNote({ rec }: { rec: SummaryProvenance }) {
+  const view = summarySourceView(rec);
+  return (
+    <div
+      data-testid="summary-source"
+      data-trust={view.trust}
+      style={{
+        ...provenanceNote,
+        fontStyle: "normal",
+        color: view.caution ? "var(--status-warning, #9a4a00)" : "var(--text-muted)",
+        fontWeight: view.caution ? 600 : 400,
+      }}
+    >
+      {view.label}
+    </div>
+  );
+}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "--";
@@ -397,6 +422,7 @@ export default function Incidents() {
             <div style={sectionTitle}>What should happen next</div>
             <div style={diagnosisBox}>
               <strong>{detail.recommended_next.summary}</strong>
+              <SummarySourceNote rec={detail.recommended_next} />
               {detail.recommended_next.requires_approval && (
                 <div style={{ marginTop: "0.375rem", fontSize: "0.8125rem" }}>
                   A named human must approve this before anything runs.
