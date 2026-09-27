@@ -5955,9 +5955,15 @@ B0B_MACHINE=$(curl -sf -X POST \
 [ -n "$B0B_MACHINE" ] || { echo "no machine token for the device-scoped agent" >&2; exit 1; }
 b0b_json "$B0B_MACHINE" "/api/attention/" | python3 -c "
 import sys, json
-items = json.load(sys.stdin)['items']
-assert [i['agent_id'] for i in items] == ['gate-agent-b'], [i['agent_id'] for i in items]
-print('  machine attention: exactly', items[0]['agent_id'], 'at', repr(items[0]['site_name']))"
+body = json.load(sys.stdin)
+# A30.35: a machine reads the MACHINE Attention contract.
+assert body['view'] == 'machine' and body['contract'] == 'attention', body.get('contract')
+items = body['items']
+ids = [i['target']['device_agent_id'] for i in items]
+assert ids == ['gate-agent-b'], ids
+# The device's site is CONTEXT for a device-scoped reader, never reach (R10).
+assert items[0]['target']['site_contextual'] is True, items[0]['target']
+print('  machine attention: exactly', ids[0], 'at', repr(items[0]['labels']['site_name']), '(context)')"
 b0b_json "$B0B_MACHINE" "/api/incidents/?status=all&limit=1000" | python3 -c "
 import sys, json
 rows = [i for i in json.load(sys.stdin)['incidents'] if i['incident_id'].startswith('b0b-inc-')]
@@ -7769,6 +7775,276 @@ assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: machine incident contract v1; plane 14, contract 99, ceiling unchanged')"
 echo "  both agents retired (the site agent's token now 401), the three planted incidents deleted"
+
+# ---------------------------------------------------------------------------
+# A30.35 (A6-4B2-2): the MACHINE Attention contract, through REAL machine
+# tokens on a real Keycloak and PostgreSQL. A machine's Attention is composed
+# from what THAT machine may read, selected before anything is computed
+# (A30.34 D2): so a site it does not hold -- here poisoned with critical,
+# fresh, failing devices that lead every tenant-wide ranking -- changes
+# nothing it is shown: which items exist, their order, the limit cut, every
+# count, the next step, freshness. A tenant-wide machine DOES see the
+# difference, and revoking the site-A grant empties the answer at once.
+# Every read costs exactly one (B0c). The steps own their agents and poison.
+# ---------------------------------------------------------------------------
+
+b22_agent() {  # $1 name, $2 scopes json, $3 extra read bindings -> a draft agent
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$1 $(date +%s%N)\", \"scopes\":$2,
+         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"IDENTIFY_LED\"}$3]}" \
+    http://localhost:8090/api/operational-agents/ \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])"
+}
+b22_read() {  # $1 token, $2 agent, $3 query, $4 out file -> "<http code> <reads charged>"
+  local before after code
+  before=$(b0c_reads "$2")
+  code=$(curl -s -o "$4" -w '%{http_code}' -H "Authorization: Bearer $1" \
+    "http://localhost:8090/api/attention/$3")
+  after=$(b0c_reads "$2")
+  echo "$code $((after - before))"
+}
+B22_QUERIES=("" "?limit=1" "?limit=2" "?limit=3" "?band=high" "?band=insufficient_data")
+b22_snapshot() {  # $1 token, $2 agent, $3 prefix -> one file per query, each read charged once
+  local q i=0 r
+  for q in "${B22_QUERIES[@]}"; do
+    r=$(b22_read "$1" "$2" "$q" "/tmp/b22/$3-$i.json")
+    [ "$r" = "200 1" ] || { echo "attention $q answered/charged '$r', want '200 1'" >&2; head -c 300 "/tmp/b22/$3-$i.json" >&2; exit 1; }
+    i=$((i + 1))
+  done
+}
+
+step "A6-4B2-2/CJ: a REAL machine token reads the MACHINE Attention contract -- scoped, allow-listed, one read each"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+mkdir -p /tmp/b22 && rm -f /tmp/b22/*.json
+B22_RUN="b22g$(date +%s)"
+B22_READS=',{"kind":"read","capability_ref":"attention"},{"kind":"read","capability_ref":"incidents"}'
+B22_SITE_AGENT=$(b22_agent "b22-site-a" "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]" "$B22_READS")
+B22_TENANT_AGENT=$(b22_agent "b22-tenant" "[]" "$B22_READS")
+B22_ATT_AGENT=$(b22_agent "b22-attention-only" "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]" \
+  ',{"kind":"read","capability_ref":"attention"}')
+[ -n "$B22_SITE_AGENT" ] && [ -n "$B22_TENANT_AGENT" ] && [ -n "$B22_ATT_AGENT" ] \
+  || { echo "could not create the B2-2 agents" >&2; exit 1; }
+[ "$(g12_tenant_grant "$B22_TENANT_AGENT")" = "201" ] || { echo "the tenant grant was refused" >&2; exit 1; }
+B22_SITE_MACHINE=$(b1_token "$B22_SITE_AGENT" "$(b2_identity "$B22_SITE_AGENT")")
+B22_TENANT_MACHINE=$(b1_token "$B22_TENANT_AGENT" "$(b2_identity "$B22_TENANT_AGENT")")
+B22_ATT_MACHINE=$(b1_token "$B22_ATT_AGENT" "$(b2_identity "$B22_ATT_AGENT")")
+[ -n "$B22_SITE_MACHINE" ] && [ -n "$B22_TENANT_MACHINE" ] && [ -n "$B22_ATT_MACHINE" ] \
+  || { echo "no machine token for a B2-2 agent" >&2; exit 1; }
+b22_snapshot "$B22_SITE_MACHINE" "$B22_SITE_AGENT" site-before
+[ "$(b22_read "$B22_ATT_MACHINE" "$B22_ATT_AGENT" "?view=human" /tmp/b22/attention-only.json)" = "200 1" ] \
+  || { echo "the attention-only machine was refused or not charged once" >&2; exit 1; }
+python3 - "$SITE_A" <<'PY'
+import json, sys
+site_a = sys.argv[1]
+def walk(node, path=()):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield path + (k,), k, True
+            yield from walk(v, path + (k,))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from walk(v, path + (i,))
+    else:
+        yield path, node, False
+WITHHELD = {"title", "correlation", "correlation_meta", "evidence_cited", "device_id",
+            "action_id", "risk_score", "factors", "rank", "sites", "reasons",
+            "sample_count", "recommended_next", "attention_driver_label", "evidence",
+            "requires_approval", "available", "capability", "tenant_id", "summary"}
+ITEM = {"order", "target", "labels", "reported", "device_class", "health", "observation",
+        "driver", "risk", "cves", "warranty_state", "prior_learning", "fleet_patterns",
+        "incidents", "approvals", "freshness", "next_step"}
+body = json.load(open("/tmp/b22/site-before-0.json"))
+assert (body["view"], body["contract"], body["contract_version"]) == ("machine", "attention", "1"), body.get("contract")
+assert set(body) == {"view", "contract", "contract_version", "as_of", "returned", "items"}, sorted(body)
+assert body["returned"] == len(body["items"]) >= 1, "the site-A machine reads no device at site A"
+assert [i["order"] for i in body["items"]] == list(range(1, body["returned"] + 1))
+for item in body["items"]:
+    assert set(item) == ITEM, sorted(item)
+    assert item["target"]["site_id"] == site_a and item["target"]["site_contextual"] is False
+    assert item["risk"]["basis"] in ("device_history", "insufficient_data"), item["risk"]
+    assert set(item["next_step"]) == {"code", "refs"}
+    assert item["freshness"]["state"] in ("fresh", "stale", "unknown")
+    assert item["incidents"]["held"] is True
+for path, leaf, is_key in walk(body):
+    assert not (is_key and leaf in WITHHELD), path
+att = json.load(open("/tmp/b22/attention-only.json"))
+assert att["view"] == "machine", "?view=human was honoured"
+assert att["items"] and all(i["incidents"] == {"held": False} for i in att["items"]), \
+    "fleet.view substituted for incident.view"
+print(f"  site-A machine: {body['returned']} item(s), every one at site A; the contract and nothing else")
+print("  attention-only machine (no incident.view): every item {'held': false}; ?view=human ignored")
+print("  every read charged exactly once")
+PY
+
+step "A6-4B2-2/CK: POISON site B -- critical, fresh, failing, waiting devices lead the tenant; the site-A machine's answer does not move"
+B22_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+b22_plant() {  # the poison, in ONE transaction, straight into Central Command's inputs
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -v ON_ERROR_STOP=1 -tAc "
+    BEGIN;
+    INSERT INTO cc_fleet_cache (id, site_id, agent_id, agent_name, vendor, model, device_class,
+         observation, health, service_tag, last_seen_at, snapshot_at)
+    SELECT substr(md5('$B22_RUN-fl-' || d), 1, 32), '$SITE_B', '000-b22-poison-' || d || '-$B22_RUN',
+           'B22POISONSENTINEL-' || d, 'B22POISON', 'P1', 'server', 'observed', 'Critical',
+           'B22TAG' || d, now(), now()
+    FROM generate_series(1, 3) d;
+    INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+         vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+    SELECT substr(md5('$B22_RUN-' || d || '-' || n), 1, 32), '$SITE_B', '$B22_RUN-' || d || '-' || n,
+           'SEL_CLEAR', '000-b22-poison-' || d || '-$B22_RUN', 'B22POISON', 'P1', 'FAILURE',
+           false, '', now(), now()
+    FROM generate_series(1, 3) d, generate_series(1, 60) n;
+    INSERT INTO cc_approval_routes (id, site_id, action_id, action_type, device_agent_id, routed_at)
+    SELECT substr(md5('$B22_RUN-rt-' || d), 1, 32), '$SITE_B', 'B22ACTIONSENTINEL-' || d || '-$B22_RUN',
+           'POWER_CYCLE', '000-b22-poison-' || d || '-$B22_RUN', now()
+    FROM generate_series(1, 3) d;
+    INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title, device_agent_id,
+         subsystem, confidence, inferred, correlation_meta, opened_at, first_seen_at, last_seen_at)
+    SELECT '$B22_RUN-inc-' || d, '$B22_TENANT', '$SITE_B', 'device', 'open', 'B22TITLESENTINEL',
+           '000-b22-poison-' || d || '-$B22_RUN', 'psu', 1.0, false,
+           '{\"B22CORRSENTINEL\": \"B22CORRSENTINEL\"}'::jsonb, now(), now(), now()
+    FROM generate_series(1, 3) d;
+    INSERT INTO cc_learned_signals (id, tenant_id, signal_key, scope_type, scope_ref, action_type,
+         vendor, model, statement, evidence, confidence, source_pattern_id, status,
+         observation_count, first_observed_at, last_confirmed_at)
+    VALUES (substr(md5('$B22_RUN-sig'), 1, 32), '$B22_TENANT', 'site:$SITE_B:$B22_RUN', 'site',
+            '$SITE_B', 'SEL_CLEAR', 'B22POISON', 'P1', 'B22SIGNALSENTINEL 7777 of 7777 at site B',
+            '{\"failures_at_site\": 7777}'::jsonb, 0.99, '', 'active', 1, now(), now());
+    COMMIT;" > /dev/null
+}
+b22_unplant() {
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+    DELETE FROM cc_fleet_cache WHERE agent_id LIKE '000-b22-poison-%-$B22_RUN';
+    DELETE FROM cc_outcome_history WHERE action_id LIKE '$B22_RUN-%';
+    DELETE FROM cc_approval_routes WHERE action_id LIKE 'B22ACTIONSENTINEL-%-$B22_RUN';
+    DELETE FROM cc_incidents WHERE incident_id LIKE '$B22_RUN-inc-%';
+    DELETE FROM cc_learned_signals WHERE signal_key = 'site:$SITE_B:$B22_RUN';" > /dev/null
+}
+b22_tenant_pair() {  # $1 prefix -> the tenant-wide default read and its limit=1 cut
+  [ "$(b22_read "$B22_TENANT_MACHINE" "$B22_TENANT_AGENT" "" "/tmp/b22/$1-0.json")" = "200 1" ] || return 1
+  [ "$(b22_read "$B22_TENANT_MACHINE" "$B22_TENANT_AGENT" "?limit=1" "/tmp/b22/$1-1.json")" = "200 1" ] || return 1
+}
+b22_poison_seen() {  # did the tenant-wide read AFTER the site-A reads still see all three?
+  python3 -c "
+import json, sys
+items = json.load(open('/tmp/b22/tenant-after-0.json'))['items']
+ids = [i['target']['device_agent_id'] for i in items]
+sys.exit(0 if sum(1 for i in ids if i.startswith('000-b22-poison-') and i.endswith('$B22_RUN')) == 3 else 1)"
+}
+# A poll replaces site B's fleet rows every 30s. The tenant-wide read taken
+# AFTER the site-A reads proves the poison was present throughout them: a poll
+# can only remove it, never bring it back. If one intervened, retry.
+B22_OK=""
+for B22_TRY in 1 2 3 4; do
+  b22_snapshot "$B22_SITE_MACHINE" "$B22_SITE_AGENT" site-before
+  b22_tenant_pair tenant-before || { echo "the tenant-wide baseline read failed" >&2; exit 1; }
+  b22_plant
+  b22_snapshot "$B22_SITE_MACHINE" "$B22_SITE_AGENT" site-after
+  b22_tenant_pair tenant-after || { echo "the tenant-wide poisoned read failed" >&2; exit 1; }
+  if b22_poison_seen; then B22_OK=1; break; fi
+  echo "  (a poll replaced site B's rows mid-attempt $B22_TRY; retrying)"
+  b22_unplant
+done
+[ -n "$B22_OK" ] || { echo "the poison never stayed in place across one attempt" >&2; exit 1; }
+python3 - "$B22_RUN" <<'PY'
+import json, sys
+run = sys.argv[1]
+def facets(body):
+    """Everything the machine may be told, except the clocks a live stack
+    legitimately moves between two reads a second apart."""
+    out = json.loads(json.dumps(body))
+    out.pop("as_of", None)
+    for item in out["items"]:
+        item["freshness"].pop("last_seen_at", None)
+        item["freshness"].pop("snapshot_at", None)
+        for signal in item["prior_learning"]:
+            signal.pop("last_confirmed_at", None)
+    return out
+SENTINELS = ("000-b22-poison", "B22POISON", "B22ACTIONSENTINEL", "B22TITLESENTINEL",
+             "B22CORRSENTINEL", "B22SIGNALSENTINEL", "7777", run + "-inc-")
+for i in range(6):
+    before = json.load(open(f"/tmp/b22/site-before-{i}.json"))
+    after = json.load(open(f"/tmp/b22/site-after-{i}.json"))
+    text = json.dumps(after)
+    for sentinel in SENTINELS:
+        assert sentinel not in text, f"query {i}: {sentinel!r} reached the site-A machine"
+    assert facets(before) == facets(after), (
+        f"query {i}: the site-A machine's answer moved when only site B changed",
+        json.dumps(facets(before))[:400], json.dumps(facets(after))[:400])
+full = json.load(open("/tmp/b22/site-after-0.json"))
+print(f"  site-A machine, 6 queries (default, limit 1/2/3, band high, band insufficient_data):")
+print(f"  existence, order, every limit cut, counts, next steps and freshness states byte-identical")
+print(f"  before and after poisoning site B ({full['returned']} item(s)); no poison id, handle, title,")
+print(f"  correlation, signal or hidden count anywhere; every read charged exactly once")
+PY
+
+step "A6-4B2-2/CL: the TENANT-WIDE machine reads the poisoned difference -- it moves for the reader who holds site B, and only for it"
+python3 - "$B22_RUN" "$SITE_B" <<'PY'
+import json, sys
+run, site_b = sys.argv[1:3]
+before = json.load(open("/tmp/b22/tenant-before-0.json"))
+after = json.load(open("/tmp/b22/tenant-after-0.json"))
+poison = [i for i in after["items"] if i["target"]["device_agent_id"].startswith("000-b22-poison-")
+          and i["target"]["device_agent_id"].endswith(run)]
+assert len(poison) == 3, "the tenant-wide machine does not see the poisoned devices"
+assert after["returned"] == before["returned"] + 3, (before["returned"], after["returned"])
+for item in poison:
+    assert item["target"]["site_id"] == site_b
+    assert (item["driver"], item["risk"]) == ("current_failure", {"basis": "device_history", "band": "high"}), item
+    assert item["approvals"]["pending_count"] == 1 and item["incidents"]["held"] is True
+    assert item["incidents"]["open_count"] == 1
+    assert item["reported"]["trust"] == "untrusted_telemetry"
+    text = json.dumps(item)
+    assert "B22ACTIONSENTINEL" not in text and "B22TITLESENTINEL" not in text, "a handle or title reached a machine"
+    assert "B22CORRSENTINEL" not in text, "raw correlation reached a tenant-wide machine"
+top = json.load(open("/tmp/b22/tenant-after-1.json"))["items"]
+before_top = json.load(open("/tmp/b22/tenant-before-1.json"))["items"]
+assert top and top[0]["target"]["device_agent_id"].startswith("000-b22-poison-"), \
+    "the poisoned devices do not lead the tenant-wide limit=1 cut"
+assert not before_top or before_top[0]["target"]["device_agent_id"] != top[0]["target"]["device_agent_id"]
+print(f"  tenant-wide machine: {before['returned']} -> {after['returned']} items; the poison leads the order and takes the limit=1 cut")
+print("  its pending action and open incident show as bounded conclusions -- no handle, no title, no raw correlation")
+PY
+
+step "A6-4B2-2/CM: revoke the site-A agent's grant -- current reach empties the answer at once, and the read still costs one"
+B22_GRANT=$(s1_cc "SELECT id FROM cc_scope_grants WHERE principal_ref='$B22_SITE_AGENT'
+                   AND principal_type='agent' AND revoked_at IS NULL LIMIT 1")
+[ -n "$B22_GRANT" ] || { echo "the site-A agent holds no live grant" >&2; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+     "http://localhost:8090/api/scope-grants/$B22_GRANT")" = "200" ] || { echo "the revoke was refused" >&2; exit 1; }
+[ "$(b22_read "$B22_SITE_MACHINE" "$B22_SITE_AGENT" "" /tmp/b22/revoked.json)" = "200 1" ] \
+  || { echo "the revoked machine's read was refused or not charged once" >&2; exit 1; }
+python3 -c "
+import json
+body = json.load(open('/tmp/b22/revoked.json'))
+assert body['view'] == 'machine' and body['items'] == [] and body['returned'] == 0, body
+print('  revoked: the same live token reads an EMPTY machine answer -- current reach, not the token -- charged 1')"
+
+step "A6-4B2-2/CN: this proof owns its state -- and the shipped image carries the contract"
+for B22_A in "$B22_SITE_AGENT" "$B22_TENANT_AGENT" "$B22_ATT_AGENT"; do
+  [ "$(g12_code "$TOKEN" POST "/api/operational-agents/$B22_A/retire")" = "200" ] || {
+    echo "could not retire $B22_A" >&2; head -c 300 /tmp/g12.json >&2; exit 1; }
+done
+[ "$(b2_code "$B22_TENANT_MACHINE" "/api/attention/")" = "401" ] || { echo "a retired agent's token still reads attention" >&2; exit 1; }
+b22_unplant
+[ "$(s1_cc "SELECT (SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$B22_RUN-%')
+             + (SELECT count(*) FROM cc_incidents WHERE incident_id LIKE '$B22_RUN-inc-%')
+             + (SELECT count(*) FROM cc_approval_routes WHERE action_id LIKE 'B22ACTIONSENTINEL-%-$B22_RUN')
+             + (SELECT count(*) FROM cc_fleet_cache WHERE agent_id LIKE '000-b22-poison-%-$B22_RUN')
+             + (SELECT count(*) FROM cc_learned_signals WHERE signal_key = 'site:$SITE_B:$B22_RUN')")" = "0" ] \
+  || { echo "the planted poison remains" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.attention_projection import CONTRACT, CONTRACT_VERSION, NEXT_STEP_CODES
+from harkeniq_cc.freshness import FRESHNESS_WINDOW, freshness_state
+from harkeniq_cc.governance import load_machine_attention, machine_attention_selection
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+assert (CONTRACT, CONTRACT_VERSION) == ('attention', '1')
+assert 'propose_action' not in NEXT_STEP_CODES and FRESHNESS_WINDOW.total_seconds() == 900
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: machine Attention contract v1, one freshness rule (15 min); plane 14, contract 99, ceiling unchanged')"
+echo "  three agents retired (the tenant token now 401); the poison deleted from every table it was planted in"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
