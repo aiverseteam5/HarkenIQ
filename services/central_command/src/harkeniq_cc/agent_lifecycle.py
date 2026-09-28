@@ -47,7 +47,7 @@ from harkeniq_cc.db.repos import (
 from harkeniq_cc.freshness import FRESH, UNKNOWN as FRESHNESS_UNKNOWN, freshness_state
 from harkeniq_cc.governance import (
     load_agent_reach,
-    load_autonomy_contract,
+    load_site_assessments,
 )
 from harkeniq_cc.operational_agent import (
     KIND_ACTION_CLASS,
@@ -106,6 +106,70 @@ async def executions_used(session, tenant_id: str, agent) -> int:
         tenant_id, agent.id, since,
     )
     return int(settled) + int(in_flight)
+
+
+def _as_utc(value) -> Optional[datetime]:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+async def activation_approved_unattended(session, tenant_id: str, agent) -> frozenset:
+    """The classes a human approved for UNATTENDED execution at activation.
+
+    D11 (A30.36/A30.37). The set is the one a person actually approved, not
+    whatever the configuration or the safety picture says today -- so it is
+    RECOVERED, never recomputed:
+
+      1. the agent is active, and activation recorded a version and a time
+         (`set_status` writes both in one unit of work);
+      2. the preflight row that was CURRENT at that moment -- produced at or
+         before `activated_at`, not yet superseded then, for exactly
+         `activated_version` -- is found among the immutable rows;
+      3. its stored unattended set is re-digested into the activation
+         subject, and E0.1's completion rule is asked whether THAT subject
+         was approved. `activation_subject_ref` on the agent row is not
+         consulted: a later preflight rewrites it.
+
+    Anything that cannot be established is the empty set, never a guess:
+    an agent that is not active, activated before A2 recorded a version,
+    or whose activation-time preflight cannot be identified approved no
+    unattended execution. Activation that needed no approval conferred
+    none. No migration: every fact read here already exists.
+    """
+    from harkeniq_cc.agent_activation import activation_subject_ref
+    from harkeniq_cc.api.approvals import activation_approval_state
+    from harkeniq_cc.approval_policy import STATE_APPROVED
+
+    if getattr(agent, "status", "") != "active":
+        return frozenset()
+    version = int(getattr(agent, "activated_version", 0) or 0)
+    activated_at = _as_utc(getattr(agent, "activated_at", None))
+    if version <= 0 or activated_at is None:
+        return frozenset()
+    at_activation = None
+    # Newest first, so the first row that qualifies is the one in force.
+    for row in await AgentPreflightRepo(session).history(agent.id):
+        if int(row.configuration_version or 0) != version:
+            continue
+        produced = _as_utc(row.produced_at)
+        superseded = _as_utc(row.superseded_at)
+        if produced is None or produced > activated_at:
+            continue
+        if superseded is not None and superseded <= activated_at:
+            continue
+        at_activation = row
+        break
+    if at_activation is None or not at_activation.requires_activation_approval:
+        return frozenset()
+    unattended = list((at_activation.result or {}).get("unattended_classes") or [])
+    if not unattended:
+        return frozenset()
+    subject = activation_subject_ref(agent.id, version, unattended)
+    block = await activation_approval_state(session, tenant_id, subject)
+    if block.get("state") != STATE_APPROVED:
+        return frozenset()
+    return frozenset(str(c).upper() for c in unattended)
 
 
 async def _per_device_reach(devices, bound: set[str]) -> list[dict]:
@@ -224,21 +288,28 @@ async def run_preflight(
     facts = action_facts()
     platform_implemented = {k for k, v in facts.items() if v["implemented"]}
 
-    # A30.26: an INTERNAL DECISION. The preflight is the activation
-    # gate's input and is stored once for every reader, so it cannot be
-    # composed for one of them; it keeps class NAMES and one flag from
-    # this contract and no site-naming row.
-    contract = await load_autonomy_contract(
+    # S3-E1 (A30.37, R5): assessed over the AGENT's own reach -- the sites
+    # of the devices it can act on -- and over no other site. The preflight
+    # is stored once for every reader, so it keeps class NAMES and flags
+    # from this composition and no site-naming row. `safety_reported` means
+    # EVERY one of those sites reported recently: a site the agent cannot
+    # reach reporting can no longer turn UNKNOWN into READY.
+    assessments = await load_site_assessments(
         session, tenant_id=tenant_id,
         actor_id=attribution_key(agent.id, agent.version),
         actor_species=ACTOR_AGENT, permissions=["fleet.view"],
-        reach=None,
+    )
+    contract = assessments.local_contract(
+        sorted({d.site_id for d in in_scope if getattr(d, "site_id", "")})
     )
     class_rows = {
         row["action_type"]: row for row in contract.get("action_classes", [])
     }
     stop = await StopSwitchRepo(session).get(tenant_id)
     safety = contract.get("safety_state") or {}
+    configured_level = int(
+        (contract.get("posture") or {}).get("configured_level", 0) or 0
+    )
 
     # A21.8: a skill may recommend only what this tenant's catalogue maps.
     from harkeniq_cc.db.repos import CapabilityCatalogueRepo
@@ -262,8 +333,11 @@ async def run_preflight(
         class_rows=class_rows, reach=reach, per_device_reach=per_device,
         executions_used=executions,
         stop_switch_active=bool(stop is not None and getattr(stop, "active", False)),
-        safety_reported=bool(safety.get("reported")),
+        safety_reported=bool(safety.get("every_site_reported")),
         realm_ok=realm_ok, preflight_version=agent.version,
+        # D11: the unattended set is DURABLE configuration -- the tenant's
+        # configured ladder level, never a transient disposition.
+        configured_level=configured_level,
     )
     result["skills"] = skill_rows
     result["devices"] = per_device

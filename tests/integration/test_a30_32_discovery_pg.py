@@ -63,7 +63,11 @@ async def _machine(stack, name, grants, classes=("SEL_CLEAR", "IDENTIFY_LED")):
     return agent_id, grant_ids
 
 
-async def test_native_reach_and_the_pre_e1_semantics_on_postgres():
+async def test_native_reach_and_the_site_local_semantics_on_postgres():
+    """INVERTED by S3-E1 (A30.37) -- this proof pinned the pre-E1 answer
+    (`unknown`, `admission_beyond_reach`) for the site-A agent, the seam
+    S3-E1 consumes. Admission now reads the TARGET site's own assessment,
+    out of the same JSONB rows."""
     stack = await _estate()
     tenant_agent, _ = await _machine(stack, "t", [("tenant", "")])
     site_agent, _ = await _machine(stack, "a", [("site", "A")])
@@ -71,20 +75,28 @@ async def test_native_reach_and_the_pre_e1_semantics_on_postgres():
     class_agent, _ = await _machine(stack, "k", [("device_class", "switch")])
 
     tenant = await _discover(stack, tenant_agent)
-    # C's drop-back came back out of JSONB: the tenant-wide agent reads what
-    # admission reads, so SEL_CLEAR definitively needs a human.
+    # C's drop-back came back out of JSONB and is C's own reason. The
+    # tenant-wide agent's targets are answered PER SITE: one at halted C can
+    # never run, one at A, B or D needs a human -- so the class-level answer
+    # depends on the target, and discovery says exactly that.
     sel = klass(tenant, "SEL_CLEAR")
     assert sel["governance"]["conclusion"] == "requires_approval"
     assert {"code": "error_budget_dropped_back", "scope": "site",
             "site_id": stack.site("C")} in sel["governance"]["reason_codes"]
-    assert sel["approval_required"]["state"] == "required"
+    assert sel["approval_required"] == {
+        "state": "unknown", "basis": ["depends_on_target_site"]}
     assert tenant["scope"]["devices_in_reach"] == 4
 
     site = await _discover(stack, site_agent)
     sel = klass(site, "SEL_CLEAR")
     assert sel["governance"]["conclusion"] == "autonomous"
-    assert sel["approval_required"]["state"] == "unknown"
-    assert sel["currently_operable"]["state"] == "unknown"
+    # Site A's suppressed fault domain sends a target there to a human, and
+    # every target this agent reaches is at A: definitive, and operable.
+    assert sel["approval_required"] == {
+        "state": "required", "basis": ["governance_requires_approval"]}
+    assert sel["currently_operable"] == {
+        "state": "operable", "blocked_by": [], "unknown": []}
+    assert site["governance_basis"]["matches_admission"] is True
     assert E.leaks(site, ("A",)) == []
     # The JSONB capability declaration was read: A permits SEL_CLEAR.
     assert sel["in_effective_scope"]["state"] == "available"

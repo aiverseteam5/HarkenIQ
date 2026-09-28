@@ -326,17 +326,38 @@ async def central_command(safety_by_site: dict[str, dict]) -> dict:
         await engine.dispose()
 
     sites = sorted(safety_by_site)
+    # S3-E1 (A30.37): Central Command reads what its production code reads --
+    # the composer's inputs once, a composite contract over every site for a
+    # reader, and each target's SITE-LOCAL assessment for a decision. The
+    # gate is the production registry: empty.
+    from harkeniq_cc.governance import AutonomyInputs, SiteAssessments, gate_verdicts
+    from harkeniq_cc.global_safety import GlobalSafetyGate, PRODUCTION_MEMBERS
+
+    inputs = AutonomyInputs(
+        tenant_id=TENANT,
+        budgets=(SimpleNamespace(
+            device_type="*", level=2, budget_limit=3, budget_period="hourly",
+            actions_used=0,
+        ),),
+        stop_switch=SimpleNamespace(active=False, changed_by="", updated_at=NOW),
+        outcomes=(), safety_rows=tuple(rows),
+        sites=tuple(SimpleNamespace(id=f"cc-{s}", site_name=s) for s in sites),
+        learned=(), policies=(), now=NOW,
+    )
     contract = build_autonomy(
         tenant_id=TENANT, actor_id="op-agent:e10@v1", actor_species="agent",
         permissions=["fleet.view"],
-        budgets=[SimpleNamespace(
-            device_type="*", level=2, budget_limit=3, budget_period="hourly",
-            actions_used=0,
-        )],
-        stop_switch=SimpleNamespace(active=False, changed_by="", updated_at=NOW),
+        budgets=list(inputs.budgets), stop_switch=inputs.stop_switch,
         outcomes=[], safety_rows=rows,
-        sites=[SimpleNamespace(id=f"cc-{s}", site_name=s) for s in sites],
+        sites=list(inputs.sites),
         now=NOW,
+        global_safety=gate_verdicts(
+            GlobalSafetyGate(members=PRODUCTION_MEMBERS, tenant_id=TENANT, estate=()),
+        ),
+    )
+    assessments = SiteAssessments(
+        inputs, actor_id="op-agent:e10@v1", actor_species="agent",
+        permissions=["fleet.view"],
     )
     agent = SimpleNamespace(
         id="e10", tenant_id=TENANT, name="e10", description="", status="active",
@@ -372,7 +393,10 @@ async def central_command(safety_by_site: dict[str, dict]) -> dict:
             ]
             for d in devices
         },
-        autonomy_contract=contract, now=NOW,
+        assessments=assessments,
+        # D11: the fixture agent's activation approved both classes.
+        unattended_approved=frozenset({"SEL_CLEAR", "BMC_RESET"}),
+        now=NOW,
     )
     classes = {
         row["action_type"]: {

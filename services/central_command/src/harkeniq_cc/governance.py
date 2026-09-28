@@ -417,43 +417,246 @@ async def load_autonomy_contract(
 
     A bare `ResolvedScope` is refused, exactly as the repositories refuse
     one (A30.24).
+
+    S3-E1 (A30.37): the global safety gate is evaluated here, over the
+    WHOLE estate, and handed to the composer as bounded verdicts -- the
+    only form in which a site outside `reach` can reach this contract.
     """
     visible_site_ids = (
         None if require_read_reach(reach) is None else authorized_sites(reach)
     )
-    budgets = await AutonomyBudgetRepo(session).list_all(tenant_id)
-    stop_switch = await StopSwitchRepo(session).get(tenant_id)
-    outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
-    safety_rows = await SafetyStateRepo(session).list_for_tenant(tenant_id)
-    sites = await SiteRepo(session).list_all(tenant_id)
-    learned = await LearnedSignalRepo(session).list_active(tenant_id)
+    inputs = await load_autonomy_inputs(session, tenant_id)
+    learned = inputs.learned
     if visible_site_ids is not None:
         # A30.28: a principal's contract quotes each signal's STATEMENT and
         # confidence. `select_site_inputs` decides which ROWS it may see;
         # this decides what is inside the ones that survive. An internal
         # decision path (`reach=None`) reasons over what is stored.
         learned = project_signals(learned, visible_site_ids)
-    # Approval policies shape what "requires approval" actually means for
-    # a class. Read at fleet.view even though managing them needs
-    # site.manage: knowing an action needs two approvers is posture, and
-    # the posture read-split (D2) is the whole point of this surface.
-    policies = await ApprovalPolicyRepo(session).list_all(tenant_id)
+    gate = inputs.gate()
 
     return build_autonomy(
         tenant_id=tenant_id,
         actor_id=actor_id,
         actor_species=actor_species,
         permissions=permissions,
-        budgets=budgets,
-        stop_switch=stop_switch,
-        outcomes=outcomes,
-        safety_rows=safety_rows,
-        sites=sites,
+        budgets=inputs.budgets,
+        stop_switch=inputs.stop_switch,
+        outcomes=inputs.outcomes,
+        safety_rows=inputs.safety_rows,
+        sites=inputs.sites,
         learned_signals=learned,
-        approval_policies=policies,
+        approval_policies=inputs.policies,
         site_id=site_id,
         action_type=action_type,
         visible_site_ids=visible_site_ids,
+        now=inputs.now,
+        global_safety=gate_verdicts(gate, target_site_id=site_id or ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# S3-E1 (A30.37): the inputs, fetched once, and the gate over them
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AutonomyInputs:
+    """Every tenant-scoped input the composer folds, read ONCE.
+
+    One fetch serves the principal's contract and every decision path, for
+    the reason `load_autonomy_contract` is one loader: two assemblies of
+    the same inputs drift the first time an input is added.
+    """
+
+    tenant_id: str
+    budgets: tuple
+    stop_switch: Any
+    outcomes: tuple
+    safety_rows: tuple
+    sites: tuple
+    learned: tuple
+    policies: tuple
+    now: Any
+
+    def gate(self):
+        """The closed global safety gate over this estate (A30.37)."""
+        from harkeniq_cc.global_safety import (
+            GlobalSafetyGate,
+            active_members,
+            estate_from_rows,
+        )
+
+        return GlobalSafetyGate(
+            members=active_members(),
+            tenant_id=self.tenant_id,
+            estate=estate_from_rows(self.safety_rows, self.now),
+            now=self.now,
+        )
+
+
+async def load_autonomy_inputs(session: AsyncSession, tenant_id: str) -> AutonomyInputs:
+    """Fetch every input the composer folds, over the whole tenant."""
+    from datetime import datetime, timezone
+
+    budgets = await AutonomyBudgetRepo(session).list_all(tenant_id)
+    stop_switch = await StopSwitchRepo(session).get(tenant_id)
+    outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
+    safety_rows = await SafetyStateRepo(session).list_for_tenant(tenant_id)
+    sites = await SiteRepo(session).list_all(tenant_id)
+    learned = await LearnedSignalRepo(session).list_active(tenant_id)
+    # Approval policies shape what "requires approval" actually means for
+    # a class. Read at fleet.view even though managing them needs
+    # site.manage: knowing an action needs two approvers is posture, and
+    # the posture read-split (D2) is the whole point of this surface.
+    policies = await ApprovalPolicyRepo(session).list_all(tenant_id)
+    return AutonomyInputs(
+        tenant_id=tenant_id,
+        budgets=tuple(budgets),
+        stop_switch=stop_switch,
+        outcomes=tuple(outcomes),
+        safety_rows=tuple(safety_rows),
+        sites=tuple(sites),
+        learned=tuple(learned),
+        policies=tuple(policies),
+        now=datetime.now(timezone.utc),
+    )
+
+
+def gate_verdicts(gate, *, target_site_id: str = "") -> dict:
+    """{action_type: verdict} for every class the platform can execute.
+
+    The composer takes exactly this and nothing looser (A30.37): a class it
+    does not name fails closed, so this names every one.
+    """
+    from harkeniq_cc.autonomy import action_risk_map
+
+    return {
+        at: gate.verdict(at, target_site_id)
+        for at in action_risk_map()
+    }
+
+
+class SiteAssessments:
+    """S3-E1 (A30.37): what a DECISION path reads, instead of the fold.
+
+    SITE-LOCAL AUTONOMY + GLOBAL SAFETY GATE = FINAL EXECUTION ELIGIBILITY.
+    A decision about a target reads that target's SITE-LOCAL assessment --
+    the one composer over `{target.site_id}` and nothing else -- and the
+    gate's verdict for it. The tenant-wide fold is no longer an assessment.
+
+    `evidence_rows` is the one exception, and it is not a decision: it is
+    the whole-tenant composition `govern_proposal` still FREEZES as a
+    proposal's outcome evidence and rationale (D7 -- S3-E2 owns what
+    evidence is recorded; S3-E1 changes what is DECIDED, not what is
+    remembered).
+
+    Pure after construction: every input was fetched by
+    `load_site_assessments`, and the gate's members were handed the estate
+    by the loader.
+    """
+
+    def __init__(
+        self,
+        inputs: AutonomyInputs,
+        *,
+        actor_id: str,
+        actor_species: str,
+        permissions: Iterable[str],
+    ) -> None:
+        self.inputs = inputs
+        self.actor_id = actor_id
+        self.actor_species = actor_species
+        self.permissions = tuple(permissions)
+        self.gate = inputs.gate()
+        self._local: dict[frozenset, dict] = {}
+        self._evidence: Optional[dict] = None
+
+    @property
+    def tenant_id(self) -> str:
+        return self.inputs.tenant_id
+
+    @property
+    def stop_switch_active(self) -> bool:
+        stop = self.inputs.stop_switch
+        return bool(getattr(stop, "active", False)) if stop else False
+
+    def _compose(self, site_ids: Optional[frozenset], target_site_id: str) -> dict:
+        return build_autonomy(
+            tenant_id=self.inputs.tenant_id,
+            actor_id=self.actor_id,
+            actor_species=self.actor_species,
+            permissions=self.permissions,
+            budgets=self.inputs.budgets,
+            stop_switch=self.inputs.stop_switch,
+            outcomes=self.inputs.outcomes,
+            safety_rows=self.inputs.safety_rows,
+            sites=self.inputs.sites,
+            learned_signals=self.inputs.learned,
+            approval_policies=self.inputs.policies,
+            visible_site_ids=site_ids,
+            now=self.inputs.now,
+            global_safety=gate_verdicts(self.gate, target_site_id=target_site_id),
+        )
+
+    def local_contract(self, site_ids: Iterable[str]) -> dict:
+        """The composer over exactly these sites (R4: a campaign's plan).
+
+        One site is that site's local assessment, and its gate verdict is
+        asked for that target; several are the composite, asked class-level.
+        """
+        key = frozenset(s for s in site_ids if s)
+        cached = self._local.get(key)
+        if cached is None:
+            target = next(iter(key)) if len(key) == 1 else ""
+            cached = self._compose(key, target)
+            self._local[key] = cached
+        return cached
+
+    def local_rows(self, site_id: str) -> dict[str, dict]:
+        """{action_type: class row} of the target site's local assessment."""
+        return {
+            row["action_type"]: row
+            for row in self.local_contract((site_id,)).get("action_classes", [])
+        }
+
+    def evidence_rows(self) -> dict[str, dict]:
+        """The whole-tenant rows a proposal FREEZES as evidence (D7). Never a
+        decision: nothing reads a disposition off these."""
+        if self._evidence is None:
+            self._evidence = self._compose(None, "")
+        return {
+            row["action_type"]: row
+            for row in self._evidence.get("action_classes", [])
+        }
+
+    def gate_verdict(self, action_type: str, site_id: str = ""):
+        return self.gate.verdict(action_type, site_id)
+
+
+async def load_site_assessments(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    actor_id: str,
+    actor_species: str,
+    permissions: Iterable[str],
+) -> SiteAssessments:
+    """The inputs every DECISION path reads (A30.37). ONE of these.
+
+    The evaluator, the dry-run, the ingress re-derivation, campaign
+    submission and advance, the activation preflight, discovery and the
+    dispatch gate all read the target's local assessment and the gate
+    through this. None of them returns the composition it holds, so the
+    call sites are allow-listed by the same structural test that pinned
+    `load_autonomy_contract(reach=None)` (A30.26).
+    """
+    inputs = await load_autonomy_inputs(session, tenant_id)
+    return SiteAssessments(
+        inputs,
+        actor_id=actor_id,
+        actor_species=actor_species,
+        permissions=permissions,
     )
 
 

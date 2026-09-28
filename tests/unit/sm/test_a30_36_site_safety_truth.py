@@ -485,34 +485,74 @@ def _fields(snapshot: dict) -> set[str]:
 
 
 class TestCentralCommandDifferential:
-    """Recorded from UNMODIFIED `main` (3323b74) by the same stages."""
+    """E1-0 recorded Central Command's reading of the Site Manager's truth on
+    UNMODIFIED `main` (3323b74), where CC folded every site into one tenant-
+    wide assessment. S3-E1 (A30.37) replaces that fold, by ratified design,
+    with each target's SITE-LOCAL assessment -- so CC's outputs are no longer
+    main's, and these tests say exactly how they differ, over the very same
+    recorded Site Manager inputs."""
 
-    @pytest.mark.parametrize("topology", ["multi", "single"])
-    async def test_central_command_is_the_same_function(self, topology):
-        """Main's recorded inputs, through this branch's Central Command,
-        give main's recorded outputs -- every stage, both topologies."""
-        for stage in GOLDEN[topology]:
-            assert await E.central_command(stage["sm_raw"]) == stage["cc"], stage["stage"]
+    @staticmethod
+    def _proposals_at(cc: dict, site: str) -> list:
+        return [p for p in cc["proposals"] if p["device"] == f"cc-dev-{site}"]
 
-    async def test_single_site_inputs_equal_main_except_a_real_halt(self):
+    async def test_a_site_is_decided_by_its_own_recorded_state_alone(self):
+        """Deletion equivalence over main's recorded multi-site stages: at
+        every stage, alpha's proposals are exactly what they would be in an
+        estate where beta did not exist -- whatever beta was doing (spending,
+        suppressed, halted, dropping back)."""
+        for stage in GOLDEN["multi"]:
+            both = await E.central_command(stage["sm_raw"])
+            alone = await E.central_command({"alpha": stage["sm_raw"]["alpha"]})
+            assert self._proposals_at(both, "alpha") == \
+                self._proposals_at(alone, "alpha"), stage["stage"]
+
+    async def test_main_recorded_the_fold_that_s3_e1_removed(self):
+        """NON-VACUITY: on main, beta's recorded state DID move alpha's
+        proposals at some stage -- the tenant-wide fold. Without this, the
+        test above could pass on an estate where beta never mattered."""
+        moved = []
+        for stage in GOLDEN["multi"]:
+            alone = await E.central_command({"alpha": stage["sm_raw"]["alpha"]})
+            if self._proposals_at(stage["cc"], "alpha") != \
+                    self._proposals_at(alone, "alpha"):
+                moved.append(stage["stage"])
+        assert moved, "main's fold never let beta move alpha in these stages"
+
+    async def test_single_site_given_mains_inputs_is_mains_answer(self):
+        """One site: the tenant-wide fold over one site IS that site's local
+        assessment, so main's recorded inputs read exactly as main read them
+        -- with R5's additive field beside them. (Main never REPORTED a
+        persisted halt -- F-1 -- so its inputs carry none to deny.)"""
+        for stage in GOLDEN["single"]:
+            now = await E.central_command(stage["sm_raw"])
+            recorded = stage["cc"]
+            state = dict(now["safety_state"])
+            assert state.pop("every_site_reported") is True, stage["stage"]
+            assert state == recorded["safety_state"], stage["stage"]
+            assert now["posture_stop"] == recorded["posture_stop"], stage["stage"]
+            assert now["classes"] == recorded["classes"], stage["stage"]
+            assert now["proposals"] == recorded["proposals"], stage["stage"]
+
+    async def test_a_truthfully_reported_halt_is_a_local_denial(self):
+        """R3(f) over THIS branch's Site Manager, which reports the halt it
+        enforces (E1-0, F-1): the site's classes are denied and its
+        proposals blocked -- nothing about it is left for a human to
+        approve. Before the halt, CC reads exactly what main read."""
         ours = await E.run_stages("single")
         for recorded, now in zip(GOLDEN["single"], ours):
-            assert recorded["stage"] == now["stage"]
-            assert now["outcomes"] == recorded["outcomes"]
-            if recorded["stage"] != "alpha_halted":
-                assert now["sm"] == recorded["sm"], recorded["stage"]
-                assert now["cc"] == recorded["cc"], recorded["stage"]
+            cc = now["cc"]
+            if now["stage"] != "alpha_halted":
+                assert cc["classes"] == recorded["cc"]["classes"], now["stage"]
+                assert cc["proposals"] == recorded["cc"]["proposals"], now["stage"]
                 continue
-            # The one correction a single site can see (F-1): the site's own
-            # persisted halt is reported.
-            assert recorded["sm"]["alpha"]["sm_stop_switch"] is False
-            assert now["sm"]["alpha"]["sm_stop_switch"] is True
-            assert {**now["sm"]["alpha"], "sm_stop_switch": False} == recorded["sm"]["alpha"]
-            # Central Command: posture counts it; no disposition moves.
-            assert now["cc"]["classes"] == recorded["cc"]["classes"]
-            assert now["cc"]["proposals"] == recorded["cc"]["proposals"]
-            assert now["cc"]["posture_stop"]["sites_reporting_active"] == 1
-            assert recorded["cc"]["posture_stop"]["sites_reporting_active"] == 0
+            for name, row in cc["classes"].items():
+                assert row["disposition"] == "denied", name
+                assert any(b["code"] == "site_stop_switch_active"
+                           for b in row["blocking_conditions"]), name
+                assert recorded["cc"]["classes"][name]["disposition"] != "denied", name
+            assert {p["status"] for p in cc["proposals"]} == {"blocked"}
+            assert "blocked" not in {p["status"] for p in recorded["cc"]["proposals"]}
 
     async def test_multi_site_inputs_differ_only_by_the_corrections(self):
         ours = await E.run_stages("multi")
@@ -558,4 +598,7 @@ class TestCentralCommandDifferential:
                 assert beta_budget["SEL_CLEAR"]["success_count"] == 3
             if stage == "beta_sel_failures":
                 assert beta_budget["SEL_CLEAR"]["dropped_back"] is True
-            assert recorded["sm"]["beta"]["error_budgets"] == []
+            # S3-E1 on the live Site Manager's truth: alpha is decided by alpha.
+            alone = await E.central_command({"alpha": now["sm_raw"]["alpha"]})
+            assert self._proposals_at(now["cc"], "alpha") == \
+                self._proposals_at(alone, "alpha"), stage

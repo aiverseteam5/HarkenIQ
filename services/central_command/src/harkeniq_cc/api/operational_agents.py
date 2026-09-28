@@ -53,6 +53,7 @@ from harkeniq_cc.governance import (
     autonomy_view,
     load_agent_reach,
     load_autonomy_contract,
+    load_site_assessments,
     require_autonomy_view,
 )
 from harkeniq_cc.target_authority import load_fleet_index
@@ -1099,6 +1100,13 @@ async def _require_agent(session: AsyncSession, tenant_id: str, agent_id: str):
     return agent
 
 
+async def _activation_approved(session: AsyncSession, tenant_id: str, agent) -> frozenset:
+    """D11 (A30.37): the set a human approved at this agent's activation."""
+    from harkeniq_cc.agent_lifecycle import activation_approved_unattended
+
+    return await activation_approved_unattended(session, tenant_id, agent)
+
+
 @router.get(
     "/{agent_id}",
     dependencies=[Depends(require_permission("fleet.view"))],
@@ -1165,12 +1173,18 @@ async def get_agent(
     agent_reach = await load_agent_reach(
         session, tenant_id=user.tenant_id, agent_id=agent.id
     )
+    from harkeniq_cc.agent_lifecycle import activation_approved_unattended
+
     view = agent_view(
         agent=agent,
         scopes=agent_reach.rules,
         capabilities=caps,
         devices=devices,
         autonomy_contract=contract,
+        # D11 (A30.37): what this agent's activation actually approved.
+        unattended_approved=await activation_approved_unattended(
+            session, user.tenant_id, agent,
+        ),
         resolved_site_ids=agent_reach.site_ids,
         configured_rule_count=configured_rule_count,
         proposals=proposals,
@@ -2003,7 +2017,7 @@ async def dry_run_agent(
         AgentProposalRepo, CapabilityCatalogueRepo, FleetCacheRepo,
     )
     from harkeniq_cc.governance import (
-        load_agent_reach, load_attention, load_autonomy_contract,
+        load_agent_reach, load_attention, load_site_assessments,
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
@@ -2074,17 +2088,22 @@ async def dry_run_agent(
             learning=None,
         ))["items"]
     }
-    # A30.26: an INTERNAL DECISION. A22.6 requires the preview to reason
-    # exactly as the runtime does, so it reasons over the same whole-tenant
-    # contract -- and the contract itself is not in the response. The
-    # verdicts that ARE returned are narrowed to the caller below.
-    contract = await load_autonomy_contract(
+    # S3-E1 (A30.37): an INTERNAL DECISION. A22.6 requires the preview to
+    # reason exactly as the runtime does, so it reads each target's own
+    # site-local assessment and the gate -- the same `SiteAssessments` the
+    # evaluator reads -- and none of it is in the response. The verdicts
+    # that ARE returned are narrowed to the caller below.
+    from harkeniq_cc.agent_lifecycle import activation_approved_unattended
+
+    assessments = await load_site_assessments(
         session,
         tenant_id=tenant_id,
         actor_id=attribution_key(agent_id, agent.version),
         actor_species=ACTOR_AGENT,
         permissions=AGENT_PERMISSIONS,
-        reach=None,
+    )
+    unattended_approved = await activation_approved_unattended(
+        session, tenant_id, agent,
     )
     catalogue_rows = await CapabilityCatalogueRepo(session).list_for_tenant(
         tenant_id
@@ -2111,7 +2130,8 @@ async def dry_run_agent(
         capabilities=caps,
         devices=devices,
         incidents_by_device=incidents,
-        autonomy_contract=contract,
+        assessments=assessments,
+        unattended_approved=unattended_approved,
         attention_by_device=attention,
         open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
         proposals_today=await prop_repo.count_since(
@@ -2275,6 +2295,29 @@ async def agent_discovery(
     midnight = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0,
     )
+    # S3-E1 (A30.37): what admission reads for a target at each site of
+    # THIS composition -- that site's own local assessment -- and the gate.
+    # Only sites the composition already holds are assessed (A30.26(j)); a
+    # device this agent reads at a site outside it (a device or class grant)
+    # makes the per-site answer indefinite rather than borrowed.
+    from harkeniq_cc.agent_lifecycle import activation_approved_unattended
+    from harkeniq_cc.agent_runtime import AGENT_PERMISSIONS
+    from harkeniq_cc.autonomy import action_risk_map
+    from harkeniq_cc.global_safety import strictest
+
+    composition = sorted(
+        s["id"] for s in (contract.get("scope") or {}).get("sites") or ()
+    )
+    assessments = await load_site_assessments(
+        session, tenant_id=tenant_id,
+        actor_id=attribution_key(agent.id, agent.version),
+        actor_species=ACTOR_AGENT, permissions=AGENT_PERMISSIONS,
+    )
+    reach_device_sites = {
+        d.site_id for d in await FleetCacheRepo(session).list_all(
+            tenant_id, scope=reach,
+        ) if d.site_id
+    }
     payload = build_discovery(
         agent=agent,
         bound_classes=bound,
@@ -2287,6 +2330,21 @@ async def agent_discovery(
         proposals_today=await AgentProposalRepo(session).count_since(
             tenant_id, agent.id, midnight,
         ),
+        site_contracts={
+            site_id: assessments.local_contract((site_id,))
+            for site_id in composition
+        },
+        gate_verdicts={
+            at: strictest(
+                [assessments.gate_verdict(at, s) for s in composition]
+                or [assessments.gate_verdict(at, "")]
+            )
+            for at in action_risk_map()
+        },
+        unattended_approved=await activation_approved_unattended(
+            session, tenant_id, agent,
+        ),
+        sites_beyond_view=bool(reach_device_sites - set(composition)),
     )
     # Composed BEFORE the rollback, which expires the identity map. Nothing
     # above added or flushed anything but the catalogue's lazy seed, and
@@ -2381,7 +2439,7 @@ async def submit_proposal(
         lock_agent_ingress, record_throttled,
     )
     from harkeniq_cc.governance import (
-        load_agent_reach, load_attention, load_autonomy_contract,
+        load_agent_reach, load_attention, load_site_assessments,
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
@@ -2584,17 +2642,20 @@ async def submit_proposal(
         capabilities=await repo.list_capabilities(agent_id),
         devices=devices,
         incidents_by_device=await _incidents_by_device(session, tenant_id),
-        # A30.26: an INTERNAL DECISION -- the same whole-tenant contract
-        # the evaluator reasons over, or a re-derivation could admit what
-        # the runtime would not. Never returned; the response narrows
-        # what the admitted proposal recorded.
-        autonomy_contract=await load_autonomy_contract(
+        # S3-E1 (A30.37): an INTERNAL DECISION -- the same site-local
+        # assessments and gate the evaluator reads, or a re-derivation
+        # could admit what the runtime would not. Never returned; the
+        # response narrows what the admitted proposal recorded.
+        assessments=await load_site_assessments(
             session,
             tenant_id=tenant_id,
             actor_id=attribution_key(agent_id, agent.version),
             actor_species=ACTOR_AGENT,
             permissions=AGENT_PERMISSIONS,
-            reach=None,
+        ),
+        # D11: the same activation-approved set the evaluator reads.
+        unattended_approved=await _activation_approved(
+            session, tenant_id, agent,
         ),
         attention_by_device={
             item["agent_id"]: item

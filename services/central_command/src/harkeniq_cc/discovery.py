@@ -41,14 +41,14 @@ agent's authorized sites (A30.26); nothing here filters a composed value.
 Learn, remember or quote. No learned signal, pattern, outcome evidence,
 advancement story or generated text is named here (A30.28, A30.29).
 
-THE ONE PLACE HIDDEN STATE ENTERS (A30.32, D3)
-----------------------------------------------
-Before S3-E1, admission folds TENANT-WIDE state. A condition outside the
-agent's reach can only ADD a restriction there, so a composed
-`requires_approval` or `denied` is definitive and only a composed
-`autonomous` can be overturned. `admission_reads_beyond` is where that is
-asked, once; S3-E1 replaces it with the target site's local assessment and
-the closed global gate, and the `unknown` states it produces reduce.
+THE ONE PLACE HIDDEN STATE ENTERS (A30.32, D3; S3-E1, A30.37)
+--------------------------------------------------------------
+Before S3-E1, admission folded TENANT-WIDE state, and `admission_reads_beyond`
+said so. S3-E1 consumed that seam: admission reads the TARGET site's local
+assessment and the closed global gate, and hidden state reaches this
+response only as the gate's one bounded code. A class-level answer is now
+the per-site one -- definitive when every site in this agent's composition
+agrees and no target lies outside it, `depends_on_target_site` otherwise.
 """
 
 from __future__ import annotations
@@ -78,6 +78,13 @@ from harkeniq_cc.capabilities import (
     reach_state,
 )
 from harkeniq_cc.capability_catalogue import CAMPAIGN_ONLY_CLASSES
+from harkeniq_cc.global_safety import (
+    GLOBAL_SAFETY_CONSTRAINT,
+    SCOPE_GLOBAL,
+    UNKNOWN as GATE_UNKNOWN,
+    final_block,
+    require_verdict,
+)
 from harkeniq_cc.operational_agent import (
     STATUS_ACTIVE,
     _suppressed_sites,
@@ -124,7 +131,8 @@ BASIS_GOVERNANCE_REQUIRES_APPROVAL = "governance_requires_approval"
 #: A19 D2: a spent execution budget returns autonomous work to a human at
 #: dispatch, so "not required" would be an over-promise.
 BASIS_EXECUTION_BUDGET_EXHAUSTED = "execution_budget_exhausted"
-#: D3: admission reads state beyond this agent's reach (pre-S3-E1).
+#: D3: admission read state beyond this agent's reach. Retired by S3-E1
+#: (A30.37): kept in the closed vocabulary, never produced.
 BASIS_ADMISSION_BEYOND_REACH = "admission_beyond_reach"
 #: `govern_proposal`'s per-target rule: a target at a site with a suppressed
 #: fault domain needs a human, so a class-level answer depends on the target.
@@ -164,6 +172,9 @@ BLOCKERS = (
     "no_effective_reach",
     "not_permitted_on_any_node",
     "governance_denied",
+    # S3-E1 (A30.37): the closed global safety gate is not clear. The exact
+    # ratified code -- one spelling everywhere it appears.
+    GLOBAL_SAFETY_CONSTRAINT,
 )
 
 #: Why operability cannot be stated definitively. Closed.
@@ -191,40 +202,44 @@ GOVERNANCE_REASON_CODES = frozenset({
     "domain_suppressed",
     "agent_requires_approval",
     "agent_ceiling_below_grant",
+    # S3-E1 (A30.37).
+    "site_safety_not_reported",
+    "site_stop_switch_active",
+    "agent_unattended_not_approved",
+    GLOBAL_SAFETY_CONSTRAINT,
 })
 
 #: A code this module does not recognise is reported as this, never passed
 #: through: a reason code is a closed vocabulary, not a free-text channel.
 REASON_OTHER = "other"
 
-_REASON_SCOPES = frozenset({SCOPE_TENANT, SCOPE_SITE, SCOPE_DOMAIN})
+_REASON_SCOPES = frozenset({SCOPE_TENANT, SCOPE_SITE, SCOPE_DOMAIN, SCOPE_GLOBAL})
 
 # -- the composition ----------------------------------------------------------
 
 COMPOSED_OVER_TENANT = "tenant"
 COMPOSED_OVER_SITES = "authorized_sites"
+#: S3-E1 (A30.37): admission reads the TARGET site's local assessment and the
+#: closed gate's bounded verdict -- never the tenant-wide fold.
+COMPOSED_OVER_TARGET_SITE = "target_site"
 
-#: What admission composes over, before S3-E1: the whole tenant (A30.26's
-#: internal decision paths). S3-E1 changes this, and `admission_reads_beyond`
-#: with it.
-ADMISSION_COMPOSED_OVER = COMPOSED_OVER_TENANT
+#: What admission composes over.
+ADMISSION_COMPOSED_OVER = COMPOSED_OVER_TARGET_SITE
 
 
 def admission_reads_beyond(reach) -> bool:
     """Does admission read governance state this agent's reach does not?
 
-    THE E1 SEAM (A30.32, D3). Before S3-E1, admission folds the whole tenant,
-    so for any reach that is not tenant-wide the answer is yes: a site the
-    agent cannot see can still add an approval requirement. `tenant_wide` is
-    the one case in which `authorized_sites` returns the whole tenant, so it
-    is the one case in which the discovery composition is provably the one
-    admission reads.
-
-    When S3-E1 lands, this is where its definitive result is consumed -- the
-    target site's local assessment plus the closed global gate -- and the
-    `unknown` states it produces reduce. Nothing of S3-E1 exists yet.
+    THE E1 SEAM (A30.32, D3) -- consumed by S3-E1 (A30.37). Admission now
+    reads the TARGET site's local assessment, which is a site this agent
+    acts on, and the closed global gate, which reaches every projection as
+    one bounded code. Neither is state beyond the reach, so the answer is
+    no, for every reach, and `admission_beyond_reach` is no longer produced.
+    Where discovery still cannot answer definitively -- targets at sites
+    outside its own composition, or sites that disagree -- it says
+    `depends_on_target_site`, which is the truth, not an over-promise.
     """
-    return not bool(getattr(reach, "tenant_wide", False))
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -340,9 +355,18 @@ def _reason_codes(blocking: Iterable[Any]) -> list[dict[str, str]]:
 
 def _approval(
     *, exists: bool, bound: bool, governance: Optional[dict],
-    budget_exhausted: bool, beyond: bool, suppressed_in_reach: bool,
+    budget_exhausted: bool, tenant_denied: bool, site_verdicts: set[str],
+    sites_beyond_view: bool,
 ) -> dict[str, Any]:
-    """Fact 7 (D3). Every branch is a row of the table in design §34m."""
+    """Fact 7 (D3; S3-E1, A30.37). Every branch is a row of design §34m/§34r.
+
+    Admission assesses a proposal against its TARGET site (A30.37), so the
+    honest class-level answer is the per-site one: definitive only when
+    every site in this agent's own composition gives the same answer AND
+    no target lies at a site outside it; otherwise `depends_on_target_site`.
+    The global gate is not asked here -- it never decides the mode
+    (answer 1); it is fact 8's.
+    """
     def _state(state: str, *basis: str) -> dict[str, Any]:
         return {"state": state, "basis": list(basis)}
 
@@ -352,24 +376,23 @@ def _approval(
         return _state(APPROVAL_NOT_APPLICABLE, BASIS_NOT_BOUND)
     if governance is None:
         return _state(APPROVAL_UNKNOWN, BASIS_NOT_DESCRIBED)
-    conclusion = governance["conclusion"]
-    if conclusion == DENIED:
+    if tenant_denied:
+        # A tenant-level denial (a fenced class, the tenant stop switch)
+        # holds at every site, in view or not: definitive.
         return _state(APPROVAL_NOT_APPLICABLE, BASIS_GOVERNANCE_DENIED)
-    if conclusion == REQUIRES_APPROVAL:
-        # Definitive: a condition outside the reach can only ADD a
-        # restriction at admission, never lift this one.
+    if sites_beyond_view or len(site_verdicts) > 1:
+        return _state(APPROVAL_UNKNOWN, BASIS_DEPENDS_ON_TARGET_SITE)
+    # No site in the composition at all is the composite over nothing:
+    # requires approval (unknown is never safe).
+    verdict = next(iter(site_verdicts)) if site_verdicts else REQUIRES_APPROVAL
+    if verdict == DENIED:
+        return _state(APPROVAL_NOT_APPLICABLE, BASIS_GOVERNANCE_DENIED)
+    if verdict == REQUIRES_APPROVAL:
         return _state(APPROVAL_REQUIRED, BASIS_GOVERNANCE_REQUIRES_APPROVAL)
-    if conclusion != AUTONOMOUS:
+    if verdict != AUTONOMOUS:
         return _state(APPROVAL_UNKNOWN, BASIS_NOT_DESCRIBED)
     if budget_exhausted:
         return _state(APPROVAL_REQUIRED, BASIS_EXECUTION_BUDGET_EXHAUSTED)
-    basis = []
-    if beyond:
-        basis.append(BASIS_ADMISSION_BEYOND_REACH)
-    if suppressed_in_reach:
-        basis.append(BASIS_DEPENDS_ON_TARGET_SITE)
-    if basis:
-        return _state(APPROVAL_UNKNOWN, *basis)
     return _state(APPROVAL_NOT_REQUIRED, BASIS_GOVERNANCE_AUTONOMOUS)
 
 
@@ -395,12 +418,15 @@ def _class_row(
     conditions: dict[str, set[str]],
     registry_rows: dict,
     contract_rows: dict,
+    site_rows: dict,
     devices_in_reach: int,
     agent,
     stop_switch_active: bool,
     agent_blockers: set[str],
     budget_exhausted: bool,
-    beyond: bool,
+    sites_beyond_view: bool,
+    gate,
+    unattended_approved,
 ) -> dict[str, Any]:
     fact = facts.get(name)
     exists = fact is not None
@@ -411,28 +437,51 @@ def _class_row(
         implemented, registry_rows.get(name), devices_in_reach,
     )
     parameters = _parameters(name)
+    gate = GATE_UNKNOWN if gate is None else require_verdict(gate)
 
     # Fact 6: only for a class this agent operates under (A30.6).
     governance = None
     row = contract_rows.get(name)
-    suppressed = False
+    site_verdicts: set[str] = set()
+    tenant_denied = False
     if exists and is_bound and row is not None:
-        verdict = effective_disposition(agent, row, stop_switch_active)
+        verdict = effective_disposition(
+            agent, row, stop_switch_active,
+            unattended_approved=unattended_approved,
+        )
         governance = {
+            # The site-local assessment over this agent's composition
+            # (A30.37); the gate and the conjunction beside it, never in it.
             "conclusion": verdict["disposition"],
             "reason_codes": _reason_codes(verdict["blocking_conditions"]),
             "budget_mapped": bool(row.get("budget_mapped")),
             "granted_at_level": row.get("granted_at_level"),
             "never_budget_grantable": bool(row.get("never_budget_grantable")),
+            "global_safety": gate.as_dict(),
+            "final_execution_eligibility": final_block(verdict["disposition"], gate),
         }
-        # `govern_proposal`'s own per-target rule, read from the SAME
-        # function admission uses, over the reach-composed row.
-        suppressed = bool(_suppressed_sites(row))
+        tenant_denied = bool(stop_switch_active or row.get("never_budget_grantable"))
+        # Each site in the composition, by the SAME rules admission applies
+        # to a target there: its own local row, the agent's narrowing (D11
+        # included) and `govern_proposal`'s suppression rule -- which only
+        # narrows.
+        for site_id, rows in site_rows.items():
+            srow = rows.get(name)
+            if srow is None:
+                site_verdicts.add(REQUIRES_APPROVAL)
+                continue
+            answer = effective_disposition(
+                agent, srow, stop_switch_active,
+                unattended_approved=unattended_approved,
+            )["disposition"]
+            if answer != DENIED and site_id in _suppressed_sites(srow):
+                answer = REQUIRES_APPROVAL
+            site_verdicts.add(answer)
 
     approval = _approval(
         exists=exists, bound=is_bound, governance=governance,
-        budget_exhausted=budget_exhausted, beyond=beyond,
-        suppressed_in_reach=suppressed,
+        budget_exhausted=budget_exhausted, tenant_denied=tenant_denied,
+        site_verdicts=site_verdicts, sites_beyond_view=sites_beyond_view,
     )
 
     blocked = set(agent_blockers)
@@ -459,8 +508,12 @@ def _class_row(
             blocked.add("not_permitted_on_any_node")
         elif state == REACH_UNKNOWN:
             unknown.add("executor_reach_undeclared")
-    if governance is not None and governance["conclusion"] == DENIED:
+    if governance is not None and approval["basis"] == [BASIS_GOVERNANCE_DENIED]:
         blocked.add("governance_denied")
+    if exists and is_bound and not gate.clear:
+        # S3-E1 (A30.37): execution is held -- on either basis (D3) -- while
+        # the gate is not clear. One bounded code, and nothing under it.
+        blocked.add(GLOBAL_SAFETY_CONSTRAINT)
     if approval["state"] == APPROVAL_UNKNOWN:
         # Only the reasons that leave PROGRESSION undecided. A class whose
         # approval depends on the target site progresses either way -- on
@@ -500,6 +553,10 @@ def build_discovery(
     catalogue: Iterable[Any],
     executions_used: int,
     proposals_today: int,
+    site_contracts: dict,
+    gate_verdicts: dict,
+    unattended_approved,
+    sites_beyond_view: bool,
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Compose discovery for ONE agent reading itself. Pure: no I/O.
@@ -509,6 +566,14 @@ def build_discovery(
     `load_autonomy_contract(reach=reach)` -- both already composed over it,
     so nothing below narrows anything. `catalogue` is the tenant's condition
     catalogue (anything with `subsystem`, `action_type`, `enabled`).
+
+    S3-E1 (A30.37): `site_contracts` are the site-local assessments of the
+    sites in that same composition, one per site -- the answer admission
+    reads for a target there. `gate_verdicts` is the closed gate's verdict
+    per class over them. `unattended_approved` is D11's set.
+    `sites_beyond_view` says a device this agent reads sits at a site outside
+    the composition (a device or class grant), where no autonomy fact may be
+    read (A30.26(j)) -- so no definitive per-site answer is possible there.
     """
     now = now or datetime.now(timezone.utc)
     facts = action_facts()
@@ -543,6 +608,12 @@ def build_discovery(
         agent_blockers.add("proposal_budget_exhausted")
 
     beyond = admission_reads_beyond(reach)
+    site_rows = {
+        site_id: {
+            r["action_type"]: r for r in (composed.get("action_classes") or ())
+        }
+        for site_id, composed in site_contracts.items()
+    }
 
     return {
         "view": VIEW_MACHINE,
@@ -595,13 +666,18 @@ def build_discovery(
                 COMPOSED_OVER_TENANT if reach.tenant_wide else COMPOSED_OVER_SITES
             ),
             "admission_composed_over": ADMISSION_COMPOSED_OVER,
-            "matches_admission": not beyond,
+            # Admission reads each target's own site (A30.37). Discovery's
+            # per-site answers ARE that reading for every site in its
+            # composition; a target outside it is the one case they are not.
+            "matches_admission": not beyond and not sites_beyond_view,
             "sites_in_composition": len((contract.get("scope") or {}).get("sites") or ()),
             "tenant_stop_switch": stop_switch_active,
             "configured_level": int(posture.get("configured_level") or 0),
-            # Reported, never folded into a conclusion: live safety and a
-            # halted Site Manager are S3-E1's to fold (D2).
+            # S3-E1 folds these into each site's local assessment (R3, D8):
+            # a site that has not reported recently requires approval and a
+            # halted one denies. Counted here; the answers are per class.
             "safety_reported": bool(safety.get("reported")),
+            "every_site_reported": bool(safety.get("every_site_reported")),
             "sites_not_reporting": len(safety.get("sites_not_reporting") or ()),
             "sites_halted": len(safety.get("site_stop_switches") or ()),
         },
@@ -609,10 +685,14 @@ def build_discovery(
             _class_row(
                 name, facts=facts, bound=bound, conditions=conditions,
                 registry_rows=registry_rows, contract_rows=contract_rows,
+                site_rows=site_rows,
                 devices_in_reach=devices_in_reach, agent=agent,
                 stop_switch_active=stop_switch_active,
                 agent_blockers=agent_blockers,
-                budget_exhausted=budget_exhausted, beyond=beyond,
+                budget_exhausted=budget_exhausted,
+                sites_beyond_view=sites_beyond_view,
+                gate=gate_verdicts.get(name),
+                unattended_approved=unattended_approved,
             )
             for name in names
         ],
@@ -646,15 +726,22 @@ CONTRACT: dict[str, str] = {
     ),
     "conclusion_basis": (
         "Governance is composed over this agent's own authorized reach. "
-        "Until site-local assessment lands, admission composes over the "
-        "whole tenant, so a conclusion that could only be loosened by state "
-        "outside that reach is reported as unknown, never as definitive."
+        "Admission assesses each proposal against its target site's own "
+        "local assessment, so a class-level answer is definitive only when "
+        "every site in that reach agrees and no target lies outside it; "
+        "otherwise it depends on the target site."
     ),
     "approval_states": (
         "required: a definitive current conclusion. not_required: definitive "
-        "under current production semantics. unknown: no requirement is "
-        "visible in this composition, but admission may still add one. "
-        "not_applicable: denied, or not applicable to this agent."
+        "under current production semantics. unknown: the answer depends on "
+        "the target site, or cannot be described. not_applicable: denied, "
+        "or not applicable to this agent."
+    ),
+    "global_safety": (
+        "A closed global safety gate holds execution, whatever the approval, "
+        "while it is not clear. It is reported as one bounded code, "
+        "GLOBAL_SAFETY_CONSTRAINT, and never names what or where. It never "
+        "changes whether approval is required."
     ),
     "operability": (
         "Central Command readiness at generated_at: operable, not_operable "

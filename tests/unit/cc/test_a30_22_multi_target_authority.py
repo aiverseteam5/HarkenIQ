@@ -803,10 +803,11 @@ async def flat_stack(console_realm):
     await cc_db_engine.dispose()
 
 
-async def _planned_campaign(state, session, autonomous=False):
+async def _planned_campaign(state, session, autonomous=False,
+                            action_type="IDENTIFY_LED"):
     repo = CampaignRepo(session)
     campaign = await repo.create(
-        tenant_id=TENANT, name="Q3", action_type="IDENTIFY_LED",
+        tenant_id=TENANT, name="Q3", action_type=action_type,
         params={"target": "Drive 0"}, created_by="ops@example.com",
     )
     await repo.replace_scopes(campaign.id, [("site", CC_SITE_ID)])
@@ -996,9 +997,30 @@ class TestDispatchRevalidatesEveryTarget:
 
     @pytest.mark.asyncio
     async def test_an_autonomous_wave_carries_no_human_authority_to_revalidate(self, flat_stack):
+        """S3-E1 (A30.37): an autonomous wave runs only while its site is
+        locally autonomous for the class NOW, so the wave here is a real
+        one -- SEL_CLEAR, which the tenant's level 2 grants, at a site that
+        reports. It still carries no human authority to revalidate (S1)."""
+        from datetime import datetime, timezone
+
+        from harkeniq_cc.db.models import CCAutonomyBudget, CCSafetyState
+
         state, cc_db = flat_stack
         async with cc_db() as session:
-            campaign, wave = await _planned_campaign(state, session, autonomous=True)
+            now = datetime.now(timezone.utc)
+            session.add(CCAutonomyBudget(
+                tenant_id=TENANT, device_type="*", level=2,
+                budget_limit=10, budget_period="daily",
+            ))
+            session.add(CCSafetyState(
+                site_id=CC_SITE_ID, tenant_id=TENANT, reported=True, as_of=now,
+                ingested_at=now, sm_stop_switch=False, suppressions=[],
+                error_budgets=[], site_budgets={},
+            ))
+            await session.commit()
+            campaign, wave = await _planned_campaign(
+                state, session, autonomous=True, action_type="SEL_CLEAR",
+            )
             assert wave.status == WAVE_AUTONOMOUS and not wave.subject_ref
             result = await _advance(state, session, campaign)
             assert result["advanced"], result

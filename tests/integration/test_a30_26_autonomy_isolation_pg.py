@@ -36,7 +36,7 @@ import pytest
 
 from harkeniq_cc import agent_runtime
 from harkeniq_cc.api import approvals as approvals_api
-from harkeniq_cc.autonomy import AUTONOMOUS, REQUIRES_APPROVAL, WITHHELD_REASON
+from harkeniq_cc.autonomy import WITHHELD_REASON
 from harkeniq_cc.db.base import make_engine
 
 from tests.unit.cc import s3_estate as E
@@ -106,10 +106,12 @@ async def test_every_persona_reads_only_its_own_sites_on_postgres(name):
         == sorted(stack.tagged(s) for s in E.expected_reporting(holds))
     assert [s["id"] for s in contract["scope"]["sites"]] \
         == sorted(stack.site(k) for k in holds)
-    # A hidden site never decides the answer; a held one does.
-    assert row["disposition"] == (REQUIRES_APPROVAL if "C" in holds else AUTONOMOUS)
+    # A hidden site never decides the answer; a held one does -- on its own
+    # report (S3-E1, A30.37): site D has not reported, and a reader holding
+    # no site at all is told what an empty selection vouches for: nothing.
+    assert row["disposition"] == E.expected_disposition(holds)
     assert klass(contract, "BMC_RESET")["disposition"] \
-        == (REQUIRES_APPROVAL if "C" in holds else AUTONOMOUS)
+        == E.expected_disposition(holds, "BMC_RESET")
 
 
 async def test_the_tenant_reader_is_the_control_on_postgres():
@@ -184,11 +186,14 @@ async def test_a_stored_verdict_round_trips_jsonb_and_is_narrowed_where_read():
                 f"{base}/proposals/{submitted.json()['proposal_id']}")).json(),
         }
 
-    # CONTROL: what JSONB holds names every reporting site.
+    # S3-E1 (A30.37) INVERTED what JSONB holds: the evaluator decides a
+    # proposal at site A over site A's local assessment, so the verdict it
+    # stores names site A alone. What it FREEZES as evidence is unchanged
+    # (D7; S3-E2's) -- site C's learned signal is still stored, and is the
+    # CONTROL every projection below must still narrow.
     (stored,) = await _stored(stack, agent_id)
-    assert _sites_named(stored.blocking_conditions) == {
-        stack.site("A"), stack.site("B"), stack.site("C"),
-    }
+    assert _sites_named(stored.blocking_conditions) == {stack.site("A")}
+    assert "SECRET" not in str(stored.blocking_conditions)
     assert "SECRET-SIGNAL-C" in _statements(stored.evidence)
 
     for where, payload in machine.items():
@@ -197,10 +202,13 @@ async def test_a_stored_verdict_round_trips_jsonb_and_is_narrowed_where_read():
         == {stack.site("A")}
     assert _sites_named(machine["receipt"]["proposal"]["blocking_conditions"]) \
         == {stack.site("A")}
-    # The recorded reason is site C's drop-back row verbatim; it goes with it.
-    assert "error budget" in stored.disposition_reason
-    assert machine["submit"]["proposal"]["disposition_reason"] == WITHHELD_REASON
-    assert machine["receipt"]["proposal"]["disposition_reason"] == WITHHELD_REASON
+    # The recorded reason was site C's drop-back row, withheld with it. It is
+    # now the agent's OWN configuration -- tenant-scoped, readable by the
+    # agent as recorded.
+    assert "error budget" not in stored.disposition_reason
+    assert machine["submit"]["proposal"]["disposition_reason"] == stored.disposition_reason
+    assert machine["receipt"]["proposal"]["disposition_reason"] == stored.disposition_reason
+    assert stored.disposition_reason != WITHHELD_REASON
 
     site_a, _ = await E.persona(stack, "site_a")
     org_ab, _ = await E.persona(stack, "org_ab")
@@ -211,11 +219,12 @@ async def test_a_stored_verdict_round_trips_jsonb_and_is_narrowed_where_read():
         queued = next(i["proposal"] for i in queue["actions"]
                       if i.get("origin") == "agent" and i["id"] == stored.id)
         for proposal in (detail["proposals"][0], listed["proposals"][0], queued):
-            assert _sites_named(proposal["blocking_conditions"]) \
-                == {stack.site(k) for k in names}
+            # The verdict names its target site; every reader who may see
+            # the proposal reads the same site rows.
+            assert _sites_named(proposal["blocking_conditions"]) == {stack.site("A")}
             assert "SECRET" not in str(proposal["blocking_conditions"])
             assert "SECRET-SIGNAL-C" not in _statements(proposal["evidence"])
-            assert proposal["disposition_reason"] == WITHHELD_REASON
+            assert proposal["disposition_reason"] == stored.disposition_reason
         assert E.leaks(detail, holds=tuple(sorted(names))) == []
     owner = (await stack.as_person().get(f"{base}/proposals")).json()
     assert owner["proposals"][0]["disposition_reason"] == stored.disposition_reason  # control

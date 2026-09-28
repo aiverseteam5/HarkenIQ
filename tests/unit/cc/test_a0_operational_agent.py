@@ -27,6 +27,8 @@ from harkeniq_cc.operational_agent import (
     resolve_scope,
 )
 
+from tests.unit.cc.s3e1_support import clear_gate, fresh_report
+
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
 
 
@@ -81,23 +83,66 @@ def _device(agent_id, site_id="s1", device_class="server", health="OK",
     )
 
 
-def _contract(level=2, stop=False, outcomes=(), safety_rows=(), sites=None):
+#: D11 (A30.37): what a human approved for unattended execution when the
+#: fixture agent was activated -- every class a ladder level can grant, so
+#: these tests keep asking what they always asked (does the TENANT grant and
+#: the AGENT allow). D11's own cases live in the S3-E1 module.
+APPROVED_AT_ACTIVATION = frozenset(
+    {"SEL_CLEAR", "BMC_RESET", "POWER_CYCLE", "POWER_CAP_ADJUST", "CONFIG_RESTORE"}
+)
+
+
+def _inputs(level=2, stop=False, outcomes=(), safety_rows=None, sites=None):
+    """The composer's inputs. The one site reports, fresh, unless a test
+    says otherwise: an unreported site requires approval (S3-E1, R3(e))."""
+    from harkeniq_cc.governance import AutonomyInputs
+
+    return AutonomyInputs(
+        tenant_id="t1",
+        budgets=(SimpleNamespace(
+            device_type="*", level=level, budget_limit=10,
+            budget_period="daily", actions_used=0,
+        ),),
+        stop_switch=SimpleNamespace(active=stop, changed_by="", updated_at=NOW),
+        outcomes=tuple(outcomes),
+        safety_rows=tuple(
+            safety_rows if safety_rows is not None
+            else [fresh_report("s1", now=NOW)]
+        ),
+        sites=tuple(sites if sites is not None else [
+            SimpleNamespace(id="s1", site_name="DC-1")
+        ]),
+        learned=(),
+        policies=(),
+        now=NOW,
+    )
+
+
+def _assessments(**kw):
+    """What a decision path reads (S3-E1): each target's own site."""
+    from harkeniq_cc.governance import SiteAssessments
+
+    return SiteAssessments(
+        _inputs(**kw), actor_id="op-agent:ag1@v1", actor_species="agent",
+        permissions=["fleet.view"],
+    )
+
+
+def _contract(**kw):
+    """The composite over every site, as a reader of the whole tenant sees it."""
+    inputs = _inputs(**kw)
     return build_autonomy(
         tenant_id="t1",
         actor_id="op-agent:ag1@v1",
         actor_species="agent",
         permissions=["fleet.view"],
-        budgets=[SimpleNamespace(
-            device_type="*", level=level, budget_limit=10,
-            budget_period="daily", actions_used=0,
-        )],
-        stop_switch=SimpleNamespace(active=stop, changed_by="", updated_at=NOW),
-        outcomes=list(outcomes),
-        safety_rows=list(safety_rows),
-        sites=sites if sites is not None else [
-            SimpleNamespace(id="s1", site_name="DC-1")
-        ],
+        budgets=list(inputs.budgets),
+        stop_switch=inputs.stop_switch,
+        outcomes=list(inputs.outcomes),
+        safety_rows=list(inputs.safety_rows),
+        sites=list(inputs.sites),
         now=NOW,
+        global_safety=clear_gate(),
     )
 
 
@@ -146,7 +191,7 @@ class TestPolicyOnlyEverTightens:
             c for c in contract["action_classes"] if c["action_type"] == "SEL_CLEAR"
         )
         assert row["disposition"] == "autonomous"  # the tenant grants it
-        verdict = effective_disposition(_agent(require_approval_always=True), row)
+        verdict = effective_disposition(_agent(require_approval_always=True), row, unattended_approved=APPROVED_AT_ACTIVATION)
         assert verdict["disposition"] == "requires_approval"
         assert verdict["authorization_basis"] == BASIS_HUMAN
         assert any(
@@ -160,7 +205,7 @@ class TestPolicyOnlyEverTightens:
             c for c in contract["action_classes"] if c["action_type"] == "SEL_CLEAR"
         )
         agent = _agent(require_approval_always=False, autonomy_ceiling=1)
-        verdict = effective_disposition(agent, row)
+        verdict = effective_disposition(agent, row, unattended_approved=APPROVED_AT_ACTIVATION)
         assert verdict["disposition"] == "requires_approval"
         assert any(
             b["code"] == "agent_ceiling_below_grant"
@@ -172,7 +217,7 @@ class TestPolicyOnlyEverTightens:
         contract = _contract(level=0)
         agent = _agent(require_approval_always=False, autonomy_ceiling=3)
         for row in contract["action_classes"]:
-            verdict = effective_disposition(agent, row)
+            verdict = effective_disposition(agent, row, unattended_approved=APPROVED_AT_ACTIVATION)
             assert verdict["disposition"] != "autonomous", row["action_type"]
 
     def test_an_unmapped_class_needs_a_human_rather_than_being_forbidden(self):
@@ -189,7 +234,7 @@ class TestPolicyOnlyEverTightens:
             if c["action_type"] == "COLLECT_DIAGNOSTICS"
         )
         assert row["disposition"] == "not_budget_mapped"
-        verdict = effective_disposition(agent, row)
+        verdict = effective_disposition(agent, row, unattended_approved=APPROVED_AT_ACTIVATION)
         assert verdict["disposition"] == "requires_approval"
         assert verdict["authorization_basis"] == BASIS_HUMAN
         assert "always needs a named human" in verdict["disposition_reason"]
@@ -202,7 +247,7 @@ class TestPolicyOnlyEverTightens:
             c for c in contract["action_classes"]
             if c["action_type"] == "COLLECT_DIAGNOSTICS"
         )
-        verdict = effective_disposition(_agent(), row, stop_switch_active=True)
+        verdict = effective_disposition(_agent(), row, stop_switch_active=True, unattended_approved=APPROVED_AT_ACTIVATION)
         assert verdict["disposition"] == "denied"
         assert "stop switch" in verdict["disposition_reason"]
 
@@ -213,7 +258,7 @@ class TestPolicyOnlyEverTightens:
             row = next(
                 c for c in contract["action_classes"] if c["action_type"] == name
             )
-            assert effective_disposition(agent, row)["disposition"] == "denied"
+            assert effective_disposition(agent, row, unattended_approved=APPROVED_AT_ACTIVATION)["disposition"] == "denied"
 
 
 class TestEvaluate:
@@ -225,7 +270,8 @@ class TestEvaluate:
             capabilities=caps,
             devices=devices,
             incidents_by_device=incidents,
-            autonomy_contract=contract,
+            assessments=contract,
+            unattended_approved=kw.pop("unattended_approved", APPROVED_AT_ACTIVATION),
             now=NOW,
             **kw,
         )
@@ -234,7 +280,7 @@ class TestEvaluate:
         got = self._run(
             _agent(), [_cap("read", "attention")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL full"}]},
-            _contract(),
+            _assessments(),
         )
         assert got == []
 
@@ -242,7 +288,7 @@ class TestEvaluate:
         """A healthy device is not an invitation to act."""
         got = self._run(
             _agent(), [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
-            {}, _contract(),
+            {}, _assessments(),
         )
         assert got == []
 
@@ -251,7 +297,7 @@ class TestEvaluate:
             _agent(), [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log",
                      "title": "BMC event log saturated"}]},
-            _contract(),
+            _assessments(),
         )
         assert len(got) == 1
         p = got[0]
@@ -268,14 +314,14 @@ class TestEvaluate:
         got = self._run(
             _agent(), [_cap("action_class", "BMC_RESET")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "disk", "title": "disk"}]},
-            _contract(),
+            _assessments(),
         )
         assert got == []
 
     def test_unreachable_device_proposes_a_bmc_reset(self):
         got = self._run(
             _agent(), [_cap("action_class", "BMC_RESET")],
-            [_device("d1", observation="unreachable")], {}, _contract(),
+            [_device("d1", observation="unreachable")], {}, _assessments(),
         )
         assert [p["action_type"] for p in got] == ["BMC_RESET"]
         assert got[0]["evidence"]["condition_kind"] == "unreachable"
@@ -285,7 +331,7 @@ class TestEvaluate:
         got = self._run(
             agent, [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL"}]},
-            _contract(level=2),
+            _assessments(level=2),
         )
         assert got[0]["status"] == PROPOSAL_APPROVED
         assert got[0]["authorization_basis"] == BASIS_AUTONOMOUS
@@ -295,7 +341,7 @@ class TestEvaluate:
         got = self._run(
             _agent(), [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL"}]},
-            _contract(level=2),
+            _assessments(level=2),
         )
         assert got[0]["status"] == PROPOSAL_AWAITING
         assert got[0]["authorization_basis"] == BASIS_HUMAN
@@ -306,7 +352,7 @@ class TestEvaluate:
             [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "fan",
                      "title": "Fan1A has failed"}]},
-            _contract(level=3),
+            _assessments(level=3),
         )
         assert len(got) == 1
         assert got[0]["action_type"] == "COLLECT_DIAGNOSTICS"
@@ -318,7 +364,7 @@ class TestEvaluate:
         got = self._run(
             _agent(), [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL"}]},
-            _contract(level=2, stop=True),
+            _assessments(level=2, stop=True),
         )
         assert got[0]["status"] == PROPOSAL_BLOCKED
         assert got[0]["disposition"] == "denied"
@@ -338,7 +384,7 @@ class TestEvaluate:
         got = self._run(
             agent, [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL"}]},
-            _contract(level=2, safety_rows=[safety]),
+            _assessments(level=2, safety_rows=[safety]),
         )
         assert got[0]["status"] == PROPOSAL_AWAITING
         assert any(
@@ -352,7 +398,7 @@ class TestEvaluate:
             devices=[_device("d1")],
             incidents={"d1": [{"incident_id": "i1", "subsystem": "log",
                                "title": "SEL"}]},
-            contract=_contract(),
+            contract=_assessments(),
         )
         first = self._run(**args)
         assert len(first) == 1
@@ -367,7 +413,7 @@ class TestEvaluate:
         }
         got = self._run(
             _agent(max_proposals_per_day=2), [_cap("action_class", "SEL_CLEAR")],
-            devices, incidents, _contract(),
+            devices, incidents, _assessments(),
         )
         assert len(got) == 2
 
@@ -380,7 +426,7 @@ class TestEvaluate:
         got = self._run(
             _agent(), [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL"}]},
-            _contract(outcomes=outcomes),
+            _assessments(outcomes=outcomes),
         )
         ev = got[0]["evidence"]["outcome_evidence"]
         assert ev["executions"] == 10
@@ -397,7 +443,8 @@ class TestEvaluate:
             incidents_by_device={
                 "d9": [{"incident_id": "i9", "subsystem": "log", "title": "SEL"}]
             },
-            autonomy_contract=_contract(),
+            assessments=_assessments(),
+            unattended_approved=APPROVED_AT_ACTIVATION,
             now=NOW,
         )
         assert got == []
@@ -412,7 +459,7 @@ class TestEvaluate:
                 {"incident_id": "i1", "subsystem": "log", "title": "SEL"},
                 {"incident_id": "i2", "subsystem": "thermal", "title": "hot"},
             ]},
-            _contract(),
+            _assessments(),
         )
         assert len(got) == 1
 
@@ -429,6 +476,7 @@ class TestAgentView:
             ],
             devices=[_device("d1"), _device("d2", site_id="s2")],
             autonomy_contract=_contract(level=2),
+            unattended_approved=APPROVED_AT_ACTIVATION,
             now=NOW,
         )
         assert view["scope"]["device_count"] == 1
@@ -439,7 +487,8 @@ class TestAgentView:
     def test_says_plainly_when_an_agent_can_see_nothing(self):
         view = agent_view(
             agent=_agent(), scopes=[], capabilities=[],
-            devices=[_device("d1")], autonomy_contract=_contract(), now=NOW,
+            devices=[_device("d1")], autonomy_contract=_contract(),
+            unattended_approved=APPROVED_AT_ACTIVATION, now=NOW,
         )
         assert view["scope"]["device_count"] == 0
         assert "can see nothing" in view["scope"]["statement"]
@@ -448,7 +497,8 @@ class TestAgentView:
         view = agent_view(
             agent=_agent(), scopes=[_scope("site", "s1")],
             capabilities=[_cap("action_class", "MAKE_COFFEE")],
-            devices=[_device("d1")], autonomy_contract=_contract(), now=NOW,
+            devices=[_device("d1")], autonomy_contract=_contract(),
+            unattended_approved=APPROVED_AT_ACTIVATION, now=NOW,
         )
         row = view["capabilities"]["action_classes"][0]
         assert row["known_to_executor"] is False

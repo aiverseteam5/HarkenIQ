@@ -91,6 +91,14 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
         from harkeniq_cc.license import load_license
         state.license = load_license(config)
 
+    # S3-E1 (A30.37): the closed global safety gate's members, set ONCE for
+    # this process. Production registers nothing (the registry is empty);
+    # the TEST-ONLY probe only when its configuration key names a trigger
+    # file, with a WARNING every time.
+    from harkeniq_cc import global_safety
+
+    global_safety.configure(config)
+
     uv_config = uvicorn.Config(
         create_app(state),
         host=config.http_host,

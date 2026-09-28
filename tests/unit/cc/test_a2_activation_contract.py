@@ -152,15 +152,17 @@ class TestRatifiedCondition3_AutonomyCeiling:
         assert row["verdict"] == READY, "a zero ceiling must not refuse existence"
 
     def test_a_zero_ceiling_grants_nothing_unattended(self):
+        # D11 (A30.37): durable configuration -- the tenant's ladder level --
+        # never a transient disposition.
         assert activation_grants_unattended(
             _agent(autonomy_ceiling=0, require_approval_always=False),
-            ["SEL_CLEAR"], {"SEL_CLEAR": _class_row("SEL_CLEAR", "autonomous")},
+            ["SEL_CLEAR"], 2,
         ) == []
 
     def test_require_approval_always_grants_nothing_unattended(self):
         assert activation_grants_unattended(
             _agent(autonomy_ceiling=3, require_approval_always=True),
-            ["SEL_CLEAR"], {"SEL_CLEAR": _class_row("SEL_CLEAR", "autonomous")},
+            ["SEL_CLEAR"], 3,
         ) == []
 
     def test_a_class_needing_a_human_is_reported_as_attended(self):
@@ -178,8 +180,8 @@ class TestRatifiedCondition4_ActivationApproval:
 
     def test_unattended_grant_requires_activation_approval(self):
         agent = _agent(autonomy_ceiling=2, require_approval_always=False)
-        rows = {"SEL_CLEAR": _class_row("SEL_CLEAR", "autonomous")}
-        unattended = activation_grants_unattended(agent, ["SEL_CLEAR"], rows)
+        # D11: the tenant's configured level 2 grants SEL_CLEAR.
+        unattended = activation_grants_unattended(agent, ["SEL_CLEAR"], 2)
         assert unattended == ["SEL_CLEAR"]
         row = check_approval(agent, unattended)
         assert row["activation_approval_required"] is True
@@ -403,6 +405,8 @@ def _preflight(**over):
                            "effective": ["SEL_CLEAR"]}],
         executions_used=0, stop_switch_active=False, safety_reported=True,
         realm_ok=True, preflight_version=1,
+        # D11 (A30.37): the tenant's configured ladder level.
+        configured_level=2,
     )
     base.update(over)
     return build_preflight(**base)

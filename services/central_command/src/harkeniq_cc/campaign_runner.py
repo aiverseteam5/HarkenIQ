@@ -44,6 +44,7 @@ from harkeniq_cc.campaigns import (
     DISPATCHABLE,
     NEEDS_ACKNOWLEDGEMENT,
     REVAL_AUTHORITY_LOST,
+    REVAL_EXECUTION_WITHHELD,
     REVAL_OK,
     STATUS_ACKNOWLEDGED,
     STATUS_AWAITING_APPROVAL,
@@ -789,10 +790,21 @@ async def advance_campaign(session, state, *, tenant_id: str, campaign) -> dict:
     startable = [s for s in site_rows if s.status == "pending"]
     active = running + startable[: max(0, concurrency - len(running))]
 
+    # S3-E1 (A30.37): each site's local assessment and the gate, read ONCE
+    # for this pass.
+    from harkeniq_cc.autonomy import ACTOR_CAMPAIGN
+    from harkeniq_cc.governance import load_site_assessments
+
+    assessments = await load_site_assessments(
+        session, tenant_id=tenant_id,
+        actor_id=campaign_actor(campaign.id, campaign.version),
+        actor_species=ACTOR_CAMPAIGN, permissions=(),
+    ) if active else None
+
     for site_row in active:
         outcome = await _advance_site(
             session, state, tenant_id=tenant_id, campaign=campaign,
-            site_row=site_row,
+            site_row=site_row, assessments=assessments,
         )
         result[outcome["bucket"]].append(outcome["detail"])
 
@@ -801,7 +813,9 @@ async def advance_campaign(session, state, *, tenant_id: str, campaign) -> dict:
     return result
 
 
-async def _advance_site(session, state, *, tenant_id: str, campaign, site_row) -> dict:
+async def _advance_site(
+    session, state, *, tenant_id: str, campaign, site_row, assessments=None,
+) -> dict:
     repo = CampaignRepo(session)
     waves = [
         w for w in await repo.waves(campaign.id, site_id=site_row.site_id)
@@ -950,6 +964,73 @@ async def _advance_site(session, state, *, tenant_id: str, campaign, site_row) -
                 "site_id": site_row.site_id, "wave": wave.wave_index,
                 "reason": authority["reason"],
             }}
+
+    # -- 3c. FINAL EXECUTION ELIGIBILITY (S3-E1, A30.37) -------------------
+    # SITE-LOCAL AUTONOMY + GLOBAL SAFETY GATE, read NOW, for this wave's own
+    # site. An autonomous wave runs only while its site is still locally
+    # autonomous; an approved wave runs unless its site denies (a halt); and
+    # the gate holds BOTH (D3) -- approval satisfied is not executable. A
+    # refusal WITHHOLDS in S1's shape: the plan, the ledger and the approval
+    # subject stand, nothing is skipped, and a later pass dispatches this
+    # same wave when eligibility returns. Suppression is not asked: it has
+    # never been part of a campaign's assessment, and S3-E1 widens nothing.
+    from harkeniq_cc.agent_activation import global_safety_gate, site_local_gate
+    from harkeniq_cc.autonomy import ACTOR_CAMPAIGN, DENIED
+    from harkeniq_cc.governance import load_site_assessments
+    from harkeniq_cc.operational_agent import BASIS_AUTONOMOUS, BASIS_HUMAN
+
+    if assessments is None:
+        assessments = await load_site_assessments(
+            session, tenant_id=tenant_id,
+            actor_id=campaign_actor(campaign.id, campaign.version),
+            actor_species=ACTOR_CAMPAIGN, permissions=(),
+        )
+    local_row = assessments.local_rows(site_row.site_id).get(
+        (campaign.action_type or "").upper()
+    ) or {}
+    eligibility = [
+        site_local_gate(
+            local_row.get("disposition", DENIED), False,
+            BASIS_AUTONOMOUS if wave.status == WAVE_AUTONOMOUS else BASIS_HUMAN,
+        ),
+        global_safety_gate(
+            assessments.gate_verdict(campaign.action_type, site_row.site_id)
+        ),
+    ]
+    refusal = next((g for g in eligibility if g is not True), None)
+    if refusal is not None:
+        reason = str(refusal)[:512]
+        changed = False
+        members = set(wave.device_agent_ids or [])
+        for target in await repo.targets(campaign.id, site_id=site_row.site_id):
+            if target.device_agent_id not in members:
+                continue
+            if (target.revalidation, target.revalidation_reason) != (
+                REVAL_EXECUTION_WITHHELD, reason,
+            ):
+                changed = True
+            target.revalidation = REVAL_EXECUTION_WITHHELD
+            target.revalidation_reason = reason
+            target.updated_at = _utcnow()
+        await session.flush()
+        if changed:
+            # One entry per distinct cause, exactly as S1's withhold.
+            await AuditRepo(session).append(
+                actor=campaign_actor(campaign.id, campaign.version),
+                action="campaign.wave_withheld",
+                subject=campaign.id,
+                tenant_id=tenant_id,
+                detail={
+                    "site_id": site_row.site_id,
+                    "wave": wave.wave_index,
+                    "subject_ref": wave.subject_ref,
+                    "reason": reason[:200],
+                },
+            )
+        return {"bucket": "blocked", "detail": {
+            "site_id": site_row.site_id, "wave": wave.wave_index,
+            "reason": reason,
+        }}
 
     # -- 4. capability and policy, which may only narrow -------------------
     reval = await revalidate_wave(

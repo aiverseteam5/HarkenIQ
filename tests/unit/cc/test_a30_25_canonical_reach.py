@@ -59,6 +59,7 @@ from harkeniq_cc.scope import (
 from harkeniq_cc.target_authority import FleetIndex
 
 from tests.unit.cc import b0b_matrix as M
+from tests.unit.cc.s3e1_support import clear_gate
 
 TENANT = "tenant-b0b"
 TAG = "t"
@@ -765,6 +766,8 @@ class TestAutonomyNarrowing:
             sites=[estate[k][1] for k in sites],
             learned_signals=[], approval_policies=[], site_id=None,
             action_type=None, now=now,
+            # S3-E1 (A30.37): the verdicts the EMPTY production registry gives.
+            global_safety=clear_gate(),
         )
 
     def _compose(self, visible, *, estate=SITES):
