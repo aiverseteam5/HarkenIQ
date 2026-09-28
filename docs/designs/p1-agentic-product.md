@@ -6130,3 +6130,35 @@ activation and pre-A2 agents; dispatch gates on both paths; campaign submit and
 advance; B1's per-site agreement. PostgreSQL: timestamptz comparison of the
 activation-time preflight, freshness on real zoned values. Mutation: the ten
 breakages A30.37 names. Live: the fresh-wipe gate scenario A30.37 names.
+
+### Found while implementing
+
+* **A suppression widened a denial** (pre-existing, S5/A1): `govern_proposal`
+  turned a DENIED class into requires-approval whenever the target site
+  suppressed a fault domain. Fixed to narrow only, in admission and in
+  discovery's per-site answers; the monotonicity sweep is what found it.
+* **An empty selection has no blocking row** — it requires approval with its
+  reason, because a tenant-scoped row is posture every reader shares.
+* **Withheld reasons state what holds, never what happens next.** "Resumes when
+  it clears" was true on the background pass and false on the synchronous
+  path, which records the same reason on a terminal failure (D6; F-12).
+* **The stated consequence covers budget-mapped classes.** An unmapped class's
+  disposition is tenant-level and unchanged by R3, so a halt after a human
+  approved one is still refused by the Site Manager, as before. Recorded as a
+  follow-up, not widened.
+* **Tenant-fold pins inverted, not deleted:** A30.26 (write path, E1, decision
+  paths), A30.32 (`TestE1IsImplemented`), A30.36's CC differential, their
+  PostgreSQL twins, and the live A6-4B1/BY step — which now also carries the
+  hidden-site proof. BC's device-scoped `safety_state` gained
+  `every_site_reported`.
+* **Fixtures meet D8 and D11:** reports are current when they vouch, and an
+  active agent carries the recorded activation the runtime recovers.
+* **Campaign withholding** uses the revalidation value `execution_withheld`.
+* **Gate hygiene:** A26's leftover wildcard dual-approval policy (a synthetic
+  group member) held every activation approval after A26; the S3-E1 live proof
+  removes it through the production route before it needs one.
+* **The probe is registered for the whole gate run** through the gate's own
+  override (`COMPOSE_FILE`), so every other step runs with a registered, clear
+  member.
+* **Mutation:** ten named breakages plus nine variants, all killed; the
+  unmutated kill set green.

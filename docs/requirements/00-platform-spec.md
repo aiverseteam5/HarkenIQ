@@ -5691,3 +5691,59 @@ breakages; real PostgreSQL; a fresh-wipe live gate driving a real proposal
 through a real approval, a real TEST-ONLY constraint, a withheld dispatch, a
 release that dispatches the same proposal exactly once, a node that still
 refuses on its own, and a hidden-site drop-back that no longer moves site A.
+
+**Found while implementing S3-E1 (recorded; no scope change).** (1) A
+suppression WIDENED a denial. `govern_proposal` set requires-approval
+unconditionally whenever the target site suppressed a fault domain, so a DENIED
+class — a fenced high-risk class, or anything under the tenant stop switch —
+became approvable by a human whenever its site happened to be suppressing.
+Pre-existing (S5/A1), found by the monotonicity sweep, and fixed to narrow
+only, in admission and in discovery's per-site answers. (2) A selection with
+no site carries NO blocking row: it requires approval and says why in its
+reason, because a tenant-scoped row is tenant-owned posture every reader shares
+(A30.26), and "you selected nothing" is a fact about the selection, not the
+tenant. (3) The withheld reasons first promised what happens next ("the
+approval stands and dispatch resumes when it clears"). That is true on the
+background pass and false on the synchronous path, which records the SAME
+reason on a terminal failure (D6 preserved; F-12). Each reason now states only
+what holds, and a test pins that none promises a resumption. (4) The stated
+consequence above is exact for BUDGET-MAPPED classes only. An unmapped class's
+disposition is a tenant-level condition that R3 leaves unchanged, so a
+human-approved unmapped class whose target halts after approval still reaches
+the Site Manager, which refuses it terminally — exactly as before S3-E1.
+Nothing is widened; withholding it at Central Command instead would change the
+unmapped class's disposition at a halted site, which R3 did not ratify, so it
+is recorded as a follow-up. (5) Every pin that recorded the tenant fold was
+INVERTED, never deleted: A30.26's write-path, E1 and decision-path pins (the
+structural test now names the decision paths that read the decision loaders
+and asserts that no caller takes the tenant-wide contract); A30.32's
+`TestE1IsNotImplemented`, now `TestE1IsImplemented`; A30.36's Central Command
+differential; their PostgreSQL twins; and the live gate's A6-4B1/BY, which
+pinned `unknown` / `admission_beyond_reach` for a site-A machine. BY now also
+carries the live hidden-site proof — site A's own decision facts byte-identical
+before and after site B's drop-back — and BC's device-scoped `safety_state`
+equality gained `every_site_reported`. (6) D8 reached every fixture: a report
+that vouches must be current, so the S3 estate composes a minute after its
+sites report and seeds current report times, and its normaliser keeps WHETHER
+a site reported rather than when. (7) D11 reached every fixture that switched
+an agent on by writing its status: an active agent now carries the recorded
+activation the runtime recovers — written as a real activation writes it — or
+it delegates nothing. (8) Campaign advance withholds with the new revalidation
+value `execution_withheld`, in S1's shape: one audit entry per distinct cause,
+and the plan, the ledger and the approval subject untouched. (9) The live gate:
+A26's proof leaves a WILDCARD dual-approval policy whose only group member is a
+synthetic address. An activation subject names no class, device or site, so
+only a wildcard policy can govern it, and that leftover held every activation
+approval after A26. The S3-E1 live proof removes it through the production
+route, on the audit chain, before it asks for one (gate hygiene, recorded).
+(10) The TEST-ONLY probe is registered for the WHOLE gate run, through the
+gate's own override (`scripts/e2e-compose-gate.override.yml`, via
+`COMPOSE_FILE`), so every other step of the gate runs with a registered, clear
+member; a unit test holds that the override is the only file outside Central
+Command's package that sets the key, and that the gate is its only reader.
+(11) Mutation: the ten named breakages plus nine variants — the campaign-path
+forms of both dispatch mutants, a composer that skips site selection, a
+non-empty production registry, a non-enum member answer, the admission side of
+D11, and the stored-verdict and plan-time-decision forms of historical
+authority. All nineteen are killed by the S3-E1 unit modules, and the
+unmutated kill set is green.
