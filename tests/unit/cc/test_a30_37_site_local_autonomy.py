@@ -682,6 +682,23 @@ class TestTheBoundedRow:
                      UNATTENDED_NOT_APPROVED_REASON):
             assert isinstance(text, str) and "{" not in text
 
+    def test_a_withheld_reason_promises_nothing_about_what_happens_next(self):
+        """The synchronous approval path records the SAME reason on a TERMINAL
+        failure (A30.17, D6 preserved; F-12), while the background pass keeps
+        the proposal approved and retries it. A reason is true on both only
+        if it states what holds -- "resumes when it clears" was recorded on
+        failed proposals that never would."""
+        from harkeniq_cc.agent_activation import (
+            SITE_LOCAL_WITHHELD_REASON,
+            UNATTENDED_NOT_APPROVED_REASON,
+        )
+
+        for text in (G.GLOBAL_WITHHELD_REASON, SITE_LOCAL_WITHHELD_REASON,
+                     UNATTENDED_NOT_APPROVED_REASON):
+            lowered = text.lower()
+            for promise in ("resume", "stands", "retr", "will ", "until"):
+                assert promise not in lowered, (promise, text)
+
 
 # ---------------------------------------------------------------------------
 # 7. The shape that keeps it fixed

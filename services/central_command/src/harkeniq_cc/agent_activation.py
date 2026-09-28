@@ -922,6 +922,10 @@ def dispatch_permitted(**gates) -> tuple[bool, str]:
 # Pure. `revalidate_dispatch` gathers the CURRENT inputs and asks these; the
 # withheld reasons are constants, because a dispatch reason is shown to every
 # reader of the proposal and must name no site, member, disposition or count.
+# Each states what HOLDS, never what happens next: the background pass leaves
+# the proposal approved and retries it, while the synchronous approval path
+# records the SAME reason on a terminal failure (A30.17, D6; F-12), so a
+# promise that the dispatch "resumes" would be false on one of the two.
 
 #: D11 withheld.
 UNATTENDED_NOT_APPROVED_REASON = (
@@ -932,7 +936,7 @@ UNATTENDED_NOT_APPROVED_REASON = (
 #: The target site's current local assessment no longer allows this basis.
 SITE_LOCAL_WITHHELD_REASON = (
     "withheld: the target site's own safety assessment does not currently "
-    "allow this dispatch; the decision stands and it resumes when it does"
+    "allow this dispatch"
 )
 
 

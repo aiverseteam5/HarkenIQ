@@ -77,10 +77,12 @@ GLOBAL_ROW_DETAIL = (
     "approval, until it clears"
 )
 
-#: The constant text a withheld dispatch records for the gate.
+#: The constant text a withheld dispatch records for the gate. It says what
+#: holds, never what happens next: the synchronous approval path records it
+#: on a terminal failure (A30.17, D6; F-12), where "resumes" would be false.
 GLOBAL_WITHHELD_REASON = (
     f"withheld ({GLOBAL_SAFETY_CONSTRAINT}): a global safety constraint is "
-    "active; the approval stands and dispatch resumes when it clears"
+    "active; nothing is dispatched while it holds"
 )
 
 
