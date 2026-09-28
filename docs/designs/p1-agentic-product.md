@@ -6028,3 +6028,105 @@ synchronous/background asymmetry. D1, D3–D8, D10 and D11 are S3-E1's.
 * **The live proof uses synthetic, run-tagged budget classes** — the node skips
   a class it does not know — so nothing real spends them, and the site-B class
   is itself the sentinel.
+
+## §34r — S3-E1: site-local autonomy + the closed global safety gate (A30.37)
+
+§34k fixed the shape and §34q the prerequisite; S3-E1-0 made the Site
+Manager's per-site facts truthful. This section is the implementation contract
+for the main slice, recorded before the code.
+
+### Three objects, never merged
+
+| concept | object | where it is decided |
+|---|---|---|
+| site-local autonomy | a class row of `build_autonomy` over the target's site | the one composer, over SELECTED inputs only |
+| global safety | `GlobalSafetyVerdict` from `GlobalSafetyGate` | `harkeniq_cc.global_safety`, members typed and closed |
+| final execution eligibility | `final_execution_eligibility(local, verdict)` | one pure conjunction, read by every dispatch path |
+
+`disposition` on a class row stays the site-local answer (its consumers keep
+their meaning); `global_safety` and `final_execution_eligibility` sit beside
+it. Nothing reads a boolean "allowed".
+
+### The composer's new local rules
+
+Per selected site: no report / `reported=False` / older than
+`freshness.FRESHNESS_WINDOW` (on `min(as_of, ingested_at)`, so a skewed
+Site Manager clock cannot keep a dark site fresh) → `site_safety_not_reported`;
+`sm_stop_switch` → `site_stop_switch_active`, and a stale halt still counts.
+Per class, after the unchanged tenant-level conditions:
+
+```
+site(s)   = DENIED if halted(s)
+            REQUIRES_APPROVAL if not reported(s) or dropped(s) or exhausted(s)
+            AUTONOMOUS otherwise
+sites     = AUTONOMOUS if every site(s) is AUTONOMOUS (and there is >= 1 site)
+            DENIED     if every site(s) is DENIED
+            REQUIRES_APPROVAL otherwise (including no site at all)
+class     = the more restrictive of the tenant-level answer and `sites`
+```
+
+A single-site selection gives exactly `site(target)`. For a campaign's plan the
+composite IS R4. The tenant-wide fold of drop-back and exhausted windows ends:
+those rows now fold only over the sites a reader or a decision selected.
+
+### The gate
+
+`GlobalSafetyGate(members=active_members(), tenant_id, estate, now)` is built by
+the loader; `verdict(action_type, target_site_id)` evaluates each member once
+per key (memoized), maps anything but `MemberVerdict.CLEAR` to `constrained`
+and any exception or foreign value to `unknown`, and never lets a member's
+text out. `PRODUCTION_MEMBERS = ()`. `active_members()` adds the TEST-ONLY
+probe only when `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger path.
+`build_autonomy` takes the verdicts as a REQUIRED input — no default that
+could mean "no gate" — and the loader is the only production caller.
+
+### Decision paths
+
+`load_site_assessments` (governance) fetches the composer's inputs ONCE and
+answers `local_rows(site_id)` (the target site's class rows), `local_contract(
+site_ids)` (a composite, for a campaign or a reach), `evidence_rows()` (the
+tenant-wide rows `govern_proposal` still freezes as evidence — D7) and
+`gate_verdict(action_type, site_id)`. `govern_proposal` reads the target
+site's local row for the verdict, the evidence row for what it freezes, and
+records the gate as the bounded row; its mode never depends on the gate.
+`revalidate_dispatch` asks the same object at dispatch. The allow-list of
+whole-tenant decision call sites (A30.26) is updated to the new loader.
+
+### D11
+
+`durable_unattended_classes(agent, bound, configured_level)` replaces the
+transient derivation in the preflight. `activation_approved_unattended(session,
+tenant_id, agent)` finds the preflight row with `produced_at <= activated_at <
+superseded_at` for `activated_version`, recomputes the activation subject from
+its stored set, and returns that set only if the E0.1 completion rule says the
+subject was approved. `effective_disposition` takes the set as a REQUIRED
+argument and narrows an autonomous class outside it
+(`agent_unattended_not_approved`).
+
+### Dispatch and campaigns
+
+`DISPATCH_GATES` gains `unattended_class`, `site_local_autonomy`,
+`global_safety`, in that order after the existing seven. The background pass
+withholds (dispatch reason from constants, one audit entry per distinct cause);
+the synchronous path fails (D6). The campaign runner asks the same three
+questions (minus D11) for each site-wave after S1's authority check and before
+capability, and withholds in S1's shape.
+
+### Projections
+
+`AutonomyView.blocking` keeps a `global` row for every reader and REBUILDS it
+from constants — whatever a stored row says, only the code and the constant
+text pass. B2 is not touched (Attention and Incident read no autonomy fact);
+machine receipts are not touched (a machine reads the current gate through
+B1).
+
+### Proof map
+
+Unit: local rules and composite; deletion-equivalence of local and final;
+generated monotonicity (every gate state × every local disposition × every
+basis); hidden-site non-interference with a sentinel-carrying test member;
+the reader matrix; D11 recovery including superseded preflights, re-runs after
+activation and pre-A2 agents; dispatch gates on both paths; campaign submit and
+advance; B1's per-site agreement. PostgreSQL: timestamptz comparison of the
+activation-time preflight, freshness on real zoned values. Mutation: the ten
+breakages A30.37 names. Live: the fresh-wipe gate scenario A30.37 names.

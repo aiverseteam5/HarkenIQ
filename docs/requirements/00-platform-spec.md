@@ -5530,3 +5530,164 @@ site it reports), and the R3a/QA-021 enforcer tests called the Site
 Manager-wide API (they now name the site). (5) The break-glass read carries
 `site_names` beside `budgets_by_site`, so a window is attributable without a
 second query.
+
+**A30.37 — S3-E1: site-local autonomy + the closed global safety gate — the
+main implementation; boundary recorded BEFORE the code (decided: Vinod,
+2026-09-28).** Implements the target model A30.30 ratified (SITE-LOCAL
+AUTONOMY ASSESSMENT + CLOSED GLOBAL SAFETY GATE = FINAL EXECUTION ELIGIBILITY)
+with D1 and D3–D8, D10, D11 of A30.36; S3-E1-0 (D2, D9) is merged and
+main-verified (`23ce192`, ledger `a58d46b`), so the per-site Site Manager
+facts this reads are truthful. ONE coherent slice: the checkpoint's reason
+stands — a preflight left on the tenant-wide fold would bypass activation
+approval (F-6), so the evaluator and D11 cannot land apart. *Naming: S3-E1
+throughout, never bare "E1".*
+
+**Three answers (Vinod, 2026-09-28).** *(1) The gate holds EXECUTION, never
+MODE.* The approval mode of an agent proposal or a campaign (autonomous or
+requires approval) comes from the site-local assessment alone; a global
+constraint active at admission or submission does not convert it. It holds
+execution — dispatch and wave advance are withheld while the gate is not
+clear, on BOTH bases (D3) — and the same still-authorized work proceeds when
+it clears (D6's background path). A30.30(g)'s "AND the gate passes" is read as
+governing EXECUTION: a campaign runs unattended only while every plan site is
+locally autonomous and the gate passes; its mode is decided by the sites. This
+is the reading that keeps D5 ("never converted into another execution mode")
+and avoids routing work to a human who, approving during a constraint, would
+hit A30.17's preserved synchronous terminal failure and burn the dedupe key.
+*(2) The live TEST-ONLY member is shipped, off by default.* The production
+registry is EMPTY (D1). A clearly labelled TEST-ONLY probe member exists in the
+Central Command package and is registered ONLY when
+`HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger file; it constrains while
+that file exists. The compose gate sets the variable through its own override,
+never the shipped compose file; startup logs a WARNING whenever it is
+registered; it can only narrow. *(3) API only.* No Console change: the bounded
+global row and the bounded withheld reasons render through the blocking-
+condition and dispatch-reason displays the Console already has. Labelling the
+three concepts separately in the UI is a PX follow-up.
+
+**The contract.** *Vocabulary (D10), closed.* Gate states `clear`,
+`constrained`, `unknown`; `unknown` is a member that errored or answered
+anything but its enum, and it FAILS CLOSED exactly as `constrained` does. The
+gate contributes to ANY projection exactly one reason code,
+`GLOBAL_SAFETY_CONSTRAINT` (A30.30(h), the exact ratified string), on a
+blocking row of scope `global` whose text is a constant — never a member id, a
+site, a device, a fault domain, a count, a metric or free text, for any
+reader, including the audit log. New site-local codes:
+`site_safety_not_reported`, `site_stop_switch_active`; new agent-narrowing
+code: `agent_unattended_not_approved` (D11). Dispositions and dispatch
+outcomes (`withheld`, `withhold_unattended`) are the existing vocabulary.
+
+*Local rules inside the one composer (D4, R3, D8).* `build_autonomy` applies,
+to every SELECTED site and to nothing else: a site with no report, a report
+marked unreported, or a report older than `harkeniq_cc.freshness`'s existing
+15-minute window (judged on the older of the Site Manager's reading time and
+Central Command's ingest time) is NOT REPORTED → `site_safety_not_reported`,
+requires approval; a site whose Site Manager reports a halt →
+`site_stop_switch_active`, denied; drop-back and an exhausted budget window
+stay per site. Staleness never lifts a restriction the last report carried: a
+stale halt still denies. Over several selected sites the class disposition is
+autonomous only if EVERY selected site is locally autonomous, denied if a
+tenant-level condition denies it or EVERY selected site is denied, otherwise
+requires approval; a selection with NO site requires approval (unknown is
+never safe). Tenant-level conditions (fenced class, unmapped class, tenant
+stop switch, ladder level) are unchanged. A single-site selection is the
+target's site-local assessment (A30.30(a)). `select_site_inputs` runs first,
+so no rule reads an unselected site (S3 select-before-aggregate and
+deletion-equivalence preserved).
+
+*The gate (D1).* A typed registry of members, each returning an enum only;
+`PRODUCTION_MEMBERS = ()`. A member may read the whole estate's safety state
+as INPUT — that is the one ratified channel through which a hidden site can
+REDUCE eligibility (A30.30(c)) — and nothing but the bounded code leaves it.
+It can never grant, widen, or raise anything. An empty registry is `clear`
+and changes nothing.
+
+*Final execution eligibility.* One pure conjunction: the local disposition when
+the gate is clear, DENIED when it is not. It is never above the local
+assessment (the monotonicity invariant, proved structurally and by mutation).
+Contracts and discovery carry the three separately: the class `disposition`
+IS the site-local assessment, beside a `global_safety` block and a
+`final_execution_eligibility` block.
+
+*Decision paths.* The evaluator, the dry-run and the ingress re-derivation
+(through `govern_proposal`), campaign submission, the activation preflight and
+discovery stop reading the tenant-wide fold. A proposal is assessed against
+its TARGET site's local assessment, narrowed by the agent's durable
+configuration (ceiling, always-approve, D11) and by a suppression at that site
+(unchanged rule); its mode follows that assessment (answer 1); the gate's
+state at admission is recorded as the bounded row. Frozen evidence — the
+outcome statistics and the rationale sentence — keeps its current semantics
+(D7; S3-E2 owns it). Campaign mode is the local composite over every site of
+its plan's targets (R4). The preflight assesses over the agent's own
+in-reach sites, and `safety_reported` means EVERY one of them reported (R5).
+
+*D11.* The unattended set is DURABLE configuration only: the tenant's
+configured ladder level ∩ the agent's ceiling ∩ its bound classes, empty when
+the agent always requires approval. The ACTIVATION-APPROVED set is the one a
+human approved at activation, recovered — no migration — from the immutable
+preflight row that was current at `activated_at` for `activated_version`,
+digest-verified against the E0.1 ledger through the existing activation
+subject; it is empty for an agent that is not active, that activation
+conferred nothing on, or whose activation cannot be identified. Admission
+grants `autonomous_grant` only to a class in it; dispatch refuses an
+`autonomous_grant` whose class is not in it. *Stated consequence:* an agent
+activated before A2 recorded a version, or activated with an empty set because
+of F-6, gets no unattended execution until it is re-preflighted and its
+activation approved.
+
+*Dispatch (the one gate, both paths).* `revalidate_dispatch` gains three gates,
+after every existing one so scope, pause, stop and binding keep their own
+attribution: `unattended_class` (D11, `autonomous_grant` only),
+`site_local_autonomy` (the target site's CURRENT local assessment:
+`autonomous_grant` needs autonomous with no suppression at the site; a human's
+approval needs anything but denied) and `global_safety` (clear, both bases).
+A refusal is the existing `withheld` on the background path — the proposal and
+its approval ledger stay exactly as they are and the same proposal dispatches
+when every gate passes again — and A30.17's terminal failure on the
+synchronous path (D6, preserved). Nothing is moved to `withhold_unattended`
+by these gates; every withheld reason is built from constants. *Stated
+consequence:* a target site that degrades or halts after admission is now
+withheld at Central Command instead of refused by the Site Manager and failed.
+
+*Campaigns.* Submission follows R4 as above (a denied composite still refuses,
+as today). Advance applies the gate to approved AND autonomous waves (D3) and
+re-asks an autonomous wave's site's local assessment; a refusal withholds the
+wave in S1's shape — the plan, the ledger and the approval subject untouched,
+one audit entry per distinct cause. S1's all-target authority is unchanged.
+
+*B1.* `admission_reads_beyond` is consumed: admission reads the target site
+and the bounded gate, so the `admission_beyond_reach` unknown is no longer
+produced. Over a multi-site reach, per-site local verdicts that agree are
+definitive and verdicts that differ are `unknown` / `depends_on_target_site`
+(the existing basis); a gate that is not clear makes the class not operable
+with `GLOBAL_SAFETY_CONSTRAINT`. No token, no hidden identity.
+
+**Invariants (LOCKED).** (i) Changing ONLY a site other than S never changes
+S's site-local assessment (byte-identical), and may change S's global state
+and final eligibility only by narrowing, only through a registered member.
+(ii) The gate never increases autonomy, bypasses approval, adds capability,
+widens scope or creates execution authority. (iii) Approval satisfied is not
+executable: a human-approved proposal passes the current gate. (iv) The empty
+registry neither narrows nor widens anything. (v) A member that errors fails
+closed. (vi) Historical approval is never execution authority. (vii) The node
+remains the final execution authority.
+
+**Change surface.** No permission (25), no machine-ceiling change
+(`{fleet.view, incident.view, proposal.submit}`), no route (`ROUTE_CONTRACT`
+99, `MACHINE_SURFACE` 14), no migration (CC `0027`, SM `0011`, Console
+`0004`), no new resolver, no new approval system, no new execution engine, no
+Console change. One configuration key, `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE`,
+empty by default. **Out of scope, by decision:** S3-E2 (frozen evidence stays
+as written), the datacenter taxonomy, F-8 (directed executions still consume
+no budget window), F-9 through F-13, B2's payload contracts (Attention and
+Incident read no autonomy fact) and the machine receipts.
+
+**Proof obligations.** The brief's matrix A–N; the reader matrix (tenant-wide,
+site, device and device-class humans, machine self-view, approval view)
+showing only the bounded code; deletion-equivalence (A30.26) over the local
+assessment and the final eligibility; a generated monotonicity sweep over every
+gate state and every local disposition; mutation testing of the ten named
+breakages; real PostgreSQL; a fresh-wipe live gate driving a real proposal
+through a real approval, a real TEST-ONLY constraint, a withheld dispatch, a
+release that dispatches the same proposal exactly once, a node that still
+refuses on its own, and a hidden-site drop-back that no longer moves site A.
