@@ -199,6 +199,23 @@ class TestTheRegistry:
         for compose in (root / "deploy").rglob("docker-compose*.yml"):
             assert G.PROBE_ENV not in compose.read_text(), compose
 
+    def test_only_the_gate_override_sets_the_probe_and_only_the_gate_reads_it(self):
+        """Answer 2: set by the compose GATE's own override, never shipped.
+        Anything under deploy/ or scripts/ that mentions the key is either
+        that override or the gate script which asserts on it."""
+        root = pathlib.Path(harkeniq_cc.__file__).resolve().parents[4]
+        override = root / "scripts" / "e2e-compose-gate.override.yml"
+        gate = root / "scripts" / "e2e-compose-gate.sh"
+        assert G.PROBE_ENV in override.read_text()
+        assert "e2e-compose-gate.override.yml" in gate.read_text()
+        for base in ("deploy", "scripts"):
+            for path in (root / base).rglob("*"):
+                if not path.is_file() or path in (override, gate):
+                    continue
+                text = path.read_text(errors="ignore")
+                assert G.PROBE_ENV not in text, path
+                assert "e2e-compose-gate.override.yml" not in text, path
+
     def test_an_empty_registry_is_clear(self):
         gate = G.GlobalSafetyGate(members=(), tenant_id=TENANT, estate=())
         assert gate.verdict("SEL_CLEAR", "s1") is G.CLEAR

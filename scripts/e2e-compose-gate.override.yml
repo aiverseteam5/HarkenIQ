@@ -1,0 +1,16 @@
+# TEST-ONLY. Read by scripts/e2e-compose-gate.sh through COMPOSE_FILE, and by
+# nothing shipped.
+#
+# Registers Central Command's TEST-ONLY global safety probe (S3-E1, spec
+# A30.37 answer 2). The probe CONSTRAINS only while the trigger file named
+# here exists inside the container -- the S3-E1 gate steps create and remove
+# it -- and it has no answer that widens anything: it can only narrow
+# execution. Startup logs a WARNING whenever it is registered.
+#
+# The production registry is EMPTY and the shipped deploy/ compose files
+# never carry this key; a unit test holds both, and holds that this file is
+# the only place outside Central Command's own package that sets it.
+services:
+  central-command:
+    environment:
+      HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE: /tmp/harken-gate-global-safety-probe
