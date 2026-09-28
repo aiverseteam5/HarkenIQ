@@ -371,7 +371,7 @@ class TestPushPolicy:
         ack = await servicer.PushPolicy(request, None)
         assert ack.accepted is True
         assert servicer.autonomy.policy_actions() == {"POWER_CYCLE": "high"}
-        assert servicer.autonomy.get_budget_for_agent("a1") == {"POWER_CYCLE": 2}
+        assert servicer.autonomy.budget_for_site("s1") == {"POWER_CYCLE": 2}
 
     async def test_stop_switch_threaded_and_audited(self, sm_env, db):
         """QA-022: CC stop switch reaches the SM enforcer + audit chain."""

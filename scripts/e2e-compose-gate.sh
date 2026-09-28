@@ -8050,6 +8050,282 @@ assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'propos
 print('  shipped image: machine Attention contract v1, one freshness rule (15 min); plane 14, contract 99, ceiling unchanged')"
 echo "  three agents retired (the tenant token now 401); the poison deleted from every table it was planted in"
 
+# ---------------------------------------------------------------------------
+# S3-E1-0 (A30.36): the Site Manager's per-site safety truth, LIVE.
+#
+# One Site Manager serves site A (its configured site, where the real node
+# runs) and site B. Every change below goes through a door production
+# traffic uses -- the Site Manager's own halt control, a node's
+# ReportVerdict and ReportAction, Central Command's PushPolicy -- and is read
+# back through the Site Manager's own GetFleetSnapshot and through Central
+# Command's poller. The two budget classes are run-tagged SYNTHETIC classes,
+# so nothing real can spend them and the site-B one is an unmistakable
+# sentinel; the node ignores a class it does not know (budget.py).
+# ---------------------------------------------------------------------------
+E10_RUN="e10$(date +%s)"
+E10_WIN="E10WIN$E10_RUN"            # spent at A only
+E10_SEN="E10SENTINEL$E10_RUN"       # spent, and failed, at B only
+E10_DOM="e10dom$E10_RUN"            # site B's power fault domain
+E10_B1="e10-b1-$E10_RUN"; E10_B2="e10-b2-$E10_RUN"; E10_A1="e10-a1-$E10_RUN"
+e10_sm() {  # $1 JSON args -> run against the Site Manager's OWN gRPC, as a node / CC would
+  docker compose exec -T -e E10_ARGS="$1" site-manager python - <<'E10PY'
+import asyncio, json, os, sys, time
+sys.path.insert(0, '/app/src')
+import grpc
+from harkeniq.proto import harkeniq_pb2, harkeniq_pb2_grpc
+MD = [('authorization', 'Bearer ' + os.environ['HARKEN_SM_SITE_TOKEN'])]
+ARGS = json.loads(os.environ['E10_ARGS'])
+def safety(s):
+    return {
+        'reported': bool(s.reported), 'sm_stop_switch': bool(s.sm_stop_switch),
+        'suppressions': [{'domain_id': d.domain_id, 'event_family': d.event_family,
+                          'trigger_reason': d.trigger_reason, 'device_count': d.device_count}
+                         for d in s.suppressions],
+        'error_budgets': [{'action_type': b.action_type, 'success_count': b.success_count,
+                           'failure_count': b.failure_count, 'total_count': b.total_count,
+                           'dropped_back': bool(b.dropped_back)} for b in s.error_budgets],
+        'site_budgets': {b.action_type: b.remaining for b in s.site_budgets},
+    }
+async def main():
+    async with grpc.aio.insecure_channel('localhost:50051') as ch:
+        node = harkeniq_pb2_grpc.AgentServiceStub(ch)
+        sm = harkeniq_pb2_grpc.SiteManagerServiceStub(ch)
+        op = ARGS['op']
+        if op == 'safety':
+            out = {}
+            for site in ARGS['sites']:
+                snap = await sm.GetFleetSnapshot(harkeniq_pb2.FleetSnapshotRequest(
+                    tenant_id='tenant-demo', site_id=site), metadata=MD)
+                assert snap.site_resolved, site
+                out[site] = safety(snap.safety)
+            print(json.dumps(out, sort_keys=True))
+        elif op == 'report':
+            got = []
+            for i in range(ARGS['n']):
+                request = harkeniq_pb2.ActionReport(
+                    agent_id=ARGS['agent'], action_id=f"{ARGS['prefix']}-{i}",
+                    type=ARGS['type'], sensor_id='log:e10', skill_name='e10-gate',
+                    verdict_severity='WARNING', params_json='{}', status=ARGS['status'],
+                    proposed_at='2026-09-27T12:00:00Z',
+                    outcome_json=json.dumps({'success': ARGS['success']}))
+                try:
+                    ack = await node.ReportAction(request, metadata=MD)
+                    got.append('accepted' if ack.accepted else 'refused')
+                except grpc.aio.AioRpcError as exc:
+                    got.append('error:' + exc.code().name)
+            print(json.dumps(got))
+        elif op == 'verdict':
+            for agent in ARGS['agents']:
+                ack = await node.ReportVerdict(harkeniq_pb2.VerdictReport(
+                    agent_id=agent, sensor_id='psu:PS1', skill_name='e10-gate',
+                    verdict=ARGS['severity'], evidence_json='{}',
+                    timestamp_unix=int(time.time())), metadata=MD)
+                assert ack.accepted, agent
+            print('ok')
+        elif op == 'policy':
+            ack = await sm.PushPolicy(harkeniq_pb2.PolicyUpdate(
+                tenant_id='tenant-demo', site_id=ARGS['site'],
+                autonomy_budgets_json=json.dumps({'policies': ARGS['policies']})), metadata=MD)
+            assert ack.accepted, ack.reason
+            print('ok')
+asyncio.run(main())
+E10PY
+}
+e10_safety() { e10_sm "{\"op\":\"safety\",\"sites\":[\"$SITE_A\",\"$SITE_B\"]}"; }
+e10_cc() {  # $1 CC site id -> the row Central Command stored for it, as JSON
+  s1_cc "SELECT json_build_object('stop', sm_stop_switch, 'supp', suppressions,
+                                  'eb', error_budgets, 'win', site_budgets)
+         FROM cc_safety_state WHERE site_id='$1'"
+}
+e10_cc_has() {  # $1 site, $2 text -- does Central Command's row for $1 contain $2?
+  [ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$1'
+               AND (suppressions::text || error_budgets::text || site_budgets::text) LIKE '%$2%'")" = "1" ]
+}
+e10_cc_stop() {  # $1 site, $2 t|f -- Central Command's stored halt for the site
+  [ "$(s1_cc "SELECT sm_stop_switch FROM cc_safety_state WHERE site_id='$1'")" = "$2" ]
+}
+e10_cc_dropped() {  # site B's stored evidence carries the sentinel class dropped back
+  [ "$(s1_cc "SELECT count(*) FROM cc_safety_state WHERE site_id='$SITE_B'
+               AND error_budgets @> '[{\"action_type\": \"$E10_SEN\", \"dropped_back\": true}]'::jsonb")" = "1" ]
+}
+e10_cc_clean() {  # no stored suppression or evidence carries this proof's run tag
+  [ "$(s1_cc "SELECT count(*) FROM cc_safety_state
+               WHERE (suppressions::text || error_budgets::text) LIKE '%$E10_RUN%'")" = "0" ]
+}
+E10_B_NAME=$(s1_sm "SELECT name FROM sites WHERE cc_site_id='$SITE_B'")
+E10_SM_A=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_A'")
+E10_SM_B=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_B'")
+[ -n "$E10_B_NAME" ] && [ -n "$E10_SM_A" ] && [ -n "$E10_SM_B" ] || {
+  echo "the Site Manager does not serve both gate sites" >&2; exit 1; }
+
+step "S3-E1-0/CO: halt site B through the Site Manager's OWN per-site control -- reported for B, never for A (F-1)"
+e10_safety > /tmp/e10_0.json
+curl -sf -X POST -H "Authorization: Bearer dev-token-sm" -H 'Content-Type: application/json' \
+  -d '{"actor":"gate@harkeniq.com","reason":"S3-E1-0/CO"}' \
+  "http://localhost:8080/api/sites/$E10_B_NAME/stop" > /dev/null
+e10_safety > /tmp/e10_1.json
+python3 - "$SITE_A" "$SITE_B" <<'PY'
+import json, sys
+a, b = sys.argv[1:3]
+before, after = json.load(open("/tmp/e10_0.json")), json.load(open("/tmp/e10_1.json"))
+assert before[a]["sm_stop_switch"] is False and before[b]["sm_stop_switch"] is False, before
+# F-1: before S3-E1-0 this was the in-memory flag alone -- false here.
+assert after[b]["sm_stop_switch"] is True, "site B is halted at its Site Manager and not reported"
+assert after[a]["sm_stop_switch"] is False, "site B's halt reached site A"
+assert after[a]["suppressions"] == before[a]["suppressions"]
+print("  Site Manager: site B halted -> sm_stop_switch true for B, false for A")
+PY
+wait_for "Central Command to read site B halted" 150 e10_cc_stop "$SITE_B" t
+[ "$(s1_cc "SELECT sm_stop_switch FROM cc_safety_state WHERE site_id='$SITE_A'")" = "f" ] || {
+  echo "Central Command read site A halted" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer dev-token-sm" -H 'Content-Type: application/json' \
+  -d '{"actor":"gate@harkeniq.com","reason":"S3-E1-0/CO lifted"}' \
+  "http://localhost:8080/api/sites/$E10_B_NAME/stop/lift" > /dev/null
+e10_safety | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+assert s['$SITE_B']['sm_stop_switch'] is False and s['$SITE_A']['sm_stop_switch'] is False, s
+print('  lifted: false at both sites')"
+wait_for "Central Command to read site B running again" 150 e10_cc_stop "$SITE_B" f
+echo "  Central Command: B true then false through its own poller; A false throughout"
+
+step "S3-E1-0/CP: a REAL suppression of a site-B power domain (real psu verdicts) is site B's alone (F-2)"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc "
+  INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model, service_tag,
+                       device_class, first_seen_at, last_seen_at)
+  VALUES ('b1$E10_RUN', '$E10_SM_B', '$E10_B1', 'e10-b1', 'Dell', 'R750', 'E10B1', 'server', now(), now()),
+         ('b2$E10_RUN', '$E10_SM_B', '$E10_B2', 'e10-b2', 'Dell', 'R750', 'E10B2', 'server', now(), now()),
+         ('a1$E10_RUN', '$E10_SM_A', '$E10_A1', 'e10-a1', 'Dell', 'R750', 'E10A1', 'server', now(), now());
+  INSERT INTO fault_domains (id, site_id, name, kind, status, confidence, source, created_at)
+  VALUES ('$E10_DOM', '$E10_SM_B', 'pdu-$E10_RUN', 'power', 'confirmed', 1.0, 'operator', now());
+  INSERT INTO domain_memberships (domain_id, device_id, added_by, added_at)
+  VALUES ('$E10_DOM', 'b1$E10_RUN', 'gate', now()), ('$E10_DOM', 'b2$E10_RUN', 'gate', now());" > /dev/null
+e10_safety > /tmp/e10_2.json
+[ "$(e10_sm "{\"op\":\"verdict\",\"severity\":\"CRITICAL\",\"agents\":[\"$E10_B1\",\"$E10_B2\"]}")" = "ok" ] || {
+  echo "the site-B verdicts were refused" >&2; exit 1; }
+e10_safety > /tmp/e10_3.json
+python3 - "$SITE_A" "$SITE_B" "$E10_DOM" "$E10_B1" "$E10_B2" <<'PY'
+import json, sys
+a, b, dom, b1, b2 = sys.argv[1:6]
+before, after = json.load(open("/tmp/e10_2.json")), json.load(open("/tmp/e10_3.json"))
+assert [s["domain_id"] for s in after[b]["suppressions"]].count(dom) == 1, after[b]
+got = next(s for s in after[b]["suppressions"] if s["domain_id"] == dom)
+assert got["trigger_reason"] == "direct_dependency" and got["device_count"] == 2, got
+text = json.dumps(after[a])
+for sentinel in (dom, b1, b2):
+    assert sentinel not in text, f"site B's {sentinel} reached site A"
+assert after[a]["suppressions"] == before[a]["suppressions"], "site B's suppression moved site A"
+print("  Site Manager: a REAL suppression (direct_dependency, 2 devices) at site B's domain;"
+      " site A's suppressions unchanged, no site-B id anywhere in A")
+PY
+wait_for "Central Command to read site B's suppression" 150 e10_cc_has "$SITE_B" "$E10_DOM"
+e10_cc_has "$SITE_A" "$E10_DOM" && { echo "Central Command stored site B's suppression under site A" >&2; exit 1; }
+echo "  Central Command: the domain is in site B's row and in no other"
+
+step "S3-E1-0/CQ: budget windows and drop-back through REAL ReportAction calls -- each site's own (F-3, F-7)"
+[ "$(e10_sm "{\"op\":\"policy\",\"site\":\"$SITE_A\",\"policies\":[
+      {\"action_type\":\"$E10_WIN\",\"max_per_window\":4,\"window_seconds\":3600,\"risk_level\":\"low\"},
+      {\"action_type\":\"$E10_SEN\",\"max_per_window\":4,\"window_seconds\":3600,\"risk_level\":\"low\"}]}")" = "ok" ] || {
+  echo "PushPolicy refused" >&2; exit 1; }
+e10_safety > /tmp/e10_4.json
+A_RUNS=$(e10_sm "{\"op\":\"report\",\"agent\":\"$E10_A1\",\"type\":\"$E10_WIN\",\"status\":\"COMPLETED\",\"success\":true,\"n\":2,\"prefix\":\"$E10_RUN-a\"}")
+e10_safety > /tmp/e10_5.json
+B_RUNS=$(e10_sm "{\"op\":\"report\",\"agent\":\"$E10_B1\",\"type\":\"$E10_SEN\",\"status\":\"COMPLETED\",\"success\":true,\"n\":3,\"prefix\":\"$E10_RUN-b\"}")
+B_FAILS=$(e10_sm "{\"op\":\"report\",\"agent\":\"$E10_B2\",\"type\":\"$E10_SEN\",\"status\":\"FAILED\",\"success\":false,\"n\":5,\"prefix\":\"$E10_RUN-f\"}")
+e10_safety > /tmp/e10_6.json
+python3 - "$SITE_A" "$SITE_B" "$E10_WIN" "$E10_SEN" "$A_RUNS" "$B_RUNS" "$B_FAILS" <<'PY'
+import json, sys
+a, b, win, sen = sys.argv[1:5]
+a_runs, b_runs, b_fails = (json.loads(x) for x in sys.argv[5:8])
+s4, s5, s6 = (json.load(open(f"/tmp/e10_{i}.json")) for i in (4, 5, 6))
+assert a_runs == ["accepted"] * 2, a_runs
+# F-7: before S3-E1-0 every one of these raised -- site B is not the Site
+# Manager's configured site, and its node-path reports were lost.
+assert b_runs == ["accepted"] * 3 and b_fails == ["accepted"] * 5, (b_runs, b_fails)
+for site in (a, b):
+    assert s4[site]["site_budgets"][win] == 4 and s4[site]["site_budgets"][sen] == 4, s4[site]
+# F-3: A's two executions spent A's window -- and B's is untouched.
+assert s5[a]["site_budgets"][win] == 2 and s5[b]["site_budgets"][win] == 4, s5
+# B's three spent B's -- and A's is untouched.
+assert s6[b]["site_budgets"][sen] == 1 and s6[a]["site_budgets"][sen] == 4, s6
+assert s6[a]["site_budgets"][win] == 2 and s6[b]["site_budgets"][win] == 4, s6
+# Drop-back: B's failures withdrew B's class, at B.
+eb_b = {e["action_type"]: e for e in s6[b]["error_budgets"]}
+assert eb_b[sen]["success_count"] == 3 and eb_b[sen]["failure_count"] == 5, eb_b.get(sen)
+assert eb_b[sen]["dropped_back"] is True, eb_b[sen]
+# The sentinel class exists at A only as the policy's untouched window.
+assert sen not in {e["action_type"] for e in s6[a]["error_budgets"]}, s6[a]["error_budgets"]
+assert win in {e["action_type"] for e in s6[a]["error_budgets"]}
+print("  Site Manager: A's window 4->2 with B's at 4; B's window 4->1 with A's at 4;"
+      " B's 5 failures dropped B's class back at B; the sentinel class has no evidence at A")
+PY
+wait_for "Central Command to read site B's drop-back" 150 e10_cc_dropped
+e10_cc "$SITE_A" | python3 -c "
+import json, sys
+row = json.loads(sys.stdin.read())
+assert row['win']['$E10_WIN'] == 2 and row['win']['$E10_SEN'] == 4, row['win']
+assert '$E10_SEN' not in json.dumps(row['eb']), 'site B evidence stored under site A'
+print('  Central Command: A stores its own window (2) and B\'s untouched one (4); no site-B evidence under A')"
+e10_cc "$SITE_B" | python3 -c "
+import json, sys
+row = json.loads(sys.stdin.read())
+assert row['win']['$E10_SEN'] == 1 and row['win']['$E10_WIN'] == 4, row['win']
+print('  Central Command: B stores its own window (1) and A\'s untouched one (4)')"
+
+step "S3-E1-0/CR: this proof owns its state -- and the shipped image carries the per-site truth"
+curl -sf -X POST -H "Authorization: Bearer dev-token-sm" -H 'Content-Type: application/json' \
+  -d '{"actor":"gate@harkeniq.com"}' \
+  "http://localhost:8080/api/autonomy/suppression/$E10_DOM/re-enable" > /dev/null
+curl -sf -X POST -H "Authorization: Bearer dev-token-sm" -H 'Content-Type: application/json' \
+  -d "{\"actor\":\"gate@harkeniq.com\",\"site\":\"$E10_B_NAME\"}" \
+  "http://localhost:8080/api/autonomy/error-budget/$E10_SEN/recover" > /dev/null
+[ "$(e10_sm "{\"op\":\"policy\",\"site\":\"$SITE_A\",\"policies\":[
+      {\"action_type\":\"$E10_WIN\",\"max_per_window\":-1,\"window_seconds\":3600,\"risk_level\":\"low\"},
+      {\"action_type\":\"$E10_SEN\",\"max_per_window\":-1,\"window_seconds\":3600,\"risk_level\":\"low\"}]}")" = "ok" ] || {
+  echo "could not retire the synthetic windows" >&2; exit 1; }
+E10_DEVS="'b1$E10_RUN','b2$E10_RUN','a1$E10_RUN'"
+E10_AGENTS="'$E10_B1','$E10_B2','$E10_A1'"
+E10_INCS=$(s1_sm "SELECT COALESCE(string_agg(quote_literal(id), ','), '''''')
+                  FROM incidents WHERE device_id IN ($E10_DEVS) OR domain_id = '$E10_DOM'")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc "
+  DELETE FROM sm_directives WHERE device_id IN ($E10_DEVS);
+  DELETE FROM actions WHERE device_id IN ($E10_DEVS);
+  DELETE FROM sm_action_outcomes WHERE device_id IN ($E10_DEVS);
+  UPDATE incidents SET parent_id = NULL WHERE parent_id IN
+    (SELECT id FROM incidents WHERE device_id IN ($E10_DEVS) OR domain_id = '$E10_DOM');
+  DELETE FROM incidents WHERE device_id IN ($E10_DEVS) OR domain_id = '$E10_DOM';
+  DELETE FROM domain_memberships WHERE domain_id = '$E10_DOM' OR device_id IN ($E10_DEVS);
+  DELETE FROM fault_domains WHERE id = '$E10_DOM';
+  DELETE FROM verdict_reports WHERE device_id IN ($E10_DEVS);
+  DELETE FROM heartbeats WHERE device_id IN ($E10_DEVS);
+  DELETE FROM agent_status WHERE device_id IN ($E10_DEVS);
+  DELETE FROM device_subsystem_state WHERE device_id IN ($E10_DEVS);
+  DELETE FROM devices WHERE id IN ($E10_DEVS);
+  DELETE FROM sm_error_budgets WHERE action_type IN ('$E10_WIN', '$E10_SEN');" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc "
+  DELETE FROM cc_outcome_history WHERE action_type IN ('$E10_WIN', '$E10_SEN');
+  DELETE FROM cc_incidents WHERE incident_id IN ($E10_INCS) OR device_agent_id IN ($E10_AGENTS);
+  DELETE FROM cc_agent_proposals WHERE device_agent_id IN ($E10_AGENTS);" > /dev/null
+[ "$(s1_cc "SELECT (SELECT count(*) FROM cc_incidents WHERE device_agent_id IN ($E10_AGENTS))
+             + (SELECT count(*) FROM cc_outcome_history WHERE action_type IN ('$E10_WIN', '$E10_SEN'))
+             + (SELECT count(*) FROM cc_agent_proposals WHERE device_agent_id IN ($E10_AGENTS))")" = "0" ] \
+  || { echo "the proof's Central Command rows remain" >&2; exit 1; }
+[ "$(s1_sm "SELECT (SELECT count(*) FROM devices WHERE id IN ($E10_DEVS))
+             + (SELECT count(*) FROM fault_domains WHERE id = '$E10_DOM')
+             + (SELECT count(*) FROM actions WHERE device_id IN ($E10_DEVS))
+             + (SELECT count(*) FROM sm_error_budgets WHERE action_type IN ('$E10_WIN', '$E10_SEN'))")" = "0" ] \
+  || { echo "the proof's Site Manager rows remain" >&2; exit 1; }
+wait_for "Central Command to drop the proof's evidence" 150 e10_cc_clean
+docker compose exec -T site-manager python -c "
+from harkeniq_sm.autonomy import SMAutonomyEnforcer
+from harkeniq_sm.site_safety import site_halted, site_suppressions
+assert hasattr(SMAutonomyEnforcer, 'budget_for_site')
+assert not hasattr(SMAutonomyEnforcer, 'get_budget_for_agent')
+print('  shipped image: per-site windows (budget_for_site), one halt predicate, per-site suppressions')"
+echo "  suppression re-enabled, B's drop-back recovered, the synthetic windows made unlimited"
+echo "  (a pushed policy class is never removed until restart -- update_policy only adds),"
+echo "  and every row the proof wrote removed from the Site Manager and Central Command"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

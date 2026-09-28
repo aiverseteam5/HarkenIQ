@@ -5343,3 +5343,190 @@ into Central Command's inputs and reads within seconds, because the poller
 rebuilds a site's fleet rows and supersedes undelivered routes every 30 s; a
 tenant-wide read taken AFTER the site-A reads proves the poison stood
 throughout them, and an attempt a poll interrupts is retried.
+
+**A30.36 — S3-E1: decisions D1–D11 RATIFIED, and S3-E1-0 (Site Manager
+per-site safety truth) — boundary recorded BEFORE the code (decided: Vinod,
+2026-09-27).** The S3-E1 Phase 1 checkpoint (read-only, on `3323b74`)
+reproduced the conflation A30.30 targets — the evaluator, the ingress
+re-derivation, the dry-run, campaign submit and the activation preflight all
+read one tenant-wide fold as a target's own assessment — and found that the
+premise of A30.27 R2 ("suppression is already per target site", "the Site
+Manager enforces drop-back and site stop per the device's OWN site") holds
+for enforcement but NOT for what the Site Manager REPORTS on a multi-site
+Site Manager. Vinod ratified D1–D11 and sequenced a prerequisite security
+slice, S3-E1-0, BEFORE the main S3-E1 implementation. *Naming: S3-E1 / S3-E1-0
+throughout, never bare "E1" (A30.27).*
+
+**The ratified decisions (D1, D3–D8, D10, D11 are implemented by S3-E1, not
+by S3-E1-0; D2 and D9 are S3-E1-0's).** **D1 (option A):** the typed global
+safety registry ships EMPTY in production; no production member is invented;
+the mechanism is proven with a TEST-ONLY member; a member that errors fails
+closed; empty-registry behaviour creates no authority. **D2 (option A):** the
+Site Manager reports each site's ACTUAL halt through the existing state
+representation (`FleetSafetyState.sm_stop_switch`, whose proto comment has
+always declared it "site-local") — no new proto field, no migration. **D3:**
+once S3-E1 is implemented the global gate applies to BOTH human-approved and
+unattended dispatch; approval does not override global safety (A10.3,
+A15.9). **D4 (option A):** the canonical local rules belong inside
+`build_autonomy` / its canonical composition path and operate only on the
+already-selected site inputs; no second wrapper with different semantics.
+**D5:** bounded dispatch outcomes stay the existing closed vocabulary
+(withheld, `withhold_unattended`); a wave is never converted into another
+execution mode. **D6:** A30.17's synchronous terminal-failure behaviour is
+preserved; recovery after a transient constraint clears is guaranteed only
+through the existing background path, and that asymmetry is a recorded
+follow-up, not an S3-E1 redesign. **D7:** frozen/historical evidence stays
+immutable under current semantics until S3-E2; S3-E1 rewrites no historical
+proposal evidence. **D8 (option B):** a safety/site report older than the
+existing canonical 15-minute freshness threshold (`harkeniq_cc.freshness`,
+A30.35) counts as NOT REPORTED for S3-E1 local-autonomy semantics — no new
+threshold; staleness may narrow autonomy, never widen it. **D9:** the
+checkpoint's F-2 (per-site suppression) and F-3 (per-site budget and
+drop-back) are FIXED in S3-E1-0, not documented as limitations; any counter
+that influences site-local autonomy must itself be site-local. **D10:** S3-E1
+uses the already-defined closed reason/status vocabulary; no free-text reason
+becomes machine authority. **D11 (ratified with tightening):** the set of
+action classes approved for unattended operation derives from DURABLE
+configuration — autonomy ladder level ∩ agent autonomy ceiling ∩ bound action
+classes — and never from transient safety or runtime state; when S3-E1 is
+implemented, dispatch MUST verify that an `autonomous_grant` class is still
+in the activation-approved unattended set, reusing the existing
+activation/approval model (no second approval system). The checkpoint's
+reproduction that motivates D11: a hidden site's drop-back present at
+preflight made `activation_grants_unattended` return nothing, so activation
+needed no approval, and after the site recovered the agent's proposals were
+`approved/autonomous_grant` — unattended execution nobody approved at
+activation.
+
+**S3-E1-0 — objective.** Make the Site Manager's per-site safety inputs
+truthful before Central Command begins relying on them for S3-E1. **The
+invariant, LOCKED:** a site-local safety fact at site S — halt, suppression,
+local budget window, local drop-back state — MUST NOT change when only
+ANOTHER site's state changes; and every emission of it (the `FleetSafetyState`
+reported for S, and the authorization lease issued to a device at S) derives
+only from S's own state and from halts that genuinely stop S.
+
+**F-1 — halt.** Before: `sm_stop_switch` was the enforcer's in-memory flag
+alone, so an E1.3 persisted halt (site, or Site Manager emergency) was
+enforced by the Site Manager's own dispatch and lease and reported to Central
+Command as `false`. Now the value reported for S is `halt_state(S).halted`
+(the persisted tenant, site and Site Manager-emergency halts for S) OR the
+enforcer's in-memory flag — which is set only by the Central Command tenant
+push and the Site Manager-local break-glass switch, and which the Site
+Manager's own dispatch already applies to every site it serves. That is
+exactly the predicate the Site Manager ENFORCES (`DispatchAction`'s
+`site_stop` + `manager_halt`, and `_agent_site_halted` in the lease), so what
+is reported and what is enforced cannot differ. A per-site halt at B is never
+reported at A.
+
+**F-2 — suppression.** Before: the suppression engine keys a suppression by
+fault-domain id and carries no site, and `_safety_state` reported EVERY
+active suppression under EVERY site the Site Manager serves — reproduced with
+a real site-B `FaultDomain` appearing in site A's snapshot — so a site-A
+reader of `/api/autonomy` and of a proposal's stored blocking rows read site
+B's fault-domain id, trigger and device count, and a site-A agent proposal
+was routed to a human by site B's suppression. Now the snapshot for S and the
+lease issued to a device at S carry only suppressions whose fault domain
+belongs to S (`fault_domains.site_id`), in fault-domain-id order. A
+suppression whose fault domain no longer exists is attributed to no site. The
+engine's own evaluation, hair-trigger and recovery are unchanged.
+
+**F-3 — budget and drop-back.** Every counter that feeds Site Manager safety
+or autonomy state, classified: (a) `sm_error_budgets` (drop-back) — truly
+site-local since E0.2 (the one writer attributes by the device's own site;
+every reader passes one) — unchanged, but its node-path FEED was lost at
+non-default sites (F-7 below); (b) the `SMAutonomyEnforcer` budget-window
+counters — Site Manager-WIDE in memory, keyed by action type alone, although
+the class (`SiteBudgetCounter`, "one action type at one site") and its module
+("SM enforces per-site") describe per-site windows: an execution at A drew
+down the window reported for B and carried in every B lease. Now they are
+keyed by (site, action type): a completed execution draws down its device's
+OWN site; the snapshot for S and every lease issued to a device at S read S's
+windows only; the pushed `max_per_window` applies per site — the unit Central
+Command already pushes to every Site Manager, and the unit the enforcer was
+written for before one Site Manager could serve several sites. Consequence,
+stated: a Site Manager serving k sites admits up to k windows, exactly as k
+single-site Site Managers already do. The windows stay in memory (F-10). (c)
+Central Command's `actions_used` on the tenant autonomy budget — tenant
+level, reported only, not a site-local input — unchanged. (d) The node's
+`AgentBudgetEnforcer` — per device from the lease, so it follows the per-site
+lease with no code change.
+
+**F-7 — the node-path report at non-default sites (fixed in S3-E1-0, decided:
+Vinod).** `ApprovalService.report_action` resolved every report's site from
+the Site Manager's configured name, so on a multi-site Site Manager a
+`ReportAction` from a device enrolled at any other site raised (E1.3's
+`upsert_registration` refusal, reproduced: "already enrolled at another
+site"): its action row, its outcome, its drop-back feed and its budget use
+were lost, and that site's own safety state could not be truthful. Now an
+ALREADY-ENROLLED device reports under its OWN site and is touched, never
+re-registered; an unknown device keeps the legacy path unchanged (F-11).
+
+**Central Command.** No Central Command code changes. Given the same inputs,
+every Central Command decision is unchanged. Its outputs change ONLY through
+the three corrected inputs, and only where they were wrong: (i) a site's
+suppression no longer routes another site's agent proposals to a human, and
+no longer appears in another site's autonomy facts; (ii) a site's window no
+longer reflects another site's executions — the tenant-wide fold (unchanged
+until S3-E1) still globalises real exhaustion, and a class exhausted only
+because sites shared one counter can return to autonomous; (iii) posture
+counts real site halts — display only, because the disposition ignores
+`sm_stop_switch` until S3-E1. On a single-site Site Manager Central Command's
+output is unchanged except (iii) and the deleted-fault-domain edge.
+
+**Change surface.** No permission (25), no machine-ceiling change
+(`{fleet.view, incident.view, proposal.submit}`), no route (`ROUTE_CONTRACT`
+99, `MACHINE_SURFACE` 14), no migration (CC `0027`, SM `0011`, Console
+`0004`), no proto change, no Central Command code. The Site Manager's
+break-glass `GET /api/autonomy` (site token) reports budget windows per site
+(`budgets_by_site`) instead of one Site Manager-wide map — an existing
+route's response; no route is added. **Out of scope, by decision:** the
+global gate, site-local admission, final execution eligibility, the S3-E1
+machine and human projections, S3-E2, the datacenter taxonomy, and the
+findings below.
+
+**Recorded, NOT fixed by S3-E1-0.** **F-8** directed executions (Central
+Command dispatches: agent proposals including `autonomous_grant`, S6
+campaigns) never draw down a budget window — `ReportDirectiveResult` records
+no execution; only node-initiated actions count (a follow-up, decided:
+Vinod). **F-9** the node never reads the lease's suppression list
+(`AuthorizationLease.suppression_domains` is carried and unread), so R3a's
+"correlated event → autonomy suppressed" is enforced only where Central
+Command governs agent proposals. **F-10** the budget windows are in memory,
+so a Site Manager restart refills every window (fixing it is a persistence
+change). **F-11** an unknown device's `ReportAction` still creates the device
+at the configured site (the legacy single-site path, kept by decision; on a
+multi-site Site Manager it is E1.3 D1's shape). **F-12** D6's
+synchronous/background recovery asymmetry.
+
+**Proof obligations.** The A/B matrix for halt, suppression, budget window and
+drop-back, each in both directions; mixed sequences (A changes repeatedly
+while B stays fixed, and the inverse) with site A's emitted facts compared
+byte for byte; a generated non-interference sweep with a non-vacuity control;
+hostile site-B sentinels walked over A's snapshot and lease; reported halt ==
+enforced halt; the F-7 fix through the real RPC; the Central Command
+differential against a golden recorded from `main`; real PostgreSQL; the live
+gate driving real transitions through the Site Manager's own RPCs and
+controls; mutation testing.
+
+**Found while implementing S3-E1-0 (recorded; no scope change).** (1) The
+Central Command effect runs in BOTH directions. Besides (i)–(iii), F-7 means
+a non-default site's node-path usage and outcomes now reach that site's own
+window and error budget, so they can withhold autonomy there — and, through
+the tenant-wide fold that stays until S3-E1, for the tenant — where before
+they were silently lost. The differential recorded on `main` shows it: site
+beta's three executions raised, its window read untouched, and SEL_CLEAR
+stayed `autonomous`; with S3-E1-0 beta's window is spent and the fold reads
+`requires_approval`. (2) Because the node never reads the lease's
+suppression list (F-9), filtering it per site changes no node decision — only
+what a node at another site is told. (3) The Site Manager keeps every policy
+class it was ever pushed (`update_policy` only adds), so a class the tenant
+withdraws keeps its last window until the process restarts (**F-13**,
+pre-existing, recorded; the live proof retires its synthetic classes by
+making them unlimited). (4) Two existing tests encoded the old semantics and
+were corrected, not weakened: the S5 transport test injected a suppression
+for a fault domain that exists at no site (it now creates the domain at the
+site it reports), and the R3a/QA-021 enforcer tests called the Site
+Manager-wide API (they now name the site). (5) The break-glass read carries
+`site_names` beside `budgets_by_site`, so a window is attributable without a
+second query.

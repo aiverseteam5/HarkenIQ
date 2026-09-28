@@ -377,8 +377,9 @@ class TestArchitecturalContracts:
             "max_per_window": 10,
             "window_seconds": 3600,
         }])
-        # SM computes budget for agent lease
-        budget = sm.get_budget_for_agent("agent-1")
+        # SM computes budget for agent lease -- the agent's OWN site's
+        # windows (S3-E1-0, A30.36)
+        budget = sm.budget_for_site("site-1")
         assert budget["SEL_CLEAR"] == 10
 
         # Agent enforces locally from lease data
