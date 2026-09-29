@@ -62,11 +62,6 @@ class CCConfig:
     warranty_refresh_interval_s: float = 86400.0
     warranty_ttl_s: float = 604800.0
     insecure: bool = False
-    #: S3-E1 (A30.37): TEST-ONLY. A trigger-file path that registers the
-    #: TEST-ONLY global safety probe; empty -- the default, and the only
-    #: production value -- registers nothing, leaving the gate's production
-    #: registry empty (D1). Set only by the compose gate's own override.
-    global_safety_test_probe: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -135,7 +130,6 @@ _ENV_MAP = {
     "HARKEN_CC_WARRANTY_REFRESH_INTERVAL_S": "warranty_refresh_interval_s",
     "HARKEN_CC_WARRANTY_TTL_S": "warranty_ttl_s",
     "HARKEN_CC_INSECURE": "insecure",
-    "HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE": "global_safety_test_probe",
 }
 
 

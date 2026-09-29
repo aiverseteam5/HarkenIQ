@@ -28,21 +28,23 @@ The production registry is EMPTY (D1). A member is named in the
 specification by dated amendment BEFORE it exists in code; none has been.
 An empty registry is `clear` and changes nothing.
 
-The TEST-ONLY probe
--------------------
-`TestOnlyProbeMember` exists so the framework can be proved on a real,
-secure-mode stack (A30.37, answer 2). It is registered ONLY when
-`HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger file, which the compose
-gate sets through its own override and nothing shipped sets; startup logs a
-WARNING whenever it is registered. It can only narrow -- it has no other
-answer to give.
+No configuration reaches the registry (A30.38)
+----------------------------------------------
+`_ACTIVE` is bound ONCE, below, to `PRODUCTION_MEMBERS`, and nothing in the
+shipped package rebinds it: there is no `CCConfig` field, YAML key,
+environment variable or startup call that takes configuration and yields a
+member. This module performs no environment, file or import-by-name I/O. The
+TEST-ONLY probe the live proof needs is test infrastructure in the
+repository's test tree, never shipped in this package or its image, and a
+harness installs it in-process after the production runtime has started.
+`announce_registry()` is how startup says which registry it serves with --
+and says it LOUDLY if it is not the production one.
 """
 
 from __future__ import annotations
 
 import enum
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional, Protocol, runtime_checkable
@@ -364,71 +366,32 @@ class GlobalSafetyGate:
 #: holds this empty.
 PRODUCTION_MEMBERS: tuple = ()
 
-#: The configuration key that registers the TEST-ONLY probe.
-PROBE_ENV = "HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE"
-
-TEST_PROBE_MEMBER_ID = "test_only_probe"
-
-#: A first line that makes the probe raise, so fail-closed can be proved live.
-PROBE_RAISE = "raise"
-
-#: The members this process evaluates. `configure` sets it once, at startup.
+#: The members this process evaluates. Bound ONCE, here, to the production
+#: registry; no configuration path reaches it (A30.38), and a structural test
+#: fails the suite if anything in the package rebinds it.
 _ACTIVE: tuple = PRODUCTION_MEMBERS
 
 
-class TestOnlyProbeMember:
-    """TEST-ONLY. Never a production member, never registered by default.
+def announce_registry() -> None:
+    """Record, once at startup, which registry this process serves with.
 
-    Constrains while its trigger file exists. The file's lines name the
-    action classes it constrains; an empty file constrains every class; a
-    first line of ``raise`` makes it raise, so a fail-closed gate can be
-    proved on a live stack. It has no answer that clears anything the site
-    assessment did not already clear.
+    INFO for the production registry. A WARNING naming the member ids for
+    anything else -- which production cannot produce, since nothing in it
+    changes the registry; only a test harness writing it in-process can.
     """
-
-    __test__ = False  # not a pytest test class, whatever its name says
-
-    member_id = TEST_PROBE_MEMBER_ID
-
-    def __init__(self, trigger_path: str) -> None:
-        self.trigger_path = trigger_path
-
-    def evaluate(self, context: GlobalSafetyContext) -> MemberVerdict:
-        if not os.path.exists(self.trigger_path):
-            return MemberVerdict.CLEAR
-        with open(self.trigger_path, encoding="utf-8") as fh:
-            lines = [ln.strip() for ln in fh.read().splitlines() if ln.strip()]
-        if lines and lines[0].lower() == PROBE_RAISE:
-            raise RuntimeError("TEST-ONLY probe asked to fail")
-        classes = {ln.upper() for ln in lines}
-        if not classes or context.action_type.upper() in classes:
-            return MemberVerdict.CONSTRAIN
-        return MemberVerdict.CLEAR
-
-
-def configure(config: Any) -> tuple:
-    """Set this process's members from its configuration. Called ONCE, at startup.
-
-    Production: `PRODUCTION_MEMBERS`, which is empty. The TEST-ONLY probe is
-    added only when its configuration key names a trigger file, and a
-    WARNING says so every time -- a deployment that set it by accident must
-    not run with it silently.
-    """
-    global _ACTIVE
-    members = PRODUCTION_MEMBERS
-    trigger = (getattr(config, "global_safety_test_probe", "") or "").strip()
-    if trigger:
-        logger.warning(
-            "TEST-ONLY global safety probe REGISTERED (trigger file %s). It can "
-            "only narrow execution, never widen it, and it must never be set "
-            "in production (%s).", trigger, PROBE_ENV,
+    if _ACTIVE == PRODUCTION_MEMBERS:
+        logger.info(
+            "global safety gate: production registry (%d members)", len(_ACTIVE),
         )
-        members = members + (TestOnlyProbeMember(trigger),)
-    _ACTIVE = members
-    return members
+        return
+    logger.warning(
+        "global safety gate: NON-PRODUCTION registry %s -- members installed "
+        "in-process by something other than the shipped package",
+        [getattr(m, "member_id", type(m).__name__) for m in _ACTIVE],
+    )
 
 
 def active_members() -> tuple:
-    """The members this process evaluates: `PRODUCTION_MEMBERS` unless
-    `configure` registered the TEST-ONLY probe."""
+    """The members this process evaluates: `PRODUCTION_MEMBERS`, which no
+    configuration can change (A30.38)."""
     return _ACTIVE

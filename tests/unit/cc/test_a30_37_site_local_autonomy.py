@@ -3,9 +3,11 @@ FINAL EXECUTION ELIGIBILITY -- the pure layer.
 
 What this module proves, without a database:
 
-* the registry (D1): EMPTY in production, a TEST-ONLY probe only by its key,
-  a member that errors or answers anything but its enum FAILS CLOSED, and
-  the verdict carries one bounded code and nothing else;
+* the registry (D1): EMPTY in production and reachable by no configuration
+  (A30.38 -- the TEST-ONLY probe's activation boundary is proved in
+  `test_a30_38_probe_activation_boundary.py`), a member that errors or answers
+  anything but its enum FAILS CLOSED, and the verdict carries one bounded code
+  and nothing else;
 * monotonicity: over every local disposition and every gate state, the final
   eligibility is never above the local assessment -- a clear gate changes
   nothing and no member answer can grant;
@@ -167,54 +169,22 @@ class TestTheRegistry:
     def test_the_production_registry_is_empty(self):
         assert G.PRODUCTION_MEMBERS == ()
 
-    def test_default_configuration_registers_nothing(self, monkeypatch):
-        from harkeniq_cc.config import CCConfig
+    def test_no_configuration_registers_a_member(self, monkeypatch):
+        """A30.38 (inverted from A30.37's "the probe key is read from the
+        environment", which pinned the defect): neither the environment nor
+        the default configuration can register anything, and there is no
+        `configure` left to ask. The full boundary -- YAML, real startup,
+        fresh interpreter, structural guards -- is
+        `test_a30_38_probe_activation_boundary.py`."""
+        from harkeniq_cc.config import CCConfig, load_cc_config
 
-        monkeypatch.setattr(G, "_ACTIVE", ("sentinel",))
-        assert CCConfig().global_safety_test_probe == ""
-        assert G.configure(CCConfig()) == ()
-        assert G.active_members() == ()
-
-    def test_the_probe_is_registered_only_by_its_key_and_says_so(
-        self, monkeypatch, caplog, tmp_path,
-    ):
-        from harkeniq_cc.config import CCConfig
-
-        monkeypatch.setattr(G, "_ACTIVE", ())
-        trigger = str(tmp_path / "probe")
-        with caplog.at_level(logging.WARNING, logger="harkeniq.cc.global_safety"):
-            members = G.configure(CCConfig(global_safety_test_probe=trigger))
-        assert [m.member_id for m in members] == [G.TEST_PROBE_MEMBER_ID]
-        assert "TEST-ONLY" in caplog.text
-        monkeypatch.setattr(G, "_ACTIVE", ())
-
-    def test_the_probe_key_is_read_from_the_environment(self, monkeypatch):
-        from harkeniq_cc.config import load_cc_config
-
-        monkeypatch.setenv(G.PROBE_ENV, "/tmp/some-trigger")
-        assert load_cc_config().global_safety_test_probe == "/tmp/some-trigger"
-
-    def test_the_shipped_compose_file_never_sets_the_probe(self):
-        root = pathlib.Path(harkeniq_cc.__file__).resolve().parents[4]
-        for compose in (root / "deploy").rglob("docker-compose*.yml"):
-            assert G.PROBE_ENV not in compose.read_text(), compose
-
-    def test_only_the_gate_override_sets_the_probe_and_only_the_gate_reads_it(self):
-        """Answer 2: set by the compose GATE's own override, never shipped.
-        Anything under deploy/ or scripts/ that mentions the key is either
-        that override or the gate script which asserts on it."""
-        root = pathlib.Path(harkeniq_cc.__file__).resolve().parents[4]
-        override = root / "scripts" / "e2e-compose-gate.override.yml"
-        gate = root / "scripts" / "e2e-compose-gate.sh"
-        assert G.PROBE_ENV in override.read_text()
-        assert "e2e-compose-gate.override.yml" in gate.read_text()
-        for base in ("deploy", "scripts"):
-            for path in (root / base).rglob("*"):
-                if not path.is_file() or path in (override, gate):
-                    continue
-                text = path.read_text(errors="ignore")
-                assert G.PROBE_ENV not in text, path
-                assert "e2e-compose-gate.override.yml" not in text, path
+        monkeypatch.setenv("HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE", "/tmp/some-trigger")
+        config = load_cc_config()
+        assert not hasattr(config, "global_safety_test_probe")
+        assert not hasattr(CCConfig(), "global_safety_test_probe")
+        assert not hasattr(G, "configure")
+        assert not hasattr(G, "TestOnlyProbeMember")
+        assert G.active_members() == G.PRODUCTION_MEMBERS == ()
 
     def test_an_empty_registry_is_clear(self):
         gate = G.GlobalSafetyGate(members=(), tenant_id=TENANT, estate=())
@@ -263,21 +233,6 @@ class TestTheRegistry:
             assert set(verdict.as_dict()["reason_codes"]) <= {G.GLOBAL_SAFETY_CONSTRAINT}
         with pytest.raises(ValueError):
             G.GlobalSafetyVerdict("granted")
-
-    def test_the_probe_semantics(self, tmp_path):
-        trigger = tmp_path / "probe"
-        probe = G.TestOnlyProbeMember(str(trigger))
-        ctx = G.GlobalSafetyContext(TENANT, "SEL_CLEAR", "s1", (), NOW)
-        assert probe.evaluate(ctx) is G.MemberVerdict.CLEAR          # absent
-        trigger.write_text("")
-        assert probe.evaluate(ctx) is G.MemberVerdict.CONSTRAIN      # every class
-        trigger.write_text("BMC_RESET\n")
-        assert probe.evaluate(ctx) is G.MemberVerdict.CLEAR          # not listed
-        trigger.write_text("sel_clear\n")
-        assert probe.evaluate(ctx) is G.MemberVerdict.CONSTRAIN      # listed
-        trigger.write_text("raise\n")
-        gate = G.GlobalSafetyGate(members=(probe,), tenant_id=TENANT, estate=())
-        assert gate.verdict("SEL_CLEAR").state == G.STATE_UNKNOWN    # fails closed
 
     def test_the_verdict_is_required_everywhere_it_is_read(self):
         with pytest.raises(TypeError, match="A30.37"):
@@ -744,14 +699,18 @@ class TestTheShape:
         assert _callers("GlobalSafetyGate") == {"governance.py"}
         assert _callers("active_members") == {"governance.py"}
 
-    def test_the_registry_is_configured_once_at_startup(self):
-        assert _callers("configure") >= {"runtime.py"}
+    def test_startup_announces_the_registry_and_never_configures_it(self):
+        """A30.38: startup READS the registry to say which one it serves
+        with; nothing in the package configures it."""
+        assert _callers("announce_registry") == {"runtime.py"}
+        assert _callers("configure") & {"runtime.py", "global_safety.py"} == set()
         tree = ast.parse((PACKAGE / "runtime.py").read_text())
-        assert any(
-            isinstance(n, ast.Attribute) and n.attr == "configure"
+        touched = {
+            n.attr for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute)
             and getattr(n.value, "id", "") == "global_safety"
-            for n in ast.walk(tree)
-        )
+        }
+        assert touched == {"announce_registry"}, touched
 
     def test_the_dispatch_gates_follow_every_existing_gate(self):
         from harkeniq_cc.agent_activation import DISPATCH_GATES

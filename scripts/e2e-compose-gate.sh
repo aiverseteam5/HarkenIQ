@@ -8,11 +8,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../deploy/full-stack"
 
-# S3-E1 (A30.37, answer 2): the gate's OWN compose override registers Central
-# Command's TEST-ONLY global safety probe for the whole run. It constrains only
-# while its trigger file exists inside the container, which the S3-E1 steps
-# create and remove, so every other step runs with it registered and CLEAR.
-# The shipped docker-compose.yml never carries the key (a unit test holds it).
+# S3-E1 (A30.37 answer 2, as amended by A30.38): the gate's OWN compose
+# override runs Central Command under the TEST-ONLY global safety harness
+# (tests/gate/, mounted read-only): the SHIPPED entrypoint with only its final
+# line replaced, the shipped main and runtime, and the probe installed
+# in-process once the production runtime has started. No configuration key is
+# involved -- none can register a member. The probe constrains only while its
+# trigger file exists inside the container, which the S3-E1 steps create and
+# remove, so every other step runs with it installed and CLEAR. The shipped
+# docker-compose.yml never mounts the harness (a unit test holds it).
 export COMPOSE_FILE="docker-compose.yml:../../scripts/e2e-compose-gate.override.yml"
 
 step() { echo; echo "=== $*"; }
@@ -8392,10 +8396,11 @@ echo "  and every row the proof wrote removed from the Site Manager and Central 
 # S3-E1 (A30.37): SITE-LOCAL AUTONOMY + GLOBAL SAFETY GATE = FINAL EXECUTION
 # ELIGIBILITY, live.
 #
-# The production registry is EMPTY, so the constraint here is the TEST-ONLY
-# probe this gate's own compose override registered for the run (never the
-# shipped compose file): it constrains while its trigger file exists inside
-# the Central Command container, and it can only narrow. Everything else is
+# The production registry is EMPTY, and no configuration can change it
+# (A30.38), so the constraint here is the TEST-ONLY probe the gate's harness
+# installed in-process after the production runtime started (never the
+# shipped compose file or image): it constrains while its trigger file exists
+# inside the Central Command container, and it can only narrow. Everything else is
 # the production path -- the real node at site A and the fan condition it has
 # held open since the start of the gate, the CC-resident evaluator, the one
 # approval queue, the ONE dispatch gate, the Site Manager and the node's own
@@ -8474,29 +8479,127 @@ e1_ladder() {  # $1 level -> the tenant ladder, pushed to every site
     http://localhost:8090/api/policies/autonomy > /dev/null
 }
 
-step "S3-E1/CS: the TEST-ONLY probe is the gate's alone -- the shipped compose file does not carry it, the running Central Command does, and says so"
+step "S3-E1/CS: no configuration can register the TEST-ONLY probe (A30.38) -- this Central Command's production runtime recorded the PRODUCTION registry, the gate's harness installed the probe after it, and the SHIPPED image with the stale key everywhere serves an empty registry"
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
 S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
-[ "$(docker compose -f docker-compose.yml config | grep -c HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE || true)" = "0" ] || {
-  echo "the SHIPPED compose file carries the TEST-ONLY probe" >&2; exit 1; }
-[ "$(docker compose exec -T central-command printenv HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE | tr -d '\r')" = "$E1_PROBE" ] || {
-  echo "the gate's override did not reach Central Command" >&2; exit 1; }
-# grep -c, not -q: -q exits at the first match and, under pipefail, the
-# SIGPIPE it hands a long log would fail the check falsely.
-[ "$(docker compose logs --no-log-prefix central-command 2>&1 \
-     | grep -c "TEST-ONLY global safety probe REGISTERED" || true)" != "0" ] || {
-  echo "the probe is registered without its startup WARNING" >&2; exit 1; }
+# (1) The SHIPPED compose file: no key, no harness mount, no entrypoint change.
+[ "$(docker compose -f docker-compose.yml config \
+     | grep -cE 'GLOBAL_SAFETY|PROBE|harken-test|tests/gate|entrypoint-cc-probe|cc_global_safety_probe' \
+     || true)" = "0" ] || {
+  echo "the SHIPPED compose file carries the TEST-ONLY harness or a probe key" >&2; exit 1; }
+# (2) No probe setting exists in the running Central Command's environment --
+# there is no such setting to give it.
+[ "$(docker compose exec -T central-command env | tr -d '\r' \
+     | grep -cE '^[^=]*(PROBE|GLOBAL_SAFETY)[^=]*=' || true)" = "0" ] || {
+  echo "a probe setting reached Central Command's environment" >&2; exit 1; }
+# (3) What runs the probe is the gate's harness, as PID 1 -- not a setting.
+E1_PID1=$(docker compose exec -T central-command cat /proc/1/cmdline | tr '\0' ' ')
+case "$E1_PID1" in
+  "python /opt/harken-test/cc_global_safety_probe.py $E1_PROBE "*) ;;
+  *) echo "Central Command is not running under the gate's harness: $E1_PID1" >&2; exit 1 ;;
+esac
+# (4) Every start of this Central Command (the A6-3 step restarts it once):
+# the PRODUCTION runtime recorded the production registry, THEN the harness
+# installed the probe -- and no start ever served a non-production registry.
+# (A file, not a pipe: -q exits at the first match and, under pipefail, the
+# SIGPIPE it hands a long log fails a check falsely.)
+docker compose logs --no-log-prefix central-command > /tmp/e1_cc.log 2>&1
+python3 - <<'PY'
+events = []
+for line in open("/tmp/e1_cc.log", errors="ignore"):
+    if "global safety gate: production registry (0 members)" in line:
+        events.append("production")
+    elif "TEST-ONLY global safety probe INSTALLED" in line:
+        events.append("installed")
+    elif "NON-PRODUCTION registry" in line:
+        events.append("NON-PRODUCTION")
+starts = len(events) // 2
+assert starts >= 1 and events == ["production", "installed"] * starts, events
+print(f"  {starts} start(s): each recorded the production registry, then the harness installed the probe")
+PY
+# (5) The SHIPPED image, started standalone by its SHIPPED entrypoint -- no
+# override, no harness mount -- with A30.37's key in its environment AND its
+# YAML, the old trigger file present (empty: the old probe's "constrain every
+# class"), against a throwaway database: an empty registry and a clear gate.
+E1_IMAGE=$(docker inspect --format '{{.Image}}' "$(docker compose ps -q central-command)")
+E1_NET=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' \
+  "$(docker compose ps -q postgres)")
+E1_SA_DB=harkeniq_cc_e1_standalone
+E1_SA_DIR=$(mktemp -d)
+: > "$E1_SA_DIR/trigger"
+printf 'global_safety_test_probe: %s\ntest_probe: %s\n' "$E1_PROBE" "$E1_PROBE" > "$E1_SA_DIR/cc.yaml"
+chmod 0644 "$E1_SA_DIR/trigger" "$E1_SA_DIR/cc.yaml"
+e1_sa_db() {  # $1 CREATE|DROP -- the standalone check's own database
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "DROP DATABASE IF EXISTS $E1_SA_DB WITH (FORCE)" > /dev/null
+  [ "$1" = "DROP" ] || docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "CREATE DATABASE $E1_SA_DB OWNER harkeniq" > /dev/null
+}
+e1_sa_db CREATE
+E1_SA=$(docker run -d --network "$E1_NET" \
+  -v "$E1_SA_DIR/cc.yaml:/etc/harkeniq/cc.yaml:ro" \
+  -v "$E1_SA_DIR/trigger:$E1_PROBE:ro" \
+  -e HARKEN_CC_CONFIG=/etc/harkeniq/cc.yaml \
+  -e HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE="$E1_PROBE" \
+  -e HARKEN_CC_DSN="postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/$E1_SA_DB" \
+  -e HARKEN_CC_INSECURE=true -e HARKEN_CC_TENANT_ID=e1-standalone \
+  -e HARKEN_CC_HTTP_PORT=8090 \
+  "$E1_IMAGE")
+e1_sa_fail() {
+  echo "standalone shipped Central Command: $1" >&2
+  docker logs "$E1_SA" 2>&1 | tail -40 >&2
+  docker rm -f "$E1_SA" > /dev/null 2>&1 || true
+  exit 1
+}
+E1_SA_UP=""
+for _ in $(seq 120); do
+  [ "$(docker inspect --format '{{.State.Running}}' "$E1_SA")" = "true" ] || e1_sa_fail "exited"
+  if docker exec "$E1_SA" python -c "import urllib.request as u; u.urlopen('http://localhost:8090/healthz', timeout=3)" \
+       > /dev/null 2>&1; then E1_SA_UP=yes; break; fi
+  sleep 1
+done
+[ -n "$E1_SA_UP" ] || e1_sa_fail "never served"
+[ "$(docker exec "$E1_SA" cat /proc/1/cmdline | tr '\0' ' ')" = "python -m harkeniq_cc " ] \
+  || e1_sa_fail "PID 1 is not the shipped main"
+docker exec -i "$E1_SA" python - <<'PY' || e1_sa_fail "the gate is not clear"
+import json, os, urllib.request
+assert os.environ["HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE"]          # present -- and inert
+assert os.path.exists(os.environ["HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE"])
+c = json.load(urllib.request.urlopen("http://localhost:8090/api/autonomy/", timeout=20))
+rows = c["action_classes"]
+assert rows, c
+bad = [r["action_type"] for r in rows
+       if r["global_safety"] != {"state": "clear", "reason_codes": []}
+       or r["final_execution_eligibility"]["disposition"] != r["disposition"]]
+assert not bad, bad
+print(f"  shipped image, stale key in env + YAML, trigger present: {len(rows)} classes, every gate CLEAR")
+PY
+docker exec "$E1_SA" python -c "
+import dataclasses
+from harkeniq_cc.config import CCConfig
+from harkeniq_cc import global_safety as G
+assert 'global_safety_test_probe' not in {f.name for f in dataclasses.fields(CCConfig)}
+assert G.PRODUCTION_MEMBERS == ()
+assert not hasattr(G, 'configure') and not hasattr(G, 'TestOnlyProbeMember')" \
+  || e1_sa_fail "the shipped package still carries a probe path"
+docker exec "$E1_SA" sh -c '! test -e /opt/harken-test && ! grep -rqs -e TestOnlyProbe -e cc_global_safety_probe /app/services/central_command/src' \
+  || e1_sa_fail "the shipped image carries the harness"
+docker logs "$E1_SA" > "$E1_SA_DIR/log" 2>&1
+[ "$(grep -c 'global safety gate: production registry (0 members)' "$E1_SA_DIR/log" || true)" = "1" ] \
+  || e1_sa_fail "the shipped runtime did not record the production registry"
+[ "$(grep -cE 'TEST-ONLY|NON-PRODUCTION' "$E1_SA_DIR/log" || true)" = "0" ] \
+  || e1_sa_fail "the shipped runtime logged a probe"
+docker rm -f "$E1_SA" > /dev/null
+e1_sa_db DROP
+rm -rf "$E1_SA_DIR"
 E1_CONST=$(docker compose exec -T central-command python -c "
 import sys; sys.path.insert(0, '/app/services/central_command/src')
 import json
-from types import SimpleNamespace as NS
 from harkeniq_cc import global_safety as G
 assert G.PRODUCTION_MEMBERS == (), G.PRODUCTION_MEMBERS
-# The shipped default -- no key -- registers nothing at all.
-assert G.configure(NS(global_safety_test_probe='')) == ()
+assert not hasattr(G, 'configure'), 'a configuration path to the registry is back'
 print(json.dumps({'code': G.GLOBAL_SAFETY_CONSTRAINT, 'row': G.global_row(),
-                  'withheld': G.GLOBAL_WITHHELD_REASON,
-                  'member': G.TEST_PROBE_MEMBER_ID}))" | tr -d '\r')
+                  'withheld': G.GLOBAL_WITHHELD_REASON}))" | tr -d '\r')
 [ -n "$E1_CONST" ] || { echo "could not read the gate's constants from the shipped image" >&2; exit 1; }
 e1_probe off
 e1_row "$S3_A" | python3 -c "
@@ -8505,8 +8608,8 @@ row = json.load(sys.stdin)
 assert row['global_safety'] == {'state': 'clear', 'reason_codes': []}, row['global_safety']
 assert row['final_execution_eligibility'] == {'disposition': row['disposition'], 'reason_codes': []}, row
 print('  registered and CLEAR (no trigger file): final eligibility IS the site-local answer,', row['disposition'])"
-echo "  shipped image: PRODUCTION_MEMBERS = (), and no key registers nothing; the shipped compose"
-echo "  file carries no probe; the running Central Command has it from the gate override, with its WARNING"
+echo "  no configuration reaches the registry: the shipped compose file and environment carry no"
+echo "  probe; the running Central Command has it from the gate's harness, installed after startup"
 
 step "S3-E1/CT: site A is locally AUTONOMOUS for BMC_RESET; the gate is held -- an activated agent's proposal keeps its MODE and its dispatch is WITHHELD"
 # A26's proof left a WILDCARD dual-approval policy whose only group member is
