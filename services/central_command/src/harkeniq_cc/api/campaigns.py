@@ -68,7 +68,7 @@ from harkeniq_cc.campaigns import (
 )
 from harkeniq_cc.db.repos import AuditRepo, CampaignRepo, OrgUnitRepo, SiteRepo
 from harkeniq_cc.api.operational_agents import _scope_rule_within
-from harkeniq_cc.governance import load_autonomy_contract
+from harkeniq_cc.governance import load_site_assessments
 from harkeniq_cc.operational_agent import (
     SCOPE_DEVICE,
     SCOPE_DEVICE_CLASS,
@@ -568,18 +568,27 @@ async def submit_campaign(
     if not ok:
         raise HTTPException(409, reason)
 
-    # A30.26: an INTERNAL DECISION -- one class row is read to choose
-    # between autonomous execution, per-wave approval and refusal. The
-    # contract is never returned, and the only text that reaches the
-    # caller is a DENIED reason, which is always tenant-scoped.
-    contract = await load_autonomy_contract(
+    # S3-E1 (A30.37, R4): an INTERNAL DECISION over EVERY site of this
+    # campaign's plan -- the composer over exactly those sites, and over no
+    # other. It is autonomous only if every one is locally autonomous; one
+    # that is not makes the campaign require approval, never the reverse; it
+    # is refused only if a tenant-level condition denies it or every site
+    # does. The global safety gate does NOT decide the mode (answer 1): it
+    # holds each wave at advance, approved and autonomous alike (D3). The
+    # contract is never returned; a DENIED reason is a tenant-scoped text or
+    # a site halt at a site this campaign itself targets.
+    assessments = await load_site_assessments(
         session,
         tenant_id=user.tenant_id,
         actor_id=campaign_actor(campaign.id, campaign.version),
         actor_species=ACTOR_CAMPAIGN,
         permissions=list(user.permissions),
-        reach=None,
     )
+    plan_sites = sorted({
+        t.site_id for t in targets
+        if t.applicability in DISPATCHABLE and t.site_id
+    })
+    contract = assessments.local_contract(plan_sites)
     row = next(
         (c for c in contract["action_classes"]
          if c["action_type"] == campaign.action_type), None,

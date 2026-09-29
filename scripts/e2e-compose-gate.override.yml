@@ -1,0 +1,28 @@
+# TEST-ONLY. Read by scripts/e2e-compose-gate.sh through COMPOSE_FILE, and by
+# nothing shipped.
+#
+# Runs Central Command under the TEST-ONLY global safety harness (S3-E1, spec
+# A30.37 answer 2 as amended by A30.38). There is no environment variable,
+# YAML key or Central Command setting here, because none exists: the
+# production registry is fixed at import and no configuration reaches it.
+#
+# This override mounts the repository's tests/gate/ read-only and makes
+# tests/gate/entrypoint-cc-probe.sh the entrypoint. That script runs the
+# SHIPPED entrypoint with only its final line replaced by the harness, which
+# calls the shipped `harkeniq_cc.__main__.main()` and -- once the production
+# runtime has started with the production registry -- installs the probe
+# in-process. The probe constrains only while its trigger file (the argument
+# below) exists inside the container; the S3-E1 gate steps create and remove
+# it. It can only narrow execution, never widen it.
+#
+# The shipped deploy/ compose files never mount tests/ or change Central
+# Command's entrypoint; a unit test holds both, and holds that this file is
+# the only place outside tests/ that names the harness.
+services:
+  central-command:
+    volumes:
+      - ../../tests/gate:/opt/harken-test:ro
+    entrypoint:
+      - /bin/sh
+      - /opt/harken-test/entrypoint-cc-probe.sh
+      - /tmp/harken-gate-global-safety-probe

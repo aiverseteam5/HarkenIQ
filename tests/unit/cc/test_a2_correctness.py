@@ -156,8 +156,15 @@ async def _stack() -> Stack:
     return stack
 
 
-async def _seed(stack: Stack, *, level: int = 2, incident: bool = True) -> str:
-    """A site, a declared device, a tenant autonomy level, an incident."""
+async def _seed(stack: Stack, *, level: int = 2, incident: bool = True,
+                reporting: bool = False) -> str:
+    """A site, a declared device, a tenant autonomy level, an incident.
+
+    `reporting` gives the site a CURRENT safety report. S3-E1 (A30.37): a
+    site that has not reported cannot vouch for anything, so work there is
+    never locally autonomous -- a test about unattended execution needs a
+    site that speaks.
+    """
     async with stack.sessionmaker() as session:
         site = CCSite(
             tenant_id=TENANT, site_name="DC-1",
@@ -165,6 +172,17 @@ async def _seed(stack: Stack, *, level: int = 2, incident: bool = True) -> str:
         )
         session.add(site)
         await session.flush()
+        if reporting:
+            from datetime import datetime, timezone
+
+            from harkeniq_cc.db.models import CCSafetyState
+
+            now = datetime.now(timezone.utc)
+            session.add(CCSafetyState(
+                site_id=site.id, tenant_id=TENANT, reported=True, as_of=now,
+                ingested_at=now, sm_stop_switch=False, suppressions=[],
+                error_budgets=[], site_budgets={},
+            ))
         session.add(CCFleetCache(
             site_id=site.id, agent_id="node-1", agent_name="rack1-node1",
             vendor="Dell", model="R750", device_class="server",
@@ -569,8 +587,16 @@ async def _autonomous_proposal(stack, site_id, actor: str, agent_id: str,
     async with stack.sessionmaker() as session:
         agent = await session.get(CCOperationalAgent, agent_id)
         if agent is not None and agent.status == "draft":
-            agent.status = "active"
-            agent.activated_version = agent.version
+            # D11 (A30.37): a real activation also RECORDS what it approved
+            # for unattended execution; dispatch recovers exactly that.
+            from harkeniq_cc.agent_activation import activation_grants_unattended
+
+            from tests.unit.cc.s3e1_support import record_activation
+
+            await record_activation(
+                session, tenant_id=TENANT, agent=agent,
+                unattended=activation_grants_unattended(agent, ["SEL_CLEAR"], 2),
+            )
         row = CCAgentProposal(
             tenant_id=TENANT, agent_id=agent_id, actor=actor, agent_version=1,
             site_id=site_id, device_agent_id="node-1", action_type="SEL_CLEAR",
@@ -591,7 +617,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     async def test_budget_is_settable_at_creation_and_on_update(self):
         """D-5: a budget a customer cannot set is not a product feature."""
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             res = await c.post("/api/operational-agents/", json=_body(
                 site_id, execution_budget=5, budget_period="weekly",
@@ -616,7 +642,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     @pytest.mark.asyncio
     async def test_an_unknown_budget_period_is_refused(self):
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             res = await c.post("/api/operational-agents/", json=_body(
                 site_id, budget_period="fortnightly",
@@ -633,7 +659,7 @@ class TestBudgetIsEnforcedAndConfigurable:
         that is expensive to use in an emergency does not get used.
         """
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             res = await c.post("/api/operational-agents/", json=_body(site_id))
             agent_id = res.json()["id"]
@@ -663,7 +689,7 @@ class TestBudgetIsEnforcedAndConfigurable:
         tested, and which nothing called.
         """
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=2)
 
@@ -688,7 +714,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     async def test_a_budget_with_room_still_dispatches_unattended(self):
         """The refusal must be the budget, not the check itself."""
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=5)
 
@@ -704,7 +730,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     async def test_no_budget_configured_dispatches_as_before(self):
         """0 means unset. The tenant and site budgets still apply."""
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id)
 
@@ -717,7 +743,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     @pytest.mark.asyncio
     async def test_a_paused_agent_does_not_run_unattended(self):
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id)
             await c.patch(f"/api/operational-agents/{agent_id}",
@@ -737,7 +763,7 @@ class TestBudgetIsEnforcedAndConfigurable:
         proposal in a single pass.
         """
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=1)
 
@@ -766,7 +792,7 @@ class TestBudgetIsEnforcedAndConfigurable:
         requires it). Consumption belongs to the AGENT.
         """
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=2)
             await _record_executions(stack, site_id, f"op-agent:{agent_id}@v1", 2)
@@ -804,7 +830,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     async def test_outcomes_keep_naming_the_version_that_decided_them(self):
         """The fix must not blur attribution, which is a different axis."""
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=5)
             await _record_executions(stack, site_id, f"op-agent:{agent_id}@v1", 1)
@@ -828,7 +854,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     async def test_budget_exhaustion_does_not_block_human_approved_work(self):
         """D2's other half, and the one that makes it a budget not a switch."""
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=1)
             await _preflight(c, agent_id)
@@ -857,7 +883,7 @@ class TestBudgetIsEnforcedAndConfigurable:
     async def test_one_notion_of_executions_used(self):
         """Preflight, runtime and dispatch must never quote different numbers."""
         stack = await _stack()
-        site_id = await _seed(stack)
+        site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=10)
             actor = f"op-agent:{agent_id}@v1"

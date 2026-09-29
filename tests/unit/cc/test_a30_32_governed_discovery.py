@@ -72,6 +72,7 @@ from harkeniq_cc.route_contract import (
 )
 
 from tests.unit.cc import s3_estate as E
+from tests.unit.cc.s3e1_support import clear_gate, record_activation
 from tests.unit.cc.s3_estate import ALL, SITES
 
 PREFIX = "/api/operational-agents"
@@ -128,6 +129,17 @@ async def _agent(stack, agent_id, classes=("SEL_CLEAR",), *, ceiling=2,
         # The bindings reference the agent row; PostgreSQL enforces that
         # foreign key where sqlite does not, so the agent is written first.
         await session.flush()
+        if status == "active":
+            # D11 (A30.37): an active agent was ACTIVATED, and what it may do
+            # unattended is what a human approved then -- recorded exactly as
+            # a real activation records it, and recovered, not recomputed.
+            from harkeniq_cc.agent_activation import activation_grants_unattended
+
+            agent = await session.get(CCOperationalAgent, agent_id)
+            await record_activation(
+                session, tenant_id=stack.tenant, agent=agent,
+                unattended=activation_grants_unattended(agent, classes, 2),
+            )
         for ref in reads:
             session.add(CCAgentCapability(
                 agent_id=agent_id, tenant_id=stack.tenant, kind="read",
@@ -467,7 +479,9 @@ class TestSelfScope:
         }
         assert body["scope"]["devices_in_reach"] == 1
         assert body["governance_basis"]["discovery_composed_over"] == "authorized_sites"
-        assert body["governance_basis"]["matches_admission"] is False
+        # S3-E1 (A30.37): admission reads the target site's local assessment,
+        # and every target this agent reaches is at a site in its composition.
+        assert body["governance_basis"]["matches_admission"] is True
 
     async def test_device_is_native_and_synthesizes_no_containing_site(self):
         """B0b preserved: a device grant reaches its device BY IDENTITY.
@@ -847,20 +861,21 @@ class TestGovernance:
         assert {"code": "agent_ceiling_below_grant", "scope": "tenant"} in row["governance"]["reason_codes"]
         assert row["approval_required"]["state"] == "required"
 
-    async def test_non_tenant_wide_autonomous_is_unknown_before_e1(self):
-        """D3's amendment. Composed over site A alone SEL_CLEAR is
-        autonomous -- and admission, which folds the WHOLE tenant, sees site
-        C's drop-back and sends it to a human. So discovery may not say
-        `not_required`, and may not say `operable`."""
+    async def test_non_tenant_wide_discovery_now_matches_admission(self):
+        """INVERTED by S3-E1 (A30.37). Before, admission folded the WHOLE
+        tenant, so site C's drop-back could send a site-A proposal to a
+        human and discovery had to say `unknown`. Admission now reads site
+        A's own assessment -- and site A suppresses a fault domain, which
+        sends a target there to a human. Every target this agent reaches is
+        at A, so discovery can say so DEFINITIVELY, and it is operable."""
         stack = await _estate()
         row = klass(await _persona(stack, "site_a"), "SEL_CLEAR")
         assert row["governance"]["conclusion"] == "autonomous"
-        assert row["approval_required"]["state"] == "unknown"
-        assert "admission_beyond_reach" in row["approval_required"]["basis"]
+        assert row["approval_required"] == {
+            "state": "required", "basis": ["governance_requires_approval"]}
+        assert "admission_beyond_reach" not in row["approval_required"]["basis"]
         assert row["currently_operable"] == {
-            "state": "unknown", "blocked_by": [],
-            "unknown": ["admission_beyond_reach"],
-        }
+            "state": "operable", "blocked_by": [], "unknown": []}
         # ...and real admission proves `unknown` was the honest answer: the
         # dry-run reasons exactly as the runtime does (A22.6).
         await E.seed_incident(stack, "A")
@@ -882,13 +897,17 @@ class TestGovernance:
 
     async def test_a_suppressed_in_reach_site_makes_approval_target_dependent(self):
         """`govern_proposal` sends a target at a suppressed site to a human,
-        so a class-level `not_required` would over-promise there. It still
-        progresses either way, so operability is not what is unknown."""
-        stack = await _estate(("A",))
-        await _clear_safety(stack, ())          # keep fault-A suppressed at A
+        so a class-level `not_required` would over-promise there. S3-E1
+        answers it PER SITE: with a suppressed site A and a clean site B in
+        reach, a target at A needs a human and one at B does not -- which is
+        exactly `depends_on_target_site`. It progresses either way, so
+        operability is not what is unknown."""
+        stack = await _estate(("A", "B"))
+        await _clear_safety(stack, ("B",))
         async with stack.sessionmaker() as session:
             row = await session.get(CCSafetyState, stack.site("A"))
-            row.error_budgets = []
+            row.error_budgets = []          # keep fault-A suppressed at A
+            row.sm_stop_switch = False
             await session.commit()
         cls = klass(await _persona(stack, "tenant"), "SEL_CLEAR")
         assert cls["governance"]["conclusion"] == "autonomous"
@@ -897,6 +916,20 @@ class TestGovernance:
         assert cls["approval_required"] == {
             "state": "unknown", "basis": ["depends_on_target_site"]}
         assert cls["currently_operable"]["state"] == "operable"
+
+    async def test_one_suppressed_site_in_reach_is_definitive(self):
+        """The same suppression with NO other site in reach: every target is
+        at the suppressed site, so the per-site answer is definitive."""
+        stack = await _estate(("A",))
+        await _clear_safety(stack, ())
+        async with stack.sessionmaker() as session:
+            row = await session.get(CCSafetyState, stack.site("A"))
+            row.error_budgets = []
+            row.sm_stop_switch = False
+            await session.commit()
+        cls = klass(await _persona(stack, "tenant"), "SEL_CLEAR")
+        assert cls["approval_required"] == {
+            "state": "required", "basis": ["governance_requires_approval"]}
 
     async def test_a_spent_execution_budget_returns_work_to_a_human(self):
         """A19 D2: autonomous work is withheld to a human at dispatch."""
@@ -982,8 +1015,14 @@ class TestTheClosedVocabularies:
                     if isinstance(k, ast.Constant) and k.value == "code":
                         assert isinstance(v, ast.Constant), (module, node.lineno)
                         emitted.add(v.value)
+        # S3-E1 (A30.37): the closed gate's ONE code, emitted by its own
+        # module, is on the allow-list as well -- the exact ratified string.
+        from harkeniq_cc.global_safety import GLOBAL_SAFETY_CONSTRAINT, global_row
+
+        assert global_row()["code"] == GLOBAL_SAFETY_CONSTRAINT
+        emitted.add(GLOBAL_SAFETY_CONSTRAINT)
         assert emitted - {"site_suppressed"} == D.GOVERNANCE_REASON_CODES
-        assert "GLOBAL_SAFETY_CONSTRAINT" not in D.GOVERNANCE_REASON_CODES
+        assert "GLOBAL_SAFETY_CONSTRAINT" in D.GOVERNANCE_REASON_CODES
 
     def test_an_unrecognised_code_is_reported_as_other_never_passed_through(self):
         codes = D._reason_codes([
@@ -1205,8 +1244,9 @@ class TestD4b:
             devices=[], autonomy_contract=build_autonomy(
                 tenant_id="t", actor_id="a", actor_species=ACTOR_AGENT,
                 permissions=[], budgets=[], stop_switch=None, outcomes=[],
-                safety_rows=[], sites=[],
+                safety_rows=[], sites=[], global_safety=clear_gate(),
             ),
+            unattended_approved=frozenset(),
         )
         rows = {r["action_type"]: r for r in view["capabilities"]["action_classes"]}
         assert rows["INTERFACE_RESET"]["capability"]["implemented"] is False
@@ -1248,6 +1288,7 @@ class TestActorSpecies:
             build_autonomy(
                 tenant_id="t", actor_id="a", actor_species=bad, permissions=[],
                 budgets=[], stop_switch=None, outcomes=[], safety_rows=[], sites=[],
+                global_safety=clear_gate(),
             )
 
     def test_the_one_mapping(self):
@@ -1300,22 +1341,28 @@ class TestActorSpecies:
 
 
 # ---------------------------------------------------------------------------
-# 12. S3-E1 is not implemented
+# 12. S3-E1 is implemented (A30.37) -- the pins of A30.32, inverted
 # ---------------------------------------------------------------------------
 
 
-class TestE1IsNotImplemented:
-    def test_no_global_gate_and_no_site_local_assessment_exist(self):
-        root = pathlib.Path(harkeniq_cc.__file__).parent
-        for path in root.rglob("*.py"):
-            text = path.read_text()
-            for name in ("GLOBAL_SAFETY_CONSTRAINT", "global_safety_gate",
-                         "site_local_assessment", "SiteLocalAssessment"):
-                assert name not in text, (path.name, name)
+class TestE1IsImplemented:
+    def test_the_gate_and_the_site_local_assessment_exist(self):
+        from harkeniq_cc import global_safety
+        from harkeniq_cc.agent_activation import DISPATCH_GATES
+        from harkeniq_cc.governance import SiteAssessments
 
-    def test_admission_still_composes_over_the_tenant(self):
-        assert D.ADMISSION_COMPOSED_OVER == "tenant"
-        assert D.admission_reads_beyond(NS(tenant_wide=False)) is True
+        assert global_safety.GLOBAL_SAFETY_CONSTRAINT == "GLOBAL_SAFETY_CONSTRAINT"
+        assert global_safety.PRODUCTION_MEMBERS == ()
+        assert callable(SiteAssessments.local_rows)
+        assert DISPATCH_GATES[-3:] == (
+            "unattended_class", "site_local_autonomy", "global_safety",
+        )
+
+    def test_admission_composes_over_the_target_site(self):
+        """The seam A30.32 left for S3-E1 is consumed: admission reads the
+        target's local assessment and the bounded gate, never beyond."""
+        assert D.ADMISSION_COMPOSED_OVER == "target_site"
+        assert D.admission_reads_beyond(NS(tenant_wide=False)) is False
         assert D.admission_reads_beyond(NS(tenant_wide=True)) is False
         from tests.unit.cc.test_a30_26_autonomy_scope_isolation import (
             INTERNAL_DECISIONS, _loader_calls,
@@ -1324,8 +1371,8 @@ class TestE1IsNotImplemented:
             (module, fn) for module, fn, reach in _loader_calls()
             if isinstance(reach, ast.Constant) and reach.value is None
         }
-        assert whole_tenant == INTERNAL_DECISIONS
-        assert ("api/operational_agents.py", "agent_discovery") not in whole_tenant
+        assert whole_tenant == set()
+        assert ("api/operational_agents.py", "agent_discovery") in INTERNAL_DECISIONS
 
 
 # ---------------------------------------------------------------------------

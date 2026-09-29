@@ -6028,3 +6028,221 @@ synchronous/background asymmetry. D1, D3–D8, D10 and D11 are S3-E1's.
 * **The live proof uses synthetic, run-tagged budget classes** — the node skips
   a class it does not know — so nothing real spends them, and the site-B class
   is itself the sentinel.
+
+## §34r — S3-E1: site-local autonomy + the closed global safety gate (A30.37)
+
+§34k fixed the shape and §34q the prerequisite; S3-E1-0 made the Site
+Manager's per-site facts truthful. This section is the implementation contract
+for the main slice, recorded before the code.
+
+### Three objects, never merged
+
+| concept | object | where it is decided |
+|---|---|---|
+| site-local autonomy | a class row of `build_autonomy` over the target's site | the one composer, over SELECTED inputs only |
+| global safety | `GlobalSafetyVerdict` from `GlobalSafetyGate` | `harkeniq_cc.global_safety`, members typed and closed |
+| final execution eligibility | `final_execution_eligibility(local, verdict)` | one pure conjunction, read by every dispatch path |
+
+`disposition` on a class row stays the site-local answer (its consumers keep
+their meaning); `global_safety` and `final_execution_eligibility` sit beside
+it. Nothing reads a boolean "allowed".
+
+### The composer's new local rules
+
+Per selected site: no report / `reported=False` / older than
+`freshness.FRESHNESS_WINDOW` (on `min(as_of, ingested_at)`, so a skewed
+Site Manager clock cannot keep a dark site fresh) → `site_safety_not_reported`;
+`sm_stop_switch` → `site_stop_switch_active`, and a stale halt still counts.
+Per class, after the unchanged tenant-level conditions:
+
+```
+site(s)   = DENIED if halted(s)
+            REQUIRES_APPROVAL if not reported(s) or dropped(s) or exhausted(s)
+            AUTONOMOUS otherwise
+sites     = AUTONOMOUS if every site(s) is AUTONOMOUS (and there is >= 1 site)
+            DENIED     if every site(s) is DENIED
+            REQUIRES_APPROVAL otherwise (including no site at all)
+class     = the more restrictive of the tenant-level answer and `sites`
+```
+
+A single-site selection gives exactly `site(target)`. For a campaign's plan the
+composite IS R4. The tenant-wide fold of drop-back and exhausted windows ends:
+those rows now fold only over the sites a reader or a decision selected.
+
+### The gate
+
+`GlobalSafetyGate(members=active_members(), tenant_id, estate, now)` is built by
+the loader; `verdict(action_type, target_site_id)` evaluates each member once
+per key (memoized), maps anything but `MemberVerdict.CLEAR` to `constrained`
+and any exception or foreign value to `unknown`, and never lets a member's
+text out. `PRODUCTION_MEMBERS = ()`. `active_members()` adds the TEST-ONLY
+probe only when `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger path
+(superseded by §34s / A30.38: no configuration reaches the registry).
+`build_autonomy` takes the verdicts as a REQUIRED input — no default that
+could mean "no gate" — and the loader is the only production caller.
+
+### Decision paths
+
+`load_site_assessments` (governance) fetches the composer's inputs ONCE and
+answers `local_rows(site_id)` (the target site's class rows), `local_contract(
+site_ids)` (a composite, for a campaign or a reach), `evidence_rows()` (the
+tenant-wide rows `govern_proposal` still freezes as evidence — D7) and
+`gate_verdict(action_type, site_id)`. `govern_proposal` reads the target
+site's local row for the verdict, the evidence row for what it freezes, and
+records the gate as the bounded row; its mode never depends on the gate.
+`revalidate_dispatch` asks the same object at dispatch. The allow-list of
+whole-tenant decision call sites (A30.26) is updated to the new loader.
+
+### D11
+
+`durable_unattended_classes(agent, bound, configured_level)` replaces the
+transient derivation in the preflight. `activation_approved_unattended(session,
+tenant_id, agent)` finds the preflight row with `produced_at <= activated_at <
+superseded_at` for `activated_version`, recomputes the activation subject from
+its stored set, and returns that set only if the E0.1 completion rule says the
+subject was approved. `effective_disposition` takes the set as a REQUIRED
+argument and narrows an autonomous class outside it
+(`agent_unattended_not_approved`).
+
+### Dispatch and campaigns
+
+`DISPATCH_GATES` gains `unattended_class`, `site_local_autonomy`,
+`global_safety`, in that order after the existing seven. The background pass
+withholds (dispatch reason from constants, one audit entry per distinct cause);
+the synchronous path fails (D6). The campaign runner asks the same three
+questions (minus D11) for each site-wave after S1's authority check and before
+capability, and withholds in S1's shape.
+
+### Projections
+
+`AutonomyView.blocking` keeps a `global` row for every reader and REBUILDS it
+from constants — whatever a stored row says, only the code and the constant
+text pass. B2 is not touched (Attention and Incident read no autonomy fact);
+machine receipts are not touched (a machine reads the current gate through
+B1).
+
+### Proof map
+
+Unit: local rules and composite; deletion-equivalence of local and final;
+generated monotonicity (every gate state × every local disposition × every
+basis); hidden-site non-interference with a sentinel-carrying test member;
+the reader matrix; D11 recovery including superseded preflights, re-runs after
+activation and pre-A2 agents; dispatch gates on both paths; campaign submit and
+advance; B1's per-site agreement. PostgreSQL: timestamptz comparison of the
+activation-time preflight, freshness on real zoned values. Mutation: the ten
+breakages A30.37 names. Live: the fresh-wipe gate scenario A30.37 names.
+
+### Found while implementing
+
+* **A suppression widened a denial** (pre-existing, S5/A1): `govern_proposal`
+  turned a DENIED class into requires-approval whenever the target site
+  suppressed a fault domain. Fixed to narrow only, in admission and in
+  discovery's per-site answers; the monotonicity sweep is what found it.
+* **An empty selection has no blocking row** — it requires approval with its
+  reason, because a tenant-scoped row is posture every reader shares.
+* **Withheld reasons state what holds, never what happens next.** "Resumes when
+  it clears" was true on the background pass and false on the synchronous
+  path, which records the same reason on a terminal failure (D6; F-12).
+* **The stated consequence covers budget-mapped classes.** An unmapped class's
+  disposition is tenant-level and unchanged by R3, so a halt after a human
+  approved one is still refused by the Site Manager, as before. Recorded as a
+  follow-up, not widened.
+* **Tenant-fold pins inverted, not deleted:** A30.26 (write path, E1, decision
+  paths), A30.32 (`TestE1IsImplemented`), A30.36's CC differential, their
+  PostgreSQL twins, and the live A6-4B1/BY step — which now also carries the
+  hidden-site proof. BC's device-scoped `safety_state` gained
+  `every_site_reported`.
+* **Fixtures meet D8 and D11:** reports are current when they vouch, and an
+  active agent carries the recorded activation the runtime recovers.
+* **Campaign withholding** uses the revalidation value `execution_withheld`.
+* **Gate hygiene:** A26's leftover wildcard dual-approval policy (a synthetic
+  group member) held every activation approval after A26; the S3-E1 live proof
+  removes it through the production route before it needs one.
+* **The probe is registered for the whole gate run** through the gate's own
+  override (`COMPOSE_FILE`), so every other step runs with a registered, clear
+  member. (Superseded by §34s: the override runs a test harness, not a key.)
+* **Mutation:** ten named breakages plus nine variants, all killed; the
+  unmutated kill set green.
+
+## §34s — S3-E1 pre-merge remediation: the TEST-ONLY probe's activation boundary (A30.38)
+
+### What was wrong
+
+§34r registered the probe from `CCConfig.global_safety_test_probe`, which the
+ordinary loader fills from YAML and from `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE`.
+The probe cannot widen anything, so nothing was ever granted; but a TEST-ONLY
+member was one configuration line away from changing production execution
+eligibility, and the independent review ruled that the activation boundary is
+itself the requirement. The fix moves the boundary, not the semantics.
+
+### The registry, in production
+
+`harkeniq_cc.global_safety` keeps `PRODUCTION_MEMBERS = ()`, `_ACTIVE` bound
+once to it, and `active_members()` — the governance loader's one read. There
+is no `configure()`: the registry has no configuration input at all, and the
+module imports neither `os` nor the config module. `runtime.run()` calls
+`global_safety.announce_registry()`, which logs INFO for the production
+registry and a WARNING naming the member ids otherwise. `CCConfig` loses its
+probe field and `_ENV_MAP` its key; the loader already ignores an unknown YAML
+key (`hasattr` gate) and an unmapped variable, so a stale key is inert without
+a line of special-casing.
+
+### The harness, in test infrastructure
+
+`tests/gate/cc_global_safety_probe.py` owns `TestOnlyProbeMember` (semantics
+unchanged: absent file clear, empty file constrains every class, listed
+classes constrain, a first line `raise` raises), `install(trigger)` — which
+writes `global_safety._ACTIVE = PRODUCTION_MEMBERS + (probe,)`, refuses over a
+non-production registry, and logs a WARNING — and `serve_then_install(config,
+trigger)`, which builds the state the production runtime would, runs the
+production `run(config, state=...)` and installs the probe only once
+`state.started` is set. `main(argv)` points `harkeniq_cc.__main__`'s `run` at
+`serve_then_install` and calls the shipped `main()`, so logging,
+configuration, validation and license handling are the shipped code.
+
+`tests/gate/entrypoint-cc-probe.sh` derives the entrypoint from the SHIPPED
+`/entrypoint.sh`: it checks the final line is exactly `exec python -m
+harkeniq_cc`, replaces that line alone with the harness, and runs the result —
+so the schema step (`alembic upgrade head`) is the shipped one, including when
+the A6-3 step stops and restarts Central Command.
+
+### The gate
+
+`scripts/e2e-compose-gate.override.yml` no longer sets any environment
+variable. It mounts `tests/gate/` read-only at `/opt/harken-test` and sets
+Central Command's entrypoint to the derived script. CS now asserts: the shipped
+compose file carries no probe key, mount or entrypoint; the running container's
+environment has no probe setting; PID 1 is the harness; the production
+runtime's INFO record precedes the harness's install record and no
+non-production WARNING was logged; and a standalone container from the SHIPPED
+image — no override, `--network none`, the stale key in its environment AND
+its YAML, the old trigger file present — runs the real `runtime.run()` to
+started with an empty registry, a clear gate for every class and no WARNING.
+CT–CY are unchanged: the trigger file still drives the constraint.
+
+### Guards
+
+Structural (AST and source, over the shipped package and the deploy tree) and
+behavioural (config, environment, YAML, real startup, fresh interpreter,
+harness) tests live in `tests/unit/cc/test_a30_38_probe_activation_boundary.py`;
+the probe's own semantics move with it. Mutation adds variants that re-add a
+config field, an environment mapping, a startup registration and a probe class
+to the package.
+
+### Found while implementing
+
+* **A30.37 pinned the defect as a requirement.** A unit test asserted the loader
+  READ the key and CS asserted the variable WAS set in the running container.
+  Both inverted: the environment registers nothing, and no probe setting exists.
+* **The standalone check needs PostgreSQL.** The image carries no sqlite driver
+  (`aiosqlite` is a dev extra), so CS migrates a throwaway database through the
+  shipped entrypoint and drops it afterwards.
+* **The harness runs once per start.** The A6-3 step restarts Central Command;
+  CS expects one production record then one install per start, never a
+  non-production registry.
+* **Mutation:** the registry-by-default mutant lost its anchor (there is no key)
+  and is replaced by seven A30.38 variants; all twenty-five mutants killed, the
+  unmutated kill set green.
+* **The guard must not read build output.** CI's `pip install -e .` writes a root
+  `SOURCES.txt` naming `tests/gate/`; the guard skips `*.egg-info` and
+  `__pycache__` only, and asserts no tracked file lives there.

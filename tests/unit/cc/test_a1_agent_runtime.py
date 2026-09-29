@@ -100,7 +100,11 @@ async def _stack(role: str = "tenant_owner"):
     return client, state
 
 
-async def _seed(state, *, level: int = 2, incident: bool = True) -> str:
+async def _seed(state, *, level: int = 2, incident: bool = True,
+                reporting: bool = False) -> str:
+    """`reporting` gives the site a CURRENT safety report: S3-E1 (A30.37) --
+    an unreported site cannot vouch for anything, so nothing there is ever
+    locally autonomous."""
     async with state.sessionmaker() as session:
         site = CCSite(
             tenant_id=TENANT, site_name="DC-1",
@@ -108,6 +112,17 @@ async def _seed(state, *, level: int = 2, incident: bool = True) -> str:
         )
         session.add(site)
         await session.flush()
+        if reporting:
+            from datetime import datetime, timezone
+
+            from harkeniq_cc.db.models import CCSafetyState
+
+            now = datetime.now(timezone.utc)
+            session.add(CCSafetyState(
+                site_id=site.id, tenant_id=TENANT, reported=True, as_of=now,
+                ingested_at=now, sm_stop_switch=False, suppressions=[],
+                error_budgets=[], site_budgets={},
+            ))
         session.add(CCFleetCache(
             site_id=site.id, agent_id="node-1", agent_name="rack1-node1",
             vendor="Dell", model="R750", device_class="server",
@@ -247,7 +262,7 @@ class TestTheGovernedJourney:
     @pytest.mark.asyncio
     async def test_autonomous_path_dispatches_without_a_human(self):
         client, state = await _stack()
-        site_id = await _seed(state, level=2)
+        site_id = await _seed(state, level=2, reporting=True)
         await _make_agent(
             client, site_id,
             require_approval_always=False, autonomy_ceiling=2,

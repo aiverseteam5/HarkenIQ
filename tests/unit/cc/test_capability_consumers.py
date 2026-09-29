@@ -405,6 +405,7 @@ from harkeniq_cc.autonomy import build_autonomy  # noqa: E402
 from harkeniq_cc.operational_agent import agent_view, evaluate  # noqa: E402
 
 from tests.unit.cc.conftest import seed_tenant_admin
+from tests.unit.cc.s3e1_support import clear_gate, fresh_report
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
@@ -434,18 +435,49 @@ def _dev(agent_id, capabilities=None, device_class="server"):
     )
 
 
+#: D11 (A30.37): the classes a human approved for unattended execution at
+#: the fixture agent's activation. These tests are about capability, so the
+#: fixture keeps autonomy out of the way exactly as it did before.
+APPROVED_AT_ACTIVATION = frozenset({"SEL_CLEAR", "BMC_RESET"})
+
+
+def _inputs(level=2):
+    """The composer's inputs. The site REPORTS (S3-E1: an unreported site
+    requires approval), and the gate is the empty production registry."""
+    from harkeniq_cc.governance import AutonomyInputs
+
+    return AutonomyInputs(
+        tenant_id="t1",
+        budgets=(SimpleNamespace(
+            device_type="*", level=level, budget_limit=10,
+            budget_period="daily", actions_used=0,
+        ),),
+        stop_switch=SimpleNamespace(active=False, changed_by="", updated_at=NOW),
+        outcomes=(), safety_rows=(fresh_report("s1", now=NOW),),
+        sites=(SimpleNamespace(id="s1", site_name="DC-1"),),
+        learned=(), policies=(), now=NOW,
+    )
+
+
 def _contract(level=2):
+    inputs = _inputs(level)
     return build_autonomy(
         tenant_id="t1", actor_id="op-agent:ag1@v1", actor_species="agent",
         permissions=["fleet.view"],
-        budgets=[SimpleNamespace(
-            device_type="*", level=level, budget_limit=10,
-            budget_period="daily", actions_used=0,
-        )],
-        stop_switch=SimpleNamespace(active=False, changed_by="", updated_at=NOW),
-        outcomes=[], safety_rows=[],
-        sites=[SimpleNamespace(id="s1", site_name="DC-1")],
-        learned_signals=[], approval_policies=[],
+        budgets=list(inputs.budgets), stop_switch=inputs.stop_switch,
+        outcomes=[], safety_rows=list(inputs.safety_rows),
+        sites=list(inputs.sites),
+        learned_signals=[], approval_policies=[], now=NOW,
+        global_safety=clear_gate(),
+    )
+
+
+def _assessments(level=2):
+    from harkeniq_cc.governance import SiteAssessments
+
+    return SiteAssessments(
+        _inputs(level), actor_id="op-agent:ag1@v1", actor_species="agent",
+        permissions=["fleet.view"],
     )
 
 
@@ -457,7 +489,8 @@ def _run(caps, devices, incidents, **kw):
         capabilities=caps,
         devices=devices,
         incidents_by_device=incidents,
-        autonomy_contract=_contract(),
+        assessments=_assessments(),
+        unattended_approved=APPROVED_AT_ACTIVATION,
         now=NOW,
         **kw,
     )
@@ -548,6 +581,7 @@ class TestAgentViewConsumesTheRegistry:
             capabilities=caps or [_cap("action_class", "SEL_CLEAR")],
             devices=devices,
             autonomy_contract=_contract(),
+            unattended_approved=APPROVED_AT_ACTIVATION,
             now=NOW,
         )
 
@@ -668,6 +702,7 @@ class TestCapabilityIsRefusedOnPolicyIsNot:
             capabilities=[_cap("action_class", "SEL_CLEAR")],
             devices=[_dev("d1", capabilities=narrow)],
             autonomy_contract=_contract(),
+            unattended_approved=APPROVED_AT_ACTIVATION,
             now=NOW,
         )
         row = next(

@@ -44,9 +44,11 @@ from harkeniq_cc.db.repos import (
     SiteRepo,
 )
 from harkeniq_cc.governance import (
+    SiteAssessments,
     load_agent_reach,
     load_attention,
-    load_autonomy_contract,
+    load_autonomy_inputs,
+    load_site_assessments,
 )
 from harkeniq_cc.autonomy import ACTOR_AGENT
 from harkeniq_cc.scope import where_reach
@@ -143,6 +145,13 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             hour=0, minute=0, second=0, microsecond=0,
         )
 
+        # S3-E1 (A30.37): the composer's inputs, read ONCE per pass. Every
+        # agent below reads each target's SITE-LOCAL assessment and the
+        # gate from them -- never the tenant-wide fold.
+        from harkeniq_cc.agent_lifecycle import activation_approved_unattended
+
+        inputs = await load_autonomy_inputs(session, tenant_id)
+
         for agent in agents:
             caps = await repo.list_capabilities(agent.id)
             # E1.2: the agent's reach comes from the SAME resolver a
@@ -168,16 +177,14 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                     learning=None,
                 ))["items"]
             }
-            # A30.26: an INTERNAL DECISION, so the whole tenant -- this
-            # contract is reasoned over and never returned. What a
-            # proposal RECORDS from it is narrowed wherever it is read.
-            contract = await load_autonomy_contract(
-                session,
-                tenant_id=tenant_id,
+            # S3-E1 (A30.37): an INTERNAL DECISION over each target's own
+            # site and the gate. Nothing here is returned; what a proposal
+            # RECORDS is narrowed wherever it is read.
+            assessments = SiteAssessments(
+                inputs,
                 actor_id=attribution_key(agent.id, agent.version),
                 actor_species=ACTOR_AGENT,
                 permissions=AGENT_PERMISSIONS,
-                reach=None,
             )
             seen_keys = await prop_repo.all_dedupe_keys(tenant_id)
             proposals = evaluate(
@@ -188,7 +195,11 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 capabilities=caps,
                 devices=devices,
                 incidents_by_device=incidents,
-                autonomy_contract=contract,
+                assessments=assessments,
+                # D11: autonomy only for what a human approved at activation.
+                unattended_approved=await activation_approved_unattended(
+                    session, tenant_id, agent,
+                ),
                 attention_by_device=attention,
                 open_dedupe_keys=seen_keys,
                 proposals_today=await prop_repo.count_since(
@@ -282,7 +293,9 @@ def _record_correlation(correlation: str) -> None:
         pass
 
 
-async def revalidate_dispatch(session, tenant_id: str, proposal) -> tuple[bool, str]:
+async def revalidate_dispatch(
+    session, tenant_id: str, proposal, *, assessments=None,
+) -> tuple[bool, str]:
     """May this approved proposal cross CC -> SM RIGHT NOW? (A30.17.)
 
     THE one Central Command dispatch decision for an Operational Agent's
@@ -315,6 +328,27 @@ async def revalidate_dispatch(session, tenant_id: str, proposal) -> tuple[bool, 
     It grants nothing and can only withhold. The per-agent unattended
     budget is NOT here: it caps delegated work only (A19 D2) and stays on
     the autonomous branch of `dispatch_decided`.
+
+    S3-E1 (A30.37) adds FINAL EXECUTION ELIGIBILITY -- the only thing a
+    dispatch path may read (§34k) -- as three more gates, after every gate
+    above so each existing cause keeps its own attribution:
+
+      unattended_class     D11: an `autonomous_grant`'s class is in the set
+                           a human approved at activation, RECOVERED from
+                           the activation-time preflight and the ledger
+      site_local_autonomy  the target site's CURRENT local assessment still
+                           allows this basis: autonomous for an unattended
+                           grant, anything but denied for a human's decision
+      global_safety        the closed gate is clear -- on BOTH bases (D3):
+                           approval satisfied is not executable
+
+    Approval is historical; every one of these is read NOW. None of them
+    converts a mode: a refusal is withheld (background) or failed (the
+    synchronous path, D6), never moved to the human queue.
+
+    `assessments` lets the background pass read the composer's inputs once
+    for every proposal; the synchronous path passes nothing and they are
+    loaded here.
 
     What it does not claim: it runs in CC's transaction immediately before
     the SM call and takes no lock on grant rows, so a grant lapsing in the
@@ -380,6 +414,29 @@ async def revalidate_dispatch(session, tenant_id: str, proposal) -> tuple[bool, 
         await OperationalAgentRepo(session).list_capabilities(agent.id)
     )
 
+    # -- S3-E1: final execution eligibility, from CURRENT state -------------
+    from harkeniq_cc.agent_activation import (
+        global_safety_gate,
+        site_local_gate,
+        unattended_class_gate,
+    )
+    from harkeniq_cc.agent_lifecycle import activation_approved_unattended
+    from harkeniq_cc.autonomy import DENIED
+    from harkeniq_cc.operational_agent import _suppressed_sites
+
+    if assessments is None:
+        assessments = await load_site_assessments(
+            session, tenant_id=tenant_id,
+            actor_id=getattr(proposal, "actor", "") or "",
+            actor_species=ACTOR_AGENT, permissions=AGENT_PERMISSIONS,
+        )
+    basis = getattr(proposal, "authorization_basis", "") or ""
+    local_row = assessments.local_rows(site_id).get(action_type.upper()) or {}
+    approved = (
+        await activation_approved_unattended(session, tenant_id, agent)
+        if basis == BASIS_AUTONOMOUS else frozenset()
+    )
+
     return dispatch_permitted(
         agent_identity=(True if honoured else why),
         agent_active=(
@@ -413,6 +470,16 @@ async def revalidate_dispatch(session, tenant_id: str, proposal) -> tuple[bool, 
                 f"{action_type or 'this action'} is no longer bound to the "
                 "agent that proposed it"
             )
+        ),
+        unattended_class=unattended_class_gate(action_type, basis, approved),
+        # An unknown class reads DENIED: an undescribed row is never consent.
+        site_local_autonomy=site_local_gate(
+            local_row.get("disposition", DENIED),
+            site_id in _suppressed_sites(local_row),
+            basis,
+        ),
+        global_safety=global_safety_gate(
+            assessments.gate_verdict(action_type, site_id)
         ),
     )
 
@@ -470,12 +537,20 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
         site_repo = SiteRepo(session)
         audit = AuditRepo(session)
         client = SMClient(state.config.sm_tls_ca)
+        # S3-E1 (A30.37): the site-local assessments and the gate, read ONCE
+        # for this pass and asked of every proposal's own target.
+        assessments = await load_site_assessments(
+            session, tenant_id=tenant_id, actor_id="op-agent:dispatch",
+            actor_species=ACTOR_AGENT, permissions=AGENT_PERMISSIONS,
+        )
         for proposal in pending:
             # A22.12 / A30.17: current authority, on BOTH bases, BEFORE
             # the basis is even consulted -- through the same gate the
             # synchronous approval path calls. An approved proposal keeps
             # its version and is never a guarantee of execution.
-            ok, why = await revalidate_dispatch(session, tenant_id, proposal)
+            ok, why = await revalidate_dispatch(
+                session, tenant_id, proposal, assessments=assessments,
+            )
             if not ok:
                 # The DECISION is left exactly as it stands. `withhold_
                 # unattended` clears `decided_by`/`decided_at`, which is

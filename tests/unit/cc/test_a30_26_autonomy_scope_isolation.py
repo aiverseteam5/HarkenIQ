@@ -38,6 +38,7 @@ import ast
 import inspect
 import itertools
 import pathlib
+from datetime import datetime, timezone
 
 import pytest
 
@@ -67,6 +68,7 @@ from harkeniq_cc.scope import empty_scope, read_reach
 
 from tests.unit.cc import s3_estate as E
 from tests.unit.cc.s3_estate import ALL, SITES, TENANT
+from tests.unit.cc.s3e1_support import clear_gate
 
 SUBSETS = [
     keys for n in range(len(ALL) + 1) for keys in itertools.combinations(ALL, n)
@@ -138,6 +140,10 @@ class TestAHiddenSiteHasNoInfluence:
             == [SITES[k].id for k in holds]
         assert contract["posture"]["stop_switch"]["sites_reporting_active"] \
             == (1 if "C" in holds else 0)
+        # S3-E1 (A30.37): the disposition too, against the same oracle.
+        assert row["disposition"] == E.expected_disposition(holds)
+        assert klass(contract, "BMC_RESET")["disposition"] \
+            == E.expected_disposition(holds, "BMC_RESET")
 
     def test_the_example_in_the_ratification(self):
         """Budgets 11 / 23 / 47: "if 47 influences any returned total or
@@ -146,8 +152,10 @@ class TestAHiddenSiteHasNoInfluence:
         from types import SimpleNamespace as NS
 
         def row(site, remaining, total, failures, dropped, domain):
+            # S3-E1 (D8): a reporting row carries a CURRENT report time.
             return NS(
-                site_id=site, reported=True, as_of=None, sm_stop_switch=False,
+                site_id=site, reported=True,
+                as_of=datetime.now(timezone.utc), sm_stop_switch=False,
                 suppressions=[{"domain_id": domain}],
                 error_budgets=[{"action_type": "SEL_CLEAR", "total_count": total,
                                 "success_count": total - failures,
@@ -166,6 +174,7 @@ class TestAHiddenSiteHasNoInfluence:
             stop_switch=None, outcomes=[], safety_rows=rows,
             sites=[NS(id=r.site_id, site_name=r.site_id) for r in rows],
             visible_site_ids={"site-A", "site-B"},
+            global_safety=clear_gate(),
         )
         sel = klass(contract)
         assert sel["safety"]["error_budget"]["total"] == 34          # not 81
@@ -658,6 +667,8 @@ class TestEveryPersonaReadsItsOwnTenant:
         assert state == {
             "reported": False, "sites_reporting": [], "sites_not_reporting": [],
             "suppressions": [], "error_budgets": [], "site_stop_switches": [],
+            # S3-E1 (R5): EVERY selected site reported -- vacuously not, here.
+            "every_site_reported": False,
         }
         assert contract["scope"]["sites"] == []
         assert contract["posture"]["stop_switch"]["sites_reporting_active"] == 0
@@ -791,9 +802,21 @@ async def _stored(stack, agent_id):
         )).scalars().all()
 
 
-async def _evaluated(keys=("A",), incidents=("A",)):
+async def _lift_halt(stack, key):
+    """Clear one site's reported Site Manager halt (S3-E1 test support)."""
+    from harkeniq_cc.db.models import CCSafetyState
+
+    async with stack.sessionmaker() as session:
+        row = await session.get(CCSafetyState, stack.site(key))
+        row.sm_stop_switch = False
+        await session.commit()
+
+
+async def _evaluated(keys=("A",), incidents=("A",), lift_halt=()):
     """The full estate, one agent, and what the REAL evaluator proposed."""
     stack = await E.build(ALL)
+    for key in lift_halt:
+        await _lift_halt(stack, key)
     agent_id = await _agent(stack, keys, name="S3 Runtime")
     for key in incidents:
         await E.seed_incident(stack, key)
@@ -811,20 +834,22 @@ def _statements(evidence) -> list:
 
 
 class TestWhatTheEvaluatorRecorded:
-    async def test_the_write_path_is_unchanged_and_names_every_site(self):
-        """CONTROL for everything below, and the record of WHY a projection
-        must narrow: the evaluator decides over the whole tenant (A30.26:
-        an internal decision), so a proposal for a device at site A stores
-        site C's drop-back, site C's suppressed fault domain and site C's
-        learned signal."""
+    async def test_the_write_path_decides_over_the_target_site_alone(self):
+        """INVERTED by S3-E1 (A30.37). A30.26 pinned WHY a projection must
+        narrow: the evaluator decided over the whole tenant, so a proposal
+        for a device at site A stored site C's drop-back and suppressed
+        fault domain. It now reads the TARGET site's local assessment, so
+        the verdict it records names site A and nothing else -- there is no
+        C left in it to narrow. What it FREEZES as evidence is unchanged
+        (D7; S3-E2's), so site C's learned signal is still stored, and every
+        projection below still narrows THAT."""
         stack, agent_id = await _evaluated()
         (proposal,) = await _stored(stack, agent_id)
         assert proposal.site_id == SITES["A"].id
-        assert _sites_named(proposal.blocking_conditions) == {
-            SITES["A"].id, SITES["B"].id, SITES["C"].id,
-        }
-        assert "SECRET-C" in str(proposal.blocking_conditions)
-        assert "SECRET-SIGNAL-C" in _statements(proposal.evidence)
+        assert _sites_named(proposal.blocking_conditions) == {SITES["A"].id}
+        assert "SECRET-C" not in str(proposal.blocking_conditions)
+        assert SITES["B"].id not in str(proposal.blocking_conditions)
+        assert "SECRET-SIGNAL-C" in _statements(proposal.evidence)   # D7
 
 
 class TestAHumanReadsAProposal:
@@ -875,7 +900,9 @@ class TestAHumanReadsAProposal:
         """Three projections of one stored proposal, one rule."""
         stack, agent_id = await _evaluated()
         subject, _ = await E.persona(stack, reader)
-        expected_sites = {SITES[k].id for k in names}
+        # S3-E1 (A30.37): the verdict names its TARGET site alone, so every
+        # reader who may see the proposal sees the same site rows.
+        expected_sites = {SITES["A"].id}
         expected_signals = sorted(
             ["cohort-knowledge"] + [t for _i, _k, key, t, _c in E.SIGNALS if key in names]
         )
@@ -894,10 +921,11 @@ class TestAHumanReadsAProposal:
         for where, proposal in projections.items():
             assert _sites_named(proposal["blocking_conditions"]) == expected_sites, where
             assert _statements(proposal["evidence"]) == expected_signals, where
-            # The recorded reason is site C's drop-back row, verbatim.
-            assert proposal["disposition_reason"] == (
-                recorded.disposition_reason if "C" in names else WITHHELD_REASON
-            ), where
+            # S3-E1: the recorded reason is the agent's own configuration --
+            # tenant-scoped, so every reader reads it as recorded. It was
+            # site C's drop-back row, withheld from readers who lack C.
+            assert proposal["disposition_reason"] == recorded.disposition_reason, where
+            assert proposal["disposition_reason"] != WITHHELD_REASON, where
             if "C" not in names:
                 assert "SECRET" not in str(proposal["blocking_conditions"]), where
                 assert "SECRET" not in str(proposal["evidence"]), where
@@ -924,14 +952,21 @@ class TestAHumanReadsAProposal:
         may APPROVE at site C -- so the proposal at C is theirs to see --
         and holds `fleet.view` only at A. The queue is guarded by
         `action.approve`; a site's safety rows are `fleet.view` facts."""
-        stack, agent_id = await _evaluated(keys=("A", "C"), incidents=("A", "C"))
+        # S3-E1 (R3(f)): site C's Site Manager halt DENIES locally, so a
+        # proposal there is blocked and never reaches the queue. This test
+        # is about what a reader may see of one, so C's halt is lifted.
+        stack, agent_id = await _evaluated(
+            keys=("A", "C"), incidents=("A", "C"), lift_halt=("C",),
+        )
         subject, _ = await E.persona(stack, "a_plus_approve_c")
         queue = await _read(stack, subject, "/api/approvals/")
         items = {i["site_id"]: i["proposal"] for i in queue["actions"]
                  if i.get("origin") == "agent"}
         assert set(items) == {SITES["A"].id, SITES["C"].id}, "both are theirs to decide"
         for proposal in items.values():
-            assert _sites_named(proposal["blocking_conditions"]) == {SITES["A"].id}
+            # Each verdict names its own target site; site C's rows are
+            # `fleet.view` facts this reader lacks at C, so none passes.
+            assert _sites_named(proposal["blocking_conditions"]) <= {SITES["A"].id}
             assert "SECRET" not in str(proposal["blocking_conditions"])
             assert "SECRET-SIGNAL-C" not in _statements(proposal["evidence"])
 
@@ -1009,25 +1044,32 @@ class TestAMachineReadsItsOwnWork:
             "receipt/submission": responses["receipt/submission"]["proposal"]["disposition_reason"],
             "receipt/proposal": responses["receipt/proposal"]["proposal"]["disposition_reason"],
         }
+        # S3-E1 (A30.37): the recorded reason is the agent's own, which it
+        # may read; it used to be site C's drop-back, withheld.
         for where, reason in reasons.items():
-            assert reason == WITHHELD_REASON, where
+            assert reason != WITHHELD_REASON, where
+            assert "error budget" not in reason, where
 
-        # CONTROL: there was something to withhold.
+        # And nothing of site C was recorded at all: the evaluator decided
+        # over site A alone.
         (stored,) = await _stored(stack, agent_id)
-        assert SITES["C"].id in _sites_named(stored.blocking_conditions)
+        assert _sites_named(stored.blocking_conditions) == {SITES["A"].id}
 
-    async def test_a_machine_granted_two_sites_reads_those_two(self):
-        """CONTROL for the narrowing above, through the same projections:
-        the agent's own grants decide, not a constant."""
+    async def test_a_machine_granted_two_sites_reads_only_what_decided_it(self):
+        """S3-E1 (A30.37) changed this control. A machine holding A and C
+        used to read site C's rows on a proposal at A -- because site C had
+        DECIDED it. Now only site A decides a proposal at A, so even a
+        reader entitled to C finds nothing of C there, and site C's
+        drop-back is no longer its reason."""
         stack, agent_id = await self._ready(keys=("A", "C"))
         preview, submitted = await self._submit(stack, agent_id)
         for blocking in (preview["would_propose"][0]["blocking_conditions"],
                          submitted["proposal"]["blocking_conditions"]):
-            assert _sites_named(blocking) == {SITES["A"].id, SITES["C"].id}
+            assert _sites_named(blocking) == {SITES["A"].id}
             assert "fault-B" not in str(blocking)
-        # It holds site C, so site C's reason is its own to read.
-        assert "error budget" in submitted["proposal"]["disposition_reason"]
-        assert "error budget" in preview["would_propose"][0]["disposition_reason"]
+            assert "SECRET-C" not in str(blocking)
+        assert "error budget" not in submitted["proposal"]["disposition_reason"]
+        assert "error budget" not in preview["would_propose"][0]["disposition_reason"]
 
     async def test_the_machine_view_of_its_own_dispositions_is_its_own_sites(self):
         stack, agent_id = await self._ready()
@@ -1046,12 +1088,13 @@ class TestTheAmbiguousItemsAreRecordedNotChanged:
     pinned here so that the slice which rules on it has a test to invert,
     the way F1 and P2 were pinned."""
 
-    async def test_E1_a_hidden_site_can_still_route_a_proposal_to_a_human(self):
-        """Execution semantics (S5's tenant-wide fold). The site-A reader's
-        OWN contract says SEL_CLEAR is autonomous; the proposal at site A
-        still waits for a human, because the evaluator decided over the
-        whole tenant. No site is named. Closing this is per-site
-        evaluation, which widens autonomy -- Vinod's ruling."""
+    async def test_E1_a_hidden_site_no_longer_decides_a_proposal(self):
+        """INVERTED by S3-E1 (A30.37) -- Vinod's ruling on E1. The site-A
+        reader's own contract says SEL_CLEAR is autonomous at A, and site C's
+        drop-back no longer decides the proposal at A: the evaluator reads
+        the target site's local assessment. This fixture's agent still asks
+        a human -- by its OWN configuration, a tenant-scoped reason every
+        reader may read -- and nothing of site C is recorded."""
         stack, agent_id = await _evaluated()
         site_a, _ = await E.persona(stack, "site_a")
         contract = await _read(stack, site_a)
@@ -1059,13 +1102,11 @@ class TestTheAmbiguousItemsAreRecordedNotChanged:
         listed = await _read(stack, site_a,
                              f"/api/operational-agents/{agent_id}/proposals")
         proposal = listed["proposals"][0]
-        assert proposal["disposition"] == REQUIRES_APPROVAL          # <- E1
-        assert proposal["status"] == "awaiting_approval"             # <- E1
-        # What is NOT left: which condition, or where. The stored reason is
-        # site C's drop-back row verbatim, so it is withheld with that row.
         (stored,) = await _stored(stack, agent_id)
-        assert "error budget" in stored.disposition_reason
-        assert proposal["disposition_reason"] == WITHHELD_REASON
+        assert "error budget" not in stored.disposition_reason
+        assert _sites_named(stored.blocking_conditions) == {SITES["A"].id}
+        assert proposal["disposition_reason"] == stored.disposition_reason
+        assert proposal["disposition_reason"] != WITHHELD_REASON
         assert E.leaks(proposal, holds=("A",)) == []
         # CONTROL: a reader who holds site C reads the reason as recorded.
         owner = (await stack.as_person().get(
@@ -1099,19 +1140,30 @@ class TestTheAmbiguousItemsAreRecordedNotChanged:
 
 PACKAGE = pathlib.Path(harkeniq_cc.__file__).parent
 
-#: The INTERNAL DECISION paths (A30.26): they reason over the whole tenant
-#: and never return the contract. Adding to this set is a design decision,
-#: which is the point of having to edit it.
+#: The DECISION paths. A30.26 allow-listed them as the callers that took the
+#: TENANT-WIDE contract (`load_autonomy_contract(reach=None)`); S3-E1
+#: (A30.37) ended that: a decision reads each target's SITE-LOCAL assessment
+#: and the closed gate, through `load_site_assessments` or the inputs it
+#: wraps. Adding to this set is still a design decision, which is the point
+#: of having to edit it.
 INTERNAL_DECISIONS = {
     ("agent_runtime.py", "evaluate_agents"),          # the CC-resident evaluator
+    ("agent_runtime.py", "revalidate_dispatch"),      # the one dispatch gate
+    ("agent_runtime.py", "dispatch_decided"),         # the background pass
     ("agent_lifecycle.py", "run_preflight"),          # the activation gate's input
     ("api/campaigns.py", "submit_campaign"),          # autonomous vs per-wave approval
+    ("campaign_runner.py", "advance_campaign"),       # a wave's final eligibility
+    ("campaign_runner.py", "_advance_site"),
     ("api/operational_agents.py", "dry_run_agent"),   # reasons as the runtime does
     ("api/operational_agents.py", "submit_proposal"),  # the ingress re-derivation
+    ("api/operational_agents.py", "agent_discovery"),  # B1's per-site answers
 }
 
+#: The decision loaders (A30.37).
+DECISION_LOADERS = {"load_site_assessments", "load_autonomy_inputs", "SiteAssessments"}
 
-def _loader_calls():
+
+def _calls_to(names):
     for path in sorted(PACKAGE.rglob("*.py")):
         tree = ast.parse(path.read_text())
         for fn in ast.walk(tree):
@@ -1119,23 +1171,37 @@ def _loader_calls():
                 continue
             for node in ast.walk(fn):
                 if isinstance(node, ast.Call) \
-                        and getattr(node.func, "id", "") == "load_autonomy_contract":
-                    reach = {k.arg: k.value for k in node.keywords}.get("reach")
-                    yield str(path.relative_to(PACKAGE)), fn.name, reach
+                        and getattr(node.func, "id", "") in names:
+                    yield str(path.relative_to(PACKAGE)), fn.name, node
+
+
+def _loader_calls():
+    for module, fn, node in _calls_to({"load_autonomy_contract"}):
+        reach = {k.arg: k.value for k in node.keywords}.get("reach")
+        yield module, fn, reach
 
 
 class TestTheTenantWideContractCannotBeTakenByAccident:
     def test_every_caller_names_its_reader(self):
         calls = list(_loader_calls())
-        assert len(calls) >= 7, calls
+        assert len(calls) >= 3, calls
         assert [c[:2] for c in calls if c[2] is None] == []
 
-    def test_only_the_named_decision_paths_compose_over_the_whole_tenant(self):
+    def test_no_decision_composes_over_the_whole_tenant_any_more(self):
+        """S3-E1 (A30.37): the tenant-wide fold is no longer an assessment.
+        No caller asks for the tenant-wide contract."""
         whole_tenant = {
             (module, fn) for module, fn, reach in _loader_calls()
             if isinstance(reach, ast.Constant) and reach.value is None
         }
-        assert whole_tenant == INTERNAL_DECISIONS
+        assert whole_tenant == set()
+
+    def test_only_the_named_decision_paths_read_the_decision_loaders(self):
+        readers = {
+            (module, fn) for module, fn, _node in _calls_to(DECISION_LOADERS)
+            if module != "governance.py"
+        }
+        assert readers == INTERNAL_DECISIONS
 
     def test_no_function_narrows_a_composed_contract(self):
         """`narrow_to_sites` is how P2 was written: its input was the

@@ -47,6 +47,8 @@ from harkeniq_cc.db.models import (
 )
 from harkeniq_cc.policy_push import budget_row_to_policies
 
+from tests.unit.cc.s3e1_support import clear_gate
+
 TENANT = "t1"
 
 
@@ -94,6 +96,8 @@ def _build(**over):
         tenant_id=TENANT, actor_id="user:u1", actor_species="human",
         permissions=["fleet.view"], budgets=[], stop_switch=None,
         outcomes=[], safety_rows=[], sites=[_site()],
+        # S3-E1 (A30.37): the verdicts the EMPTY production registry gives.
+        global_safety=clear_gate(),
     )
     kwargs.update(over)
     return build_autonomy(**kwargs)

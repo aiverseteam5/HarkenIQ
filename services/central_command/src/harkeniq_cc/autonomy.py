@@ -50,7 +50,7 @@ that gap; it does not close it by widening a boundary.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 #: Bump when a consumer would have to change to read the payload.
 CONTRACT_VERSION = "1"
@@ -398,6 +398,54 @@ def _iso(value) -> Optional[str]:
 #: restated so this module stays free of intra-package imports.
 _SIGNAL_SCOPE_SITE = "site"
 
+# S3-E1 (A30.37): the site-local blocking codes the R3/D8 rules emit.
+SITE_NOT_REPORTED = "site_safety_not_reported"
+SITE_STOP_SWITCH = "site_stop_switch_active"
+
+#: The reason a class requires approval over a selection that holds no site:
+#: nothing there has reported, and unknown is never safe (S5).
+NO_SITE_REASON = (
+    "no site in this selection has reported live safety state, so nothing "
+    "here may run unattended"
+)
+
+#: Order of restrictiveness, for folding local answers. Higher is freer.
+_DISPOSITION_RANK = {DENIED: 0, NOT_BUDGET_MAPPED: 1, REQUIRES_APPROVAL: 1, AUTONOMOUS: 2}
+
+
+def _utc(value) -> Optional[datetime]:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def site_reported(row, now: datetime) -> bool:
+    """Did this site REPORT live safety state recently enough to vouch for it?
+
+    THE rule (S3-E1 / A30.36 D8), shared by the composer and the global
+    gate's estate. A site vouches for nothing when it has no row, when its
+    row says it did not report, or when the report is older than the ONE
+    freshness window (`harkeniq_cc.freshness`, 15 minutes). Age is judged on
+    the OLDER of the Site Manager's reading time (`as_of`) and Central
+    Command's ingest (`ingested_at`): a Site Manager whose clock runs ahead
+    cannot keep a dark site fresh, and a reading copied late cannot either.
+
+    Not reported is UNKNOWN, never safe (S5). This only ever NARROWS: it
+    can take a site's vouching away, never lift a restriction its last
+    report carried -- the composer keeps a stale halt, drop-back or spent
+    window exactly as reported.
+    """
+    from harkeniq_cc.freshness import FRESH, freshness_state
+
+    if row is None or not bool(getattr(row, "reported", False)):
+        return False
+    as_of = _utc(getattr(row, "as_of", None))
+    if as_of is None:
+        return False
+    ingested = _utc(getattr(row, "ingested_at", None))
+    oldest = min(as_of, ingested) if ingested is not None else as_of
+    return freshness_state(oldest, _utc(now) or now) == FRESH
+
 
 def select_site_inputs(
     *,
@@ -473,6 +521,7 @@ def build_autonomy(
     action_type: Optional[str] = None,
     now: Optional[datetime] = None,
     visible_site_ids: Optional[Iterable[str]] = None,
+    global_safety: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Compose the governance contract. Pure: no I/O, no clock of its own.
 
@@ -487,12 +536,43 @@ def build_autonomy(
     them -- is computed from those sites only. It is applied first and
     once, by `select_site_inputs`; nothing here filters a composed value.
 
+    SITE-LOCAL RULES (S3-E1, A30.37; R3, D4, D8). Each selected site is
+    assessed on its own report: not reported -- or a report older than the
+    one freshness window -- requires approval; a Site Manager halt denies;
+    drop-back and a spent window stay the site's own. A class is autonomous
+    only if EVERY selected site is, denied if a tenant-level condition
+    denies it or EVERY selected site is denied, and otherwise requires
+    approval; a selection with no site requires approval. A single-site
+    selection is that site's local assessment, which is what every
+    decision path now reads.
+
+    `global_safety` is REQUIRED and has no default: {action_type:
+    `GlobalSafetyVerdict`}, evaluated by the loader over the whole estate
+    (`harkeniq_cc.global_safety`). It never changes `disposition`, which is
+    the site-local answer; it is carried beside it, with the final
+    execution eligibility the ONE conjunction derives. A class it does not
+    name fails closed.
+
     `actor_species` is one of `ACTOR_SPECIES` (A30.32) and nothing else.
     """
+    from harkeniq_cc.global_safety import (
+        UNKNOWN as GATE_UNKNOWN,
+        final_block,
+        global_row,
+        require_verdict,
+    )
+
     if actor_species not in ACTOR_SPECIES:
         raise ValueError(
             f"actor_species {actor_species!r} is not a declared actor species "
             f"({', '.join(sorted(ACTOR_SPECIES))}); spec A30.32"
+        )
+    if not isinstance(global_safety, Mapping):
+        raise TypeError(
+            "build_autonomy needs the global safety verdicts the loader "
+            "evaluated ({action_type: GlobalSafetyVerdict}), not "
+            f"{type(global_safety).__name__}: 'no gate' is not a value "
+            "(spec A30.37)"
         )
     now = now or datetime.now(timezone.utc)
     held = set(permissions or ())
@@ -516,7 +596,20 @@ def build_autonomy(
     configured_level = int(getattr(fleet_budget, "level", 0) or 0) if fleet_budget else 0
     stop_active = bool(getattr(stop_switch, "active", False)) if stop_switch else False
 
-    reported_sites = {s.site_id for s in safety_rows if getattr(s, "reported", True)}
+    # D8: a report that is not fresh vouches for nothing. Only the SELECTED
+    # rows are looked at -- `select_site_inputs` ran above.
+    reported_sites = {s.site_id for s in safety_rows if site_reported(s, now)}
+    rows_by_site = {s.site_id: s for s in safety_rows}
+    # The sites this contract describes, in a total order. A registered site
+    # with no row at all is a site that has not reported.
+    selected_site_ids = sorted({s.id for s in sites})
+    halted_sites = {
+        sid for sid in selected_site_ids
+        # A stale halt still halts: staleness never lifts a restriction.
+        if bool(getattr(rows_by_site.get(sid), "sm_stop_switch", False))
+    }
+    unreported_sites = [sid for sid in selected_site_ids if sid not in reported_sites]
+    selected_set = frozenset(selected_site_ids)
     site_rows = [
         {
             "id": s.id,
@@ -595,7 +688,12 @@ def build_autonomy(
         mapped = grant_level is not None
         evidence = _evidence_for(at, outcomes)
         eb = error_budgets.get(at)
-        dropped = bool(eb and eb["dropped_back"])
+        # Drop-back is a fact about a SITE, read only for the sites selected.
+        dropped_sites = [
+            sid for sid in (eb["sites_dropped_back"] if eb else [])
+            if sid in selected_set
+        ]
+        dropped = bool(dropped_sites)
 
         blocking: list[dict[str, Any]] = []
         if fenced:
@@ -633,20 +731,47 @@ def build_autonomy(
                     ),
                     "scope": SCOPE_TENANT,
                 })
-            if dropped:
-                for sid in eb["sites_dropped_back"]:
+            # S3-E1 (A30.37): the site-local rules, for SELECTED sites only.
+            # A halt is a local denial (R3(f)); a site that has not reported
+            # recently enough cannot vouch for anything (R3(e), D8).
+            for sid in selected_site_ids:
+                if sid in halted_sites:
                     blocking.append({
-                        "code": "error_budget_dropped_back",
+                        "code": "site_stop_switch_active",
                         "detail": (
-                            "success rate fell below the error budget; "
-                            "autonomy for this class was withdrawn automatically"
+                            "the Site Manager at this site is halted; nothing "
+                            "runs here, whatever the approval"
                         ),
                         "scope": SCOPE_SITE,
                         "site_id": sid,
                     })
+            # A selection with NO site requires approval (below), but it gets
+            # no blocking row: a tenant-scoped row is tenant-owned posture
+            # every reader shares (A30.26), and "you selected nothing" is a
+            # fact about the selection, not the tenant. The reason says it.
+            for sid in unreported_sites:
+                blocking.append({
+                    "code": "site_safety_not_reported",
+                    "detail": (
+                        "this site has not reported live safety state recently "
+                        "enough to vouch for it"
+                    ),
+                    "scope": SCOPE_SITE,
+                    "site_id": sid,
+                })
+            for sid in dropped_sites:
+                blocking.append({
+                    "code": "error_budget_dropped_back",
+                    "detail": (
+                        "success rate fell below the error budget; "
+                        "autonomy for this class was withdrawn automatically"
+                    ),
+                    "scope": SCOPE_SITE,
+                    "site_id": sid,
+                })
             exhausted = [
                 sid for sid, rem in site_budget_remaining.get(at, {}).items()
-                if rem == 0
+                if rem == 0 and sid in selected_set
             ]
             for sid in exhausted:
                 blocking.append({
@@ -655,14 +780,43 @@ def build_autonomy(
                     "scope": SCOPE_SITE,
                     "site_id": sid,
                 })
-            if stop_active:
-                disposition = DENIED
-                reason = "stop switch active"
-            elif blocking:
-                disposition = REQUIRES_APPROVAL
-                reason = blocking[0]["detail"]
+
+            # Each selected site on its own report, then the composite.
+            site_local: dict[str, str] = {}
+            for sid in selected_site_ids:
+                if sid in halted_sites:
+                    site_local[sid] = DENIED
+                elif (sid not in reported_sites or sid in dropped_sites
+                      or sid in exhausted):
+                    site_local[sid] = REQUIRES_APPROVAL
+                else:
+                    site_local[sid] = AUTONOMOUS
+            answers = set(site_local.values())
+            if not answers:
+                sites_disposition = REQUIRES_APPROVAL
+            elif answers == {DENIED}:
+                sites_disposition = DENIED
+            elif answers == {AUTONOMOUS}:
+                sites_disposition = AUTONOMOUS
             else:
-                disposition = AUTONOMOUS
+                sites_disposition = REQUIRES_APPROVAL
+            tenant_disposition = (
+                DENIED if stop_active
+                else REQUIRES_APPROVAL if configured_level < grant_level
+                else AUTONOMOUS
+            )
+            disposition = min(
+                (tenant_disposition, sites_disposition),
+                key=_DISPOSITION_RANK.__getitem__,
+            )
+            if disposition == DENIED:
+                reason = "stop switch active" if stop_active else next(
+                    row["detail"] for row in blocking
+                    if row["code"] == SITE_STOP_SWITCH
+                )
+            elif disposition == REQUIRES_APPROVAL:
+                reason = blocking[0]["detail"] if blocking else NO_SITE_REASON
+            else:
                 reason = (
                     f"granted at level {grant_level}; tenant is configured "
                     f"at level {configured_level}"
@@ -683,6 +837,14 @@ def build_autonomy(
                 "domain_id": dom.get("domain_id", ""),
             })
 
+        # S3-E1 (A30.37): the gate. Context, like a suppressed domain: it
+        # never moves `disposition`, which is the site-local answer. A class
+        # the loader did not evaluate fails closed.
+        gate = global_safety.get(at)
+        gate = GATE_UNKNOWN if gate is None else require_verdict(gate)
+        if not gate.clear:
+            blocking.append(global_row())
+
         policy = policy_by_action.get(at) or policy_by_action.get("*")
         classes.append({
             "action_type": at,
@@ -695,8 +857,12 @@ def build_autonomy(
             "granted_at_level": grant_level,
             "budget_mapped": mapped,
             "never_budget_grantable": fenced,
+            # The SITE-LOCAL assessment (A30.37). The gate and the conjunction
+            # are the next two keys, never folded into this one.
             "disposition": disposition,
             "disposition_reason": reason,
+            "global_safety": gate.as_dict(),
+            "final_execution_eligibility": final_block(disposition, gate),
             "blocking_conditions": blocking,
             "evidence": evidence,
             "learning": learning_by_action.get(at, []),
@@ -769,6 +935,10 @@ def build_autonomy(
         },
         "safety_state": {
             "reported": bool(reported_sites),
+            # R5 (A30.37): EVERY selected site vouches, not merely one. The
+            # preflight's `safety_reported` reads this, so a site the agent
+            # cannot reach reporting can no longer turn UNKNOWN into READY.
+            "every_site_reported": bool(selected_site_ids) and not unreported_sites,
             "sites_reporting": sorted(reported_sites),
             "sites_not_reporting": sorted(
                 s["id"] for s in site_rows if not s["safety_reported"]
@@ -810,14 +980,24 @@ def visible_blocking_conditions(
     the set. Everything else is dropped -- including a site- or
     domain-scoped row that cannot name its site, and any shape this
     function does not recognise: fail closed.
+
+    A GLOBAL row (S3-E1, A30.37) passes for EVERY reader, and is rebuilt
+    from constants rather than returned as stored: whatever a stored row
+    says, only the one bounded code and its constant text leave. It names
+    no site, so there is nothing in it any reader may not hold.
     """
-    rows = list(blocking or [])
+    from harkeniq_cc.global_safety import global_row, is_global_row
+
+    rows = [global_row() if is_global_row(row) else row for row in (blocking or [])]
     if visible_site_ids is None:
         return rows
     visible = frozenset(visible_site_ids)
     kept = []
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if is_global_row(row):
+            kept.append(row)
             continue
         site = row.get("site_id") or ""
         if site:

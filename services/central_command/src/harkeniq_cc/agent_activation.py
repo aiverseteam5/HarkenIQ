@@ -290,20 +290,35 @@ def check_autonomy(agent, bound_classes, class_rows: dict) -> dict:
                 unattended=unattended, attended=attended, denied=denied)
 
 
-def activation_grants_unattended(agent, bound_classes, class_rows: dict) -> list[str]:
-    """The classes activation would let run WITHOUT a human (D1).
+def activation_grants_unattended(
+    agent, bound_classes, configured_level: int,
+) -> list[str]:
+    """The classes activation would let run WITHOUT a human (D1, D11).
 
     This is the whole trigger for activation approval. Turning on an
     agent whose every action needs a human grants no new authority, so
     gating it is ceremony; turning on one that can act unattended is the
     moment real authority is conferred, and that is what a person should
     be asked about.
+
+    D11 (A30.36/A30.37): DURABLE CONFIGURATION ONLY -- the tenant's
+    configured ladder level ∩ this agent's ceiling ∩ its bound classes.
+    It used to read the contract's CURRENT disposition, so a transient
+    drop-back at a site the agent may never reach made this return
+    nothing at preflight; activation then needed no approval, and once the
+    site recovered the agent ran unattended work nobody approved (F-6).
+    Transient safety decides whether something may run NOW; it never
+    decides what a person is asked to delegate.
     """
-    if agent.require_approval_always or int(agent.autonomy_ceiling or 0) <= 0:
+    from harkeniq_cc.autonomy import granted_at_level, grants_for_level
+
+    ceiling = int(getattr(agent, "autonomy_ceiling", 0) or 0)
+    if getattr(agent, "require_approval_always", True) or ceiling <= 0:
         return []
+    granted = grants_for_level(int(configured_level or 0))
     return sorted(
-        name for name in bound_classes
-        if (class_rows.get(name) or {}).get("disposition") == AUTONOMOUS
+        name for name in {str(c).upper() for c in bound_classes}
+        if name in granted and int(granted_at_level(name) or 99) <= ceiling
     )
 
 
@@ -374,10 +389,15 @@ def check_safety(agent, stop_switch_active: bool, safety_reported: bool) -> dict
                     "the tenant stop switch is active; nothing this agent "
                     "proposes could run unattended", stop_switch=True)
     if not safety_reported:
+        # R5 (A30.37): EVERY site this agent reaches must have reported
+        # recently. A site it cannot reach reporting no longer makes this
+        # READY -- the one non-monotone input the package found.
         return _row("safety", UNKNOWN,
-                    "no site has reported live safety state, so suppressions "
-                    "and error budgets read UNKNOWN, never clear")
-    return _row("safety", READY, "no stop switch, no pause, safety reported")
+                    "not every site this agent reaches has reported live "
+                    "safety state recently, so suppressions and error budgets "
+                    "read UNKNOWN, never clear")
+    return _row("safety", READY,
+                "no stop switch, no pause, every reached site reported")
 
 
 def check_skills(skill_rows: list[dict]) -> dict:
@@ -454,6 +474,7 @@ def build_preflight(
     stop_switch_active: bool,
     safety_reported: bool,
     realm_ok: Optional[bool],
+    configured_level: int,
     preflight_version: Optional[int] = None,
 ) -> dict:
     """The authoritative activation readiness contract.
@@ -470,7 +491,9 @@ def build_preflight(
     approval ledger and the node's own funnel.
     """
     bound = sorted(set(bound_classes))
-    unattended = activation_grants_unattended(agent, bound, class_rows)
+    # D11: from durable configuration, never from `class_rows`' transient
+    # dispositions (which `check_autonomy` still reports, as information).
+    unattended = activation_grants_unattended(agent, bound, configured_level)
 
     dimensions = [
         check_identity(agent, realm_ok),
@@ -847,6 +870,16 @@ DISPATCH_GATES = (
     "budget",
     "effective_scope",
     "capability_binding",
+    # S3-E1 (A30.37). After every gate above, so scope, pause, stop and
+    # binding keep their own attribution (matrix G-I).
+    #   unattended_class     D11: an autonomous grant's class is in the set
+    #                        a human approved at activation
+    #   site_local_autonomy  the target site's CURRENT local assessment
+    #                        still allows this basis
+    #   global_safety        the closed gate is clear, on BOTH bases (D3)
+    "unattended_class",
+    "site_local_autonomy",
+    "global_safety",
 )
 
 
@@ -882,6 +915,65 @@ def dispatch_permitted(**gates) -> tuple[bool, str]:
             return False, f"{name} refused"
         return False, str(verdict)
     return True, ""
+
+
+# -- S3-E1 (A30.37): the three dispatch-time answers ------------------------
+#
+# Pure. `revalidate_dispatch` gathers the CURRENT inputs and asks these; the
+# withheld reasons are constants, because a dispatch reason is shown to every
+# reader of the proposal and must name no site, member, disposition or count.
+# Each states what HOLDS, never what happens next: the background pass leaves
+# the proposal approved and retries it, while the synchronous approval path
+# records the SAME reason on a terminal failure (A30.17, D6; F-12), so a
+# promise that the dispatch "resumes" would be false on one of the two.
+
+#: D11 withheld.
+UNATTENDED_NOT_APPROVED_REASON = (
+    "withheld: this class is not in the unattended set a human approved when "
+    "this agent was activated; re-run preflight and approve the activation to "
+    "delegate it"
+)
+#: The target site's current local assessment no longer allows this basis.
+SITE_LOCAL_WITHHELD_REASON = (
+    "withheld: the target site's own safety assessment does not currently "
+    "allow this dispatch"
+)
+
+
+def unattended_class_gate(action_type: str, basis: str, approved) -> Any:
+    """D11 at dispatch. `True`, or the constant reason. A human's decision is
+    not a delegation, so it is not asked."""
+    from harkeniq_cc.operational_agent import BASIS_AUTONOMOUS
+
+    if basis != BASIS_AUTONOMOUS:
+        return True
+    if (action_type or "").upper() in {str(c).upper() for c in approved}:
+        return True
+    return UNATTENDED_NOT_APPROVED_REASON
+
+
+def site_local_gate(local_disposition: str, suppressed_at_site: bool, basis: str) -> Any:
+    """The target site's CURRENT local assessment, for this basis.
+
+    An unattended grant runs only while the site itself is autonomous for
+    the class and suppresses nothing (the admission rule, asked again). A
+    human's approval satisfies "requires approval" and never a denial: a
+    halted site denies whatever anybody approved (R3(f), A10.3).
+    """
+    from harkeniq_cc.operational_agent import BASIS_AUTONOMOUS
+
+    if basis == BASIS_AUTONOMOUS:
+        ok = local_disposition == AUTONOMOUS and not suppressed_at_site
+    else:
+        ok = local_disposition != DENIED
+    return True if ok else SITE_LOCAL_WITHHELD_REASON
+
+
+def global_safety_gate(verdict) -> Any:
+    """The closed gate, on EITHER basis (D3): approval is not an override."""
+    from harkeniq_cc.global_safety import GLOBAL_WITHHELD_REASON, require_verdict
+
+    return True if require_verdict(verdict).clear else GLOBAL_WITHHELD_REASON
 
 
 def proposal_version_is_honoured(proposal, agent) -> tuple[bool, str]:

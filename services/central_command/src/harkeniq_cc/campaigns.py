@@ -107,6 +107,13 @@ REVAL_ABSENT = "absent"
 #: see it where they look, and so the audit entry is written once per
 #: distinct cause rather than once per reconciliation pass.
 REVAL_AUTHORITY_LOST = "authority_lost"
+#: S3-E1 (A30.37): the wave's FINAL EXECUTION ELIGIBILITY does not hold right
+#: now -- its site's current local assessment no longer allows this basis, or
+#: the closed global safety gate is not clear (D3: on approved waves too).
+#: WITHHELD in S1's shape: nothing is skipped, the plan, the ledger and the
+#: approval subject stay as they are, and a later pass dispatches the same
+#: wave when eligibility returns. The reason is a constant.
+REVAL_EXECUTION_WITHHELD = "execution_withheld"
 
 
 def target_applicability(

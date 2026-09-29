@@ -69,6 +69,8 @@ from harkeniq_cc.route_contract import MACHINE_JOBS
 from harkeniq_cc.runtime import AppState
 from harkeniq_cc.scope import ENFORCEMENT_STRICT
 
+from tests.unit.cc.s3e1_support import clear_gate
+
 TENANT = "tenant-demo"
 OWNER = "kc-s3-owner"
 AS_OF = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
@@ -229,6 +231,36 @@ def expected_reporting(keys: Iterable[str]) -> list[str]:
     return sorted(SITES[k].id for k in keys if SAFETY[k].get("reported"))
 
 
+def expected_disposition(keys: Iterable[str], action: str = "SEL_CLEAR") -> str:
+    """The site-local disposition over exactly these sites (S3-E1, A30.37
+    R3/R4), written from the estate definition, not from the composer.
+
+    The estate runs at level 2, which grants SEL_CLEAR and BMC_RESET. Each
+    held site answers on its OWN report: a Site Manager halt denies; no
+    report, a drop-back or a spent window asks a human; anything else is
+    autonomous. The composite is autonomous only when every held site is,
+    denied only when every held site is, and a reader holding no site gets
+    the one answer that vouches for nothing.
+    """
+    answers = set()
+    for key in keys:
+        row = SAFETY[key]
+        dropped = any(
+            entry["action_type"] == action and entry["dropped_back"]
+            for entry in row.get("error_budgets", [])
+        )
+        spent = row.get("site_budgets", {}).get(action) == 0
+        if row.get("sm_stop_switch"):
+            answers.add("denied")
+        elif not row.get("reported") or dropped or spent:
+            answers.add("requires_approval")
+        else:
+            answers.add("autonomous")
+    if answers in ({"autonomous"}, {"denied"}):
+        return answers.pop()
+    return "requires_approval"
+
+
 # ---------------------------------------------------------------------------
 # The sentinel walk
 # ---------------------------------------------------------------------------
@@ -288,6 +320,12 @@ def normalised(contract: dict) -> dict:
     out = json.loads(json.dumps(contract))
     out.pop("generated_at", None)
     out.pop("actor", None)
+    # S3-E1 (A30.37, D8): a reporting site's report must be CURRENT, so two
+    # separately seeded estates carry report times seconds apart. The fact
+    # that must be equal is WHETHER a site reported, and it is kept.
+    for site in (out.get("scope") or {}).get("sites") or []:
+        if isinstance(site, dict) and "safety_as_of" in site:
+            site["safety_as_of"] = "reported" if site["safety_as_of"] else None
     return out
 
 
@@ -357,7 +395,12 @@ def pure_inputs(keys: Iterable[str] = ALL) -> dict:
         "stop_switch": NS(active=False, changed_by="", updated_at=None),
         "outcomes": outcomes, "safety_rows": safety_rows, "sites": sites,
         "learned_signals": signals,
-        "now": datetime(2026, 9, 20, tzinfo=timezone.utc),
+        # S3-E1 (A30.37, D8): a report older than the one freshness window
+        # vouches for nothing. The estate's reporting sites REPORT, so the
+        # composition runs a minute after they spoke.
+        "now": AS_OF + timedelta(minutes=1),
+        # ...and the gate is the empty production registry's.
+        "global_safety": clear_gate(),
     }
 
 
@@ -491,7 +534,12 @@ async def build(sites: Iterable[str] = ALL, *, engine=None,
             session.add(CCSafetyState(
                 site_id=_t(site.id), tenant_id=tenant,
                 reported=state_row.get("reported", False),
-                as_of=AS_OF if state_row.get("reported") else None,
+                # S3-E1 (D8): a reporting site's report is CURRENT -- the
+                # route composes against the real clock.
+                as_of=(
+                    datetime.now(timezone.utc)
+                    if state_row.get("reported") else None
+                ),
                 sm_stop_switch=state_row.get("sm_stop_switch", False),
                 suppressions=state_row.get("suppressions", []),
                 error_budgets=state_row.get("error_budgets", []),

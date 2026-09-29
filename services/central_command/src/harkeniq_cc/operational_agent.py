@@ -68,6 +68,11 @@ from harkeniq_cc.autonomy import (
     REQUIRES_APPROVAL,
     SCOPE_TENANT,
 )
+from harkeniq_cc.global_safety import (
+    STATE_UNKNOWN,
+    GlobalSafetyVerdict,
+    final_block,
+)
 # A30.4: the ONE lifecycle rule. `scope.is_active` is what `resolve()`
 # applies, so a reach path that filters differently is a second answer.
 from harkeniq_cc.scope import is_active
@@ -194,6 +199,11 @@ PROPOSAL_FAILED = "failed"
 
 BASIS_HUMAN = "human_approval"
 BASIS_AUTONOMOUS = "autonomous_grant"
+
+#: D11 (A30.37): an autonomous class this agent's activation did not approve
+#: for unattended execution. The agent-narrowing code beside
+#: `agent_requires_approval` and `agent_ceiling_below_grant`.
+AGENT_UNATTENDED_NOT_APPROVED = "agent_unattended_not_approved"
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +380,7 @@ def bound_skills(capabilities: Iterable[Any]) -> set[str]:
 
 def effective_disposition(
     agent, class_row: dict, stop_switch_active: bool = False,
+    *, unattended_approved: Iterable[str],
 ) -> dict[str, Any]:
     """What this agent may do with this action class, and why.
 
@@ -377,6 +388,13 @@ def effective_disposition(
     the agent's own ceiling. Every rule here can only TIGHTEN: an agent
     is never granted something the tenant is not, which is what keeps
     "one autonomy model" true when there are many agents.
+
+    D11 (A30.36/A30.37): `unattended_approved` is REQUIRED -- the classes a
+    human approved for unattended execution when this agent was activated
+    (`agent_lifecycle.activation_approved_unattended`). A class outside it
+    needs a human however autonomous the site is: activation that
+    conferred no unattended authority cannot acquire it later because the
+    safety picture changed.
 
     Two translations, because the contract answers a narrower question
     than an actor needs to:
@@ -395,6 +413,14 @@ def effective_disposition(
       spend a human's decision on work the node will refuse anyway
       (A10.3: approval never overrides a safety gate).
     """
+    if unattended_approved is None or isinstance(unattended_approved, str):
+        raise TypeError(
+            "effective_disposition needs the activation-approved unattended "
+            "set (D11), not "
+            f"{type(unattended_approved).__name__}: an unevaluated set is not "
+            "consent (spec A30.37)"
+        )
+    approved = frozenset(str(c).upper() for c in unattended_approved)
     disposition = class_row.get("disposition", REQUIRES_APPROVAL)
     reason = class_row.get("disposition_reason", "")
     blocking = list(class_row.get("blocking_conditions") or [])
@@ -450,6 +476,18 @@ def effective_disposition(
             )
             blocking.append({
                 "code": "agent_ceiling_below_grant",
+                "detail": reason,
+                "scope": SCOPE_TENANT,
+            })
+        elif (class_row.get("action_type") or "").upper() not in approved:
+            disposition = REQUIRES_APPROVAL
+            reason = (
+                "this agent's activation did not approve unattended execution "
+                "of this class, so it needs a named human; re-run preflight "
+                "and approve the activation to delegate it"
+            )
+            blocking.append({
+                "code": "agent_unattended_not_approved",
                 "detail": reason,
                 "scope": SCOPE_TENANT,
             })
@@ -614,10 +652,9 @@ def govern_proposal(
     condition: dict,
     candidate: dict,
     allowed_classes,
-    class_rows: dict,
-    autonomy_contract: dict,
+    assessments,
+    unattended_approved,
     attention: Optional[dict] = None,
-    stop_switch_active: bool = False,
     open_dedupe_keys=(),
     now=None,
 ) -> dict:
@@ -631,16 +668,28 @@ def govern_proposal(
     two implementations that agree today.
 
     Returns ``{"admitted", "code", "reason", "proposal", "dedupe_key"}``.
-    It decides; it does not write, and it never widens anything: every
-    check below already existed and none was added or removed.
+    It decides; it does not write, and it never widens anything.
+
+    S3-E1 (A30.37). `assessments` is a `governance.SiteAssessments`: the
+    verdict reads the TARGET site's local assessment -- the composer over
+    the device's own site and nothing else -- never the tenant-wide fold.
+    The global safety gate is recorded on the proposal as its bounded row
+    and NEVER converts the mode (answer 1): it holds execution, which the
+    dispatch gate enforces. What the proposal FREEZES as evidence is the
+    whole-tenant row, exactly as before (D7; S3-E2's). `unattended_approved`
+    is the activation-approved unattended set (D11), required.
     """
+    from harkeniq_cc.autonomy import CONTRACT_VERSION
+    from harkeniq_cc.global_safety import global_row
+
     now = now or datetime.now(timezone.utc)
     action_type = candidate["action_type"]
 
     if action_type not in allowed_classes:
         return _refused("not_bound", f"{action_type} is not bound to this agent")
 
-    class_row = class_rows.get(action_type)
+    target_site = getattr(device, "site_id", "") or ""
+    class_row = assessments.local_rows(target_site).get(action_type)
     if class_row is None:
         # The contract does not describe this class, which means the
         # executor does not have it. Never propose into a class the
@@ -704,12 +753,19 @@ def govern_proposal(
         return _refused("duplicate", "an equivalent proposal is already open")
 
     disposition_verdict = effective_disposition(
-        agent, class_row, stop_switch_active,
+        agent, class_row, assessments.stop_switch_active,
+        unattended_approved=unattended_approved,
     )
     blocking = disposition_verdict["blocking_conditions"]
     disposition = disposition_verdict["disposition"]
 
-    if device.site_id in _suppressed_sites(class_row):
+    # A suppression TIGHTENS: it takes autonomy away from work proposed into
+    # a site that is suppressing correlated conclusions. It never loosens a
+    # denial. It used to set REQUIRES_APPROVAL unconditionally, so a DENIED
+    # class -- a fenced high-risk one, or anything under the tenant stop
+    # switch -- became approvable by a human whenever its site happened to
+    # be suppressing (found by S3-E1, A30.37: local rules only narrow).
+    if disposition != DENIED and device.site_id in _suppressed_sites(class_row):
         disposition = REQUIRES_APPROVAL
         blocking = blocking + [{
             "code": "site_suppressed",
@@ -721,6 +777,19 @@ def govern_proposal(
             "site_id": device.site_id,
         }]
 
+    # The gate, for this target. Recorded -- the one bounded row, from
+    # constants -- and deliberately NOT folded into `disposition`: a
+    # constraint present at admission holds execution at dispatch and does
+    # not route locally autonomous work to a human (A30.37, answer 1).
+    # `local_rows` already carries the row when the class-level gate is
+    # not clear; this adds it for the target-level answer, once.
+    gate = assessments.gate_verdict(action_type, target_site)
+    if not gate.clear and not any(
+        isinstance(row, dict) and row.get("scope") == global_row()["scope"]
+        for row in blocking
+    ):
+        blocking = blocking + [global_row()]
+
     if disposition == DENIED:
         status = PROPOSAL_BLOCKED
     elif disposition == AUTONOMOUS:
@@ -729,6 +798,11 @@ def govern_proposal(
         status = PROPOSAL_AWAITING
 
     attention = attention or {}
+    # D7: what a proposal FREEZES is unchanged -- the whole-tenant row's
+    # outcome evidence and learned signals, and the rationale sentence built
+    # from them. S3-E2 decides what evidence is recorded; S3-E1 changes only
+    # what is decided.
+    evidence_row = assessments.evidence_rows().get(action_type) or class_row
     evidence = {
         "observed": condition["detail"],
         "condition_kind": condition["kind"],
@@ -747,8 +821,8 @@ def govern_proposal(
             "driver": attention.get("attention_driver"),
             "risk_score": attention.get("risk_score"),
         } if attention else None,
-        "outcome_evidence": class_row.get("evidence"),
-        "learned_signals": class_row.get("learning") or [],
+        "outcome_evidence": evidence_row.get("evidence"),
+        "learned_signals": evidence_row.get("learning") or [],
         "device": {
             "vendor": getattr(device, "vendor", ""),
             "model": getattr(device, "model", ""),
@@ -756,7 +830,7 @@ def govern_proposal(
             "health": getattr(device, "health", ""),
             "observation": getattr(device, "observation", ""),
         },
-        "contract_version": autonomy_contract.get("contract_version"),
+        "contract_version": CONTRACT_VERSION,
         "evaluated_at": now.isoformat(),
     }
 
@@ -775,7 +849,7 @@ def govern_proposal(
             "action_type": action_type,
             "params": params,
             "rationale": _rationale(
-                agent.name, device, condition, candidate, class_row,
+                agent.name, device, condition, candidate, evidence_row,
             ),
             "evidence": evidence,
             "disposition": disposition,
@@ -861,7 +935,12 @@ def evaluate(
     capabilities: Iterable[Any],
     devices: Iterable[Any],
     incidents_by_device: dict[str, list[dict]],
-    autonomy_contract: dict,
+    #: S3-E1 (A30.37): a `governance.SiteAssessments` -- each target's own
+    #: site-local assessment and the gate, never the tenant-wide fold.
+    assessments,
+    #: D11: the classes this agent's activation approved for unattended
+    #: execution. Required; an agent that is not active approved none.
+    unattended_approved,
     attention_by_device: Optional[dict[str, dict]] = None,
     open_dedupe_keys: Iterable[str] = (),
     proposals_today: int = 0,
@@ -896,18 +975,9 @@ def evaluate(
     if not allowed_classes:
         return []
 
-    class_rows = {
-        row["action_type"]: row
-        for row in autonomy_contract.get("action_classes", [])
-    }
     in_scope = resolve_scope(scopes, devices, resolved_site_ids)
     if not in_scope:
         return []
-    stop_switch_active = bool(
-        (autonomy_contract.get("posture") or {})
-        .get("stop_switch", {})
-        .get("active", False)
-    )
 
     budget_left = proposal_budget_left(agent, proposals_today)
 
@@ -936,10 +1006,9 @@ def evaluate(
                     condition=condition,
                     candidate=candidate,
                     allowed_classes=allowed_classes,
-                    class_rows=class_rows,
-                    autonomy_contract=autonomy_contract,
+                    assessments=assessments,
+                    unattended_approved=unattended_approved,
                     attention=attention_by_device.get(device.agent_id),
-                    stop_switch_active=stop_switch_active,
                     open_dedupe_keys=open_keys,
                     now=now,
                 )
@@ -1048,6 +1117,9 @@ def agent_view(
     capabilities: Iterable[Any],
     devices: Iterable[Any],
     autonomy_contract: dict,
+    #: D11 (A30.37): the classes this agent's activation approved for
+    #: unattended execution. Required -- an absent set is not consent.
+    unattended_approved,
     proposals: Iterable[Any] = (),
     #: E1.2: sites an `org_unit` scope expands to, resolved by the ONE
     #: scope resolver before this pure function is called.
@@ -1114,7 +1186,13 @@ def agent_view(
                 "requires_approval": True,
             })
             continue
-        verdict = effective_disposition(agent, row, stop_switch_active)
+        verdict = effective_disposition(
+            agent, row, stop_switch_active,
+            unattended_approved=unattended_approved,
+        )
+        gate = GlobalSafetyVerdict(
+            (row.get("global_safety") or {}).get("state") or STATE_UNKNOWN
+        )
         can_do.append({
             "action_type": action_type,
             "known_to_executor": True,
@@ -1122,7 +1200,12 @@ def agent_view(
             "granted_at_level": row.get("granted_at_level"),
             "never_budget_grantable": row.get("never_budget_grantable"),
             "tenant_disposition": row.get("disposition"),
+            # S3-E1 (A30.37): three answers, never merged. `disposition` is
+            # the agent's own over its site-local assessment; the gate and
+            # the conjunction are beside it.
             "disposition": verdict["disposition"],
+            "global_safety": gate.as_dict(),
+            "final_execution_eligibility": final_block(verdict["disposition"], gate),
             "disposition_reason": verdict["disposition_reason"],
             "blocking_conditions": verdict["blocking_conditions"],
             "requires_approval": verdict["disposition"] != AUTONOMOUS,

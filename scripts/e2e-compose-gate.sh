@@ -8,6 +8,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/../deploy/full-stack"
 
+# S3-E1 (A30.37 answer 2, as amended by A30.38): the gate's OWN compose
+# override runs Central Command under the TEST-ONLY global safety harness
+# (tests/gate/, mounted read-only): the SHIPPED entrypoint with only its final
+# line replaced, the shipped main and runtime, and the probe installed
+# in-process once the production runtime has started. No configuration key is
+# involved -- none can register a member. The probe constrains only while its
+# trigger file exists inside the container, which the S3-E1 steps create and
+# remove, so every other step runs with it installed and CLEAR. The shipped
+# docker-compose.yml never mounts the harness (a unit test holds it).
+export COMPOSE_FILE="docker-compose.yml:../../scripts/e2e-compose-gate.override.yml"
+
 step() { echo; echo "=== $*"; }
 
 wait_for() {  # wait_for <description> <timeout_s> <command...>
@@ -6105,9 +6116,10 @@ else:
     assert 'error_budget_dropped_back' not in row['advancement']['blocked_by'], row['advancement']
     assert set(row['safety']['site_budget_remaining']) <= {A}, row['safety']
     if want == 'none':
+        # S3-E1 (A30.37, R5): 'every_site_reported' -- vacuously not, here.
         assert c['safety_state'] == {'reported': False, 'sites_reporting': [],
             'sites_not_reporting': [], 'suppressions': [], 'error_budgets': [],
-            'site_stop_switches': []}, c['safety_state']
+            'site_stop_switches': [], 'every_site_reported': False}, c['safety_state']
         assert row['safety'] == {'reported': False, 'error_budget': None,
             'suppressed_domains': [], 'site_budget_remaining': {}}, row['safety']
         assert c['posture']['ladder'] and 'configured_level' in c['posture']
@@ -7214,11 +7226,37 @@ PY
   echo "the machine agent view's lapsed-agent answer changed (A30.20 records it as 404)" >&2; exit 1; }
 echo "  (the machine agent view still answers that agent 404, as A30.20 records -- unchanged by B1)"
 
-step "A6-4B1/BY: one Site Manager drop-back at site B, read by a site-A machine and a tenant-wide machine (D3, before S3-E1)"
+step "A6-4B1/BY: one Site Manager drop-back at site B, read by a site-A person, a site-A machine and a tenant-wide machine (D3; S3-E1: admission reads the TARGET site)"
 # Raise the ladder so BMC_RESET is budget-granted at all; BZ puts it back.
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"device_type":"*","level":2,"budget_limit":50,"budget_period":"daily"}' \
   http://localhost:8090/api/policies/autonomy >/dev/null
+# S3-E1 (A30.37): site A's OWN local assessment, read by a site-A person
+# before site B withdraws the class and again after -- it must not move. The
+# ladder is pushed to the Site Manager at once but reaches Central Command's
+# copy of the site's windows on the next poll, so the BEFORE read waits for
+# site A to answer on its own report at the raised level.
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+by_local_a() {  # site A's local DECISION facts, exactly as its own reader sees them
+  # Execution COUNTS are left out: an outcome at site A may land between the
+  # two reads, and that is site A's own state moving, not site B's.
+  s2_get "$S3_A" "/api/autonomy/" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+assert [s['id'] for s in c['scope']['sites']] == ['$SITE_A'], c['scope']['sites']
+keep = ('disposition', 'disposition_reason', 'blocking_conditions',
+        'global_safety', 'final_execution_eligibility')
+rows = {r['action_type']: {k: r[k] for k in keep} for r in c['action_classes']}
+state = {k: v for k, v in c['safety_state'].items() if k != 'error_budgets'}
+print(json.dumps({'classes': rows, 'safety_state': state}, sort_keys=True))"
+}
+by_a_autonomous() {
+  by_local_a | python3 -c "
+import sys, json
+sys.exit(0 if json.load(sys.stdin)['classes']['BMC_RESET']['disposition'] == 'autonomous' else 1)"
+}
+wait_for "site A's own BMC_RESET assessment to read autonomous at level 2" 120 by_a_autonomous
+BY_LOCAL_A_0=$(by_local_a)
 B1_SENTINEL=520052
 B1_SM_SITE_B=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_B'")
 [ -n "$B1_SM_SITE_B" ] || { echo "the Site Manager does not serve site B" >&2; exit 1; }
@@ -7235,6 +7273,25 @@ b1_polled() {
               AND error_budgets::text LIKE '%$B1_SENTINEL%'")" = "1" ]
 }
 wait_for "the poller to carry site B's BMC_RESET drop-back into cc_safety_state" 180 b1_polled
+BY_LOCAL_A_1=$(by_local_a)
+python3 - "$BY_LOCAL_A_0" "$BY_LOCAL_A_1" "$SITE_B" "$B1_SENTINEL" <<'PY'
+import json, sys
+before, after = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+site_b, sentinel = sys.argv[3:5]
+# Before S3-E1 a decision path folded EVERY site's drop-back into one answer,
+# so this one row at site B sent site A's BMC_RESET work to a human.
+assert before == after, "site B's drop-back moved site A's OWN assessment"
+row = after["classes"]["BMC_RESET"]
+assert row["disposition"] == "autonomous", row
+assert row["final_execution_eligibility"] == {"disposition": "autonomous",
+                                              "reason_codes": []}, row
+text = json.dumps(after)
+assert site_b not in text and sentinel not in text, "site B reached site A's assessment"
+print("  site-A person: BMC_RESET autonomous at site A before AND after site B's drop-back;"
+      " every class's decision facts byte-identical; site B named nowhere")
+PY
+[ "$(s3_walk "$S3_A" "/api/autonomy/" "$SITE_B" "$B1_SENTINEL")" = "clean" ] || {
+  echo "site B's drop-back reached the site-A person's contract" >&2; exit 1; }
 B1_TW=$(b1_agent "b1-tenant-wide" "[]")
 [ -n "$B1_TW" ] || { echo "could not create the tenant-wide agent" >&2; exit 1; }
 # The credential is issued BEFORE the tenant grant. That order was REQUIRED
@@ -7273,25 +7330,34 @@ import json, sys
 site_b, sentinel = sys.argv[1:3]
 body = json.load(open("/tmp/b1_disc.json"))
 basis = body["governance_basis"]
-assert basis["discovery_composed_over"] == "authorized_sites" and basis["matches_admission"] is False, basis
+# INVERTED by S3-E1 (A30.37). Before it, admission folded the WHOLE tenant,
+# so a site-A agent's answer had to be `unknown` (`admission_beyond_reach`).
+# Admission now reads the TARGET site's own assessment, and every target
+# this agent reaches is at site A: what discovery composes IS what
+# admission reads.
+assert basis["discovery_composed_over"] == "authorized_sites", basis
+assert basis["admission_composed_over"] == "target_site", basis
+assert basis["matches_admission"] is True, basis
 row = next(r for r in body["action_classes"] if r["action_type"] == "BMC_RESET")
 gov = row["governance"]
-# Composed over site A alone, site B's drop-back does not exist here (S3) --
-assert gov["conclusion"] == "autonomous", gov
-# -- and admission, which folds the WHOLE tenant until S3-E1, will send it
-# to a human. So discovery may not say `not_required`, and may not say
-# `operable` (D3): the honest answer is `unknown`.
-assert row["approval_required"]["state"] == "unknown", row["approval_required"]
-assert "admission_beyond_reach" in row["approval_required"]["basis"], row["approval_required"]
+codes = [c["code"] for c in gov["reason_codes"]]
+# Site A alone is autonomous for BMC_RESET (its own person read it above).
+# This agent was never ACTIVATED, so no human approved unattended execution
+# for it: it needs a named human by its OWN configuration (D11), a
+# tenant-scoped reason -- and site B's drop-back is not among its reasons.
+assert gov["conclusion"] == "requires_approval", gov
+assert "agent_unattended_not_approved" in codes, codes
+assert "error_budget_dropped_back" not in codes, codes
+assert gov["global_safety"] == {"state": "clear", "reason_codes": []}, gov
+assert row["approval_required"] == {"state": "required",
+                                    "basis": ["governance_requires_approval"]}, row["approval_required"]
 operable = row["currently_operable"]
-assert operable["state"] != "operable", operable
-if not operable["blocked_by"]:
-    assert operable == {"state": "unknown", "blocked_by": [],
-                        "unknown": ["admission_beyond_reach"]}, operable
+assert "admission_beyond_reach" not in operable["unknown"], operable
+assert "agent_not_active" in operable["blocked_by"], operable
 text = json.dumps(body)
 assert site_b not in text and sentinel not in text, "site B reached the site-A machine"
-print("  site-A machine: BMC_RESET composed autonomous; approval UNKNOWN (admission_beyond_reach);"
-      f" operability {operable['state']} {operable['blocked_by'] or operable['unknown']};"
+print("  site-A machine: composed over site A = what admission reads (matches_admission);"
+      " BMC_RESET needs a human by its OWN activation (D11), not by site B's drop-back;"
       " site B and its sentinel appear nowhere")
 PY
 
@@ -8325,6 +8391,564 @@ print('  shipped image: per-site windows (budget_for_site), one halt predicate, 
 echo "  suppression re-enabled, B's drop-back recovered, the synthetic windows made unlimited"
 echo "  (a pushed policy class is never removed until restart -- update_policy only adds),"
 echo "  and every row the proof wrote removed from the Site Manager and Central Command"
+
+# ---------------------------------------------------------------------------
+# S3-E1 (A30.37): SITE-LOCAL AUTONOMY + GLOBAL SAFETY GATE = FINAL EXECUTION
+# ELIGIBILITY, live.
+#
+# The production registry is EMPTY, and no configuration can change it
+# (A30.38), so the constraint here is the TEST-ONLY probe the gate's harness
+# installed in-process after the production runtime started (never the
+# shipped compose file or image): it constrains while its trigger file exists
+# inside the Central Command container, and it can only narrow. Everything else is
+# the production path -- the real node at site A and the fan condition it has
+# held open since the start of the gate, the CC-resident evaluator, the one
+# approval queue, the ONE dispatch gate, the Site Manager and the node's own
+# authority. BMC_RESET is the class because no earlier step binds it and the
+# demo node does not permit it, so once Central Command lets it through the
+# NODE refuses it on its own. Two agents carry the two bases (D3): X acts
+# unattended on the grant a human approved when X was activated (D11); Y
+# asks a human. Site B's drop-back not moving site A is proven at BY, where
+# that drop-back is seeded.
+# ---------------------------------------------------------------------------
+E1_PROBE=/tmp/harken-gate-global-safety-probe
+e1_probe() {  # on | raise | off -- the TEST-ONLY trigger file inside Central Command
+  case "$1" in
+    on)    docker compose exec -T central-command sh -c "printf 'BMC_RESET\n' > $E1_PROBE" ;;
+    raise) docker compose exec -T central-command sh -c "printf 'raise\n' > $E1_PROBE" ;;
+    off)   docker compose exec -T central-command rm -f "$E1_PROBE" ;;
+  esac
+}
+e1_row() {  # $1 token -> the BMC_RESET row of the autonomy contract, as that reader reads it
+  s2_get "$1" "/api/autonomy/" | python3 -c "
+import sys, json
+print(json.dumps(next(r for r in json.load(sys.stdin)['action_classes']
+                      if r['action_type'] == 'BMC_RESET')))"
+}
+e1_a_autonomous() {  # site A's OWN assessment grants BMC_RESET, and the gate is clear
+  e1_row "$S3_A" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+sys.exit(0 if r['disposition'] == 'autonomous' and r['global_safety']['state'] == 'clear' else 1)"
+}
+e1_prop() {  # $1 agent -> its proposal on the real node ('' until the evaluator admits one)
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "SELECT id FROM cc_agent_proposals WHERE agent_id='$1' AND device_agent_id='$E1_NODE'
+     ORDER BY created_at LIMIT 1" | tr -d ' \r' | sed '/^$/d'
+}
+e1_has_prop() { [ -n "$(e1_prop "$1")" ]; }
+e1_withheld() {  # $1 proposal -> a background pass has withheld it
+  [ "$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE subject='$1'
+              AND action='agent_proposal.dispatch_withheld'")" != "0" ]
+}
+e1_dispatched() {  # $1 proposal -> it carries a directive id (never cleared once written)
+  [ "$(s1_cc "SELECT count(*) FROM cc_agent_proposals WHERE id='$1' AND directive_id <> ''")" = "1" ]
+}
+e1_ledger() {  # $1 approval subject -> its E0.1 ledger, as count|approvers
+  s1_cc "SELECT count(*) || '|' || coalesce(string_agg(approver_ref, ',' ORDER BY approver_ref), '')
+         FROM cc_approval_records WHERE subject_ref='$1'"
+}
+e1_agent() {  # $1 name, $2 require_approval_always -> a draft agent bound to BMC_RESET at site A
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$1 $(date +%s%N)\",
+         \"require_approval_always\":$2, \"autonomy_ceiling\":2,
+         \"execution_budget\":5, \"budget_period\":\"daily\",
+         \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}],
+         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"BMC_RESET\"}]}" \
+    http://localhost:8090/api/operational-agents/ \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])"
+}
+e1_catalogue() {  # $1 with|without the gate-only fan -> BMC_RESET row, on top of the platform SEED
+  curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "$(E1_SRC="$_REPO_ROOT/services/central_command/src" E1_WITH="$1" python3 -c '
+import json, os, sys
+sys.path.insert(0, os.environ["E1_SRC"])
+from harkeniq_cc.capability_catalogue import SEED
+entries = [dict(e) for e in SEED]
+if os.environ["E1_WITH"] == "with":
+    entries.append({"subsystem": "fan", "action_type": "BMC_RESET",
+                    "because": "S3-E1 gate: a class no earlier step binds, on a "
+                               "condition the node already holds open",
+                    "provenance": "scripts/e2e-compose-gate.sh (S3-E1)"})
+print(json.dumps({"entries": entries}))
+')" http://localhost:8090/api/capabilities/catalogue > /dev/null
+}
+e1_ladder() {  # $1 level -> the tenant ladder, pushed to every site
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"device_type\":\"*\",\"level\":$1,\"budget_limit\":$(( $1 > 0 ? 50 : 0 )),\"budget_period\":\"daily\"}" \
+    http://localhost:8090/api/policies/autonomy > /dev/null
+}
+
+step "S3-E1/CS: no configuration can register the TEST-ONLY probe (A30.38) -- this Central Command's production runtime recorded the PRODUCTION registry, the gate's harness installed the probe after it, and the SHIPPED image with the stale key everywhere serves an empty registry"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+# (1) The SHIPPED compose file: no key, no harness mount, no entrypoint change.
+[ "$(docker compose -f docker-compose.yml config \
+     | grep -cE 'GLOBAL_SAFETY|PROBE|harken-test|tests/gate|entrypoint-cc-probe|cc_global_safety_probe' \
+     || true)" = "0" ] || {
+  echo "the SHIPPED compose file carries the TEST-ONLY harness or a probe key" >&2; exit 1; }
+# (2) No probe setting exists in the running Central Command's environment --
+# there is no such setting to give it.
+[ "$(docker compose exec -T central-command env | tr -d '\r' \
+     | grep -cE '^[^=]*(PROBE|GLOBAL_SAFETY)[^=]*=' || true)" = "0" ] || {
+  echo "a probe setting reached Central Command's environment" >&2; exit 1; }
+# (3) What runs the probe is the gate's harness, as PID 1 -- not a setting.
+E1_PID1=$(docker compose exec -T central-command cat /proc/1/cmdline | tr '\0' ' ')
+case "$E1_PID1" in
+  "python /opt/harken-test/cc_global_safety_probe.py $E1_PROBE "*) ;;
+  *) echo "Central Command is not running under the gate's harness: $E1_PID1" >&2; exit 1 ;;
+esac
+# (4) Every start of this Central Command (the A6-3 step restarts it once):
+# the PRODUCTION runtime recorded the production registry, THEN the harness
+# installed the probe -- and no start ever served a non-production registry.
+# (A file, not a pipe: -q exits at the first match and, under pipefail, the
+# SIGPIPE it hands a long log fails a check falsely.)
+docker compose logs --no-log-prefix central-command > /tmp/e1_cc.log 2>&1
+python3 - <<'PY'
+events = []
+for line in open("/tmp/e1_cc.log", errors="ignore"):
+    if "global safety gate: production registry (0 members)" in line:
+        events.append("production")
+    elif "TEST-ONLY global safety probe INSTALLED" in line:
+        events.append("installed")
+    elif "NON-PRODUCTION registry" in line:
+        events.append("NON-PRODUCTION")
+starts = len(events) // 2
+assert starts >= 1 and events == ["production", "installed"] * starts, events
+print(f"  {starts} start(s): each recorded the production registry, then the harness installed the probe")
+PY
+# (5) The SHIPPED image, started standalone by its SHIPPED entrypoint -- no
+# override, no harness mount -- with A30.37's key in its environment AND its
+# YAML, the old trigger file present (empty: the old probe's "constrain every
+# class"), against a throwaway database: an empty registry and a clear gate.
+E1_IMAGE=$(docker inspect --format '{{.Image}}' "$(docker compose ps -q central-command)")
+E1_NET=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' \
+  "$(docker compose ps -q postgres)")
+E1_SA_DB=harkeniq_cc_e1_standalone
+E1_SA_DIR=$(mktemp -d)
+: > "$E1_SA_DIR/trigger"
+printf 'global_safety_test_probe: %s\ntest_probe: %s\n' "$E1_PROBE" "$E1_PROBE" > "$E1_SA_DIR/cc.yaml"
+chmod 0644 "$E1_SA_DIR/trigger" "$E1_SA_DIR/cc.yaml"
+e1_sa_db() {  # $1 CREATE|DROP -- the standalone check's own database
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "DROP DATABASE IF EXISTS $E1_SA_DB WITH (FORCE)" > /dev/null
+  [ "$1" = "DROP" ] || docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "CREATE DATABASE $E1_SA_DB OWNER harkeniq" > /dev/null
+}
+e1_sa_db CREATE
+E1_SA=$(docker run -d --network "$E1_NET" \
+  -v "$E1_SA_DIR/cc.yaml:/etc/harkeniq/cc.yaml:ro" \
+  -v "$E1_SA_DIR/trigger:$E1_PROBE:ro" \
+  -e HARKEN_CC_CONFIG=/etc/harkeniq/cc.yaml \
+  -e HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE="$E1_PROBE" \
+  -e HARKEN_CC_DSN="postgresql+asyncpg://harkeniq:harkeniq@postgres:5432/$E1_SA_DB" \
+  -e HARKEN_CC_INSECURE=true -e HARKEN_CC_TENANT_ID=e1-standalone \
+  -e HARKEN_CC_HTTP_PORT=8090 \
+  "$E1_IMAGE")
+e1_sa_fail() {
+  echo "standalone shipped Central Command: $1" >&2
+  docker logs "$E1_SA" 2>&1 | tail -40 >&2
+  docker rm -f "$E1_SA" > /dev/null 2>&1 || true
+  exit 1
+}
+E1_SA_UP=""
+for _ in $(seq 120); do
+  [ "$(docker inspect --format '{{.State.Running}}' "$E1_SA")" = "true" ] || e1_sa_fail "exited"
+  if docker exec "$E1_SA" python -c "import urllib.request as u; u.urlopen('http://localhost:8090/healthz', timeout=3)" \
+       > /dev/null 2>&1; then E1_SA_UP=yes; break; fi
+  sleep 1
+done
+[ -n "$E1_SA_UP" ] || e1_sa_fail "never served"
+[ "$(docker exec "$E1_SA" cat /proc/1/cmdline | tr '\0' ' ')" = "python -m harkeniq_cc " ] \
+  || e1_sa_fail "PID 1 is not the shipped main"
+docker exec -i "$E1_SA" python - <<'PY' || e1_sa_fail "the gate is not clear"
+import json, os, urllib.request
+assert os.environ["HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE"]          # present -- and inert
+assert os.path.exists(os.environ["HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE"])
+c = json.load(urllib.request.urlopen("http://localhost:8090/api/autonomy/", timeout=20))
+rows = c["action_classes"]
+assert rows, c
+bad = [r["action_type"] for r in rows
+       if r["global_safety"] != {"state": "clear", "reason_codes": []}
+       or r["final_execution_eligibility"]["disposition"] != r["disposition"]]
+assert not bad, bad
+print(f"  shipped image, stale key in env + YAML, trigger present: {len(rows)} classes, every gate CLEAR")
+PY
+docker exec "$E1_SA" python -c "
+import dataclasses
+from harkeniq_cc.config import CCConfig
+from harkeniq_cc import global_safety as G
+assert 'global_safety_test_probe' not in {f.name for f in dataclasses.fields(CCConfig)}
+assert G.PRODUCTION_MEMBERS == ()
+assert not hasattr(G, 'configure') and not hasattr(G, 'TestOnlyProbeMember')" \
+  || e1_sa_fail "the shipped package still carries a probe path"
+docker exec "$E1_SA" sh -c '! test -e /opt/harken-test && ! grep -rqs -e TestOnlyProbe -e cc_global_safety_probe /app/services/central_command/src' \
+  || e1_sa_fail "the shipped image carries the harness"
+docker logs "$E1_SA" > "$E1_SA_DIR/log" 2>&1
+[ "$(grep -c 'global safety gate: production registry (0 members)' "$E1_SA_DIR/log" || true)" = "1" ] \
+  || e1_sa_fail "the shipped runtime did not record the production registry"
+[ "$(grep -cE 'TEST-ONLY|NON-PRODUCTION' "$E1_SA_DIR/log" || true)" = "0" ] \
+  || e1_sa_fail "the shipped runtime logged a probe"
+docker rm -f "$E1_SA" > /dev/null
+e1_sa_db DROP
+rm -rf "$E1_SA_DIR"
+E1_CONST=$(docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+import json
+from harkeniq_cc import global_safety as G
+assert G.PRODUCTION_MEMBERS == (), G.PRODUCTION_MEMBERS
+assert not hasattr(G, 'configure'), 'a configuration path to the registry is back'
+print(json.dumps({'code': G.GLOBAL_SAFETY_CONSTRAINT, 'row': G.global_row(),
+                  'withheld': G.GLOBAL_WITHHELD_REASON}))" | tr -d '\r')
+[ -n "$E1_CONST" ] || { echo "could not read the gate's constants from the shipped image" >&2; exit 1; }
+e1_probe off
+e1_row "$S3_A" | python3 -c "
+import sys, json
+row = json.load(sys.stdin)
+assert row['global_safety'] == {'state': 'clear', 'reason_codes': []}, row['global_safety']
+assert row['final_execution_eligibility'] == {'disposition': row['disposition'], 'reason_codes': []}, row
+print('  registered and CLEAR (no trigger file): final eligibility IS the site-local answer,', row['disposition'])"
+echo "  no configuration reaches the registry: the shipped compose file and environment carry no"
+echo "  probe; the running Central Command has it from the gate's harness, installed after startup"
+
+step "S3-E1/CT: site A is locally AUTONOMOUS for BMC_RESET; the gate is held -- an activated agent's proposal keeps its MODE and its dispatch is WITHHELD"
+# A26's proof left a WILDCARD dual-approval policy whose only group member is
+# a synthetic address -- it never had to complete a decision. An activation
+# subject names no class, device or site, so only a wildcard policy can
+# govern it, and that leftover holds every activation after A26 forever. It
+# is removed here, through the production route and on the audit chain,
+# before this proof asks a human to approve an activation.
+E1_A26=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/policies/ \
+  | A26_GROUP="$A26_GROUP" python3 -c "
+import sys, json, os
+print(' '.join(p['id'] for p in json.load(sys.stdin)['policies']
+               if p.get('group_id') == os.environ['A26_GROUP']))")
+for E1_P in $E1_A26; do
+  curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/policies/$E1_P" > /dev/null
+done
+# The real node: the one BMC-backed device at site A, still holding the fan
+# condition injected at the start of the gate (FAN_RESET records a reset at
+# the simulator; it does not repair the fan).
+E1_NODE=$(s1_cc "SELECT device_agent_id FROM cc_incidents WHERE site_id='$SITE_A'
+                 AND subsystem='fan' AND status='open' ORDER BY opened_at LIMIT 1")
+[ -n "$E1_NODE" ] || { echo "no open fan condition on the node at site A" >&2; exit 1; }
+e1_ladder 2
+e1_catalogue with
+wait_for "site A's own BMC_RESET assessment to read autonomous at level 2" 120 e1_a_autonomous
+e1_row "$S3_A" > /tmp/e1_row_clear.json
+e1_probe on
+e1_row "$S3_A" > /tmp/e1_row_held.json
+python3 - "$E1_CONST" <<'PY'
+import json, sys
+const = json.loads(sys.argv[1])
+clear, held = (json.load(open(f"/tmp/e1_row_{k}.json")) for k in ("clear", "held"))
+code = const["code"]
+local = lambda r: [b for b in r["blocking_conditions"] if b.get("scope") != "global"]
+# The gate is not an input to the site's own assessment: nothing local moves.
+assert clear["disposition"] == held["disposition"] == "autonomous", (clear, held)
+assert clear["disposition_reason"] == held["disposition_reason"], (clear, held)
+assert local(clear) == local(held), (local(clear), local(held))
+# The conjunction narrows, and says so with the ONE bounded code.
+assert clear["global_safety"] == {"state": "clear", "reason_codes": []}, clear
+assert held["global_safety"] == {"state": "constrained", "reason_codes": [code]}, held
+assert held["final_execution_eligibility"] == {"disposition": "denied",
+                                               "reason_codes": [code]}, held
+assert [b for b in held["blocking_conditions"] if b.get("scope") == "global"] == [const["row"]]
+print("  site-A person: BMC_RESET site-local disposition autonomous with the gate CLEAR and HELD;"
+      " final eligibility autonomous -> denied; one constant row, code", code)
+PY
+E1_X=$(e1_agent s3e1-unattended false)
+[ -n "$E1_X" ] || { echo "could not create agent X" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$E1_X/preflight" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+assert p["requires_activation_approval"] is True, p
+assert p["unattended_classes"] == ["BMC_RESET"], p["unattended_classes"]
+print("  X preflighted with the gate HELD: unattended", p["unattended_classes"],
+      "-> its activation needs a named human (D11)")
+'
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$E1_X/acknowledge" > /dev/null 2>&1 || true
+E1_ACT=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/approvals/ | python3 -c "
+import sys, json
+q = json.load(sys.stdin)
+mine = [i for i in q['actions'] if i['origin'] == 'agent_activation'
+        and i['activation']['agent_id'] == '$E1_X']
+assert mine, 'X activation is not in the ONE queue'
+assert mine[0]['activation']['unattended_classes'] == ['BMC_RESET'], mine[0]['activation']
+print(mine[0]['action_id'])")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$E1_ACT/approve" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['origin'] == 'agent_activation' and d['decision'] == 'approved', d
+assert d['approval']['state'] == 'approved' and d['approval']['required'] == 1, d['approval']
+print('  X activation approved on the one queue by', d['decided_by'], '(one approver: no wildcard left)')"
+E1_ACT_LEDGER=$(e1_ledger "$E1_ACT")
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$E1_X/activate" | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active', a
+print('  X activated at v%d' % a['activated_version'])"
+wait_for "the evaluator to admit X's BMC_RESET on the node's open fan condition" 90 e1_has_prop "$E1_X"
+E1_XP=$(e1_prop "$E1_X")
+wait_for "a background pass to WITHHOLD X's approved proposal" 60 e1_withheld "$E1_XP"
+b0r_cc_text "SELECT status || '|' || authorization_basis || '|' || disposition || '|' ||
+    coalesce(directive_id,'') || '|' || site_id || '|' || action_type || '|' || coalesce(dispatch_reason,'')
+  FROM cc_agent_proposals WHERE id='$E1_XP'" | E1_CONST="$E1_CONST" SITE_A="$SITE_A" python3 -c "
+import sys, json, os
+status, basis, disposition, directive, site, action, reason = sys.stdin.read().strip().split('|', 6)
+const = json.loads(os.environ['E1_CONST'])
+# Answer 1: the MODE is the site's. A constraint at admission did not route
+# locally autonomous work to a human -- it holds the execution.
+assert (status, basis, disposition) == ('approved', 'autonomous_grant', 'autonomous'), (status, basis, disposition)
+assert (site, action) == (os.environ['SITE_A'], 'BMC_RESET'), (site, action)
+assert directive == '', ('dispatched while the gate was held', directive)
+assert reason == const['withheld'], reason
+print('  X proposal: approved / autonomous_grant / autonomous (mode kept) -- WITHHELD:', reason[:70])"
+b0r_cc_text "SELECT detail->>'reason' FROM cc_audit_log WHERE subject='$E1_XP'
+    AND action='agent_proposal.dispatch_withheld' ORDER BY seq LIMIT 1" \
+  | E1_CONST="$E1_CONST" python3 -c "
+import sys, json, os
+got, want = sys.stdin.read().strip(), json.loads(os.environ['E1_CONST'])['withheld']
+assert got == want[:200], ('the withheld dispatch is not audited with the constant reason', got)"
+[ "$(b0r_sm_directives "$E1_XP")" = "0" ] || { echo "X's proposal reached the Site Manager while held" >&2; exit 1; }
+[ "$(e1_ledger "$E1_ACT")" = "$E1_ACT_LEDGER" ] || { echo "withholding moved the activation ledger" >&2; exit 1; }
+echo "  SM directives for it: 0; the withheld dispatch audited; the activation ledger ($E1_ACT_LEDGER) did not move"
+
+step "S3-E1/CU: every reader reads ONE bounded code -- no member, no probe, no site, no count"
+E1_X_SECRET=$(b1_issue "$E1_X")
+E1_X_MACHINE=$(b1_token "$E1_X" "$E1_X_SECRET")
+[ -n "$E1_X_MACHINE" ] || { echo "no machine token for agent X" >&2; exit 1; }
+s2_get "$S3_A" "/api/operational-agents/$E1_X/proposals" > /tmp/e1_site_a.json
+s2_get "$TOKEN" "/api/operational-agents/$E1_X/proposals" > /tmp/e1_owner.json
+s2_get "$E1_X_MACHINE" "/api/operational-agents/$E1_X/proposals" > /tmp/e1_machine.json
+[ "$(b1_disc "$E1_X_MACHINE" "$E1_X")" = "200" ] || { head -c 300 /tmp/b1_disc.json >&2; exit 1; }
+python3 - "$E1_CONST" "$E1_XP" <<'PY'
+import json, sys
+const, prop = json.loads(sys.argv[1]), sys.argv[2]
+code, row = const["code"], const["row"]
+def item(payload):
+    # A person's list item IS the proposal; a machine's wraps it (A25.5).
+    for p in payload["proposals"]:
+        inner = p.get("proposal") if isinstance(p.get("proposal"), dict) else p
+        ids = {p.get("proposal_id"), p.get("id"), inner.get("proposal_id"), inner.get("id")}
+        if prop in ids:
+            return inner
+    raise AssertionError(("proposal not listed", payload["proposals"]))
+for who in ("site_a", "owner", "machine"):
+    inner = item(json.load(open(f"/tmp/e1_{who}.json")))
+    rows = [b for b in inner["blocking_conditions"] if b.get("scope") == "global"]
+    assert rows == [row], (who, rows)          # the owner reads no more than anyone
+disc = json.load(open("/tmp/b1_disc.json"))
+sel = next(r for r in disc["action_classes"] if r["action_type"] == "BMC_RESET")
+assert sel["governance"]["conclusion"] == "autonomous", sel["governance"]   # the mode
+assert sel["governance"]["global_safety"] == {"state": "constrained", "reason_codes": [code]}
+assert sel["governance"]["final_execution_eligibility"] == {"disposition": "denied",
+                                                             "reason_codes": [code]}
+assert sel["currently_operable"]["state"] == "not_operable", sel["currently_operable"]
+assert code in sel["currently_operable"]["blocked_by"], sel["currently_operable"]
+print("  site-A person, tenant owner and X's own machine token: the proposal carries exactly the"
+      " constant row; X's discovery: mode autonomous, gate constrained, final denied, not operable")
+PY
+for E1_READ in "$S3_A|/api/autonomy/" "$S3_A|/api/operational-agents/$E1_X/proposals" \
+               "$E1_X_MACHINE|/api/operational-agents/$E1_X/proposals" \
+               "$E1_X_MACHINE|/api/operational-agents/$E1_X/discovery"; do
+  E1_W=$(s3_walk "${E1_READ%%|*}" "${E1_READ#*|}" "test_only_probe" "harken-gate-global-safety-probe" "$SITE_B")
+  [ "$E1_W" = "clean" ] || { echo "${E1_READ#*|}: $E1_W" >&2; exit 1; }
+done
+# The owner holds site B, so site B's own facts may reach them -- the probe may not.
+E1_W=$(s3_walk "$TOKEN" "/api/operational-agents/$E1_X/proposals" "test_only_probe" "harken-gate-global-safety-probe")
+[ "$E1_W" = "clean" ] || { echo "owner: $E1_W" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_audit_log WHERE (subject='$E1_XP' OR subject='$E1_X')
+            AND detail::text LIKE '%test_only_probe%'")" = "0" ] || {
+  echo "the member's identity reached the audit chain" >&2; exit 1; }
+echo "  no reader, no response and no audit entry names the member, the trigger or site B"
+
+step "S3-E1/CV: the gate clears -- the SAME proposal dispatches exactly once, and the node still refuses it on its own"
+e1_probe off
+wait_for "X's withheld proposal to dispatch once the gate clears" 90 e1_dispatched "$E1_XP"
+[ "$(b0r_sm_directives "$E1_XP")" = "1" ] || { echo "release did not deliver exactly one directive" >&2; exit 1; }
+E1_XD=$(s1_cc "SELECT directive_id FROM cc_agent_proposals WHERE id='$E1_XP'")
+e1_answered() {
+  [ "$(s1_sm "SELECT count(*) FROM sm_directives WHERE proposal_id='$E1_XP'
+              AND status IN ('completed','failed')")" = "1" ]
+}
+wait_for "the node to answer X's directive" 180 e1_answered
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "SELECT status || '|' || authorization_basis || '|' || actor || '|' ||
+          (CASE WHEN delivered_at IS NOT NULL THEN 't' ELSE 'f' END) || '|' || result_detail
+   FROM sm_directives WHERE proposal_id='$E1_XP'" | tr -d '\r' | sed '/^$/d' \
+  | E1_X="$E1_X" python3 -c "
+import sys, os
+status, basis, actor, delivered, detail = sys.stdin.read().strip().split('|', 4)
+assert delivered.strip() == 't', 'the directive never reached the node'
+# The Site Manager queued it (BMC_RESET is implemented on this protocol), the
+# node received it -- and the node refused it by its own authority.
+assert status == 'failed', (status, detail)
+assert basis == 'autonomous_grant', basis
+assert actor.startswith('op-agent:' + os.environ['E1_X'] + '@'), actor
+assert detail.strip(), 'the node refused without saying why'
+print('  directive delivered to the node and REFUSED there:', detail.strip()[:90])"
+e1_outcome() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id='directive:$E1_XD'")" = "1" ]
+}
+wait_for "the node's refusal to reach Central Command as attributed evidence" 120 e1_outcome
+[ "$(s1_cc "SELECT outcome || '|' || (CASE WHEN actor LIKE 'op-agent:$E1_X@%' THEN 't' ELSE 'f' END)
+            FROM cc_outcome_history WHERE action_id='directive:$E1_XD'")" = "FAILURE|t" ] || {
+  echo "the refusal is not attributed FAILURE evidence for X" >&2; exit 1; }
+[ "$(b0r_sm_directives "$E1_XP")" = "1" ] || { echo "a later pass dispatched X's proposal again" >&2; exit 1; }
+[ "$(e1_ledger "$E1_ACT")" = "$E1_ACT_LEDGER" ] || { echo "release moved the activation ledger" >&2; exit 1; }
+echo "  the SAME proposal: one directive, before and after later passes; the node's refusal is"
+echo "  FAILURE evidence attributed to X at directive:$E1_XD; the activation ledger never moved"
+
+step "S3-E1/CW: a HUMAN approval is held the same way (D3) -- approved, then the gate, then released, and the ledger does not move"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' \
+  "http://localhost:8090/api/operational-agents/$E1_X/retire" > /dev/null
+E1_Y=$(e1_agent s3e1-human true)
+[ -n "$E1_Y" ] || { echo "could not create agent Y" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$E1_Y/preflight" | python3 -c '
+import sys, json
+p = json.load(sys.stdin)
+assert p["requires_activation_approval"] is False and p["unattended_classes"] == [], p
+'
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$E1_Y/acknowledge" > /dev/null 2>&1 || true
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$E1_Y/activate" | python3 -c "
+import sys, json
+assert json.load(sys.stdin)['status'] == 'active'"
+wait_for "the evaluator to admit Y's human-gated BMC_RESET" 90 e1_has_prop "$E1_Y"
+E1_YP=$(e1_prop "$E1_Y")
+[ "$(s1_cc "SELECT status || '|' || authorization_basis || '|' || site_id FROM cc_agent_proposals
+            WHERE id='$E1_YP'")" = "awaiting_approval|human_approval|$SITE_A" ] || {
+  echo "Y's proposal is not the human-gated site-A proposal this step needs" >&2; exit 1; }
+# APPROVED, delivery pending: the approval completes with the gate CLEAR while
+# the site is briefly unreachable from Central Command -- the one case the
+# approval route leaves `approved` for the background pass (A6-4B0a/AK's
+# technique and guards, unchanged: the window follows a fresh poll, is
+# bounded by the CONFIGURED interval, and the poller's failures are counted
+# across it). The gate is raised inside the window, before the site returns.
+E1_INTERVAL=$(docker compose exec -T central-command printenv HARKEN_CC_SITE_POLL_INTERVAL_S | tr -d ' \r')
+case "$E1_INTERVAL" in ''|*[!0-9]*)
+  echo "could not read HARKEN_CC_SITE_POLL_INTERVAL_S ('$E1_INTERVAL')" >&2; exit 1;;
+esac
+E1_BUDGET=$((E1_INTERVAL * 2 / 3))
+[ "$E1_BUDGET" -ge 5 ] || E1_BUDGET=5
+E1_SNAP=$(b0r_cc "SELECT coalesce(max(snapshot_at)::text,'') FROM cc_fleet_cache WHERE site_id='$SITE_A'")
+E1_WAITED=0
+until [ "$(b0r_cc "SELECT coalesce(max(snapshot_at)::text,'') FROM cc_fleet_cache WHERE site_id='$SITE_A'")" != "$E1_SNAP" ]; do
+  sleep 1; E1_WAITED=$((E1_WAITED + 1))
+  [ "$E1_WAITED" -lt 90 ] || { echo "no fleet poll of site A in 90s" >&2; exit 1; }
+done
+E1_POLLFAIL_0=$(docker compose logs central-command 2>&1 | grep -c "Fleet poll failed" || true)
+E1_EP=$(b0r_cc "SELECT sm_endpoint FROM cc_sites WHERE id='$SITE_A'")
+E1_T0=$SECONDS
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c \
+  "UPDATE cc_sites SET sm_endpoint='127.0.0.1:9' WHERE id='$SITE_A'" > /dev/null
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$E1_YP/approve" > /tmp/e1_yp.json || true
+e1_probe on
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -q -c \
+  "UPDATE cc_sites SET sm_endpoint='$E1_EP' WHERE id='$SITE_A'" > /dev/null
+E1_WINDOW=$((SECONDS - E1_T0))
+[ "$(b0r_cc "SELECT sm_endpoint FROM cc_sites WHERE id='$SITE_A'")" = "$E1_EP" ] || {
+  echo "the site route was not restored" >&2; exit 1; }
+[ "$E1_WINDOW" -lt "$E1_BUDGET" ] || {
+  echo "outage window ${E1_WINDOW}s exceeded ${E1_BUDGET}s of a ${E1_INTERVAL}s poll interval" >&2; exit 1; }
+[ "$(docker compose logs central-command 2>&1 | grep -c "Fleet poll failed" || true)" = "$E1_POLLFAIL_0" ] || {
+  echo "a fleet poll landed inside the injected outage; the ERROR is this step's" >&2; exit 1; }
+python3 -c "
+import json
+d = json.load(open('/tmp/e1_yp.json'))
+assert d.get('decision') == 'approved', ('the approval did not complete', d)
+assert d['approval']['state'] == 'approved' and d['approval']['required'] == 1, d['approval']
+assert d['delivery']['delivered'] is False, d['delivery']
+print('  Y proposal approved by %s with the gate CLEAR; delivery pending (site briefly unreachable)'
+      % d['decided_by'])"
+[ "$(s1_cc "SELECT status FROM cc_agent_proposals WHERE id='$E1_YP'")" = "approved" ] || {
+  echo "Y's proposal is not approved-and-pending; the background proof has no subject" >&2; exit 1; }
+E1_Y_LEDGER=$(e1_ledger "$E1_YP")
+[ "${E1_Y_LEDGER%%|*}" = "1" ] || { echo "unexpected approval ledger: $E1_Y_LEDGER" >&2; exit 1; }
+wait_for "a background pass to WITHHOLD Y's approved proposal" 60 e1_withheld "$E1_YP"
+b0r_cc_text "SELECT status || '|' || authorization_basis || '|' || coalesce(directive_id,'') || '|' ||
+    coalesce(dispatch_reason,'') FROM cc_agent_proposals WHERE id='$E1_YP'" \
+  | E1_CONST="$E1_CONST" python3 -c "
+import sys, json, os
+status, basis, directive, reason = sys.stdin.read().strip().split('|', 3)
+assert (status, basis, directive) == ('approved', 'human_approval', ''), (status, basis, directive)
+assert reason == json.loads(os.environ['E1_CONST'])['withheld'], reason
+print('  Y proposal: approved / human_approval -- WITHHELD by the gate; a human approval is not an override (D3)')"
+[ "$(b0r_sm_directives "$E1_YP")" = "0" ] || { echo "Y's proposal reached the Site Manager while held" >&2; exit 1; }
+[ "$(e1_ledger "$E1_YP")" = "$E1_Y_LEDGER" ] || { echo "withholding moved the approval ledger" >&2; exit 1; }
+e1_probe off
+wait_for "Y's approved proposal to dispatch once the gate clears" 90 e1_dispatched "$E1_YP"
+[ "$(b0r_sm_directives "$E1_YP")" = "1" ] || { echo "release did not deliver exactly one directive" >&2; exit 1; }
+[ "$(e1_ledger "$E1_YP")" = "$E1_Y_LEDGER" ] || { echo "release moved the approval ledger" >&2; exit 1; }
+echo "  released: the SAME approved proposal, one directive; the ledger ($E1_Y_LEDGER) never moved"
+
+step "S3-E1/CX: a member that FAILS is a constraint too -- fail closed, and still only the one code"
+e1_probe raise
+e1_row "$S3_A" | E1_CONST="$E1_CONST" python3 -c "
+import sys, json, os
+row, code = json.load(sys.stdin), json.loads(os.environ['E1_CONST'])['code']
+assert row['global_safety'] == {'state': 'unknown', 'reason_codes': [code]}, row['global_safety']
+assert row['final_execution_eligibility'] == {'disposition': 'denied', 'reason_codes': [code]}, row
+print('  a member that raises: state unknown, final denied, the ONE code -- never clear')"
+[ "$(docker compose logs --no-log-prefix central-command 2>&1 \
+     | grep -c "failed to evaluate; failing closed" || true)" != "0" ] || {
+  echo "the failing member was not logged" >&2; exit 1; }
+e1_probe off
+e1_row "$S3_A" | python3 -c "
+import sys, json
+assert json.load(sys.stdin)['global_safety']['state'] == 'clear'
+print('  trigger removed: clear again')"
+
+step "S3-E1/CY: this proof owns its state -- and the shipped image carries the site-local gate"
+e1_probe off
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' \
+  "http://localhost:8090/api/operational-agents/$E1_Y/retire" > /dev/null
+e1_catalogue without
+e1_ladder 0
+# The node's two refusals are REAL outcomes and stay as evidence; a drop-back
+# they caused at site A is recovered through the Site Manager's own route.
+E1_SM_A=$(s1_sm "SELECT id FROM sites WHERE cc_site_id='$SITE_A'")
+E1_A_NAME=$(s1_sm "SELECT name FROM sites WHERE cc_site_id='$SITE_A'")
+if [ "$(s1_sm "SELECT count(*) FROM sm_error_budgets WHERE site_id='$E1_SM_A'
+               AND action_type='BMC_RESET' AND dropped_back")" != "0" ]; then
+  curl -sf -X POST -H "Authorization: Bearer dev-token-sm" -H 'Content-Type: application/json' \
+    -d "{\"actor\":\"gate@harkeniq.com\",\"site\":\"$E1_A_NAME\"}" \
+    "http://localhost:8080/api/autonomy/error-budget/BMC_RESET/recover" > /dev/null
+fi
+[ "$(s1_cc "SELECT string_agg(status, ',' ORDER BY id) FROM cc_operational_agents
+            WHERE id IN ('$E1_X', '$E1_Y')")" = "retired,retired" ] || {
+  echo "the proof's agents were not retired" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/autonomy/ | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+assert c['posture']['configured_level'] == 0, c['posture']
+assert all(r['global_safety']['state'] == 'clear' for r in c['action_classes'])
+print('  ladder back at 0, every class clear')"
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.agent_activation import DISPATCH_GATES
+from harkeniq_cc.discovery import ADMISSION_COMPOSED_OVER, admission_reads_beyond
+from harkeniq_cc.global_safety import PRODUCTION_MEMBERS
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert PRODUCTION_MEMBERS == ()
+assert DISPATCH_GATES[-3:] == ('unattended_class', 'site_local_autonomy', 'global_safety'), DISPATCH_GATES
+assert ADMISSION_COMPOSED_OVER == 'target_site' and admission_reads_beyond(None) is False
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: empty registry; the three S3-E1 dispatch gates after the seven;'
+      ' admission reads the target site; plane 14, contract 99, ceiling unchanged')"
+echo "  probe removed, both agents retired, the platform catalogue and ladder restored,"
+echo "  and site A's BMC_RESET budget recovered where the node's refusals withdrew it"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

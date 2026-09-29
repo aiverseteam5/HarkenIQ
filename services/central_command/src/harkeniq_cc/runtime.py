@@ -91,6 +91,14 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
         from harkeniq_cc.license import load_license
         state.license = load_license(config)
 
+    # S3-E1 (A30.37, A30.38): the closed global safety gate's registry is
+    # fixed at import and NO configuration reaches it -- this only records
+    # which registry the process serves with, loudly if it is not the
+    # production one (which nothing shipped can cause).
+    from harkeniq_cc import global_safety
+
+    global_safety.announce_registry()
+
     uv_config = uvicorn.Config(
         create_app(state),
         host=config.http_host,
