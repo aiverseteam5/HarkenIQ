@@ -6228,3 +6228,18 @@ harness) tests live in `tests/unit/cc/test_a30_38_probe_activation_boundary.py`;
 the probe's own semantics move with it. Mutation adds variants that re-add a
 config field, an environment mapping, a startup registration and a probe class
 to the package.
+
+### Found while implementing
+
+* **A30.37 pinned the defect as a requirement.** A unit test asserted the loader
+  READ the key and CS asserted the variable WAS set in the running container.
+  Both inverted: the environment registers nothing, and no probe setting exists.
+* **The standalone check needs PostgreSQL.** The image carries no sqlite driver
+  (`aiosqlite` is a dev extra), so CS migrates a throwaway database through the
+  shipped entrypoint and drops it afterwards.
+* **The harness runs once per start.** The A6-3 step restarts Central Command;
+  CS expects one production record then one install per start, never a
+  non-production registry.
+* **Mutation:** the registry-by-default mutant lost its anchor (there is no key)
+  and is replaced by seven A30.38 variants; all twenty-five mutants killed, the
+  unmutated kill set green.

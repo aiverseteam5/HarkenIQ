@@ -5824,3 +5824,28 @@ present, serving an empty registry and a clear gate.
 `0011`, Console `0004`), no proto, Console, Site Manager or agent change;
 S3-E2 and the datacenter taxonomy untouched. A30.37's one configuration key
 is REMOVED and none is added.
+
+**Found while implementing A30.38 (recorded; no scope change).** (1) A30.37's
+own unit suite pinned the defect as a requirement:
+`test_the_probe_key_is_read_from_the_environment` asserted that
+`load_cc_config()` READ the key, and
+the live gate's CS step asserted the variable WAS set inside the running
+Central Command. Both are inverted, not deleted: the unit pin now asserts the
+environment cannot register anything, and CS asserts no probe setting exists
+in the running environment at all. (2) The standalone shipped-image check
+needs a real PostgreSQL database: the image carries no sqlite driver
+(`aiosqlite` is a development extra), so the check migrates a throwaway
+database on the compose network through the SHIPPED entrypoint and drops it
+afterwards, the gate owning its state. (3) The A6-3 step stops and restarts
+Central Command, so the harness runs twice in one gate: the derived entrypoint
+makes the restart ride the shipped schema step, and CS expects exactly one
+production-registry record followed by one install per start, never a
+non-production registry at any start. (4) Mutation: the S3-E1 set's
+registry-by-default variant no longer has an anchor (there is no key), so it
+is replaced by seven A30.38 variants — the configuration path re-added end
+to end, the environment mapping alone, a YAML loader that installs a member,
+a startup that installs one, the gate module reading the variable itself, a
+probe class re-grown in the package, and a non-production registry
+announced as production. All twenty-five mutants (the eighteen retained S3-E1
+mutants and the seven A30.38 variants) are killed by the S3-E1 and A30.38 unit
+modules, and the unmutated kill set is green.
