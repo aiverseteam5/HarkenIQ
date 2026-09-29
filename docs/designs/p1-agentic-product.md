@@ -6076,7 +6076,8 @@ the loader; `verdict(action_type, target_site_id)` evaluates each member once
 per key (memoized), maps anything but `MemberVerdict.CLEAR` to `constrained`
 and any exception or foreign value to `unknown`, and never lets a member's
 text out. `PRODUCTION_MEMBERS = ()`. `active_members()` adds the TEST-ONLY
-probe only when `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger path.
+probe only when `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger path
+(superseded by §34s / A30.38: no configuration reaches the registry).
 `build_autonomy` takes the verdicts as a REQUIRED input — no default that
 could mean "no gate" — and the loader is the only production caller.
 
@@ -6159,6 +6160,71 @@ breakages A30.37 names. Live: the fresh-wipe gate scenario A30.37 names.
   removes it through the production route before it needs one.
 * **The probe is registered for the whole gate run** through the gate's own
   override (`COMPOSE_FILE`), so every other step runs with a registered, clear
-  member.
+  member. (Superseded by §34s: the override runs a test harness, not a key.)
 * **Mutation:** ten named breakages plus nine variants, all killed; the
   unmutated kill set green.
+
+## §34s — S3-E1 pre-merge remediation: the TEST-ONLY probe's activation boundary (A30.38)
+
+### What was wrong
+
+§34r registered the probe from `CCConfig.global_safety_test_probe`, which the
+ordinary loader fills from YAML and from `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE`.
+The probe cannot widen anything, so nothing was ever granted; but a TEST-ONLY
+member was one configuration line away from changing production execution
+eligibility, and the independent review ruled that the activation boundary is
+itself the requirement. The fix moves the boundary, not the semantics.
+
+### The registry, in production
+
+`harkeniq_cc.global_safety` keeps `PRODUCTION_MEMBERS = ()`, `_ACTIVE` bound
+once to it, and `active_members()` — the governance loader's one read. There
+is no `configure()`: the registry has no configuration input at all, and the
+module imports neither `os` nor the config module. `runtime.run()` calls
+`global_safety.announce_registry()`, which logs INFO for the production
+registry and a WARNING naming the member ids otherwise. `CCConfig` loses its
+probe field and `_ENV_MAP` its key; the loader already ignores an unknown YAML
+key (`hasattr` gate) and an unmapped variable, so a stale key is inert without
+a line of special-casing.
+
+### The harness, in test infrastructure
+
+`tests/gate/cc_global_safety_probe.py` owns `TestOnlyProbeMember` (semantics
+unchanged: absent file clear, empty file constrains every class, listed
+classes constrain, a first line `raise` raises), `install(trigger)` — which
+writes `global_safety._ACTIVE = PRODUCTION_MEMBERS + (probe,)`, refuses over a
+non-production registry, and logs a WARNING — and `serve_then_install(config,
+trigger)`, which builds the state the production runtime would, runs the
+production `run(config, state=...)` and installs the probe only once
+`state.started` is set. `main(argv)` points `harkeniq_cc.__main__`'s `run` at
+`serve_then_install` and calls the shipped `main()`, so logging,
+configuration, validation and license handling are the shipped code.
+
+`tests/gate/entrypoint-cc-probe.sh` derives the entrypoint from the SHIPPED
+`/entrypoint.sh`: it checks the final line is exactly `exec python -m
+harkeniq_cc`, replaces that line alone with the harness, and runs the result —
+so the schema step (`alembic upgrade head`) is the shipped one, including when
+the A6-3 step stops and restarts Central Command.
+
+### The gate
+
+`scripts/e2e-compose-gate.override.yml` no longer sets any environment
+variable. It mounts `tests/gate/` read-only at `/opt/harken-test` and sets
+Central Command's entrypoint to the derived script. CS now asserts: the shipped
+compose file carries no probe key, mount or entrypoint; the running container's
+environment has no probe setting; PID 1 is the harness; the production
+runtime's INFO record precedes the harness's install record and no
+non-production WARNING was logged; and a standalone container from the SHIPPED
+image — no override, `--network none`, the stale key in its environment AND
+its YAML, the old trigger file present — runs the real `runtime.run()` to
+started with an empty registry, a clear gate for every class and no WARNING.
+CT–CY are unchanged: the trigger file still drives the constraint.
+
+### Guards
+
+Structural (AST and source, over the shipped package and the deploy tree) and
+behavioural (config, environment, YAML, real startup, fresh interpreter,
+harness) tests live in `tests/unit/cc/test_a30_38_probe_activation_boundary.py`;
+the probe's own semantics move with it. Mutation adds variants that re-add a
+config field, an environment mapping, a startup registration and a probe class
+to the package.

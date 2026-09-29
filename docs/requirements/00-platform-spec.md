@@ -5554,7 +5554,8 @@ locally autonomous and the gate passes; its mode is decided by the sites. This
 is the reading that keeps D5 ("never converted into another execution mode")
 and avoids routing work to a human who, approving during a constraint, would
 hit A30.17's preserved synchronous terminal failure and burn the dedupe key.
-*(2) The live TEST-ONLY member is shipped, off by default.* The production
+*(2) The live TEST-ONLY member is shipped, off by default* — AMENDED by
+A30.38: the probe is test infrastructure and no configuration reaches it. The production
 registry is EMPTY (D1). A clearly labelled TEST-ONLY probe member exists in the
 Central Command package and is registered ONLY when
 `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` names a trigger file; it constrains while
@@ -5677,7 +5678,7 @@ remains the final execution authority.
 99, `MACHINE_SURFACE` 14), no migration (CC `0027`, SM `0011`, Console
 `0004`), no new resolver, no new approval system, no new execution engine, no
 Console change. One configuration key, `HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE`,
-empty by default. **Out of scope, by decision:** S3-E2 (frozen evidence stays
+empty by default — REMOVED by A30.38. **Out of scope, by decision:** S3-E2 (frozen evidence stays
 as written), the datacenter taxonomy, F-8 (directed executions still consume
 no budget window), F-9 through F-13, B2's payload contracts (Attention and
 Incident read no autonomy fact) and the machine receipts.
@@ -5736,7 +5737,8 @@ synthetic address. An activation subject names no class, device or site, so
 only a wildcard policy can govern it, and that leftover held every activation
 approval after A26. The S3-E1 live proof removes it through the production
 route, on the audit chain, before it asks for one (gate hygiene, recorded).
-(10) The TEST-ONLY probe is registered for the WHOLE gate run, through the
+(10) [Superseded by A30.38: the override now runs the harness, not a key.]
+The TEST-ONLY probe is registered for the WHOLE gate run, through the
 gate's own override (`scripts/e2e-compose-gate.override.yml`, via
 `COMPOSE_FILE`), so every other step of the gate runs with a registered, clear
 member; a unit test holds that the override is the only file outside Central
@@ -5747,3 +5749,78 @@ non-empty production registry, a non-enum member answer, the admission side of
 D11, and the stored-verdict and plan-time-decision forms of historical
 authority. All nineteen are killed by the S3-E1 unit modules, and the
 unmutated kill set is green.
+
+**A30.38 — S3-E1 pre-merge remediation (independent review): a TEST-ONLY
+global safety member is impossible to enable through ordinary production
+configuration (Codex's review of PR #67 at `6057a24`; remediation contract
+relayed by Vinod, 2026-09-29; recorded BEFORE the code).** **The finding.**
+A30.37 answer (2) shipped the TEST-ONLY probe inside the Central Command
+package and registered it from `CCConfig.global_safety_test_probe` — a field
+the ordinary loader, `load_cc_config`, fills from YAML and from
+`HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE`. The probe can only narrow, so the
+failure is fail-closed and grants nothing; but it leaves test machinery able
+to change PRODUCTION execution eligibility through ordinary configuration
+drift, and the ratified requirement is that a TEST-ONLY member is IMPOSSIBLE
+to enable through ordinary production configuration. Answer (2) is amended
+below; nothing else in A30.37 changes — site-local autonomy, the gate's
+semantics and monotonicity, dispatch, approval, B1/B2, the ceiling, the
+permissions and the routes are exactly as recorded.
+
+**Ratified.** (1) *The production registry is fixed at import and no
+configuration path reaches it.* `_ACTIVE = PRODUCTION_MEMBERS = ()` is bound
+once, at module level, and nothing in the shipped package rebinds it: no
+`CCConfig` field, no YAML key, no environment variable and no startup call
+that takes configuration. `CCConfig.global_safety_test_probe`, the
+`HARKEN_CC_GLOBAL_SAFETY_TEST_PROBE` mapping, `global_safety.configure()` and
+`TestOnlyProbeMember` are REMOVED from the package. A stale YAML key or
+environment variable of the old name is ignored by the loader's ordinary
+rules — an unknown YAML key and an unmapped variable are not read — and
+activates nothing. (2) *Startup says which registry it serves with.* The
+production runtime records the registry once at startup: INFO when it is the
+production registry, a WARNING naming the member ids when it is not — a case
+production cannot produce, since nothing in production can change the
+registry. (3) *The probe is test infrastructure.* It lives under `tests/gate/`,
+never under `src/`, and the Central Command image cannot contain it
+(`deploy/r2b/Dockerfile.cc` copies `src/` only). A test harness registers it
+by writing the existing registry directly, in-process, AFTER the production
+runtime has started and recorded the production registry, and refuses to
+install over a registry that is not the production one; its trigger path is a
+command-line argument, not configuration. (4) *Only registration is
+test-specific.* The compose gate's own override mounts `tests/gate/`
+read-only and runs the SHIPPED entrypoint with its final line — and only that
+line — replaced by the harness, which calls the shipped
+`harkeniq_cc.__main__.main()`: the same logging, configuration loading and
+validation, license handling and `runtime.run()`. The registry, the
+evaluator, the autonomy composition, dispatch revalidation, the approval path
+and the node boundary are the production ones. No generic plugin loading, no
+module loading from environment, no configurable import path, no production
+feature flag, no alternate safety engine. (5) *A structural guard keeps it
+so.* The suite fails if `_ACTIVE` is bound anywhere but its one declaration
+or to anything but `PRODUCTION_MEMBERS`; if the gate module performs
+environment, file or import-by-name I/O; if a `CCConfig` field or environment
+mapping names a probe or the gate; if production source names the probe, its
+old key, its trigger or the harness; if a shipped compose file mounts the
+harness or changes Central Command's entrypoint; or if the image copies
+`tests/`.
+
+**Proof obligations.** Ordinary `CCConfig` has no probe field; YAML, the
+environment and both together register nothing — through a real
+`runtime.run()` started with the stale key in both and the old trigger file
+present, the registry stays empty, the gate clear and no WARNING is emitted;
+a fresh interpreter importing the startup path sees an empty registry; the
+harness registers the probe onto the production registry and nothing else;
+the probe only narrows (swept over every local disposition and every trigger
+state); a raising probe fails closed; its identity reaches no projection;
+every earlier S3-E1 invariant is re-proven; mutation variants re-adding a
+configuration, environment or startup registration path are killed; and the
+live gate shows the running Central Command with no probe setting in its
+environment, its production runtime recording the production registry at
+startup BEFORE the harness installs the probe, and the shipped image, started
+standalone with the stale key in its environment and YAML and the trigger file
+present, serving an empty registry and a clear gate.
+
+**Change surface.** No permission (25), no machine-ceiling change, no route
+(`ROUTE_CONTRACT` 99, `MACHINE_SURFACE` 14), no migration (CC `0027`, SM
+`0011`, Console `0004`), no proto, Console, Site Manager or agent change;
+S3-E2 and the datacenter taxonomy untouched. A30.37's one configuration key
+is REMOVED and none is added.
