@@ -5848,4 +5848,10 @@ a startup that installs one, the gate module reading the variable itself, a
 probe class re-grown in the package, and a non-production registry
 announced as production. All twenty-five mutants (the eighteen retained S3-E1
 mutants and the seven A30.38 variants) are killed by the S3-E1 and A30.38 unit
-modules, and the unmutated kill set is green.
+modules, and the unmutated kill set is green. (5) Exact-head CI caught the
+structural guard reading build output: a runner's `pip install -e .` writes
+`src/harkeniq.egg-info/SOURCES.txt`, which lists every tracked file,
+`tests/gate/` included. That file is gitignored setuptools metadata, not
+shipped source (the image generates its own from a context with no `tests/`),
+so the guard skips `*.egg-info` and bytecode caches and nothing else, and a
+test asserts no tracked file lives under either.

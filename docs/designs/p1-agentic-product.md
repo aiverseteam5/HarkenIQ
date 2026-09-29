@@ -6243,3 +6243,6 @@ to the package.
 * **Mutation:** the registry-by-default mutant lost its anchor (there is no key)
   and is replaced by seven A30.38 variants; all twenty-five mutants killed, the
   unmutated kill set green.
+* **The guard must not read build output.** CI's `pip install -e .` writes a root
+  `SOURCES.txt` naming `tests/gate/`; the guard skips `*.egg-info` and
+  `__pycache__` only, and asserts no tracked file lives there.

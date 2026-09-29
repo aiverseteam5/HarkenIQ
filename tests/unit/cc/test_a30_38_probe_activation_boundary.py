@@ -599,9 +599,22 @@ def _package_trees():
         yield path, ast.parse(path.read_text())
 
 
+def _generated(path: pathlib.Path) -> bool:
+    """Build output a local `pip install -e .` writes into a source tree, and
+    nothing else: setuptools' `*.egg-info` (gitignored) and `__pycache__`.
+    Not source and never shipped -- CI's root `SOURCES.txt` lists every
+    tracked file, `tests/gate/` included, while the image's own egg-info is
+    generated from a build context that has no `tests/` at all."""
+    return "__pycache__" in path.parts or any(
+        part.endswith(".egg-info") for part in path.parts
+    )
+
+
 def _production_files():
     for base in [ROOT / "src", *sorted((ROOT / "services").glob("*/src"))]:
         for path in sorted(base.rglob("*")):
+            if _generated(path):
+                continue
             if path.is_file() and path.suffix in {
                 ".py", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".sh", ".json", ".txt",
             }:
@@ -705,6 +718,18 @@ class TestStructuralGuards:
                     offenders.append((str(path.relative_to(ROOT)), needle))
         assert offenders == []
 
+    def test_only_generated_build_metadata_is_skipped(self):
+        """The skip is exactly setuptools' egg-info and bytecode caches: no
+        tracked file lives under either, so no source can hide there."""
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=str(ROOT), capture_output=True, text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert tracked
+        assert [f for f in tracked if _generated(pathlib.Path(f))] == []
+        assert _generated(ROOT / "src" / "harkeniq.egg-info" / "SOURCES.txt")
+        assert not _generated(PACKAGE / "global_safety.py")
+
     def test_the_harness_is_not_part_of_any_shipped_package(self):
         import importlib.util
 
@@ -742,7 +767,7 @@ class TestStructuralGuards:
         allowed = {OVERRIDE, GATE_SCRIPT}
         for base in ("deploy", "scripts", ".github", "src", "services"):
             for path in (ROOT / base).rglob("*"):
-                if not path.is_file() or path in allowed or "__pycache__" in path.parts:
+                if not path.is_file() or path in allowed or _generated(path):
                     continue
                 text = path.read_text(errors="ignore")
                 for needle in ("cc_global_safety_probe", "entrypoint-cc-probe",
