@@ -44,7 +44,7 @@ from harkeniq_cc.api.deps import (
     require_permission,
 )
 from harkeniq_cc.scope import read_reach
-from harkeniq_cc.governance import autonomy_view
+from harkeniq_cc.governance import load_proposal_evidence_view
 from harkeniq_cc.approval_policy import (
     DECISION_APPROVED,
     DECISION_DENIED,
@@ -117,11 +117,12 @@ def _proposal_item(proposal, submission_id: str = "", *, view) -> dict:
     to decide: who proposed it, what it observed, the evidence, the
     governance verdict and what is blocking it.
 
-    `view` is the reader's `AutonomyView` (A30.26), required by
-    `proposal_dict`: "what is blocking it" was decided over the whole
-    tenant, and a site's safety rows are `fleet.view` facts -- this queue
-    is guarded by `action.approve | audit.view`, which is not the same
-    thing and may be held at a site where `fleet.view` is not.
+    `view` is the reader's `ProposalEvidenceView` (A30.26, A30.39),
+    required by `proposal_dict`: "what is blocking it" and "how has this
+    class done" were composed over the whole tenant, and both are
+    `fleet.view` facts -- this queue is guarded by `action.approve |
+    audit.view`, which is not the same thing and may be held at a site
+    where `fleet.view` is not.
     """
     from harkeniq_cc.api.operational_agents import proposal_dict
 
@@ -520,6 +521,23 @@ async def _record_and_evaluate(
     return block
 
 
+async def _evidence_view(session: AsyncSession, user: UserContext, scope, views):
+    """The reader's `ProposalEvidenceView`, loaded once per request (A30.39).
+
+    `views` is a request-local memo a batch passes down, so deciding fifty
+    proposals reads the reader's current outcomes once, not fifty times.
+    Nothing a decision does moves an outcome, so one view serves them all.
+    """
+    if views is not None and "view" in views:
+        return views["view"]
+    view = await load_proposal_evidence_view(
+        session, tenant_id=user.tenant_id, scope=scope,
+    )
+    if views is not None:
+        views["view"] = view
+    return view
+
+
 async def _decide_agent_proposal(
     proposal_id: str,
     decision: str,
@@ -527,6 +545,7 @@ async def _decide_agent_proposal(
     session: AsyncSession,
     state,
     scope,
+    views: Optional[dict] = None,
 ) -> dict:
     """Decide an Operational Agent's proposal (A1).
 
@@ -606,7 +625,8 @@ async def _decide_agent_proposal(
                              "reason": gate_reason},
                 "approval": block,
                 "proposal": _proposal_item(
-                    proposal, view=autonomy_view(scope),
+                    proposal,
+                    view=await _evidence_view(session, user, scope, views),
                 )["proposal"],
             }
         site = await SiteRepo(session).get_by_id(proposal.site_id)
@@ -708,7 +728,9 @@ async def _decide_agent_proposal(
         "decided_by": decided_by,
         "delivery": delivery,
         "approval": block,
-        "proposal": _proposal_item(proposal, view=autonomy_view(scope))["proposal"],
+        "proposal": _proposal_item(
+            proposal, view=await _evidence_view(session, user, scope, views),
+        )["proposal"],
     }
 
 
@@ -960,6 +982,7 @@ async def _route_decision(
     session: AsyncSession,
     state,
     scope,
+    views: Optional[dict] = None,
 ) -> dict:
     """Shared logic for approve/deny: update DB, route to SM, audit-log."""
     repo = ApprovalRouteRepo(session)
@@ -971,7 +994,7 @@ async def _route_decision(
         proposal_repo = AgentProposalRepo(session)
         if await proposal_repo.get(user.tenant_id, action_id) is not None:
             return await _decide_agent_proposal(
-                action_id, decision, user, session, state, scope,
+                action_id, decision, user, session, state, scope, views,
             )
         # A2: the fourth origin on the same id space and same queue.
         activation = await _decide_agent_activation(
@@ -1170,7 +1193,13 @@ async def list_pending(
             )
         )
 
-    facts = autonomy_view(scope)
+    # A30.39: one view for the page, and only when it renders a proposal.
+    facts = (
+        await load_proposal_evidence_view(
+            session, tenant_id=user.tenant_id, scope=scope,
+        )
+        if page == 1 and proposals else None
+    )
     items = (
         activations
         + [
@@ -1288,10 +1317,12 @@ async def batch_decide(
         )
 
     results = []
+    # A30.39: one proposal-evidence view for the whole batch.
+    views: dict = {}
     for action_id in body.action_ids:
         try:
             result = await _route_decision(
-                action_id, body.decision, user, session, state, scope
+                action_id, body.decision, user, session, state, scope, views,
             )
             results.append({"action_id": action_id, "ok": True, "detail": result})
         except ApprovalIncomplete as pending:

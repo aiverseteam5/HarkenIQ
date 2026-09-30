@@ -1,0 +1,677 @@
+{
+  "recorded_from": "0fc72c3 (main) production code, branch head 4820ed0201c5425b37039b52bb4ce3aa39d3e7e8",
+  "tenant_wide": {
+    "detail": {
+      "clean": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      },
+      "evaluated": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "float"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": true,
+          "incident_ids": [
+            "e2-inc-a1"
+          ],
+          "learned_signals": [
+            {
+              "confidence": 0.9,
+              "scope_ref": "Dell/R750",
+              "scope_type": "cohort",
+              "signal_id": "s3-sig-cohort",
+              "statement": "cohort-knowledge"
+            },
+            {
+              "confidence": 0.8,
+              "scope_ref": "s3-site-a",
+              "scope_type": "site",
+              "signal_id": "s3-sig-a",
+              "statement": "signal-A"
+            },
+            {
+              "confidence": 0.7,
+              "scope_ref": "s3-site-b",
+              "scope_type": "site",
+              "signal_id": "s3-sig-b",
+              "statement": "signal-B"
+            },
+            {
+              "confidence": 0.6,
+              "scope_ref": "s3-site-c",
+              "scope_type": "site",
+              "signal_id": "s3-sig-c",
+              "statement": "SECRET-SIGNAL-C"
+            }
+          ],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 40,
+            "failure": 17,
+            "resolution_rate": 0.575,
+            "sites_observed": 3,
+            "success": 23,
+            "success_rate": 0.575,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "A2.1 action semantics; granted at autonomy level 2",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Runtime observed BMC event log saturated on node-s3-a and recommends sel clear: a saturated event log hides the next fault behind the last one. This class has succeeded 57% of the time across 40 executions in this tenant."
+      },
+      "extra_key": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "legacy_tenant_stat": "HIDDENKEYe2",
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      },
+      "malformed": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy HIDDENRATIONALEe2: 918273645 executions across s3-site-c said so."
+      },
+      "no_evidence": {
+        "evidence": {},
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      }
+    },
+    "dry_run": {
+      "node-e2-a2:SEL_CLEAR": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "float"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-inc-a2"
+          ],
+          "learned_signals": [
+            {
+              "confidence": 0.9,
+              "scope_ref": "Dell/R750",
+              "scope_type": "cohort",
+              "signal_id": "s3-sig-cohort",
+              "statement": "cohort-knowledge"
+            },
+            {
+              "confidence": 0.8,
+              "scope_ref": "s3-site-a",
+              "scope_type": "site",
+              "signal_id": "s3-sig-a",
+              "statement": "signal-A"
+            },
+            {
+              "confidence": 0.7,
+              "scope_ref": "s3-site-b",
+              "scope_type": "site",
+              "signal_id": "s3-sig-b",
+              "statement": "signal-B"
+            },
+            {
+              "confidence": 0.6,
+              "scope_ref": "s3-site-c",
+              "scope_type": "site",
+              "signal_id": "s3-sig-c",
+              "statement": "SECRET-SIGNAL-C"
+            }
+          ],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 40,
+            "failure": 17,
+            "resolution_rate": 0.575,
+            "sites_observed": 3,
+            "success": 23,
+            "success_rate": 0.575,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "A2.1 action semantics; granted at autonomy level 2",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Runtime observed BMC event log saturated on node-e2-a2 and recommends sel clear: a saturated event log hides the next fault behind the last one. This class has succeeded 57% of the time across 40 executions in this tenant."
+      }
+    },
+    "list": {
+      "clean": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      },
+      "evaluated": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "float"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": true,
+          "incident_ids": [
+            "e2-inc-a1"
+          ],
+          "learned_signals": [
+            {
+              "confidence": 0.9,
+              "scope_ref": "Dell/R750",
+              "scope_type": "cohort",
+              "signal_id": "s3-sig-cohort",
+              "statement": "cohort-knowledge"
+            },
+            {
+              "confidence": 0.8,
+              "scope_ref": "s3-site-a",
+              "scope_type": "site",
+              "signal_id": "s3-sig-a",
+              "statement": "signal-A"
+            },
+            {
+              "confidence": 0.7,
+              "scope_ref": "s3-site-b",
+              "scope_type": "site",
+              "signal_id": "s3-sig-b",
+              "statement": "signal-B"
+            },
+            {
+              "confidence": 0.6,
+              "scope_ref": "s3-site-c",
+              "scope_type": "site",
+              "signal_id": "s3-sig-c",
+              "statement": "SECRET-SIGNAL-C"
+            }
+          ],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 40,
+            "failure": 17,
+            "resolution_rate": 0.575,
+            "sites_observed": 3,
+            "success": 23,
+            "success_rate": 0.575,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "A2.1 action semantics; granted at autonomy level 2",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Runtime observed BMC event log saturated on node-s3-a and recommends sel clear: a saturated event log hides the next fault behind the last one. This class has succeeded 57% of the time across 40 executions in this tenant."
+      },
+      "extra_key": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "legacy_tenant_stat": "HIDDENKEYe2",
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      },
+      "malformed": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy HIDDENRATIONALEe2: 918273645 executions across s3-site-c said so."
+      },
+      "no_evidence": {
+        "evidence": {},
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      }
+    },
+    "queue": {
+      "clean": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      },
+      "evaluated": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "float"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": true,
+          "incident_ids": [
+            "e2-inc-a1"
+          ],
+          "learned_signals": [
+            {
+              "confidence": 0.9,
+              "scope_ref": "Dell/R750",
+              "scope_type": "cohort",
+              "signal_id": "s3-sig-cohort",
+              "statement": "cohort-knowledge"
+            },
+            {
+              "confidence": 0.8,
+              "scope_ref": "s3-site-a",
+              "scope_type": "site",
+              "signal_id": "s3-sig-a",
+              "statement": "signal-A"
+            },
+            {
+              "confidence": 0.7,
+              "scope_ref": "s3-site-b",
+              "scope_type": "site",
+              "signal_id": "s3-sig-b",
+              "statement": "signal-B"
+            },
+            {
+              "confidence": 0.6,
+              "scope_ref": "s3-site-c",
+              "scope_type": "site",
+              "signal_id": "s3-sig-c",
+              "statement": "SECRET-SIGNAL-C"
+            }
+          ],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 40,
+            "failure": 17,
+            "resolution_rate": 0.575,
+            "sites_observed": 3,
+            "success": 23,
+            "success_rate": 0.575,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "A2.1 action semantics; granted at autonomy level 2",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Runtime observed BMC event log saturated on node-s3-a and recommends sel clear: a saturated event log hides the next fault behind the last one. This class has succeeded 57% of the time across 40 executions in this tenant."
+      },
+      "extra_key": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "legacy_tenant_stat": "HIDDENKEYe2",
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      },
+      "malformed": {
+        "evidence": {
+          "attention": {
+            "band": "str",
+            "driver": "str",
+            "rank": "int",
+            "risk_score": "int"
+          },
+          "component": "",
+          "components_reported": null,
+          "condition_kind": "incident",
+          "contract_version": "1",
+          "device": {
+            "device_class": "server",
+            "health": "Critical",
+            "model": "R750",
+            "observation": "observed",
+            "vendor": "Dell"
+          },
+          "evaluated_at": "<clock>",
+          "has_diagnosis": false,
+          "incident_ids": [
+            "e2-legacy-inc"
+          ],
+          "learned_signals": [],
+          "observed": "BMC event log saturated",
+          "outcome_evidence": {
+            "executions": 918273645,
+            "failure": 113712408,
+            "resolution_rate": 0.618,
+            "sites_observed": 731313131,
+            "success": 804561237,
+            "success_rate": 0.8762,
+            "sufficient": true,
+            "window": "all_time"
+          },
+          "remediation_provenance": "seed",
+          "subsystem": "log"
+        },
+        "rationale": "S3E2 Legacy HIDDENRATIONALEe2: 918273645 executions across s3-site-c said so."
+      },
+      "no_evidence": {
+        "evidence": {},
+        "rationale": "S3E2 Legacy observed BMC event log saturated on node-s3-a and recommends sel clear: the event log is full. This class has succeeded 88% of the time across 918273645 executions in this tenant."
+      }
+    }
+  }
+}

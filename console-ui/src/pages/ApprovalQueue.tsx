@@ -12,6 +12,7 @@ import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
 import type { ApprovalAction } from "../types";
 import { provenanceView } from "../proposalProvenance";
+import { trackRecordView } from "../proposalEvidence";
 
 /* ── Constants ────────────────────────────────────── */
 
@@ -707,22 +708,25 @@ export default function ApprovalQueue() {
                             </code>
                           </div>
                         ) : null}
-                        {action.proposal.evidence?.outcome_evidence?.sufficient ? (
+                        {/* A30.39: the reader's CURRENT track record, never
+                            the creation record standing in for it -- and a
+                            record withheld by scope is never "too few
+                            outcomes". One reading rule, from one module. */}
+                        <div style={cardDetailRow}>
+                          <span>Track record</span>
+                          <span>{trackRecordView(action.proposal).current}</span>
+                        </div>
+                        {trackRecordView(action.proposal).atCreation ? (
                           <div style={cardDetailRow}>
-                            <span>Track record</span>
-                            <span>
-                              {Math.round(
-                                (action.proposal.evidence.outcome_evidence.success_rate ?? 0) * 100,
-                              )}
-                              % over {action.proposal.evidence.outcome_evidence.executions} runs
-                            </span>
+                            <span>When proposed</span>
+                            <span>{trackRecordView(action.proposal).atCreation}</span>
                           </div>
-                        ) : (
-                          <div style={cardDetailRow}>
-                            <span>Track record</span>
-                            <span>too few outcomes to judge</span>
+                        ) : null}
+                        {trackRecordView(action.proposal).note ? (
+                          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                            {trackRecordView(action.proposal).note}
                           </div>
-                        )}
+                        ) : null}
                         {action.proposal.blocking_conditions.length > 0 ? (
                           <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                             {action.proposal.blocking_conditions[0].detail}

@@ -1724,8 +1724,8 @@ export default function OperationalAgents() {
                   {c.evidence ? (
                     <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                       {c.evidence.sufficient && c.evidence.success_rate !== null
-                        ? `${Math.round(c.evidence.success_rate * 100)}% success over ${c.evidence.executions} executions in this tenant`
-                        : `${c.evidence.executions} recorded execution(s): too few to judge`}
+                        ? `${Math.round(c.evidence.success_rate * 100)}% success over ${c.evidence.executions} executions in your current view`
+                        : `${c.evidence.executions} recorded execution(s) in your current view: too few to judge`}
                     </div>
                   ) : null}
                   {c.advancement?.statement ? (

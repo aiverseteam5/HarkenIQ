@@ -6263,7 +6263,8 @@ the only machine surface carrying either field.
 
 ### The one module: `harkeniq_cc.proposal_evidence`
 
-Pure, no I/O, no intra-package imports beyond the S4 marker vocabulary.
+Pure, no I/O; its only intra-package imports are S4's marker vocabulary and
+the autonomy disposition constants.
 
 * **The writer's grammar.** `rationale_head(agent_name, device, condition,
   candidate)` (no evidence argument, by construction) and

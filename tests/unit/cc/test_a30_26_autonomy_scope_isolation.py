@@ -1033,9 +1033,16 @@ class TestAMachineReadsItsOwnWork:
         }
         for where, blocking in rows.items():
             assert _sites_named(blocking) == {SITES["A"].id}, where
-        assert _statements(preview["would_propose"][0]["evidence"]) == [
-            "cohort-knowledge", "signal-A",
-        ]
+        # INVERTED by S3-E2 (A30.39, D9): A30.26 narrowed the learned
+        # signals a MACHINE's dry-run carried to its own site and the cohort.
+        # They are creation evidence, not machine authority, so EVERY
+        # machine's dry-run now withholds them -- and the outcome statistic
+        # and attention score beside them -- by name.
+        machine_evidence = preview["would_propose"][0]["evidence"]
+        assert machine_evidence["learned_signals"] is None
+        assert {"learned_signals", "outcome_evidence", "attention"} <= set(
+            machine_evidence["withheld"])
+        assert machine_evidence["projection"] == "machine"
         reasons = {
             "dry-run": preview["would_propose"][0]["disposition_reason"],
             "submit": submitted["proposal"]["disposition_reason"],
@@ -1113,14 +1120,31 @@ class TestTheAmbiguousItemsAreRecordedNotChanged:
             f"/api/operational-agents/{agent_id}/proposals")).json()
         assert owner["proposals"][0]["disposition_reason"] == stored.disposition_reason
 
-    async def test_E2_a_stored_proposal_keeps_its_tenant_wide_outcome_statistic(self):
+    async def test_E2_a_scoped_reader_reads_its_own_track_record_beside_the_withheld_creation_record(self):
+        """INVERTED by S3-E2 (A30.39) -- Vinod's ruling on E2. The stored
+        proposal still says 31 (the creation record is immutable), and the
+        tenant owner still reads 31; the site-A reader no longer does. It
+        reads the creation record's statistic withheld, a rationale with the
+        tenant-wide sentence removed, and -- beside it, never in its place --
+        its OWN current track record: 7."""
         stack, agent_id = await _evaluated()
         site_a, _ = await E.persona(stack, "site_a")
         listed = await _read(stack, site_a,
                              f"/api/operational-agents/{agent_id}/proposals")
         proposal = listed["proposals"][0]
-        assert proposal["evidence"]["outcome_evidence"]["executions"] == 31   # not 7
-        assert "31 executions in this tenant" in proposal["rationale"]
+        (stored,) = await _stored(stack, agent_id)
+        assert stored.evidence["outcome_evidence"]["executions"] == 31
+        assert "31 executions in this tenant" in stored.rationale
+        assert proposal["evidence"]["outcome_evidence"] is None
+        assert "31" not in proposal["rationale"]
+        assert proposal["evidence_scope"] == "broader_than_current_view"
+        viewer = proposal["viewer_projected_evidence"]["outcome_evidence"]
+        assert viewer["executions"] == 7                                # not 31
+        # CONTROL: the tenant owner reads the stored statistic.
+        owner = (await stack.as_person().get(
+            f"/api/operational-agents/{agent_id}/proposals")).json()
+        assert owner["proposals"][0]["evidence"]["outcome_evidence"]["executions"] == 31
+        assert owner["proposals"][0]["rationale"] == stored.rationale
 
     async def test_E3_a_cohort_signal_is_tenant_knowledge(self):
         """A23's ratified decision, kept: it names a vendor and a model."""
@@ -1288,6 +1312,16 @@ class TestNoProjectionOfAStoredVerdictIsReaderless:
 # ---------------------------------------------------------------------------
 
 
+def _evidence_view(autonomy: AutonomyView):
+    """A reader's S3-E2 view around an S3 view, for the pure checks here."""
+    from harkeniq_cc.governance import ProposalEvidenceView
+
+    return ProposalEvidenceView(
+        autonomy=autonomy, tenant_wide=autonomy.sites is None,
+        reach_empty=False, outcomes=(), as_of="t",
+    )
+
+
 class TestWhatDidNotChange:
     async def test_a_never_granted_human_under_legacy_open_still_reads_the_tenant(self):
         """A23.10 is untouched: `legacy_open` synthesizes tenant reach for a
@@ -1336,12 +1370,16 @@ class TestWhatDidNotChange:
         )
         holds_a = AutonomyView(sites=frozenset({SITES["A"].id}))
         everything = AutonomyView(sites=None)
-        for payload in (proposal_dict(proposal, view=holds_a),
+        # S3-E2 (A30.39): a human projection takes the reader's
+        # ProposalEvidenceView, which CARRIES this same AutonomyView.
+        human_a = _evidence_view(holds_a)
+        human_all = _evidence_view(everything)
+        for payload in (proposal_dict(proposal, view=human_a),
                         proposal_block(proposal, full=True, view=holds_a),
                         proposal_block(proposal, full=False, view=holds_a)):
             assert "SECRET" not in str(payload), payload
             assert payload["disposition_reason"] == WITHHELD_REASON
         # CONTROL
-        assert proposal_dict(proposal, view=everything)["disposition_reason"] == secret
+        assert proposal_dict(proposal, view=human_all)["disposition_reason"] == secret
         assert proposal_block(proposal, full=True, view=everything)["disposition_reason"] \
             == secret
