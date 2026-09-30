@@ -9053,9 +9053,8 @@ E2_DEV_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' AN
                   ORDER BY agent_id LIMIT 1")
 E2_CLASS=$(s1_cc "SELECT lower(device_class) FROM cc_fleet_cache
                   WHERE site_id='$SITE_A' AND agent_id='$E2_DEV_A'")
-E2_DEV_B=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_B' ORDER BY agent_id LIMIT 1")
-[ -n "$E2_DEV_A" ] && [ -n "$E2_DEV_B" ] && [ -n "$E2_CLASS" ] || {
-  echo "the stack has no classed device at site A or no device at site B" >&2; exit 1; }
+[ -n "$E2_DEV_A" ] && [ -n "$E2_CLASS" ] || {
+  echo "the stack has no classed device at site A" >&2; exit 1; }
 # The writer's grammar and the constants, from the SHIPPED image -- never restated here.
 E2_CONST=$(docker compose exec -T central-command python -c "
 import sys; sys.path.insert(0, '/app/services/central_command/src')
@@ -9072,17 +9071,62 @@ E2_HEAD="gate S3-E2 observed a gate condition on $E2_DEV_A and recommends power 
 E2_RATIONALE="$E2_HEAD$(echo "$E2_CONST" | python3 -c "import sys,json; print(json.load(sys.stdin)['clause'], end='')")"
 case "$E2_RATIONALE" in *"$E2_SENTINEL executions in this tenant."*) ;;
   *) echo "the writer's clause did not carry the creation count: $E2_RATIONALE" >&2; exit 1 ;; esac
-for E2_SITE_DEV in "$SITE_A:$E2_DEV_A:9:1" "$SITE_B:$E2_DEV_B:13:4"; do
+# Three devices of this proof's own, through the Site Manager's real device
+# path (the S4 precedent), so the device and class readers below are told
+# apart from their site and from the tenant BY THE ESTATE, not by luck: a
+# SIBLING of E2_DEV_A's class at site A (the device reader's record is not
+# site A's), a device of the SAME class at site B (the class reader's record
+# spans sites, so it is not site A's), and one of ANOTHER class at site B
+# (the class reader's record is not the tenant's). No heartbeat and no
+# incident: `unobserved`, which no evaluator reads as a condition. The poller
+# carries them to Central Command within one poll; DD removes them.
+E2_OTHER_CLASS=$([ "$E2_CLASS" = "switch" ] && echo server || echo switch)
+E2_SIB=gate-e2-sib-a
+E2_SAME=gate-e2-same-b
+E2_OTHER=gate-e2-other-b
+e2_sm_device() {  # $1 id, $2 cc site, $3 agent id, $4 class
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                          service_tag, device_class, first_seen_at, last_seen_at)
+     SELECT '$1', s.id, '$3', '$3', 'GateE2', 'S3E2', 'GATEE2', '$4', now(), now()
+     FROM sites s WHERE s.cc_site_id = '$2'
+     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+}
+e2_sm_device gatedevs3e2a00000000000000000000 "$SITE_A" "$E2_SIB" "$E2_CLASS"
+e2_sm_device gatedevs3e2b00000000000000000000 "$SITE_B" "$E2_SAME" "$E2_CLASS"
+e2_sm_device gatedevs3e2c00000000000000000000 "$SITE_B" "$E2_OTHER" "$E2_OTHER_CLASS"
+e2_devices_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache
+              WHERE (agent_id='$E2_SIB' AND site_id='$SITE_A' AND lower(device_class)='$E2_CLASS')
+                 OR (agent_id='$E2_SAME' AND site_id='$SITE_B' AND lower(device_class)='$E2_CLASS')
+                 OR (agent_id='$E2_OTHER' AND site_id='$SITE_B' AND lower(device_class)='$E2_OTHER_CLASS')")" = "3" ]
+}
+wait_for "the poller to carry the proof's three devices to Central Command" 180 e2_devices_polled
+E2_K=0
+for E2_SITE_DEV in "$SITE_A:$E2_DEV_A:9:1" "$SITE_A:$E2_SIB:3:2" \
+                   "$SITE_B:$E2_SAME:13:4" "$SITE_B:$E2_OTHER:5:2"; do
   IFS=: read -r E2_S E2_D E2_OK E2_BAD <<< "$E2_SITE_DEV"
+  E2_K=$((E2_K + 1))
   docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
     "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
           vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
-     SELECT substr(md5(random()::text || g::text || '$E2_S'), 1, 32), '$E2_S',
-            '$E2_TAG-' || '$E2_S' || '-' || g, '$E2_ACTION', '$E2_D', 'GateE2', 'S3E2',
+     SELECT substr(md5(random()::text || g::text || '$E2_K'), 1, 32), '$E2_S',
+            '$E2_TAG-$E2_K-' || g, '$E2_ACTION', '$E2_D', 'GateE2', 'S3E2',
             CASE WHEN g <= $E2_OK THEN 'SUCCESS' ELSE 'FAILURE' END, g <= $E2_OK,
             'gate-s3e2', now(), now()
      FROM generate_series(1, $((E2_OK + E2_BAD))) g" > /dev/null
 done
+E2_N_DEVICE=$(e2_count "o.device_agent_id='$E2_DEV_A' AND $(e2_owned)")
+E2_N_SITE_A=$(e2_count "o.site_id='$SITE_A'")
+E2_N_CLASS=$(e2_count "$(e2_owned "AND lower(f.device_class)='$E2_CLASS'")")
+E2_N_TENANT=$(e2_count "true")
+# The estate itself must tell the four readers apart, or the device and class
+# assertions below would be the site and tenant assertions under other names.
+[ "$E2_N_DEVICE" != "$E2_N_SITE_A" ] && [ "$E2_N_CLASS" != "$E2_N_TENANT" ] \
+  && [ "$E2_N_CLASS" != "$E2_N_SITE_A" ] || {
+  echo "the estate does not tell device from site ($E2_N_DEVICE/$E2_N_SITE_A) or class from tenant ($E2_N_CLASS/$E2_N_TENANT)" >&2
+  exit 1; }
+echo "  outcome rows: device $E2_N_DEVICE, site A $E2_N_SITE_A, class $E2_CLASS $E2_N_CLASS, tenant $E2_N_TENANT (runs|ok)"
 E2_AGENT=$(e1_agent s3e2-record true)
 [ -n "$E2_AGENT" ] || { echo "could not create the S3-E2 draft agent" >&2; exit 1; }
 E2_PROP="gate-s3e2-prop-$(date +%s)"
@@ -9113,13 +9157,13 @@ E2_BYTES=$(e2_bytes)
 [ -n "$E2_BYTES" ] || { echo "the S3-E2 proposal was not stored" >&2; exit 1; }
 echo "  stored: $E2_ACTION at site A on $E2_DEV_A, creation record $E2_SENTINEL executions across $E2_SITES_SEEN sites"
 echo "  CONTROL, the tenant owner:"
-e2_check "$TOKEN" tenant "$(e2_count "true")"
+e2_check "$TOKEN" tenant "$E2_N_TENANT"
 [ "$(s3_walk "$TOKEN" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN")" != "clean" ] || {
   echo "the control did not read the creation record -- the absences below would mean nothing" >&2; exit 1; }
 
 step "S3-E2/DA: a site-A approver reads the creation record WITHHELD and its OWN current track record -- no hidden count, rate, site or signal"
 echo "  site-A approver:"
-e2_check "$S3_A" scoped "$(e2_count "o.site_id='$SITE_A'")"
+e2_check "$S3_A" scoped "$E2_N_SITE_A"
 [ "$(s3_walk "$S3_A" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN" "$SITE_B" "$E2_SIGNAL_B")" = "clean" ] || {
   s3_walk "$S3_A" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN" "$SITE_B" "$E2_SIGNAL_B" >&2
   echo "a site-A approver read the tenant-wide creation record" >&2; exit 1; }
@@ -9135,19 +9179,16 @@ E2_APR_T=$(e2_person approver operator)
 e2_grant "$(s1_sub "$E2_DEV_T")" device "$E2_DEV_A" > /dev/null
 e2_grant "$(s1_sub "$E2_CLS_T")" device_class "$E2_CLASS" > /dev/null
 e2_grant "$(s1_sub "$E2_APR_T")" site "$SITE_A" '["action.approve"]' > /dev/null
-echo "  device-scoped ($E2_DEV_A):"
-e2_check "$E2_DEV_T" scoped "$(e2_count "o.device_agent_id='$E2_DEV_A' AND $(e2_owned)")"
-echo "  device_class-scoped ($E2_CLASS):"
-e2_check "$E2_CLS_T" scoped "$(e2_count "$(e2_owned "AND lower(f.device_class)='$E2_CLASS'")")"
+echo "  device-scoped ($E2_DEV_A) -- not its sibling, not site A:"
+e2_check "$E2_DEV_T" scoped "$E2_N_DEVICE"
+echo "  device_class-scoped ($E2_CLASS) -- not the $E2_OTHER_CLASS at site B, not the tenant:"
+e2_check "$E2_CLS_T" scoped "$E2_N_CLASS"
 echo "  approver at site A whose grant withholds fleet.view:"
 e2_check "$E2_APR_T" noreach -
 for E2_T in "$E2_DEV_T" "$E2_CLS_T" "$E2_APR_T"; do
   [ "$(s3_walk "$E2_T" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN" "$E2_SIGNAL_B")" = "clean" ] || {
     echo "a device, class or no-fleet.view reader read the creation record" >&2; exit 1; }
 done
-# D6: never the containing site's total merely because the device is there.
-[ "$(e2_count "o.device_agent_id='$E2_DEV_A' AND $(e2_owned)")" != "$(e2_count "o.site_id='$SITE_A'")" ] \
-  || echo "  (note: every site-A row of $E2_ACTION is this device's -- the counts coincide by estate)"
 
 step "S3-E2/DC: a grant narrowed after creation -- the current record follows the grant, the reader loses the proposal when the grant goes, and the stored row never moves"
 E2_NAR_T=$(e2_person narrow site_admin)
@@ -9157,7 +9198,7 @@ echo "  holds A and B:"
 e2_check "$E2_NAR_T" scoped "$(e2_count "o.site_id IN ('$SITE_A', '$SITE_B')")"
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/scope-grants/$E2_G_B" > /dev/null
 echo "  site B revoked:"
-e2_check "$E2_NAR_T" scoped "$(e2_count "o.site_id='$SITE_A'")"
+e2_check "$E2_NAR_T" scoped "$E2_N_SITE_A"
 curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/scope-grants/$E2_G_A" > /dev/null
 [ -z "$(e2_item "$E2_NAR_T")" ] || { echo "a reader with no grant left still reads the proposal" >&2; exit 1; }
 echo "  site A revoked too: the proposal is no longer theirs to read"
@@ -9213,6 +9254,14 @@ done
             AND principal_ref='$E2_M' AND revoked_at IS NULL")" = "0" ] || {
   echo "retiring the S3-E2 machine left a live grant" >&2; exit 1; }
 s1_cc "DELETE FROM cc_agent_proposals WHERE id='$E2_PROP'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM devices WHERE id IN ('gatedevs3e2a00000000000000000000',
+       'gatedevs3e2b00000000000000000000', 'gatedevs3e2c00000000000000000000')" > /dev/null
+e2_devices_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache
+              WHERE agent_id IN ('$E2_SIB', '$E2_SAME', '$E2_OTHER')")" = "0" ]
+}
+wait_for "the proof's three devices to leave Central Command's fleet" 180 e2_devices_gone
 s1_cc "DELETE FROM cc_outcome_history WHERE actor='gate-s3e2' AND action_id LIKE '$E2_TAG-%'" > /dev/null
 [ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$E2_TAG-%'")" = "0" ] || {
   echo "the S3-E2 outcome rows were not removed" >&2; exit 1; }
@@ -9227,7 +9276,7 @@ assert P.MACHINE_WITHHELD_KEYS == ('attention', 'learned_signals', 'outcome_evid
 assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: the projection module and the one loader; plane 14, contract 99, ceiling unchanged')"
-echo "  catalogue restored, both S3-E2 agents retired, the synthetic proposal and its outcome rows removed"
+echo "  catalogue restored, both S3-E2 agents retired, the synthetic proposal, its outcome rows and the three devices removed"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
