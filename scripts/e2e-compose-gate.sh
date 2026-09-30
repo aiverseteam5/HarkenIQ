@@ -8993,9 +8993,13 @@ items = [a['proposal'] for a in json.load(sys.stdin)['actions']
 print(json.dumps(items[0]) if items else '')"
 }
 e2_check() {  # $1 token, $2 expect: tenant|scoped|noreach, $3 "executions|success" or '-'
-  e2_item "$1" | E2_EXPECT="$2" E2_COUNTS="$3" E2_CONST="$E2_CONST" E2_HEAD="$E2_HEAD" \
-    E2_STORED="$(b0r_cc_text "SELECT evidence::text FROM cc_agent_proposals WHERE id='$E2_PROP'")" \
-    E2_RATIONALE="$E2_RATIONALE" python3 -c "
+  # Both reads happen BEFORE the pipe: `docker compose exec -T` forwards its
+  # stdin, so a psql call on the right of a pipe would swallow the payload.
+  local e2_stored e2_payload
+  e2_stored=$(b0r_cc_text "SELECT evidence::text FROM cc_agent_proposals WHERE id='$E2_PROP'" < /dev/null)
+  e2_payload=$(e2_item "$1")
+  printf '%s' "$e2_payload" | E2_EXPECT="$2" E2_COUNTS="$3" E2_CONST="$E2_CONST" E2_HEAD="$E2_HEAD" \
+    E2_STORED="$e2_stored" E2_RATIONALE="$E2_RATIONALE" python3 -c "
 import sys, json, os
 raw = sys.stdin.read().strip()
 assert raw, 'the reader does not see the proposal at all'
