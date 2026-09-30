@@ -6069,3 +6069,37 @@ reach); minimal Console Vitest; a fresh-wipe live gate with real Keycloak and
 real outcomes at two sites (tenant owner control, site-scoped approver,
 device- and class-scoped humans, grant narrowed after creation, real machine
 dry-run); every security regression group; the full suite; exact-head CI.
+
+**Found while implementing S3-E2 (recorded; no scope change).**
+
+1. *Two S3 pins recorded today's behaviour as a requirement.* A30.26's
+   `test_E2_a_stored_proposal_keeps_its_tenant_wide_outcome_statistic`
+   asserted that a site-A reader READ the tenant-wide 31. It is inverted
+   under a new name. Its "the stored row still says 31" assertion is
+   kept, and the site-A reader now reads 7 beside a withheld creation
+   record. A second S3 machine test asserted that a site-scoped machine's
+   dry-run CARRIED its site's and the cohort's learned signals; D9
+   inverts it. Neither pin is deleted.
+2. *The viewer claim is stronger than the checkpoint predicted.* The
+   checkpoint expected deletion equivalence to hold only below the
+   10000-row window, because `/api/autonomy` filters by site AFTER its
+   window. The viewer block instead reads the canonical outcome read,
+   which applies B0b's predicate in SQL BEFORE the window. Hidden volume
+   therefore never decides which of the reader's own outcomes are
+   counted, at any size (tested with 10000 hidden rows older than every
+   site-A row). What remains is the window over the reader's OWN set,
+   pinned by a strict xfail for F-E2-4.
+3. *The live gate needed the estate to discriminate.* On CI's estate the
+   device reader's record coincided with site A's, and the class
+   reader's with the tenant's, so the first live device and class
+   assertions were true but not discriminating. The proof now owns three
+   devices, added through the Site Manager's real device path (S4's
+   precedent), and refuses to run unless device ≠ site ≠ class ≠ tenant.
+4. *A gate-harness defect.* `docker compose exec -T` forwards its stdin,
+   so a psql helper placed on the right of a pipe consumed the payload.
+   Both first CI gates read an empty queue for that reason. The local
+   rehearsal had stubbed the helper with a command that reads no stdin;
+   the rehearsal stub now drains stdin exactly as docker exec does.
+5. *A decision batch loads the reader's view once.* Nothing a decision
+   does moves an outcome, so a request-local memo serves the whole
+   batch. This is pinned by counting loader calls.

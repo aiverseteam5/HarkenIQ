@@ -6341,3 +6341,26 @@ readers; structural pins (the head takes no evidence, `govern_proposal` reads
 reads no evidence field, `/api/autonomy` unchanged); the F-E2-4 window as a
 strict xfail. Real PostgreSQL in `tests/integration/`. Live gate steps
 S3-E2/CZ–DD after S3-E1/CY.
+
+### Found while implementing
+
+* **Two S3 pins inverted, never deleted.** A site-A reader used to READ the
+  tenant-wide 31, and a site-scoped machine's dry-run used to CARRY learned
+  signals. The first now reads 7 beside a withheld creation record, and the
+  stored row still says 31. The second now reads the three withheld keys.
+* **Deletion equivalence holds at any size.** The canonical outcome read
+  applies B0b's predicate in SQL before the window, so hidden rows never
+  displace the reader's own. That is stronger than `/api/autonomy`'s
+  post-window filter. The reader's OWN window is F-E2-4's, pinned by a
+  strict xfail.
+* **The live estate must discriminate.** CZ adds three proof-owned devices
+  through the Site Manager (a sibling at A, and at B one of the same class
+  and one of another class). It refuses to proceed unless the device, site,
+  class and tenant counts all differ. DD removes the devices and waits for
+  them to leave the fleet.
+* **`docker compose exec -T` reads stdin.** A psql helper on the right of a
+  pipe swallowed the queue payload in the first CI gates. Reads now happen
+  before the pipe. A rehearsal stub must drain stdin, or it cannot see this.
+* **Mutation:** 22 named breakages, all killed by the S3-E2 and S3 modules;
+  the unmutated kill set is green.
+
