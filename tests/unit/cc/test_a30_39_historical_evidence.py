@@ -1019,3 +1019,51 @@ class TestTheWindowIsNotClaimedAway:
         view = await E.evidence_view(stack, subject)
         assert view.viewer("SEL_CLEAR")["outcome_evidence"] == \
             E.expected_track_record("site_a")
+
+
+# ---------------------------------------------------------------------------
+# 14. Case 20: the proposal's own outcome joins the CURRENT record, never the
+#     creation record
+# ---------------------------------------------------------------------------
+
+
+class TestTheOperationAndItsOutcome:
+    async def test_a_settled_outcome_counts_now_and_changes_nothing_recorded(self):
+        """The exact execution key (A25.1: `directive:<id>`) links a proposal to
+        its outcome row. Settling it moves the reader's CURRENT track record
+        by exactly that row and leaves the creation record, the rationale and
+        the lifecycle linkage as they were."""
+        from harkeniq_cc.db.models import CCAgentProposal
+
+        stack, ids = await E.scenario()
+        subject = await E.persona(stack, "site_a")
+        before = {i["proposal_id"]: i for i in await _queue(stack, subject, "site_admin")}
+        creation_before = {k: before[ids["evaluated"]][k] for k in ("evidence", "rationale")}
+        stored_before = await E.stored_bytes(stack)
+
+        directive = "e2-directive-1"
+        async with stack.sessionmaker() as session:
+            session.add(CCOutcomeHistory(
+                site_id=stack.site("A"), action_id=f"directive:{directive}",
+                action_type="SEL_CLEAR", device_agent_id=stack.tagged("node-s3-a"),
+                vendor="Dell", model="R750", outcome="SUCCESS", fault_resolved=True,
+                actor="op-agent:x@v1", ingested_at=datetime.now(timezone.utc),
+            ))
+            await session.commit()
+
+        after = {i["proposal_id"]: i for i in await _queue(stack, subject, "site_admin")}
+        item = after[ids["evaluated"]]
+        assert {k: item[k] for k in ("evidence", "rationale")} == creation_before
+        assert _viewer(item)["outcome_evidence"]["executions"] == \
+            _viewer(before[ids["evaluated"]])["outcome_evidence"]["executions"] + 1
+        assert await E.stored_bytes(stack) == stored_before
+        # The linkage itself is the settle pass's, read through the exact key
+        # and never through a projection of evidence.
+        async with stack.sessionmaker() as session:
+            from harkeniq_cc.db.repos import OutcomeHistoryRepo
+
+            row = await OutcomeHistoryRepo(session).find_by_action_id(
+                stack.tenant, f"directive:{directive}")
+            assert row is not None and row.outcome == "SUCCESS"
+            stored = await session.get(CCAgentProposal, ids["evaluated"])
+            assert stored.evidence["outcome_evidence"]["executions"] == 40
