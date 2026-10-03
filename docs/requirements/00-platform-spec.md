@@ -6266,3 +6266,54 @@ pre-projection windows) stays S4's follow-up; a universal minimum-peer rule
 (D-P9) is a separate product decision; F-E2-4 owns both outcome windows
 (D-P10); proposal-budget ordering stays OPEN; the datacenter taxonomy and PX
 are not started.
+
+**Found while implementing A30.40 (recorded; no scope change).**
+
+1. *A principal and the internal paths shared one entry, told apart by an
+   optional argument.* `load_attention` served the human route (with a
+   `LearningView` and its reach) and the three internal decision paths
+   (with `learning=None`); nothing tied the reach to the reader, and the
+   outcome read ignored it either way. A person's attention now enters
+   through a TYPE, `HumanAttentionSelection`, and `load_attention` refuses a
+   reader, so its only callers are the three internal paths A30.28's
+   allow-list already named.
+2. *Three structural pins, one gate twin and one golden moved; none was
+   weakened.* A5's router check now names `load_human_attention` (and
+   still forbids `build_attention`) -- and so does its live twin, gate
+   step A5/J, which the first push-event gate stopped at before reaching
+   the A30.40 steps. A30.28 counts the three internal callers: the human
+   route was the fourth, and it now names its reader by type. A30.35's
+   one-composer set gains `load_human_attention`. B2-2's golden stays
+   byte-for-byte main's recording: the tenant owner must still equal it,
+   the scoped personas must now differ from it, and its B2-F5 non-vacuity
+   test is inverted under a new name, never deleted.
+3. *Two texts in the code had become false and were corrected.* The machine
+   selection's refusal said the human selection "folds every site's
+   outcomes into a cohort prior"; the outcome read's docstring said the
+   human Attention route reads the whole tenant.
+4. *D-P7's boundary inside one route.* The machine incident detail used the
+   reader's learning view twice: for prior learning and for A30.29's
+   generated block. D-P7 bounds the first. The second keeps the reader's
+   own view, pinned by a test and by a named mutant that moves the bounded
+   view onto it.
+5. *A tenant-wide machine's bounded view is the set of current sites.* A
+   site-scoped learned signal at a site that no longer exists is therefore
+   not shown to it; no current reader holds that site.
+6. *D-P9's consequence for a device reader.* A device-only reach's cohort is
+   that device's own rows: 2/2 in the live estate, exactly what a tenant
+   reader computes over an estate holding nothing else, and labelled "in
+   your current view". A minimum-peer rule stays a separate product
+   decision.
+7. *A typo in design §34u.* The insufficient-evidence sentence reads
+   "unscored", not "unscoped"; §34u is corrected.
+8. *The OpenAPI document changes in one leaf.* Every path, parameter and
+   schema is identical to `main`; the description of
+   `GET /api/predictive/risk` changed, because FastAPI publishes the
+   handler's docstring and that docstring now states where the rows come
+   from.
+9. *The gate's posture is not a tenant's birth posture.* E1.2's last step
+   returns the demo tenant to `legacy_open` so the gate stays reusable, and
+   under it a never-granted person is synthesized tenant-wide (A23.10). The
+   second push-event gate stopped at DE's own precondition for exactly that
+   reason. DE-DI now set strict through A26's helpers, record the posture
+   they found and restore it in DI.

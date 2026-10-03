@@ -6440,7 +6440,7 @@ else. With it set:
   evidence in your current view";
 * `_reasons` says "… (recency-weighted, N outcomes in your current view)",
   "… peers in your current view fail at X%", and "… or its model in your
-  current view — unscoped, not proven healthy".
+  current view — unscored, not proven healthy".
 
 The anomaly sentence and the learned-signal sentences are tenant knowledge
 under A23 and S4 and do not change. No Console change is needed: the Console
@@ -6498,3 +6498,27 @@ tenant-wide machine on Attention and incident detail. The reader's own 50k
 window is pinned by a strict xfail. Real PostgreSQL in
 `tests/integration/test_a30_40_predictive_privacy_pg.py`; live gate steps
 after S3-E2/DD.
+
+### Found while implementing
+
+* **One entry served two kinds of caller.** `load_attention` took a person
+  (with a `LearningView`) and the internal paths (with `learning=None`), and
+  nothing tied the reach to the reader. A person's attention now enters
+  through `HumanAttentionSelection`, and `load_attention` refuses a reader.
+* **Pins moved, intent kept.** A5's router check and its live twin, gate step
+  A5/J; A30.28's caller count; A30.35's one-composer set. B2-2's golden
+  stays main's recording: the tenant owner still equals it, the scoped
+  personas now differ, and the B2-F5 non-vacuity test is inverted under a
+  new name.
+* **Two code texts corrected:** the machine selection's refusal message and
+  the outcome read's docstring both described the old human path.
+* **D-P7's boundary inside the incident route.** Prior learning is bounded;
+  the generated block keeps the reader's own view (pinned by a test and by
+  a named mutant).
+* **The gate runs DE–DI under strict.** E1.2 returns the demo tenant to
+  `legacy_open`, where a never-granted person is synthesized; A26's helpers
+  set strict and DI restores the posture found.
+* **OpenAPI:** one leaf differs, the description of `GET /api/predictive/risk`
+  (FastAPI publishes the handler's docstring).
+* **Mutation:** 18 named breakages, all killed by the A30.40 and B2-2
+  modules; the unmutated kill set is green.
