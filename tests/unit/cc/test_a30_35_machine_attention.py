@@ -175,20 +175,27 @@ class TestDeletionEquivalence:
                 f"deleting what {name} may not read changed nothing for the "
                 "tenant-wide control: the oracle proves nothing")
 
-    async def test_non_vacuity_the_human_composer_still_shows_b2_f5(self):
-        """The unchanged human path over the SAME persona's two estates DOES
-        differ -- the tenant cohort decides a2 -- which is the residual A30.35
-        records and B2-2 does not change for people."""
+    async def test_a30_40_the_scoped_human_composer_no_longer_shows_b2_f5(self):
+        """INVERTED by A30.40 (D-P2, D-P5), never deleted. B2-2 recorded here
+        that the human path over the SAME persona's two estates DID differ --
+        the tenant cohort decided a2 -- and left that residual for people. A
+        person's attention is now composed from their own selection: the two
+        estates agree on a2, still scored on a cohort prior (of the person's
+        current view), and only the tenant-wide control tells them apart."""
         full = await E.build()
         reduced = await E.build(E.visible("m-site-a"))
         a = await _human(full, "h-site-a")
         b = await _human(reduced, "h-site-a")
 
-        def a2(body):
-            return next(i for i in body["items"] if i["agent_id"] == E.agent(full, "a2"))
+        def a2(body, stack):
+            return next(i for i in body["items"] if i["agent_id"] == E.agent(stack, "a2"))
 
-        assert a2(a)["confidence"]["basis"] == "cohort_prior"
-        assert a2(a)["risk_score"] != a2(b)["risk_score"], "B2-F5 did not reproduce"
+        assert a2(a, full)["confidence"]["basis"] == "cohort_prior"
+        assert a2(a, full) == a2(b, reduced), "B2-F5 reproduced for a scoped person"
+        owner_full = await _human(full, "h-owner")
+        owner_reduced = await _human(reduced, "h-owner")
+        assert a2(owner_full, full)["risk_score"] != a2(owner_reduced, reduced)["risk_score"], (
+            "the tenant-wide control no longer tells the estates apart")
 
 
 # ---------------------------------------------------------------------------
@@ -864,10 +871,25 @@ class TestTheViewIsTheToken:
 
 
 class TestHumanCompatibility:
-    async def test_every_human_read_equals_main(self):
+    async def test_the_tenant_wide_human_read_equals_main(self):
+        """The tenant owner's every read is byte-identical to main's recording.
+        The golden file is unchanged: it is still main's."""
         golden = json.loads(GOLDEN.read_text())
         full = await E.build()
-        assert await E.human_payloads(full) == golden["human"]
+        assert (await E.human_payloads(full))["h-owner"] == golden["human"]["h-owner"]
+
+    async def test_a30_40_scoped_human_reads_no_longer_equal_main(self):
+        """INVERTED by A30.40 (D-P5, D-P6), never deleted. This test asserted
+        that B2-2 changed no person's attention, scoped readers included. A
+        scoped person's attention is now composed from their own selection
+        and says so ("in your current view"), so each scoped persona's answer
+        now differs from main's recording. What it now equals is proven
+        against the reduced-estate oracle in test_a30_40_predictive_privacy."""
+        golden = json.loads(GOLDEN.read_text())
+        full = await E.build()
+        now = await E.human_payloads(full)
+        for name in ("h-site-a", "h-device-a1", "h-class-switch"):
+            assert now[name] != golden["human"][name], name
 
     async def test_the_internal_decision_paths_equal_main(self):
         """The evaluator, the dry-run's reasoning and the ingress re-derivation
@@ -957,8 +979,11 @@ def _functions_calling(name: str) -> set[tuple[str, str]]:
 class TestStructure:
     def test_one_composer_one_body(self):
         assert _functions_calling("build_attention") == {("governance.py", "_compose_attention")}
+        # A30.40 (D-P5): a person's selection enters the same body beside the
+        # machine's; still ONE composer, ONE body.
         assert _functions_calling("_compose_attention") == {
-            ("governance.py", "load_attention"), ("governance.py", "load_machine_attention")}
+            ("governance.py", "load_attention"), ("governance.py", "load_machine_attention"),
+            ("governance.py", "load_human_attention")}
 
     def test_machine_attention_goes_through_its_own_selection(self):
         assert _functions_calling("load_machine_attention") == {("api/attention.py", "attention")}

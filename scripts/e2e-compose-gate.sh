@@ -3487,7 +3487,10 @@ api = (root / "services/central_command/src/harkeniq_cc/api/attention.py").read_
 # filter ran before ranking. A behavioural test alone would pass again
 # the moment somebody copies it back.
 assert "build_attention" not in api, "the router composes attention again"
-assert "load_attention" in api
+# A30.40 (D-P5): a person's attention enters the ONE composer through
+# `load_human_attention`, from their own selection; `load_attention` is now
+# the internal decision paths' entry and refuses a reader.
+assert "load_human_attention" in api
 print("the attention router is a thin caller over the one composer")
 A5PY
 
@@ -9277,6 +9280,316 @@ assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: the projection module and the one loader; plane 14, contract 99, ceiling unchanged')"
 echo "  catalogue restored, both S3-E2 agents retired, the synthetic proposal, its outcome rows and the three devices removed"
+
+# ===========================================================================
+# A30.40, live: predictive / privacy projection hardening. `/api/predictive/
+# risk` scored a reader's own devices from the WHOLE tenant's outcome rows --
+# their history, the vendor/model cohort prior and `outcomes_considered`,
+# which reached even a principal with no reach at all -- and a person's
+# Attention was composed the same way (B2-F5). Both now read the outcome rows
+# the reader's CURRENT canonical reach reads: B0b's owner rule, in SQL,
+# before the window. Every machine reads S4's BOUNDED learning, tenant-wide
+# included (D-P7).
+#
+# This proof owns its estate: four devices through the Site Manager's real
+# device path (one model of its own, two classes, two sites); outcome rows in
+# Central Command's append-only `cc_outcome_history`, including rows left at
+# site B by a device that resolves at site A -- moved-device history, which
+# the owner rule makes SITE B's; and, for D-P7, one count-bearing learned
+# signal and fleet pattern for its model. Every expected value is an
+# independent SQL restatement of the owner rule. The estate is chosen so the
+# four readers' cohorts differ: site A 4/5, class 13/15, tenant 18/26, and
+# the device reader's own rows 2/2.
+# ===========================================================================
+P40_VENDOR=GateA40
+P40_MODEL=A3040P
+P40_TAG="gate-a3040-$(date +%s)"
+P40_A1=gate-p40-a1
+P40_A2=gate-p40-a2
+P40_B1=gate-p40-b1
+P40_B2=gate-p40-b2
+p40_sm_device() {  # $1 id, $2 cc site, $3 agent id, $4 class
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                          service_tag, device_class, first_seen_at, last_seen_at)
+     SELECT '$1', s.id, '$3', '$3', '$P40_VENDOR', '$P40_MODEL', 'GATEP40', '$4', now(), now()
+     FROM sites s WHERE s.cc_site_id = '$2'
+     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+}
+p40_rows() {  # $1 site, $2 device agent id, $3 successes, $4 failures, $5 key
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+          vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+     SELECT substr(md5(random()::text || g::text || '$5'), 1, 32), '$1',
+            '$P40_TAG-$5-' || g, 'SEL_CLEAR', '$2', '$P40_VENDOR', '$P40_MODEL',
+            CASE WHEN g <= $3 THEN 'SUCCESS' ELSE 'FAILURE' END, g <= $3,
+            'gate-a3040', now() - interval '1 day', now()
+     FROM generate_series(1, $(($3 + $4))) g" > /dev/null < /dev/null
+}
+p40_count() {  # $1 extra SQL predicate over `o` -> how many outcome rows it reads
+  s1_cc "SELECT count(*) FROM cc_outcome_history o JOIN cc_sites s ON s.id = o.site_id
+         WHERE s.tenant_id='$P40_TENANT' AND ($1)" < /dev/null
+}
+p40_rate() {  # $1 extra SQL predicate over `o` -> this model's cohort failure rate, 4dp
+  s1_cc "SELECT round(count(*) FILTER (WHERE o.outcome IN ('FAILURE', 'ROLLBACK'))::numeric
+                      / nullif(count(*), 0), 4)
+         FROM cc_outcome_history o JOIN cc_sites s ON s.id = o.site_id
+         WHERE s.tenant_id='$P40_TENANT' AND o.vendor='$P40_VENDOR'
+           AND o.model='$P40_MODEL' AND ($1)" < /dev/null
+}
+p40_owned() {  # the owner rule's device half, restated: the row's device resolves AT its site
+  echo "EXISTS (SELECT 1 FROM cc_fleet_cache f WHERE f.agent_id = o.device_agent_id
+         AND f.site_id = o.site_id ${1:-})"
+}
+p40_read() {  # $1 token, $2 count predicate -> P40_BODY, and P40_N bracketing the read
+  local before after
+  for _ in 1 2 3 4 5; do
+    before=$(p40_count "$2")
+    P40_BODY=$(s2_get "$1" "/api/predictive/risk")
+    after=$(p40_count "$2")
+    [ "$before" = "$after" ] && { P40_N=$before; return 0; }
+    sleep 2
+  done
+  echo "the estate kept moving under the read" >&2; exit 1
+}
+p40_check() {  # $1 token, $2 label, $3 count predicate, $4 cohort predicate, $5 a1 "basis:samples", $6 a2 seen yes|no
+  p40_read "$1" "$3"
+  local rate
+  rate=$(p40_rate "$4")
+  printf '%s' "$P40_BODY" | P40_N="$P40_N" P40_RATE="$rate" P40_A1_EXPECT="$5" \
+    P40_A2_SEEN="$6" P40_A1="$P40_A1" P40_A2="$P40_A2" P40_LABEL="$2" P40_MODEL="$P40_MODEL" python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+rows = {r['agent_id']: r for r in d['risks']}
+assert d['outcomes_considered'] == int(os.environ['P40_N']), (d['outcomes_considered'], os.environ['P40_N'])
+rate = float(os.environ['P40_RATE'])
+basis, samples = os.environ['P40_A1_EXPECT'].split(':')
+a1 = rows[os.environ['P40_A1']]
+assert (a1['factors']['basis'], a1['sample_count']) == (basis, int(samples)), a1
+if basis == 'cohort_prior':
+    assert a1['factors']['cohort_failure_rate'] == rate, (a1, rate)
+if os.environ['P40_A2_SEEN'] == 'yes':
+    a2 = rows[os.environ['P40_A2']]
+    assert a2['factors']['basis'] == 'cohort_prior', a2
+    assert a2['factors']['cohort_failure_rate'] == rate, (a2, rate)
+else:
+    assert os.environ['P40_A2'] not in rows, 'a device outside the reach was scored'
+print('  %-34s outcomes_considered %d = the SQL oracle; %s cohort %s; a1 %s over %s row(s)' % (
+    os.environ['P40_LABEL'], d['outcomes_considered'], os.environ['P40_MODEL'], rate, basis, samples))"
+}
+p40_zero() {  # $1 token, $2 label -> zero predictive evidence on both surfaces
+  local pred attn
+  pred=$(s2_get "$1" "/api/predictive/risk")
+  attn=$(s2_get "$1" "/api/attention/")
+  printf '%s' "$pred" | P40_ATTN="$attn" P40_LABEL="$2" python3 -c "
+import sys, json, os
+d, a = json.load(sys.stdin), json.loads(os.environ['P40_ATTN'])
+assert (d['risks'], d['devices_scored'], d['outcomes_considered']) == ([], 0, 0), d
+assert a['items'] == [] and set(a['summary'].values()) == {0}, a['summary']
+print('  %-34s risks [], devices_scored 0, outcomes_considered 0, Attention empty' % os.environ['P40_LABEL'])"
+}
+
+step "A30.40/DE: real outcome rows at two sites -- every reader's predictive answer is computed over EXACTLY the rows its current reach reads"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+P40_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+# Strict enforcement, the posture a tenant is born with (A23-5): under the
+# legacy_open posture E1.2 returns the gate to, a never-granted person is
+# SYNTHESIZED tenant-wide (A23.10) and DF's third reader would mean nothing.
+# A26's helpers record the posture found and DI restores it.
+P40_MODE_BEFORE=$(a26_mode)
+[ "$P40_MODE_BEFORE" = "strict" ] || a26_set_mode strict
+[ "$(a26_mode)" = "strict" ] || { echo "could not put the tenant in strict enforcement" >&2; exit 1; }
+echo "  the proof runs under strict enforcement (found: $P40_MODE_BEFORE)"
+P40_CLASS=$(s1_cc "SELECT lower(device_class) FROM cc_fleet_cache WHERE site_id='$SITE_A'
+                   AND device_class <> '' ORDER BY agent_id LIMIT 1")
+[ -n "$P40_CLASS" ] || { echo "the stack has no classed device at site A" >&2; exit 1; }
+P40_OTHER=$([ "$P40_CLASS" = "switch" ] && echo server || echo switch)
+p40_sm_device gatedeva3040a1000000000000000000 "$SITE_A" "$P40_A1" "$P40_CLASS"
+p40_sm_device gatedeva3040a2000000000000000000 "$SITE_A" "$P40_A2" "$P40_CLASS"
+p40_sm_device gatedeva3040b1000000000000000000 "$SITE_B" "$P40_B1" "$P40_CLASS"
+p40_sm_device gatedeva3040b2000000000000000000 "$SITE_B" "$P40_B2" "$P40_OTHER"
+p40_devices_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache
+              WHERE (agent_id='$P40_A1' AND site_id='$SITE_A' AND lower(device_class)='$P40_CLASS')
+                 OR (agent_id='$P40_A2' AND site_id='$SITE_A' AND lower(device_class)='$P40_CLASS')
+                 OR (agent_id='$P40_B1' AND site_id='$SITE_B' AND lower(device_class)='$P40_CLASS')
+                 OR (agent_id='$P40_B2' AND site_id='$SITE_B' AND lower(device_class)='$P40_OTHER')")" = "4" ]
+}
+wait_for "the poller to carry the proof's four devices to Central Command" 180 p40_devices_polled
+p40_rows "$SITE_A" "$P40_A1" 0 2 a1
+p40_rows "$SITE_A" "$P40_A2" 1 2 a2
+p40_rows "$SITE_B" "$P40_B1" 1 9 b1
+p40_rows "$SITE_B" "$P40_B2" 6 0 b2
+# Moved-device history: rows at site B naming a device that resolves at A.
+p40_rows "$SITE_B" "$P40_A1" 0 5 a1-at-b
+P40_SITE_A="o.site_id='$SITE_A'"
+P40_DEVICE="o.device_agent_id='$P40_A1' AND $(p40_owned)"
+P40_CLASSED="$(p40_owned "AND lower(f.device_class)='$P40_CLASS'")"
+P40_R_SITE=$(p40_rate "$P40_SITE_A"); P40_R_CLASS=$(p40_rate "$P40_CLASSED")
+P40_R_TENANT=$(p40_rate "true"); P40_R_DEVICE=$(p40_rate "$P40_DEVICE")
+[ "$(printf '%s\n' "$P40_R_SITE" "$P40_R_CLASS" "$P40_R_TENANT" "$P40_R_DEVICE" | sort -u | wc -l)" = "4" ] || {
+  echo "the estate does not tell the readers apart: $P40_R_SITE $P40_R_CLASS $P40_R_TENANT $P40_R_DEVICE" >&2
+  exit 1; }
+echo "  $P40_MODEL cohorts: site A $P40_R_SITE, class $P40_CLASS $P40_R_CLASS, tenant $P40_R_TENANT, device $P40_R_DEVICE"
+P40_DEV_T=$(e2_person p40dev site_admin)
+P40_CLS_T=$(e2_person p40cls site_admin)
+e2_grant "$(s1_sub "$P40_DEV_T")" device "$P40_A1" > /dev/null
+e2_grant "$(s1_sub "$P40_CLS_T")" device_class "$P40_CLASS" > /dev/null
+echo "  CONTROL, the tenant owner (a1 reads its moved-device history: 2 at A + 5 at B):"
+p40_check "$TOKEN" "tenant owner" "true" "true" "device_history:7" yes
+echo "  a site-A person -- a1's rows at B are site B's:"
+p40_check "$S3_A" "site-A person" "$P40_SITE_A" "$P40_SITE_A" "cohort_prior:2" yes
+echo "  a device person ($P40_A1) -- its own rows, its own cohort (D-P9):"
+p40_check "$P40_DEV_T" "device person" "$P40_DEVICE" "$P40_DEVICE" "cohort_prior:2" no
+echo "  a device_class person ($P40_CLASS) -- not the $P40_OTHER at B, not the site-owned rows:"
+p40_check "$P40_CLS_T" "class person" "$P40_CLASSED" "$P40_CLASSED" "cohort_prior:2" yes
+
+step "A30.40/DF: zero effective reach reads ZERO predictive evidence -- revoked, approve-only and never granted"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+P40_REV_T=$(e2_person p40rev site_admin)
+P40_APR_T=$(e2_person p40apr operator)
+P40_NONE_T=$(e2_person p40none site_admin)
+P40_G_REV=$(e2_grant "$(s1_sub "$P40_REV_T")" site "$SITE_A")
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/scope-grants/$P40_G_REV" > /dev/null
+e2_grant "$(s1_sub "$P40_APR_T")" site "$SITE_A" '["action.approve"]' > /dev/null
+p40_zero "$P40_REV_T" "revoked site-A grant"
+p40_zero "$P40_APR_T" "action.approve without fleet.view"
+p40_zero "$P40_NONE_T" "no grant at all (strict)"
+P40_TOTAL=$(p40_count "true")
+[ "$(s2_get "$TOKEN" /api/predictive/risk | python3 -c "import sys,json; print(json.load(sys.stdin)['outcomes_considered'])")" -ge "$P40_TOTAL" ] || {
+  echo "the control does not read the tenant total -- the zeros above would mean nothing" >&2; exit 1; }
+echo "  CONTROL: the tenant owner reads the tenant total ($P40_TOTAL)"
+
+step "A30.40/DG: one hidden outcome, added and removed -- a site-A person's answer does not move; the tenant's cohort does; the words say whose view it is"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+p40_mine() {  # $1 token -> the proof devices' predictive rows, canonical
+  s2_get "$1" "/api/predictive/risk" | P40_A1="$P40_A1" P40_A2="$P40_A2" python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+mine = [r for r in d['risks'] if r['agent_id'] in (os.environ['P40_A1'], os.environ['P40_A2'])]
+print(json.dumps(sorted(mine, key=lambda r: r['agent_id']), sort_keys=True))"
+}
+P40_BEFORE=$(p40_mine "$S3_A")
+P40_T_BEFORE=$(p40_rate "true")
+p40_rows "$SITE_B" "gate-p40-ghost" 0 1 hidden
+[ "$(p40_mine "$S3_A")" = "$P40_BEFORE" ] || { echo "a hidden outcome at site B moved a site-A person's answer" >&2; exit 1; }
+[ "$(p40_rate "true")" != "$P40_T_BEFORE" ] || { echo "the hidden outcome did not move the tenant cohort -- vacuous" >&2; exit 1; }
+s1_cc "DELETE FROM cc_outcome_history WHERE action_id LIKE '$P40_TAG-hidden-%'" > /dev/null < /dev/null
+[ "$(p40_mine "$S3_A")" = "$P40_BEFORE" ] || { echo "removing a hidden outcome moved a site-A person's answer" >&2; exit 1; }
+echo "  site-A person: byte-identical across one hidden failure and its removal; tenant cohort moved $P40_T_BEFORE -> and back"
+s2_get "$S3_A" "/api/attention/" | P40_A2="$P40_A2" P40_V="$P40_VENDOR $P40_MODEL" python3 -c "
+import sys, json, os
+items = {i['agent_id']: i for i in json.load(sys.stdin)['items']}
+reasons = items[os.environ['P40_A2']]['reasons']
+assert any(r.startswith('No history for this device yet; %s peers in your current view fail at ' % os.environ['P40_V'])
+           for r in reasons), reasons
+print('  site-A person reads:', [r for r in reasons if 'peers' in r][0])"
+s2_get "$TOKEN" "/api/attention/" | P40_A2="$P40_A2" P40_V="$P40_VENDOR $P40_MODEL" python3 -c "
+import sys, json, os
+items = {i['agent_id']: i for i in json.load(sys.stdin)['items']}
+reasons = items[os.environ['P40_A2']]['reasons']
+assert any(r.startswith('No history for this device yet; %s peers fail at ' % os.environ['P40_V'])
+           for r in reasons), reasons
+assert not any('in your current view' in r for r in reasons), reasons
+print('  CONTROL, the tenant owner reads:', [r for r in reasons if 'peers' in r][0])"
+
+step "A30.40/DH: a TENANT-WIDE machine reads S4's bounded learning -- no k/n, no exact confidence -- while the owner reads what is stored"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+P40_COHORT=$(docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.learned_signals import cohort_ref
+print(cohort_ref('$P40_VENDOR', '$P40_MODEL'))" < /dev/null | tr -d '\r')
+[ -n "$P40_COHORT" ] || { echo "could not read the cohort reference from the shipped image" >&2; exit 1; }
+P40_STATEMENT="SEL_CLEAR on $P40_VENDOR $P40_MODEL fails 69% of the time (18 of 26 attempts)."
+P40_DESCRIPTION="SEL_CLEAR fails at 69% on $P40_VENDOR $P40_MODEL (18/26)"
+s1_cc "INSERT INTO cc_learned_signals (id, tenant_id, signal_key, scope_type, scope_ref, action_type,
+          vendor, model, statement, evidence, confidence, source_pattern_id, status,
+          observation_count, first_observed_at, last_confirmed_at)
+       VALUES ('gatea3040signal00000000000000000', '$P40_TENANT', '$P40_TAG:signal', 'cohort',
+          '$P40_COHORT', 'SEL_CLEAR', '$P40_VENDOR', '$P40_MODEL', '$P40_STATEMENT',
+          '{\"failure_rate\": 0.6923, \"failures\": 18, \"total\": 26}'::jsonb, 0.65, '', 'active',
+          1, now(), now())" > /dev/null < /dev/null
+s1_cc "INSERT INTO cc_fleet_patterns (id, tenant_id, pattern_type, description, affected_scope,
+          confidence, evidence, status, detected_at)
+       VALUES ('gatea3040pattern0000000000000000', '$P40_TENANT', 'batch_failure', '$P40_DESCRIPTION',
+          '{\"vendor\": \"$P40_VENDOR\", \"model\": \"$P40_MODEL\", \"action_type\": \"SEL_CLEAR\"}'::jsonb,
+          0.65, '{\"failure_rate\": 0.6923, \"failure_count\": 18, \"total_count\": 26}'::jsonb,
+          'active', now())" > /dev/null < /dev/null
+P40_M=$(e1_agent a3040-machine true)
+[ -n "$P40_M" ] || { echo "could not create the A30.40 machine agent" >&2; exit 1; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$P40_M\",\"scope_type\":\"tenant\",\"scope_ref\":\"\"}" \
+  http://localhost:8090/api/scope-grants/ > /dev/null
+P40_M_TOKEN=$(b1_token "$P40_M" "$(b1_issue "$P40_M")")
+[ -n "$P40_M_TOKEN" ] || { echo "no machine token for the A30.40 agent" >&2; exit 1; }
+s2_get "$P40_M_TOKEN" "/api/attention/" | P40_A2="$P40_A2" python3 -c "
+import sys, json, os, re
+d = json.load(sys.stdin)
+assert d.get('view') == 'machine', 'a machine did not read the machine contract'
+item = next(i for i in d['items'] if i['target']['device_agent_id'] == os.environ['P40_A2'])
+learning = [(e['statement']['text'], e['confidence']) for e in item['prior_learning']] + \
+           [(e['description']['text'], e['confidence']) for e in item['fleet_patterns']]
+assert len(learning) >= 2, item
+count = re.compile(r'\(\s*\d+\s*/\s*\d+\s*\)|\b\d+ of \d+ attempts\b')
+for text, confidence in learning:
+    assert not count.search(text), text
+    assert confidence in (0.0, 0.25, 0.5, 0.75, 1.0), confidence
+print('  tenant-wide machine: %d learning entr(ies), every confidence on the 0.25 grid, no k/n' % len(learning))"
+s2_get "$TOKEN" "/api/attention/" | P40_A2="$P40_A2" python3 -c "
+import sys, json, os
+items = {i['agent_id']: i for i in json.load(sys.stdin)['items']}
+text = json.dumps(items[os.environ['P40_A2']]['evidence'])
+assert '(18/26)' in text and '18 of 26 attempts' in text and '0.65' in text, text[:400]
+print('  CONTROL, the tenant owner reads the stored (18/26), 18 of 26 attempts and 0.65')"
+
+step "A30.40/DI: this proof owns its state -- and the shipped image carries the selection, the bounded view and the internal entry"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' \
+  "http://localhost:8090/api/operational-agents/$P40_M/retire" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_scope_grants WHERE principal_type='agent'
+            AND principal_ref='$P40_M' AND revoked_at IS NULL")" = "0" ] || {
+  echo "retiring the A30.40 machine left a live grant" >&2; exit 1; }
+s1_cc "DELETE FROM cc_learned_signals WHERE id='gatea3040signal00000000000000000'" > /dev/null < /dev/null
+s1_cc "DELETE FROM cc_fleet_patterns WHERE id='gatea3040pattern0000000000000000'" > /dev/null < /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM devices WHERE id IN ('gatedeva3040a1000000000000000000', 'gatedeva3040a2000000000000000000',
+       'gatedeva3040b1000000000000000000', 'gatedeva3040b2000000000000000000')" > /dev/null < /dev/null
+p40_devices_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache
+              WHERE agent_id IN ('$P40_A1', '$P40_A2', '$P40_B1', '$P40_B2')")" = "0" ]
+}
+wait_for "the proof's four devices to leave Central Command's fleet" 180 p40_devices_gone
+s1_cc "DELETE FROM cc_outcome_history WHERE actor='gate-a3040' AND action_id LIKE '$P40_TAG-%'" > /dev/null < /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$P40_TAG-%'")" = "0" ] || {
+  echo "the A30.40 outcome rows were not removed" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import asyncio, sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc import governance as g
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+from harkeniq_cc.scope import empty_scope
+assert all(hasattr(g, n) for n in ('HumanAttentionSelection', 'human_attention_selection',
+                                   'load_human_attention', 'machine_learning_view'))
+try:
+    asyncio.run(g.load_attention(None, tenant_id='t', learning=g.learning_view(empty_scope('t'))))
+except TypeError:
+    pass
+else:
+    raise AssertionError('the internal entry accepted a reader')
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: the person selection, the bounded machine view, an internal entry that refuses a'
+      ' reader; plane 14, contract 99, ceiling unchanged')" < /dev/null
+echo "  the machine agent retired, the signal and pattern, the four devices and every outcome row removed"
+[ "$P40_MODE_BEFORE" = "strict" ] || a26_set_mode "$P40_MODE_BEFORE"
+[ "$(a26_mode)" = "$P40_MODE_BEFORE" ] || { echo "the enforcement posture was not restored" >&2; exit 1; }
+echo "  enforcement restored to the posture found: $P40_MODE_BEFORE"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

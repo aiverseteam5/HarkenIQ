@@ -6103,3 +6103,217 @@ dry-run); every security regression group; the full suite; exact-head CI.
 5. *A decision batch loads the reader's view once.* Nothing a decision
    does moves an outcome, so a request-local memo serves the whole
    batch. This is pinned by counting loader calls.
+
+**A30.40 — Predictive / privacy projection hardening — Model B for the
+predictive surfaces and scoped-human Attention, bounded learning for every
+machine, ratified and recorded BEFORE the code (decided: Vinod, 2026-10-03;
+the dedicated privacy/projection slice A30.39 Q1 named).** The checkpoint (on
+`5892beb`) established by inventory and by probes executed against the
+production app over the B2-2 harness (real `get_scope`, persisted grants,
+STRICT): (a) `GET /api/predictive/risk` scoped its DEVICE list (S2) and read
+outcomes with NO scope (`list_device_outcome_dicts(tenant_id)`), so every
+device's history, the vendor/model cohort prior and `outcomes_considered` were
+composed over the whole tenant — and `outcomes_considered` reached principals
+with NO effective reach: revoked, expired, lapsed-all, approve-only and
+no-grant principals each read the exact tenant total beside an empty risk
+list. (b) Human `GET /api/attention/` composed through the same body with the
+same unscoped read (A30.35 changed only the MACHINE selection), so for every
+scoped human persona — org, site, device, device_class, mixed — hidden
+outcomes moved the score, band, basis, rank, driver, next step, site rollup,
+summary, sample counts and the reasons text (B2-F5); the tenant owner alone
+was unaffected. (c) The cohort rate and `risk_score` (the prior plus the
+health and warranty bumps the payload itself reports) were published to four
+decimal places: two reads either side of ONE hidden outcome solved the hidden
+cohort's size and failure count exactly, and the direction of the change
+named the outcome's result; a model whose outcomes existed only at a hidden
+site moved a visible device from `insufficient_data` to `cohort_prior` at an
+exact k/N. (d) The human path ignored B0b's owner rule (A30.25) for outcome
+rows: a MOVED device's history recorded at a site the reader does not hold
+counted toward its visible score. (e) A tenant-wide MACHINE received S4's
+identity learning payload on Attention and incident `prior_learning` —
+exact counts inside pattern and statement text (`(k/n)`) and exact,
+count-equivalent confidences. (f) The predictive read carries its own
+window: `ORDER BY recorded_at ASC LIMIT 50000` — the oldest rows, a different
+constant and column from F-E2-4's. (g) `GET /api/outcomes/metrics` was
+already deletion-equivalent for every persona probed (owner predicate in SQL
+before its window): the canonical read the fix reuses. A30.28 had recorded
+`cohort_failure_rate` / `outcomes_considered` as "tenant-wide OUTCOME
+statistics — S3-E2's family, decided by R6", and A30.39 Q1 made them this
+slice: they were never ratified tenant knowledge. The ratified A23 channel —
+a cohort learned-signal conclusion, bounded by S4 — reached a scoped reader
+byte-identically with or without the hidden estate.
+
+**The rulings (Vinod, 2026-10-03).** **D-P1 RATIFIED** — the predictive
+cohort prior is Class C, mixed / derived cohort data; it is NOT A23 tenant
+knowledge, and A23 is unchanged. **D-P2 RATIFIED, MODEL B** — for a scoped
+human the cohort prior is computed only from outcome rows covered by the
+reader's CURRENT canonical permission-aware reach; tenant-wide authorized
+humans are byte-identical; no Model D and no second coarsening policy in this
+slice. **D-P3 RATIFIED** — the human predictive and human Attention paths
+obey the existing B0b owner rule for outcome rows; a moved device's history
+from a site outside the reader's current ownership or reach does not
+contribute; no synthetic site authority. **D-P4 RATIFIED** —
+`outcomes_considered` is the count of outcome rows currently visible to the
+reader; with zero effective reach it is 0, the risk list is empty and
+Attention is empty; no exact tenant-wide count reaches a scoped or zero-reach
+reader. **D-P5 RATIFIED** — scoped-human Attention SELECTS the authorized
+inputs, THEN composes, THEN calculates cohort and history, THEN scores, THEN
+bands, THEN ranks, THEN limits, and hidden rows influence none of those
+operations; tenant-wide humans are byte-identical; the three internal
+evaluator / `learning=None` decision paths stay byte-identical and OUT OF
+SCOPE; proposal-budget ordering stays OPEN and unchanged. **D-P6 RATIFIED**
+— a scoped reader's wording says "in your current view"; tenant-wide wording
+is unchanged; no PX redesign; at most the one optional semantic Console label
+the checkpoint named. **D-P7 RATIFIED** — every machine principal, tenant-wide
+machines included, receives S4's bounded learning representation; no machine
+receives raw count-bearing text such as `k/n`, or an exact count-equivalent
+confidence, merely because it has tenant-wide reach; no `MACHINE_SURFACE`
+expansion, no machine-ceiling change, no new machine field. **D-P8
+DEFERRED** — the scoped-human Attention learning pre-projection windows
+(signals 500, patterns 200) are NOT changed by this slice; they remain the
+existing S4 privacy/correctness follow-up and are not part of the predictive
+/ cohort implementation. **D-P9 RATIFIED** — one cohort calculation function
+for every reader; no universal minimum-peer or support-floor rule in this
+slice, because it would change tenant-wide product semantics and needs its
+own product-policy decision. **D-P10 RATIFIED** — the predictive 50k
+oldest-first window is recorded as an F-E2-4 dependency: the future
+window-correctness slice owns BOTH windows — the 10k `list_outcome_dicts`
+window (`ingested_at`) and the 50k `list_device_outcome_dicts` window
+(`recorded_at`); this slice claims no whole-history correctness, and its
+deletion-equivalence claims apply only to the rows the current canonical
+source/window contract returns.
+
+**The contract.** *(1) Canonical reach before aggregation.* Both human
+predictive surfaces read outcomes through
+`OutcomeHistoryRepo.list_device_outcome_dicts(tenant, scope=read_reach(scope,
+"fleet.view"))` — B0b's `scope_device_owned`, in SQL, before the row window —
+and from nothing else: every device's history, the cohort prior (the SAME
+`cohort_failure_rates`, D-P9), `outcomes_considered` and every value derived
+from them come from those rows. A tenant-wide reach compiles to no predicate,
+so the tenant-wide reader's statement is unchanged; an empty reach compiles
+to `false()`. *(2) Scoped-human Attention through a TYPE.* A frozen
+`HumanAttentionSelection` (the reader's `fleet.view` reach and its
+`LearningView`, both from ONE resolved scope; the only constructor outside a
+test is `human_attention_selection(scope)`) is entered through
+`load_human_attention`, beside A30.35's `MachineAttentionSelection` and
+`load_machine_attention`. `load_attention` becomes the internal decision
+paths' entry only and refuses a `LearningView`: a principal's attention is
+composed from that principal's own selection, human or machine. The one body
+keeps one composer, one scorer, one sort, one `_recommend`, and `band` and
+`limit` after ranking. *(3) Wording.* `build_attention` is told the reader's
+shape; for a reader whose reach is not tenant-wide the predictive sentences
+and the confidence explanation say "in your current view"; tenant-wide and
+internal strings are byte-identical; S4's learning sentences and the anomaly
+sentence (tenant knowledge) are unchanged. *(4) Machines.* Learned signals and
+fleet patterns on every machine surface — Attention `prior_learning` and
+`fleet_patterns`, incident `prior_learning` — are projected through a BOUNDED
+`LearningView`: a tenant-wide machine's view holds every current site of the
+tenant, so S4's bounded representation applies (rates to 5%, confidence to
+the 0.25 grid, counts withheld and named, text re-rendered from projected
+evidence). A30.29's generated-content provenance gate is a separate rule and
+is unchanged; D-P7 governs the learning payloads. *(5) Unchanged.* The three
+internal decision paths (evaluator, dry-run reasoning, ingress re-derivation)
+are byte-identical, so proposal-budget ordering is untouched; S3-E2's creation
+record and viewer projection; S4's human learning projection and its windows
+(D-P8); A23; `/api/outcomes/metrics`; autonomy evidence.
+
+**Invariants (LOCKED).** (i) Canonical reach before aggregation. (ii) Device
+history passes B0b's ownership filter before prediction. (iii) A scoped
+cohort prior contains only currently authorized outcome rows. (iv)
+`outcomes_considered` counts only currently authorized rows. (v) Scoped
+Attention selects before it composes, ranks or limits. (vi) Hidden rows
+cannot change a scoped reader's score, band, basis, rank, driver, next step,
+rollups, summary, reason text or sample counts. (vii) The tenant-wide human
+view is byte-identical. (viii) Revoked, expired, lapsed-all, no-grant and
+approve-without-`fleet.view` principals receive zero predictive evidence.
+(ix) Every machine learning representation is bounded. (x) The internal
+evaluator decision paths are byte-identical. (xi) No proposal-budget
+ordering change. (xii) A23 semantics are unchanged. Predictive and cohort
+data are information only: never permission, scope, approval, execution
+authority, an autonomous grant or a dispatch token.
+
+**What is claimed, exactly.** For the predictive route and scoped-human
+Attention, for tenant, org, site, device, device_class and mixed personas:
+a scoped reader of the full estate reads what a tenant-wide reader reads of
+an independently reduced estate — over the rows the canonical source/window
+contract returns, with the D-P6 wording normalized and S4's bounded class-B
+learning excluded (it is tenant knowledge, where deletion equivalence does
+not apply and S4's non-reconstruction proofs stand). The window over the
+reader's OWN rows (oldest 50,000 by `recorded_at`) is F-E2-4's and is NOT
+claimed away: a strict-xfail test pins it for that slice to invert.
+
+**Change surface.** No permission (25), no machine-ceiling change, no route
+(`ROUTE_CONTRACT` 99, `MACHINE_SURFACE` 14), no resolver (S2's `read_reach`
+and B0b's predicate), no approval system, no migration, no schema or proto
+change, no taxonomy; E1 and E2 unchanged; proposal-budget ordering unchanged.
+Response shapes are unchanged: the same keys, with values that change only
+for scoped readers and, in learning payloads, for tenant-wide machines.
+
+**Proof obligations.** A persona matrix — tenant, org, site, device,
+device_class, mixed, revoked, expired, lapsed-all, no grant, approve without
+`fleet.view`; poison — hidden failures, hidden successes, hidden model
+cohorts, one hidden member added and removed, edge rates 0%, 100% and 1/N,
+exact count and rate sentinels, moved-device history, repeated-query
+differencing, hidden rows across rank and band thresholds; deletion
+equivalence against an independently reduced estate with a tenant-wide
+control that MUST change under the poison; a tenant-wide golden recorded from
+unmodified code; the internal decision paths byte-identical; machine bounded
+learning; mutation testing; real PostgreSQL; a fresh-wipe live gate; every
+security regression group; the full suite; exact-head CI.
+
+**Recorded, not implemented.** D-P8 (the scoped-human learning
+pre-projection windows) stays S4's follow-up; a universal minimum-peer rule
+(D-P9) is a separate product decision; F-E2-4 owns both outcome windows
+(D-P10); proposal-budget ordering stays OPEN; the datacenter taxonomy and PX
+are not started.
+
+**Found while implementing A30.40 (recorded; no scope change).**
+
+1. *A principal and the internal paths shared one entry, told apart by an
+   optional argument.* `load_attention` served the human route (with a
+   `LearningView` and its reach) and the three internal decision paths
+   (with `learning=None`); nothing tied the reach to the reader, and the
+   outcome read ignored it either way. A person's attention now enters
+   through a TYPE, `HumanAttentionSelection`, and `load_attention` refuses a
+   reader, so its only callers are the three internal paths A30.28's
+   allow-list already named.
+2. *Three structural pins, one gate twin and one golden moved; none was
+   weakened.* A5's router check now names `load_human_attention` (and
+   still forbids `build_attention`) -- and so does its live twin, gate
+   step A5/J, which the first push-event gate stopped at before reaching
+   the A30.40 steps. A30.28 counts the three internal callers: the human
+   route was the fourth, and it now names its reader by type. A30.35's
+   one-composer set gains `load_human_attention`. B2-2's golden stays
+   byte-for-byte main's recording: the tenant owner must still equal it,
+   the scoped personas must now differ from it, and its B2-F5 non-vacuity
+   test is inverted under a new name, never deleted.
+3. *Two texts in the code had become false and were corrected.* The machine
+   selection's refusal said the human selection "folds every site's
+   outcomes into a cohort prior"; the outcome read's docstring said the
+   human Attention route reads the whole tenant.
+4. *D-P7's boundary inside one route.* The machine incident detail used the
+   reader's learning view twice: for prior learning and for A30.29's
+   generated block. D-P7 bounds the first. The second keeps the reader's
+   own view, pinned by a test and by a named mutant that moves the bounded
+   view onto it.
+5. *A tenant-wide machine's bounded view is the set of current sites.* A
+   site-scoped learned signal at a site that no longer exists is therefore
+   not shown to it; no current reader holds that site.
+6. *D-P9's consequence for a device reader.* A device-only reach's cohort is
+   that device's own rows: 2/2 in the live estate, exactly what a tenant
+   reader computes over an estate holding nothing else, and labelled "in
+   your current view". A minimum-peer rule stays a separate product
+   decision.
+7. *A typo in design §34u.* The insufficient-evidence sentence reads
+   "unscored", not "unscoped"; §34u is corrected.
+8. *The OpenAPI document changes in one leaf.* Every path, parameter and
+   schema is identical to `main`; the description of
+   `GET /api/predictive/risk` changed, because FastAPI publishes the
+   handler's docstring and that docstring now states where the rows come
+   from.
+9. *The gate's posture is not a tenant's birth posture.* E1.2's last step
+   returns the demo tenant to `legacy_open` so the gate stays reusable, and
+   under it a never-granted person is synthesized tenant-wide (A23.10). The
+   second push-event gate stopped at DE's own precondition for exactly that
+   reason. DE-DI now set strict through A26's helpers, record the posture
+   they found and restore it in DI.

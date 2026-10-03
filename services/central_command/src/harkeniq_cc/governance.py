@@ -889,9 +889,78 @@ def require_machine_attention_selection(selection) -> MachineAttentionSelection:
     raise TypeError(
         "machine attention is composed from the machine's own selection "
         "(harkeniq_cc.governance.machine_attention_selection(scope)), not "
-        f"{type(selection).__name__}: the human selection folds every site's "
-        "outcomes into a cohort prior (spec A30.35, D2)"
+        f"{type(selection).__name__}: a person's selection carries a cohort "
+        "prior, and a machine is never scored on one (spec A30.35, D2)"
     )
+
+
+@dataclass(frozen=True)
+class HumanAttentionSelection:
+    """The inputs a HUMAN principal's attention is composed from (A30.40).
+
+    A TYPE for the reason `MachineAttentionSelection` is one. Before A30.40 a
+    person's attention read its outcomes with NO scope -- the device list was
+    the reader's, the outcome rows were the tenant's -- so a hidden site's
+    history moved the score, band, basis, rank, driver and next step of a
+    device the reader does hold (B2-F5), and a moved device kept the history
+    recorded at a site the reader does not hold. An optional argument whose
+    absence meant "the tenant's rows" is how that stays possible; a type is
+    how it does not. `human_attention_selection` is the only constructor
+    outside a test, and both fields come from ONE resolved scope.
+
+    * `fleet` -- `read_reach(scope, "fleet.view")`: the devices, their
+      outcomes (B0b's owner rule, in SQL, before the row window), the
+      pending approvals, the sites and the incidents, exactly the reach the
+      route already used for everything but the outcomes (D-P3, D-P5);
+    * `learning` -- the reader's `LearningView` (A30.28), unchanged.
+
+    The cohort prior is kept and computed over the SELECTED rows: the same
+    function every reader is scored with (D-P2, D-P9).
+    """
+
+    fleet: ReadReach
+    learning: LearningView
+
+
+def human_attention_selection(scope) -> HumanAttentionSelection:
+    """A person's attention inputs, from their OWN resolved scope."""
+    return HumanAttentionSelection(
+        fleet=read_reach(scope, ATTENTION_FACT_PERMISSION),
+        learning=learning_view(scope),
+    )
+
+
+def require_human_attention_selection(selection) -> HumanAttentionSelection:
+    """The boundary of A30.40: a `HumanAttentionSelection`, or a TypeError."""
+    if isinstance(selection, HumanAttentionSelection):
+        return selection
+    raise TypeError(
+        "a person's attention is composed from their own selection "
+        "(harkeniq_cc.governance.human_attention_selection(scope)), not "
+        f"{type(selection).__name__}: anything else lets a hidden site's "
+        "outcomes into the score (spec A30.40, D-P5)"
+    )
+
+
+async def machine_learning_view(session: AsyncSession, tenant_id: str, view) -> LearningView:
+    """The learning view a MACHINE principal's learning is projected through.
+
+    A30.40 (D-P7): every machine reads S4's BOUNDED representation, a
+    tenant-wide machine included. `learning_view` answers ``None`` for any
+    tenant-wide reader, and ``None`` means "as stored": exact counts inside
+    pattern and statement text, and confidences that are counts in disguise.
+    A scoped machine's view is already a site set and comes back unchanged.
+    A tenant-wide machine's view becomes the set of every current site of
+    the tenant, which takes S4's bounded path although nothing is hidden.
+
+    Learning payloads only: A30.29's generated-content gate is a different
+    rule and keeps the reader's own view.
+    """
+    view = require_learning_view(view)
+    if view.sites is not None:
+        return view
+    sites = await SiteRepo(session).list_all(tenant_id)
+    return LearningView(sites=frozenset(site.id for site in sites))
 
 
 @dataclass(frozen=True)
@@ -995,10 +1064,53 @@ async def load_attention(
     A30.35: a MACHINE principal's attention does not come through here. It
     comes through `load_machine_attention`, into the same body with its own
     selection; this entry point is byte-identical to what it was.
+
+    A30.40: nor does a PERSON's. A person's attention comes through
+    `load_human_attention`, from their own selection, because this entry
+    reads every outcome of the tenant -- the evaluator's shape, kept
+    byte-identical for the three internal decision paths (proposal-budget
+    ordering is not this slice's to change). A `LearningView` here would be
+    a principal's answer composed over rows that principal may not read, so
+    it is refused: `learning` must be ``None``.
     """
+    if learning is not None:
+        raise TypeError(
+            "load_attention is the INTERNAL decision paths' entry (learning=None). "
+            "A principal's attention is composed from its own selection: "
+            "load_human_attention(human_attention_selection(scope)) or "
+            "load_machine_attention(machine_attention_selection(scope)) "
+            "(spec A30.40, D-P5)"
+        )
     result, _devices, _held = await _compose_attention(
-        session, tenant_id=tenant_id, learning=learning, site_id=site_id,
-        scope=scope, band=band, limit=limit, machine=None,
+        session, tenant_id=tenant_id, learning=None, site_id=site_id,
+        scope=scope, band=band, limit=limit, machine=None, human=None,
+    )
+    return result
+
+
+async def load_human_attention(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    selection: HumanAttentionSelection,
+    site_id: Optional[str] = None,
+    band: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    """A person's attention: the same body, from their own selection.
+
+    A30.40 (D-P5): SELECT the authorized inputs, THEN compose -- history and
+    the cohort prior over the selected rows, then the score, the band, the
+    rank and the `limit` cut -- so no value a person is shown can reflect an
+    outcome row their current canonical reach does not read. A tenant-wide
+    reach selects every row, so a tenant-wide reader's answer is the one it
+    always was; that is what the golden recorded from unmodified code pins.
+    """
+    selection = require_human_attention_selection(selection)
+    result, _devices, _held = await _compose_attention(
+        session, tenant_id=tenant_id, learning=selection.learning,
+        site_id=site_id, scope=selection.fleet, band=band, limit=limit,
+        machine=None, human=selection,
     )
     return result
 
@@ -1027,7 +1139,7 @@ async def load_machine_attention(
     result, devices, held = await _compose_attention(
         session, tenant_id=tenant_id, learning=selection.learning,
         site_id=site_id, scope=selection.fleet, band=band, limit=limit,
-        machine=selection,
+        machine=selection, human=None,
     )
     return MachineAttentionComposition(
         composed=result,
@@ -1047,8 +1159,11 @@ async def _compose_attention(
     band: Optional[str],
     limit: Optional[int],
     machine: Optional[MachineAttentionSelection],
+    human: Optional[HumanAttentionSelection],
 ) -> tuple[dict, list, Optional[frozenset]]:
-    """The ONE body. `machine` is None for every caller before A30.35.
+    """The ONE body. Three callers: `load_attention` (neither selection: the
+    internal decision paths), `load_human_attention` (`human`) and
+    `load_machine_attention` (`machine`).
 
     Where `machine` is given, and only there, the inputs differ (A30.35):
 
@@ -1060,12 +1175,25 @@ async def _compose_attention(
       the devices it holds that reach over (D3);
     * learned signals and fleet patterns are read with no pre-projection
       window, so a row the machine may not see cannot take the place of one
-      it may before S4 projects them;
+      it may before S4 projects them -- and are projected through S4's
+      BOUNDED representation whatever the machine's reach (A30.40, D-P7);
     * the devices are handed to the composer in a total order.
+
+    Where `human` is given (A30.40), the outcomes pass the same owner
+    predicate under the person's `fleet.view` reach, in SQL before the row
+    limit, and the cohort prior is computed over THOSE rows (D-P2, D-P3,
+    D-P5); a person whose reach is not the tenant is told the answer is "in
+    your current view" (D-P6). Everything else is a person's as it was --
+    learning read through the existing windows (D-P8 is deferred).
+
+    With neither, the outcomes are the whole tenant's: the evaluator's
+    shape, byte-identical (proposal-budget ordering stays OPEN).
 
     Nothing else differs: one composer, one scorer, one sort, one
     `_recommend`, and `band` and `limit` after ranking.
     """
+    if machine is not None and human is not None:
+        raise TypeError("an attention answer is composed for ONE principal")
     from harkeniq_cc.attention import build_attention
     from harkeniq_cc.db.repos import (
         ApprovalRouteRepo,
@@ -1084,14 +1212,23 @@ async def _compose_attention(
         devices = [d for d in devices if d.site_id == site_id]
     if machine is not None:
         devices = sorted(devices, key=_machine_device_order)
-    if machine is None:
-        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
-    else:
+    if machine is not None:
         # D2: only the rows this machine may read, selected in SQL before
         # the row limit -- never the whole tenant, stripped afterwards.
         outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
             tenant_id, scope=machine.fleet,
         )
+    elif human is not None:
+        # A30.40 (D-P3, D-P5): only the rows this person's CURRENT canonical
+        # reach reads -- B0b's owner rule, in SQL, before the row limit. A
+        # moved device's rows at a site the person does not hold are that
+        # site's, not the device's, and are not read. A tenant-wide reach
+        # compiles to no predicate: the same rows as before, in the same order.
+        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
+            tenant_id, scope=human.fleet,
+        )
+    else:
+        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
     warranty_map = await WarrantyRepo(session).get_map(
         [d.service_tag for d in devices], tenant_id=tenant_id,
     )
@@ -1121,6 +1258,10 @@ async def _compose_attention(
         learned = await LearnedSignalRepo(session).list_active(tenant_id)
     else:
         learned = await LearnedSignalRepo(session).list_active(tenant_id, limit=None)
+    if machine is not None:
+        # A30.40 (D-P7): a machine reads S4's BOUNDED learning, tenant-wide
+        # included -- never the stored text and confidences as such.
+        learning = await machine_learning_view(session, tenant_id, learning)
     if learning is not None:
         view = require_learning_view(learning)
         patterns = view.patterns(patterns)
@@ -1144,6 +1285,9 @@ async def _compose_attention(
         )
 
     # D2: a machine is never scored on a cohort the whole tenant built.
+    # A30.40 (D-P2, D-P9): a person IS scored on a cohort -- the same
+    # function, over the rows selected above, so for a scoped person it is
+    # the cohort of their current view and nothing more.
     cohorts = cohort_failure_rates(outcomes) if machine is None else {}
     by_device: dict[str, list[dict]] = {}
     for oc in outcomes:
@@ -1177,6 +1321,9 @@ async def _compose_attention(
         learned_signals=learned,
         incidents=open_incidents,
         authoritative_site_ids=authoritative_site_ids,
+        # A30.40 (D-P6): a person whose reach is not the tenant reads "in
+        # your current view"; every other answer keeps its wording.
+        current_view=human is not None and not human.fleet.tenant_wide,
     )
     # AFTER ranking, never before. Rank is assigned over the principal's
     # whole scope, so "rank 1" always means first in that scope.

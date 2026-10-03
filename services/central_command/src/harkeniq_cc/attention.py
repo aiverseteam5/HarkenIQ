@@ -87,7 +87,37 @@ def _now(now: Optional[datetime]) -> datetime:
     return now or datetime.now(timezone.utc)
 
 
-def _confidence(risk) -> dict:
+#: What a basis means, for a reader who holds the whole tenant.
+_EXPLANATION = {
+    "device_history": "Scored from this device's own outcome history.",
+    "cohort_prior": (
+        "Too few outcomes for this device; scored from the failure "
+        "rate of the same vendor and model across the fleet."
+    ),
+    "insufficient_data": (
+        "Not enough evidence to score this device. This is not a "
+        "clean bill of health — it is an absence of data."
+    ),
+}
+#: A30.40 (D-P6): the same, for a reader whose reach is not the tenant. Their
+#: answer was computed over the outcome rows their current view reads, so
+#: "across the fleet" is exactly what would no longer be true.
+_CURRENT_VIEW_EXPLANATION = {
+    "device_history": "Scored from this device's own outcome history in your current view.",
+    "cohort_prior": (
+        "Too few outcomes for this device; scored from the failure "
+        "rate of the same vendor and model in your current view."
+    ),
+    "insufficient_data": (
+        "Not enough evidence in your current view to score this device. "
+        "This is not a clean bill of health — it is an absence of data."
+    ),
+}
+#: The phrase a scoped reader's predictive reasons carry (D-P6).
+CURRENT_VIEW = " in your current view"
+
+
+def _confidence(risk, current_view: bool = False) -> dict:
     """Data sufficiency, stated plainly.
 
     `basis` comes from the scoring model: device_history (the device's own
@@ -95,34 +125,30 @@ def _confidence(risk) -> dict:
     when there was nothing to score on.
     """
     basis = risk.factors.get("basis", "insufficient_data")
+    explanations = _CURRENT_VIEW_EXPLANATION if current_view else _EXPLANATION
     return {
         "basis": basis,
         "sample_count": risk.sample_count,
         "sufficient": basis == "device_history",
-        "explanation": {
-            "device_history": "Scored from this device's own outcome history.",
-            "cohort_prior": (
-                "Too few outcomes for this device; scored from the failure "
-                "rate of the same vendor and model across the fleet."
-            ),
-            "insufficient_data": (
-                "Not enough evidence to score this device. This is not a "
-                "clean bill of health — it is an absence of data."
-            ),
-        }.get(basis, "Unknown basis."),
+        "explanation": explanations.get(basis, "Unknown basis."),
     }
 
 
 def _reasons(risk, cves: list[dict], warranty: Optional[dict],
              patterns: list[dict], health: str, driver: str = "",
-             learned: Optional[list[dict]] = None) -> list[str]:
+             learned: Optional[list[dict]] = None,
+             current_view: bool = False) -> list[str]:
     """Human-readable 'why does this matter', derived only from evidence.
 
     Every string here traces to a value the caller supplied. Nothing is
-    inferred beyond restating the evidence in plain language.
+    inferred beyond restating the evidence in plain language. With
+    `current_view` (A30.40, D-P6) the predictive sentences say the evidence
+    is the reader's current view's; the learned and pattern sentences are
+    tenant knowledge (A23, S4) and keep their words.
     """
     out: list[str] = []
     f = risk.factors or {}
+    view = CURRENT_VIEW if current_view else ""
 
     # Lead with present-tense trouble. A predicted-risk sentence first
     # would bury the fact that the machine is broken right now.
@@ -136,18 +162,18 @@ def _reasons(risk, cves: list[dict], warranty: Optional[dict],
         if rate is not None:
             out.append(
                 f"{round(rate * 100)}% of this device's recent remediation "
-                f"attempts failed (recency-weighted, {risk.sample_count} outcomes)."
+                f"attempts failed (recency-weighted, {risk.sample_count} outcomes{view})."
             )
     elif f.get("basis") == "cohort_prior":
         rate = f.get("cohort_failure_rate")
         if rate is not None:
             out.append(
                 f"No history for this device yet; {risk.vendor} {risk.model} "
-                f"peers fail at {round(rate * 100)}%."
+                f"peers{view} fail at {round(rate * 100)}%."
             )
     else:
         out.append(
-            "No outcome history for this device or its model — unscored, "
+            f"No outcome history for this device or its model{view} — unscored, "
             "not proven healthy."
         )
 
@@ -338,11 +364,16 @@ def build_attention(
     learned_signals=None,
     incidents=None,
     authoritative_site_ids=None,
+    current_view: bool = False,
 ) -> dict:
     """Compose the tenant's attention answer. Pure: no I/O, no DB.
 
     Every input is already tenant-scoped by its repository; this function
     performs no cross-tenant lookup and cannot widen scope.
+
+    `current_view` (A30.40, D-P6) is set for a person whose reach is not the
+    tenant: the inputs were selected for them, and the predictive sentences
+    say so. It changes words only -- never a value, an order or a count.
     """
     ts = _now(now)
     site_names = {s.id: s.site_name for s in sites}
@@ -424,11 +455,11 @@ def build_attention(
             # among several, not the whole ordering.
             "attention_driver": driver,
             "attention_driver_label": _DRIVER_LABEL[driver],
-            "confidence": _confidence(risk),
+            "confidence": _confidence(risk, current_view),
             "factors": risk.factors or {},
             "reasons": _reasons(
                 risk, cves, warranty_d, cohort_patterns, health, driver,
-                device_signals,
+                device_signals, current_view=current_view,
             ),
             "evidence": {
                 "learned_signals": device_signals,
