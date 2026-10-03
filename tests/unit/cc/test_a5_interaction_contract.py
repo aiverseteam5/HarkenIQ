@@ -530,7 +530,10 @@ class TestD3OneAttentionComposer:
 
         source = inspect.getsource(router)
         assert "build_attention" not in source
-        assert "load_attention" in source
+        # A30.40 (D-P5): a person's attention enters the ONE composer through
+        # `load_human_attention`, from their own selection; `load_attention`
+        # is now the internal decision paths' entry and refuses a reader.
+        assert "load_human_attention" in source
 
 
 class TestD4DispatchRechecksLifecycle:

@@ -30,11 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harkeniq_cc import attention_projection as machine_view
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
-from harkeniq_cc.scope import read_reach
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.governance import (
-    learning_view,
-    load_attention,
+    human_attention_selection,
+    load_human_attention,
     load_machine_attention,
     machine_attention_selection,
 )
@@ -87,16 +86,14 @@ async def attention(
             composition, now=datetime.now(timezone.utc),
         )
 
-    reach = read_reach(scope, "fleet.view")
-    return await load_attention(
+    # A30.40 (D-P5): a person's attention is composed from THEIR selection --
+    # the outcome rows their current canonical reach reads, and the learning
+    # view A30.28 projects for them -- before anything is scored or ranked.
+    return await load_human_attention(
         session,
         tenant_id=user.tenant_id,
+        selection=human_attention_selection(scope),
         site_id=site_id,
-        scope=reach,
-        # A30.28: learned signals and fleet patterns are projected for THIS
-        # reader -- human or Operational Agent, one rule -- before they are
-        # attached to a device.
-        learning=learning_view(scope),
         band=band,
         limit=limit,
     )

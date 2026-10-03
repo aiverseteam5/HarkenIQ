@@ -43,7 +43,11 @@ from harkeniq_cc.db.repos import (
     LearnedSignalRepo,
     SiteRepo,
 )
-from harkeniq_cc.governance import learning_view, require_learning_view
+from harkeniq_cc.governance import (
+    learning_view,
+    machine_learning_view,
+    require_learning_view,
+)
 from harkeniq_cc.learned_signals import signals_for_device
 from harkeniq_cc.machine_identity import is_machine
 from harkeniq_cc.trust import (
@@ -312,7 +316,13 @@ async def get_incident(
     )
     # R2: the children the caller could read on their own, and no others.
     children = await repo.children_of(user.tenant_id, incident_id, scope=reach)
-    signals = await _prior_learning(session, user.tenant_id, row, reach, view)
+    # A30.40 (D-P7): a machine's prior learning is S4's BOUNDED
+    # representation whatever its reach. Only the learning: `view` itself
+    # still decides A30.29's generated block below.
+    learning = (
+        await machine_learning_view(session, user.tenant_id, view) if machine else view
+    )
+    signals = await _prior_learning(session, user.tenant_id, row, reach, learning)
     # What is already waiting on a human for this device. The incident
     # names the governed next step; it never performs one.
     pending_routes = [
