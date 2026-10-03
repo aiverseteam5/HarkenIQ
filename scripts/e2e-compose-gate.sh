@@ -8950,6 +8950,334 @@ print('  shipped image: empty registry; the three S3-E1 dispatch gates after the
 echo "  probe removed, both agents retired, the platform catalogue and ladder restored,"
 echo "  and site A's BMC_RESET budget recovered where the node's refusals withdrew it"
 
+# ===========================================================================
+# S3-E2 (A30.39), live: historical proposal evidence projection. Every writer
+# since A1 froze a proposal's outcome statistic, attention score and the
+# sentence restating them over the WHOLE TENANT, and every human projection
+# returned them as stored -- a site-A approver read the tenant's totals, and
+# a machine's dry-run read them too. The creation record is immutable and is
+# now read through an allow-list by anyone whose reach is not the tenant; the
+# reader's CURRENT track record rides beside it, computed over exactly the
+# outcomes their canonical reach reads -- tenant, org, site, device and
+# device_class alike (D6 as amended).
+#
+# The outcome rows are REAL rows in Central Command's append-only
+# `cc_outcome_history` on this PostgreSQL (the poller only ever appends
+# there, so nothing overwrites them), at both sites, for one action class;
+# every expected count is computed by an independent SQL restatement of B0b's
+# owner rule. The stored proposal is written directly, as an
+# `awaiting_approval` proposal of a DRAFT agent (the S3/BF precedent): nothing
+# evaluates a draft agent and nothing dispatches an undecided proposal. Its
+# creation record carries numbers nothing else on this stack produces.
+# ===========================================================================
+E2_ACTION=POWER_CAP_ADJUST
+E2_SENTINEL=918273645
+E2_ATTN=612345678
+E2_SITES_SEEN=731313131
+E2_SIGNAL_B="GATE-S3E2-SIGNAL-B"
+E2_TAG="gate-s3e2-$(date +%s)"
+e2_count() {  # $1 extra SQL predicate over `o` -> "executions|success" for E2_ACTION
+  s1_cc "SELECT count(*) || '|' || count(*) FILTER (WHERE o.outcome='SUCCESS')
+         FROM cc_outcome_history o JOIN cc_sites s ON s.id = o.site_id
+         WHERE s.tenant_id='$E2_TENANT' AND o.action_type='$E2_ACTION' AND ($1)"
+}
+e2_owned() {  # the owner rule's device half, restated: the row's device resolves AT its site
+  echo "EXISTS (SELECT 1 FROM cc_fleet_cache f WHERE f.agent_id = o.device_agent_id
+         AND f.site_id = o.site_id ${1:-})"
+}
+e2_item() {  # $1 token -> the synthetic proposal as that reader's approval queue carries it ('' if absent)
+  s2_get "$1" "/api/approvals/" | E2_PROP="$E2_PROP" python3 -c "
+import sys, json, os
+items = [a['proposal'] for a in json.load(sys.stdin)['actions']
+         if a.get('origin') == 'agent' and a['id'] == os.environ['E2_PROP']]
+print(json.dumps(items[0]) if items else '')"
+}
+e2_check() {  # $1 token, $2 expect: tenant|scoped|noreach, $3 "executions|success" or '-'
+  # Both reads happen BEFORE the pipe: `docker compose exec -T` forwards its
+  # stdin, so a psql call on the right of a pipe would swallow the payload.
+  local e2_stored e2_payload
+  e2_stored=$(b0r_cc_text "SELECT evidence::text FROM cc_agent_proposals WHERE id='$E2_PROP'" < /dev/null)
+  e2_payload=$(e2_item "$1")
+  printf '%s' "$e2_payload" | E2_EXPECT="$2" E2_COUNTS="$3" E2_CONST="$E2_CONST" E2_HEAD="$E2_HEAD" \
+    E2_STORED="$e2_stored" E2_RATIONALE="$E2_RATIONALE" python3 -c "
+import sys, json, os
+raw = sys.stdin.read().strip()
+assert raw, 'the reader does not see the proposal at all'
+p, want, const = json.loads(raw), os.environ['E2_EXPECT'], json.loads(os.environ['E2_CONST'])
+viewer = p['viewer_projected_evidence']
+assert viewer['basis'] == 'current_reach', viewer
+if want == 'tenant':
+    assert p['evidence'] == json.loads(os.environ['E2_STORED']), 'the tenant reader did not read the stored bytes'
+    assert p['rationale'] == os.environ['E2_RATIONALE'], p['rationale']
+    assert p['evidence_scope'] == 'fully_visible', p['evidence_scope']
+else:
+    ev = p['evidence']
+    assert ev['outcome_evidence'] is None and ev['attention'] is None, ev
+    assert ev['projection'] == 'scoped' and {'attention', 'outcome_evidence'} <= set(ev['withheld']), ev
+    assert p['evidence_scope'] == 'broader_than_current_view', p['evidence_scope']
+    assert p['rationale'] == os.environ['E2_HEAD'] + const['withheld_track_record'], p['rationale']
+assert p['creation_basis'] == 'tenant', p['creation_basis']
+if want == 'noreach':
+    assert viewer['outcome_evidence'] is None and viewer['unavailable_reason'] == 'no_fleet_view_reach', viewer
+    print('  %-8s creation record withheld; NO current track record (holds fleet.view nowhere)' % want)
+else:
+    runs, ok = (int(x) for x in os.environ['E2_COUNTS'].split('|'))
+    got = viewer['outcome_evidence']
+    assert viewer['unavailable_reason'] is None, viewer
+    assert (got['executions'], got['success']) == (runs, ok), (got, runs, ok)
+    print('  %-8s creation record %s; current track record %d runs (%d ok) = the SQL oracle' % (
+        want, 'READ AS STORED' if want == 'tenant' else 'withheld', runs, ok))"
+}
+e2_bytes() {  # the stored row, hashed: the immutability oracle
+  s1_cc "SELECT md5(evidence::text || '|' || rationale || '|' || disposition || '|' ||
+                    coalesce(blocking_conditions::text, '') || '|' || status)
+         FROM cc_agent_proposals WHERE id='$E2_PROP'"
+}
+e2_person() {  # $1 name, $2 role -> a tenant-realm person's token (created once)
+  tenant_realm_user "gate-e2-$1@demo" "gate-e2-$1" "$2" || true
+  tenant_token "gate-e2-$1@demo" "gate-e2-$1"
+}
+e2_grant() {  # $1 subject, $2 scope_type, $3 scope_ref, [$4 subset json] -> the grant id
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$1\",\"scope_type\":\"$2\",\"scope_ref\":\"$3\",
+         \"role\":\"site_admin\"${4:+,\"permission_subset\":$4}}" \
+    http://localhost:8090/api/scope-grants/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])"
+}
+
+step "S3-E2/CZ: real outcome rows at two sites, and a stored proposal whose creation record was composed over the WHOLE tenant -- the tenant owner reads the stored bytes"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+S3_AB=$(tenant_token gate-s3-ab@demo gate-s3-ab)
+E2_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
+E2_DEV_A=$(s1_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_A' AND device_class <> ''
+                  ORDER BY agent_id LIMIT 1")
+E2_CLASS=$(s1_cc "SELECT lower(device_class) FROM cc_fleet_cache
+                  WHERE site_id='$SITE_A' AND agent_id='$E2_DEV_A'")
+[ -n "$E2_DEV_A" ] && [ -n "$E2_CLASS" ] || {
+  echo "the stack has no classed device at site A" >&2; exit 1; }
+# The writer's grammar and the constants, from the SHIPPED image -- never restated here.
+E2_CONST=$(docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+import json
+from harkeniq_cc import proposal_evidence as P
+ev = {'executions': $E2_SENTINEL, 'success': 804561237, 'failure': $((E2_SENTINEL - 804561237)),
+      'success_rate': 0.8762, 'resolution_rate': 0.618, 'sites_observed': $E2_SITES_SEEN,
+      'sufficient': True, 'window': 'all_time'}
+print(json.dumps({'clause': P.track_record_clause(ev), 'outcome_evidence': ev,
+                  'withheld_track_record': P.WITHHELD_TRACK_RECORD,
+                  'machine_note': P.MACHINE_RATIONALE_NOTE}))" | tr -d '\r')
+[ -n "$E2_CONST" ] || { echo "could not read the S3-E2 grammar from the shipped image" >&2; exit 1; }
+E2_HEAD="gate S3-E2 observed a gate condition on $E2_DEV_A and recommends power cap adjust: a gate reason."
+E2_RATIONALE="$E2_HEAD$(echo "$E2_CONST" | python3 -c "import sys,json; print(json.load(sys.stdin)['clause'], end='')")"
+case "$E2_RATIONALE" in *"$E2_SENTINEL executions in this tenant."*) ;;
+  *) echo "the writer's clause did not carry the creation count: $E2_RATIONALE" >&2; exit 1 ;; esac
+# Three devices of this proof's own, through the Site Manager's real device
+# path (the S4 precedent), so the device and class readers below are told
+# apart from their site and from the tenant BY THE ESTATE, not by luck: a
+# SIBLING of E2_DEV_A's class at site A (the device reader's record is not
+# site A's), a device of the SAME class at site B (the class reader's record
+# spans sites, so it is not site A's), and one of ANOTHER class at site B
+# (the class reader's record is not the tenant's). No heartbeat and no
+# incident: `unobserved`, which no evaluator reads as a condition. The poller
+# carries them to Central Command within one poll; DD removes them.
+E2_OTHER_CLASS=$([ "$E2_CLASS" = "switch" ] && echo server || echo switch)
+E2_SIB=gate-e2-sib-a
+E2_SAME=gate-e2-same-b
+E2_OTHER=gate-e2-other-b
+e2_sm_device() {  # $1 id, $2 cc site, $3 agent id, $4 class
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                          service_tag, device_class, first_seen_at, last_seen_at)
+     SELECT '$1', s.id, '$3', '$3', 'GateE2', 'S3E2', 'GATEE2', '$4', now(), now()
+     FROM sites s WHERE s.cc_site_id = '$2'
+     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+}
+e2_sm_device gatedevs3e2a00000000000000000000 "$SITE_A" "$E2_SIB" "$E2_CLASS"
+e2_sm_device gatedevs3e2b00000000000000000000 "$SITE_B" "$E2_SAME" "$E2_CLASS"
+e2_sm_device gatedevs3e2c00000000000000000000 "$SITE_B" "$E2_OTHER" "$E2_OTHER_CLASS"
+e2_devices_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache
+              WHERE (agent_id='$E2_SIB' AND site_id='$SITE_A' AND lower(device_class)='$E2_CLASS')
+                 OR (agent_id='$E2_SAME' AND site_id='$SITE_B' AND lower(device_class)='$E2_CLASS')
+                 OR (agent_id='$E2_OTHER' AND site_id='$SITE_B' AND lower(device_class)='$E2_OTHER_CLASS')")" = "3" ]
+}
+wait_for "the poller to carry the proof's three devices to Central Command" 180 e2_devices_polled
+E2_K=0
+for E2_SITE_DEV in "$SITE_A:$E2_DEV_A:9:1" "$SITE_A:$E2_SIB:3:2" \
+                   "$SITE_B:$E2_SAME:13:4" "$SITE_B:$E2_OTHER:5:2"; do
+  IFS=: read -r E2_S E2_D E2_OK E2_BAD <<< "$E2_SITE_DEV"
+  E2_K=$((E2_K + 1))
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+          vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+     SELECT substr(md5(random()::text || g::text || '$E2_K'), 1, 32), '$E2_S',
+            '$E2_TAG-$E2_K-' || g, '$E2_ACTION', '$E2_D', 'GateE2', 'S3E2',
+            CASE WHEN g <= $E2_OK THEN 'SUCCESS' ELSE 'FAILURE' END, g <= $E2_OK,
+            'gate-s3e2', now(), now()
+     FROM generate_series(1, $((E2_OK + E2_BAD))) g" > /dev/null
+done
+E2_N_DEVICE=$(e2_count "o.device_agent_id='$E2_DEV_A' AND $(e2_owned)")
+E2_N_SITE_A=$(e2_count "o.site_id='$SITE_A'")
+E2_N_CLASS=$(e2_count "$(e2_owned "AND lower(f.device_class)='$E2_CLASS'")")
+E2_N_TENANT=$(e2_count "true")
+# The estate itself must tell the four readers apart, or the device and class
+# assertions below would be the site and tenant assertions under other names.
+[ "$E2_N_DEVICE" != "$E2_N_SITE_A" ] && [ "$E2_N_CLASS" != "$E2_N_TENANT" ] \
+  && [ "$E2_N_CLASS" != "$E2_N_SITE_A" ] || {
+  echo "the estate does not tell device from site ($E2_N_DEVICE/$E2_N_SITE_A) or class from tenant ($E2_N_CLASS/$E2_N_TENANT)" >&2
+  exit 1; }
+echo "  outcome rows: device $E2_N_DEVICE, site A $E2_N_SITE_A, class $E2_CLASS $E2_N_CLASS, tenant $E2_N_TENANT (runs|ok)"
+E2_AGENT=$(e1_agent s3e2-record true)
+[ -n "$E2_AGENT" ] || { echo "could not create the S3-E2 draft agent" >&2; exit 1; }
+E2_PROP="gate-s3e2-prop-$(date +%s)"
+E2_EVIDENCE=$(echo "$E2_CONST" | E2_DEV_A="$E2_DEV_A" SITE_B="$SITE_B" E2_SIGNAL_B="$E2_SIGNAL_B" python3 -c "
+import sys, json, os
+c = json.load(sys.stdin)
+print(json.dumps({
+    'observed': 'a gate condition', 'condition_kind': 'incident', 'subsystem': 'power',
+    'incident_ids': [], 'has_diagnosis': False, 'remediation_provenance': 'gate S3-E2',
+    'component': '', 'components_reported': None,
+    'attention': {'rank': 1, 'band': 'act_now', 'driver': 'health', 'risk_score': $E2_ATTN},
+    'outcome_evidence': c['outcome_evidence'],
+    'learned_signals': [
+        {'scope_type': 'site', 'scope_ref': os.environ['SITE_B'], 'statement': os.environ['E2_SIGNAL_B']},
+        {'scope_type': 'cohort', 'scope_ref': 'GateE2/S3E2', 'statement': 'gate cohort'}],
+    'device': {'vendor': 'GateE2', 'model': 'S3E2', 'device_class': 'server'},
+    'contract_version': '1', 'evaluated_at': '2026-09-30T00:00:00+00:00'}).replace(\"'\", \"''\"))")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_agent_proposals (id, tenant_id, agent_id, actor, agent_version, site_id,
+        device_agent_id, action_type, params, rationale, evidence, disposition,
+        disposition_reason, blocking_conditions, authorization_basis, status, decided_by,
+        dedupe_key, directive_id, dispatch_reason, outcome, created_at)
+   VALUES ('$E2_PROP', '$E2_TENANT', '$E2_AGENT', 'op-agent:$E2_AGENT@v1', 1, '$SITE_A',
+        '$E2_DEV_A', '$E2_ACTION', '{}'::jsonb, '$E2_RATIONALE', '$E2_EVIDENCE'::jsonb,
+        'requires_approval', 'gate S3-E2', '[]'::jsonb, 'human_approval',
+        'awaiting_approval', '', '$E2_PROP', '', '', '', now())" > /dev/null
+E2_BYTES=$(e2_bytes)
+[ -n "$E2_BYTES" ] || { echo "the S3-E2 proposal was not stored" >&2; exit 1; }
+echo "  stored: $E2_ACTION at site A on $E2_DEV_A, creation record $E2_SENTINEL executions across $E2_SITES_SEEN sites"
+echo "  CONTROL, the tenant owner:"
+e2_check "$TOKEN" tenant "$E2_N_TENANT"
+[ "$(s3_walk "$TOKEN" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN")" != "clean" ] || {
+  echo "the control did not read the creation record -- the absences below would mean nothing" >&2; exit 1; }
+
+step "S3-E2/DA: a site-A approver reads the creation record WITHHELD and its OWN current track record -- no hidden count, rate, site or signal"
+echo "  site-A approver:"
+e2_check "$S3_A" scoped "$E2_N_SITE_A"
+[ "$(s3_walk "$S3_A" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN" "$SITE_B" "$E2_SIGNAL_B")" = "clean" ] || {
+  s3_walk "$S3_A" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN" "$SITE_B" "$E2_SIGNAL_B" >&2
+  echo "a site-A approver read the tenant-wide creation record" >&2; exit 1; }
+echo "  holds A and B (still not the tenant):"
+e2_check "$S3_AB" scoped "$(e2_count "o.site_id IN ('$SITE_A', '$SITE_B')")"
+[ "$(s3_walk "$S3_AB" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN")" = "clean" ] || {
+  echo "a two-site reader read the tenant-wide creation record" >&2; exit 1; }
+
+step "S3-E2/DB: device and device_class humans read the track record of EXACTLY their object set; an approver with no fleet.view reads none"
+E2_DEV_T=$(e2_person dev site_admin)
+E2_CLS_T=$(e2_person class site_admin)
+E2_APR_T=$(e2_person approver operator)
+e2_grant "$(s1_sub "$E2_DEV_T")" device "$E2_DEV_A" > /dev/null
+e2_grant "$(s1_sub "$E2_CLS_T")" device_class "$E2_CLASS" > /dev/null
+e2_grant "$(s1_sub "$E2_APR_T")" site "$SITE_A" '["action.approve"]' > /dev/null
+echo "  device-scoped ($E2_DEV_A) -- not its sibling, not site A:"
+e2_check "$E2_DEV_T" scoped "$E2_N_DEVICE"
+echo "  device_class-scoped ($E2_CLASS) -- not the $E2_OTHER_CLASS at site B, not the tenant:"
+e2_check "$E2_CLS_T" scoped "$E2_N_CLASS"
+echo "  approver at site A whose grant withholds fleet.view:"
+e2_check "$E2_APR_T" noreach -
+for E2_T in "$E2_DEV_T" "$E2_CLS_T" "$E2_APR_T"; do
+  [ "$(s3_walk "$E2_T" "/api/approvals/" "$E2_SENTINEL" "$E2_ATTN" "$E2_SITES_SEEN" "$E2_SIGNAL_B")" = "clean" ] || {
+    echo "a device, class or no-fleet.view reader read the creation record" >&2; exit 1; }
+done
+
+step "S3-E2/DC: a grant narrowed after creation -- the current record follows the grant, the reader loses the proposal when the grant goes, and the stored row never moves"
+E2_NAR_T=$(e2_person narrow site_admin)
+E2_G_A=$(e2_grant "$(s1_sub "$E2_NAR_T")" site "$SITE_A")
+E2_G_B=$(e2_grant "$(s1_sub "$E2_NAR_T")" site "$SITE_B")
+echo "  holds A and B:"
+e2_check "$E2_NAR_T" scoped "$(e2_count "o.site_id IN ('$SITE_A', '$SITE_B')")"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/scope-grants/$E2_G_B" > /dev/null
+echo "  site B revoked:"
+e2_check "$E2_NAR_T" scoped "$E2_N_SITE_A"
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/scope-grants/$E2_G_A" > /dev/null
+[ -z "$(e2_item "$E2_NAR_T")" ] || { echo "a reader with no grant left still reads the proposal" >&2; exit 1; }
+echo "  site A revoked too: the proposal is no longer theirs to read"
+[ "$(e2_bytes)" = "$E2_BYTES" ] || { echo "a read or a grant change moved the stored proposal" >&2; exit 1; }
+echo "  the stored row hashes identically after every read and grant change above ($E2_BYTES)"
+
+step "S3-E2/DD: a REAL machine's dry-run -- site-scoped, then tenant-scoped -- withholds outcome, attention and learned signals; this proof owns its state"
+e1_catalogue with
+E2_M=$(e1_agent s3e2-machine true)
+[ -n "$E2_M" ] || { echo "could not create the S3-E2 machine agent" >&2; exit 1; }
+E2_M_SECRET=$(b1_issue "$E2_M")
+E2_M_TOKEN=$(b1_token "$E2_M" "$E2_M_SECRET")
+[ -n "$E2_M_TOKEN" ] || { echo "no machine token for the S3-E2 agent" >&2; exit 1; }
+e2_dry() {  # $1 token, $2 machine|human -> checks every candidate the dry-run would propose
+  s2_get "$1" "/api/operational-agents/$E2_M/dry-run" | E2_KIND="$2" E2_CONST="$E2_CONST" python3 -c "
+import sys, json, os
+d, kind, const = json.load(sys.stdin), os.environ['E2_KIND'], json.loads(os.environ['E2_CONST'])
+items = d['would_propose']
+assert items, ('the dry-run proposes nothing -- the check below would be vacuous', d.get('withheld'))
+for p in items:
+    ev = p['evidence']
+    if kind == 'machine':
+        assert ev['projection'] == 'machine', ev
+        for key in ('outcome_evidence', 'attention', 'learned_signals'):
+            assert ev[key] is None and key in ev['withheld'], (key, ev)
+        for key in ('viewer_projected_evidence', 'evidence_scope', 'creation_basis'):
+            assert key not in p, key
+        assert p['rationale'].startswith('Recommends ') and p['rationale'].endswith(const['machine_note']), p['rationale']
+        assert 'executions' not in json.dumps(p) and 'in this tenant' not in json.dumps(p)
+    else:
+        assert isinstance(ev['outcome_evidence'], dict) and isinstance(ev['learned_signals'], list), ev
+        assert 'executions in this tenant' in p['rationale'] or 'no recorded outcome' in p['rationale'] \
+            or 'recorded execution' in p['rationale'], p['rationale']
+print('  %-7s %d candidate(s); %s' % (kind, len(items),
+      'outcome, attention and learned signals withheld; reduced sentence from typed facts'
+      if kind == 'machine' else 'CONTROL: the tenant owner reads the creation record whole'))"
+}
+echo "  site-scoped machine:"; e2_dry "$E2_M_TOKEN" machine
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_type\":\"agent\",\"principal_ref\":\"$E2_M\",\"scope_type\":\"tenant\",\"scope_ref\":\"\"}" \
+  http://localhost:8090/api/scope-grants/ > /dev/null
+echo "  the same machine, now tenant-scoped (D9: every machine):"; e2_dry "$E2_M_TOKEN" machine
+echo "  CONTROL:"; e2_dry "$TOKEN" human
+# This proof owns its state: the catalogue row, both agents (retiring revokes
+# their scope rows, the tenant grant included), the synthetic proposal and the
+# outcome rows it wrote.
+e1_catalogue without
+for E2_R in "$E2_M" "$E2_AGENT"; do
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' \
+    "http://localhost:8090/api/operational-agents/$E2_R/retire" > /dev/null
+done
+[ "$(s1_cc "SELECT count(*) FROM cc_scope_grants WHERE principal_type='agent'
+            AND principal_ref='$E2_M' AND revoked_at IS NULL")" = "0" ] || {
+  echo "retiring the S3-E2 machine left a live grant" >&2; exit 1; }
+s1_cc "DELETE FROM cc_agent_proposals WHERE id='$E2_PROP'" > /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM devices WHERE id IN ('gatedevs3e2a00000000000000000000',
+       'gatedevs3e2b00000000000000000000', 'gatedevs3e2c00000000000000000000')" > /dev/null
+e2_devices_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache
+              WHERE agent_id IN ('$E2_SIB', '$E2_SAME', '$E2_OTHER')")" = "0" ]
+}
+wait_for "the proof's three devices to leave Central Command's fleet" 180 e2_devices_gone
+s1_cc "DELETE FROM cc_outcome_history WHERE actor='gate-s3e2' AND action_id LIKE '$E2_TAG-%'" > /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$E2_TAG-%'")" = "0" ] || {
+  echo "the S3-E2 outcome rows were not removed" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc import governance, proposal_evidence as P
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert governance.PROPOSAL_EVIDENCE_PERMISSION == 'fleet.view'
+assert P.CREATION_WITHHELD_KEYS == ('attention', 'outcome_evidence')
+assert P.MACHINE_WITHHELD_KEYS == ('attention', 'learned_signals', 'outcome_evidence')
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: the projection module and the one loader; plane 14, contract 99, ceiling unchanged')"
+echo "  catalogue restored, both S3-E2 agents retired, the synthetic proposal, its outcome rows and the three devices removed"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

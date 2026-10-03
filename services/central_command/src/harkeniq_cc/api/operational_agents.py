@@ -53,8 +53,15 @@ from harkeniq_cc.governance import (
     autonomy_view,
     load_agent_reach,
     load_autonomy_contract,
+    load_proposal_evidence_view,
     load_site_assessments,
     require_autonomy_view,
+    require_proposal_evidence_view,
+)
+from harkeniq_cc.proposal_evidence import (
+    CREATION_BASIS_TENANT,
+    machine_dry_run_evidence,
+    machine_rationale,
 )
 from harkeniq_cc.target_authority import load_fleet_index
 from harkeniq_cc.scope import (
@@ -252,14 +259,16 @@ def proposal_dict(p, *, view) -> dict:
     payload plus the queue's own envelope, so the two can never describe
     the same proposal differently.
 
-    `view` is the READER's `AutonomyView` and is REQUIRED (A30.26). The
-    evaluator decides over the whole tenant and stores the class row's
-    blocking conditions and learned signals on the proposal, so a proposal
-    at one site can name another site's drop-back and its suppressed fault
-    domains. What was recorded is left alone; what is RETURNED names a
-    site only when the reader holds `fleet.view` there.
+    `view` is the READER's `ProposalEvidenceView` and is REQUIRED (A30.26,
+    A30.39). The evaluator stores the whole tenant's view of a class on
+    every proposal -- blocking conditions and learned signals that name
+    other sites (A30.26), and an outcome statistic, an attention score and
+    a sentence restating them composed over every site (S3-E2). What was
+    recorded is left alone; what is RETURNED is the creation record as this
+    reader may read it, beside the reader's CURRENT track record -- two
+    things with two names, never one number standing in for the other.
     """
-    view = require_autonomy_view(view)
+    view = require_proposal_evidence_view(view)
     return {
         "proposal_id": p.id,
         "agent_id": p.agent_id,
@@ -269,8 +278,20 @@ def proposal_dict(p, *, view) -> dict:
         "device_agent_id": p.device_agent_id,
         "action_type": p.action_type,
         "params": p.params or {},
-        "rationale": p.rationale,
+        "rationale": view.rationale(
+            p.rationale, p.evidence,
+            action_type=p.action_type, device_agent_id=p.device_agent_id,
+        ),
         "evidence": view.evidence(p.evidence),
+        # A30.39 (D4): what the creation record was composed over, and
+        # whether this reader holds all of it -- from the reader's reach
+        # SHAPE, never from what the hidden estate contributed.
+        "creation_basis": CREATION_BASIS_TENANT,
+        "evidence_scope": view.evidence_scope,
+        # A30.39 (D6): the reader's CURRENT track record for this class,
+        # over exactly the outcomes their current reach reads. Information,
+        # never authority, and not a restatement of the creation record.
+        "viewer_projected_evidence": view.viewer(p.action_type),
         "disposition": p.disposition,
         "disposition_reason": view.reason(
             p.disposition_reason, p.blocking_conditions,
@@ -1216,7 +1237,11 @@ async def get_agent(
             user.tenant_id, [p.id for p in page],
         )
     )
-    facts = autonomy_view(scope)
+    # A30.39: loaded once for the page -- the reader's current track record
+    # and how their reach reads the creation records below.
+    facts = await load_proposal_evidence_view(
+        session, tenant_id=user.tenant_id, scope=scope,
+    )
     view["proposals"] = [
         proposal_dict_with_provenance(p, by_proposal.get(p.id, ""), view=facts)
         for p in page
@@ -1675,7 +1700,9 @@ async def list_proposals(
             "view": "machine",
         }
 
-    facts = autonomy_view(scope)
+    facts = await load_proposal_evidence_view(
+        session, tenant_id=user.tenant_id, scope=scope,
+    )
     return {
         "proposals": [proposal_dict(p, view=facts) for p in proposals],
         "total": len(proposals),
@@ -2146,18 +2173,73 @@ async def dry_run_agent(
     agent_version = agent.version
     agent_status = agent.status
 
-    # Nothing above added, flushed or committed. Rolling back is belt and
-    # braces: A22.7 says "writes nothing" and the acceptance proves it by
-    # table snapshot, so the code should not be the only thing asserting it.
-    await session.rollback()
-
     # A30.26: the preview REASONS over the whole tenant, because the
     # runtime does (A22.6) -- and then answers THIS caller. A verdict's
     # blocking conditions and learned signals name sites; the caller is
     # shown a site only where they hold `fleet.view`. For a machine that is
     # its own grants, so a runtime bound to one site stops being told
     # another site's drop-back and suppressed fault domains.
+    #
+    # A30.39 (S3-E2): what the preview would FREEZE is composed over the
+    # whole tenant too. A person reads it as their reach allows, beside
+    # their own current track record (read here, before the rollback: a
+    # read, never a write). A machine -- EVERY machine, tenant-scoped ones
+    # included -- reads the condition facts and a reduced sentence built
+    # from typed facts, and nothing built from outcomes, rank or learning.
+    machine = is_machine(user)
     facts = autonomy_view(scope)
+    evidence_view = None if machine else await load_proposal_evidence_view(
+        session, tenant_id=tenant_id, scope=scope,
+    )
+
+    # Nothing above added, flushed or committed. Rolling back is belt and
+    # braces: A22.7 says "writes nothing" and the acceptance proves it by
+    # table snapshot, so the code should not be the only thing asserting it.
+    await session.rollback()
+
+    def _preview(p: dict) -> dict:
+        requires_human = p["authorization_basis"] != BASIS_AUTONOMOUS
+        item = {
+            # A24.3: the handle an external agent submits. Opaque,
+            # server-minted, and re-derived on receipt -- it names a
+            # candidate, it does not authorize one.
+            "candidate_ref": candidate_ref(tenant_id, p["dedupe_key"]),
+            "device_agent_id": p["device_agent_id"],
+            "site_id": p["site_id"],
+            "action_type": p["action_type"],
+            # A22.2: the REAL parameters, resolved and validated. This
+            # is the field that would have exposed the A4 defect: every
+            # proposal used to carry {"reason": ...} whatever the class.
+            "params": p["params"],
+            "disposition": p["disposition"],
+            "disposition_reason": facts.reason(
+                p["disposition_reason"], p["blocking_conditions"],
+            ),
+            "blocking_conditions": facts.blocking(p["blocking_conditions"]),
+            "authorization_basis": p["authorization_basis"],
+            "requires_human": requires_human,
+        }
+        if machine:
+            evidence = p["evidence"] or {}
+            item["rationale"] = machine_rationale(
+                action_type=p["action_type"],
+                device_agent_id=p["device_agent_id"],
+                condition_kind=evidence.get("condition_kind", ""),
+                subsystem=evidence.get("subsystem", ""),
+                requires_human=requires_human,
+                disposition=p["disposition"],
+            )
+            item["evidence"] = machine_dry_run_evidence(p["evidence"])
+            return item
+        item["rationale"] = evidence_view.rationale(
+            p["rationale"], p["evidence"],
+            action_type=p["action_type"], device_agent_id=p["device_agent_id"],
+        )
+        item["evidence"] = evidence_view.evidence(p["evidence"])
+        item["creation_basis"] = CREATION_BASIS_TENANT
+        item["evidence_scope"] = evidence_view.evidence_scope
+        item["viewer_projected_evidence"] = evidence_view.viewer(p["action_type"])
+        return item
 
     return {
         "agent_id": agent_id,
@@ -2168,31 +2250,7 @@ async def dry_run_agent(
         "dry_run": True,
         "wrote": [],
         "devices_in_scope": len(in_scope),
-        "would_propose": [
-            {
-                # A24.3: the handle an external agent submits. Opaque,
-                # server-minted, and re-derived on receipt -- it names a
-                # candidate, it does not authorize one.
-                "candidate_ref": candidate_ref(tenant_id, p["dedupe_key"]),
-                "device_agent_id": p["device_agent_id"],
-                "site_id": p["site_id"],
-                "action_type": p["action_type"],
-                # A22.2: the REAL parameters, resolved and validated. This
-                # is the field that would have exposed the A4 defect: every
-                # proposal used to carry {"reason": ...} whatever the class.
-                "params": p["params"],
-                "disposition": p["disposition"],
-                "disposition_reason": facts.reason(
-                    p["disposition_reason"], p["blocking_conditions"],
-                ),
-                "blocking_conditions": facts.blocking(p["blocking_conditions"]),
-                "authorization_basis": p["authorization_basis"],
-                "requires_human": p["authorization_basis"] != BASIS_AUTONOMOUS,
-                "rationale": p["rationale"],
-                "evidence": facts.evidence(p["evidence"]),
-            }
-            for p in would_propose
-        ],
+        "would_propose": [_preview(p) for p in would_propose],
         "withheld": withheld,
         "contract": {
             "governs": (

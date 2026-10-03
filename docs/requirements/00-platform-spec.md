@@ -5855,3 +5855,251 @@ structural guard reading build output: a runner's `pip install -e .` writes
 shipped source (the image generates its own from a context with no `tests/`),
 so the guard skips `*.egg-info` and bytecode caches and nothing else, and a
 test asserts no tracked file lives under either.
+
+**A30.39 — S3-E2: historical proposal evidence projection — the dual
+representation, ratified and recorded BEFORE the code (decided: Vinod,
+2026-09-30; implements A30.30's S3-E2 model).** The S3-E2 checkpoint (on
+`0fc72c3`) established by inventory and one executed probe that a stored
+proposal carries three things composed over a broader estate than its reader
+may now hold, and that the human projections return them as stored:
+`evidence.outcome_evidence` (the tenant-wide execution, success and failure
+counts, rates and `sites_observed`), the rationale's closing track-record
+sentence ("… across 31 executions in this tenant"), and `evidence.attention`
+(a rank over the agent's whole reach and a score carrying the tenant-wide
+vendor/model prior). Every writer since A1 froze the whole-tenant composition —
+A1 composed with no reach, the evaluator used `reach=None` until S3-E1, and
+S3-E1's `SiteAssessments.evidence_rows()` is the whole-tenant composer — so the
+creation basis is the tenant for every row ever written, and the rationale's
+track-record clause has had one grammar since A1. The outcome statistic never
+decides anything: `_evidence_for` feeds only the `advancement` statement,
+never a disposition. Machine lifecycle projections carry no evidence or
+rationale (A25.9); the machine dry-run (A22.2) is the one machine surface that
+does. No generated text reaches a proposal (`has_diagnosis` is a boolean; the
+`because` clause is tenant catalogue text). *Naming: S3-E2 throughout, never
+bare "E2".*
+
+**The rulings (Vinod, 2026-09-30).** The checkpoint's D1–D14 and its four
+questions were ratified in two rounds. *Round one:* Q1 NARROW (predictive
+`outcomes_considered` / `cohort_failure_rate` and the tenant-wide cohort prior
+in scoped humans' Attention, B2-F5, are the NEXT dedicated privacy/projection
+slice, not started); Q2 a MINIMAL Console correction, semantic only; Q3 the
+10000-row outcome window (F-E2-4) is its own correctness slice and S3-E2
+states its deletion-equivalence claim over the evidence set the existing
+source/window contract returns, never over whole history; Q4 EVERY machine
+receives bounded conclusions only, tenant-scoped machines included. *Final
+round:* **D1 RATIFIED** — the wire and storage key stays `evidence`, which
+IS `decision_evidence_at_creation`: the immutable decision evidence captured at
+proposal creation. The architecture may use the longer name; no field is
+renamed for naming purity, and a later API-versioning exercise may introduce
+it if justified. **D9 RATIFIED (learned signals)** — `learned_signals` are
+withheld from EVERY machine dry-run, tenant-scoped machines included: they are
+creation/evaluation evidence that may encode tenant-wide historical
+statistics and are not machine authority; machines consume governed
+conclusions, not internal evidence construction. **D9 RATIFIED (machine
+rationale)** — a REDUCED machine rationale is kept, containing ONLY
+allow-listed condition facts, bounded catalogue/reason codes, safe constants
+and current machine-visible conclusions; never raw historical evidence,
+learned signals, hidden counts, a percentage capable of reconstructing a
+count, a hidden site or device identifier, a tenant-wide creation statistic
+outside the machine contract, free-form persisted creation rationale, or raw
+generated evidence text. **D6 AMENDED** — the checkpoint's "device- and
+class-scoped humans see no current track record" is NOT ratified: it would
+make the current-view projection disagree with the canonical outcome read. The
+ratified rule is below.
+
+**The contract.** *(D1) One stored record, two views.* `evidence`, `rationale`,
+`disposition`, `disposition_reason`, `blocking_conditions`,
+`authorization_basis` and `created_at` on a proposal ARE
+`decision_evidence_at_creation`: written once by `govern_proposal`, never
+rewritten, never re-derived — not when a grant expires, scope narrows, the
+reader changes, topology changes, a device moves or a site disappears.
+`viewer_projected_evidence` is a new sibling key, computed at read time; it is
+a presentation, not a second decision record, carries no authority and is not
+audited as a decision. The two are never interchangeable and no arithmetic
+joins them. *(D2) The creation basis is the tenant, written nowhere.* Nothing
+new is persisted; a structural test pins `govern_proposal` to the whole-tenant
+composition so a future change of basis fails the suite and must arrive by
+amendment with a marker. `_rationale` is split into `rationale_head` (which
+takes no evidence) and `track_record_clause` (which takes only the outcome
+evidence), and their join is byte-identical to today's sentence; the stored
+output of `govern_proposal` is byte-identical. *(D3) What a scoped human reads
+of the creation evidence.* "Scoped" means the reader's `fleet.view` read reach
+(S2's `read_reach`, the basis A30.26 fixed for every autonomy fact) is not
+tenant-wide. The creation evidence is returned by ALLOW-LIST: the facts about
+the target device and its condition (`observed`, `condition_kind`,
+`subsystem`, `incident_ids`, `has_diagnosis`, `remediation_provenance`,
+`component`, `components_reported`, `device`, `contract_version`,
+`evaluated_at`) are kept; `learned_signals` keeps its S3/S4 projection;
+`outcome_evidence` and `attention` are withheld WHOLE — present as `null`
+whether or not the stored row has them, so the shape never varies — and any
+stored key outside the allow-list is withheld too; the evidence carries S4's
+markers `projection: "scoped"` and a sorted `withheld` list. Blocking
+conditions and the disposition reason keep their S3 projection. No banded
+creation-time rate is offered. *(D4) `evidence_scope` depends only on who is
+reading.* Every human proposal projection carries `creation_basis: "tenant"`
+and `evidence_scope: "fully_visible"` (tenant-wide reader) or
+`"broader_than_current_view"` (anyone else), computed from the reader's reach
+SHAPE and never from whether hidden sites actually contributed — a
+content-derived value would disclose one bit about the hidden estate.
+*(D5) Rationale.* A tenant-wide reader reads the stored sentence. For anyone
+else the exact track-record clause is re-rendered from the stored
+`outcome_evidence` by the SAME function that wrote it; when the stored
+sentence ends with it, the clause is replaced by one constant sentence,
+`WITHHELD_TRACK_RECORD`; when it does not — or the stored evidence is missing
+or malformed — the WHOLE sentence is replaced by a constant built only from
+the action class and the target device id (fail closed). The head is proven
+evidence-free by construction (it takes no evidence argument), so reduction
+through the writer's grammar leaves no count behind (A30.28's text rule).
+*(D6, AMENDED) `viewer_projected_evidence`.* Computed from the reader's
+CURRENT permission-aware canonical reach, in its native types — tenant,
+org_unit, site, device and device_class — as
+`{basis: "current_reach", as_of, outcome_evidence, unavailable_reason}`, where
+`outcome_evidence` is `_evidence_for(action_type, rows)` (the counts
+`/api/autonomy` reports, same keys, same function) over exactly the rows the
+canonical outcome read returns this reader:
+`OutcomeHistoryRepo.list_outcome_dicts(tenant, scope=read_reach(scope,
+"fleet.view"))`, the read `/api/outcomes/metrics` performs, filtered IN SQL by
+B0b's owner predicate `scope_device_owned` BEFORE the row window. A
+device-scoped reader therefore reads that device's current outcomes and the
+track record derived from them — never a sibling device's, the containing
+site's or the tenant's totals; a device_class reader reads the outcomes of the
+devices the class grant CURRENTLY covers and nothing else; site, org and
+tenant readers read their sites. The requested `visible_execution_count` is
+`outcome_evidence.executions`. A reader who holds `fleet.view` nowhere (for
+instance `action.approve` without `fleet.view`) reads `outcome_evidence: null`
+with `unavailable_reason: "no_fleet_view_reach"` — derived from the reach
+shape, never zeros that would claim "no executions"; a reader with reach and
+no readable outcome reads zeros, which is a true statement about their view.
+Tenant-wide readers receive it too, so every human reads one shape. **No
+second resolver, no synthetic site authority, no widening of `covers_site()`,
+no contextual site becoming authority, no new permission, no machine-ceiling
+change:** the rule is S2's `read_reach` and B0b's predicate, unmodified.
+*(Confirmed before production code, as the ruling required: the canonical
+outcome read already expresses all five native reach types — org units expand
+to sites inside `read_reach`, device ids and classes are consumed by
+`scope_device_owned` — so the amended D6 needs nothing new.)* *(D7) One
+projection type.* A frozen `ProposalEvidenceView`, built once per request by
+ONE loader, `governance.load_proposal_evidence_view`, carries the reader's
+`AutonomyView` (S3/S4 unchanged) beside the reach shape and the reader's
+current per-class outcome evidence; every human proposal projection REQUIRES
+it and raises `TypeError` on anything else (A30.26's pattern). *(D8) Human
+surfaces.* The approval queue, the approve / deny / batch decision responses,
+Operational Agent detail, the proposal list and the HUMAN dry-run carry D3–D6.
+For a tenant-wide reader `evidence` and `rationale` are byte-identical to a
+golden recorded from `main`. *(D9) Machines: bounded conclusions only, for
+every machine.* Receipts, the machine proposal list, the machine agent view and
+the submit response are unchanged — they carry no evidence and no rationale.
+The machine dry-run keeps `candidate_ref`, the target, `params`, the
+disposition, its reason, the blocking conditions, the basis, `requires_human`
+and the condition facts, by allow-list; it withholds `outcome_evidence`,
+`attention` and `learned_signals` for every machine (`null`, named in
+`withheld`, marked `projection: "machine"`); it carries no
+`viewer_projected_evidence`; its rationale is the reduced machine sentence
+rendered from typed facts only — the action class, the target device id, the
+condition kind, the catalogue subsystem code, the current disposition
+conclusion and constant text — never the incident title, the catalogue's
+free-text `because`, or any stored sentence. B2-1's recorded dry-run
+exemption for `evidence.observed` / `components_reported` is unchanged.
+*(D10) Legacy and new proposals project identically* — every row has the same
+creation basis (D2); no backfill, no rewrite, no migration. *(D11) What is
+claimed, exactly.* `viewer_projected_evidence` never counts an outcome
+outside the reader's current reach, at any size. Deletion equivalence holds
+for it over the evidence set the existing canonical outcome read returns — a
+scoped reader of the full estate reads what a tenant-wide reader reads of an
+estate from which everything outside that reader's reach is deleted, for
+tenant, org, site, device and device_class personas; because the reach filter
+runs in SQL before the window, hidden volume never decides which of the
+reader's own outcomes are counted. The window itself (oldest 10000 rows of
+the reader's own set) is F-E2-4's and is NOT claimed away here: a strict-xfail
+test pins it for that slice to invert. For `decision_evidence_at_creation`
+deletion equivalence does not apply (it would be rewriting history); instead:
+the stored row is byte-identical across every read, grant change and topology
+change; a scoped reader's creation view is byte-identical under any change to
+hidden facts, the stored tenant totals themselves included; and a tenant-wide
+control reads the stored bytes. *(D12) Change surface.* No migration, no
+permission (25), no machine-ceiling change
+(`{fleet.view, incident.view, proposal.submit}`), no route (`ROUTE_CONTRACT`
+99, `MACHINE_SURFACE` 14), no scope resolver, no approval system, no proto,
+Site Manager or agent change. Execution semantics are unchanged: the dispatch
+gate reads no evidence field (pinned by test). S3-E1 — site-local autonomy,
+the global safety gate, final execution eligibility, dispatch revalidation,
+the activation-approved unattended set — is untouched, the node remains the
+final execution authority, and `/api/autonomy` is pinned unchanged.
+Historical evidence is never execution authority and reading it confers
+nothing. *(D13) Console, minimal and semantic.* The approval queue's
+track-record row renders the reader's CURRENT in-scope track record and, for
+a scoped reader, the bounded note that the creation evidence lies outside
+their current scope — never "too few outcomes to judge" for a record that was
+withheld; the Operational Agent page's "in this tenant" label on a
+reader-scoped number becomes "in your current view"; one typed module with
+focused Vitest tests applies the server's reading rule. No restyling, PX
+work, information architecture, navigation or component system. *(D14)
+Deferred or open, recorded here.* The next privacy/projection slice (dated
+2026-09-30, not started): predictive `outcomes_considered` /
+`cohort_failure_rate` and scoped-human Attention's tenant cohort prior
+(B2-F5). The F-E2-4 correctness slice: settlement past 10000 outcomes, the
+stale `"window": "all_time"` evidence, and the pre-window membership side
+channel in `/api/autonomy`. Proposal-budget ordering: OPEN, untouched. S3-E1
+unchanged; taxonomy and PX not started.
+
+**Invariants (LOCKED).** (i) No read path mutates a stored proposal, and no
+current scope or topology change alters what was recorded. (ii) A scoped
+human's creation view and rationale are invariant under every change to
+facts outside their reach, including the stored tenant totals. (iii)
+`viewer_projected_evidence` is a pure function of the reader's current
+canonical reach and the rows that reach reads; deletion-equivalent over the
+canonical read's contract for all five native reach types. (iv) No hidden
+count, rate, site or device identifier, attention score or learned signal
+reaches a scoped human through the creation view or the rationale, or ANY
+machine through a proposal-evidence surface. (v) `evidence_scope` and
+`unavailable_reason` derive from the reach shape only. (vi) A tenant-wide
+human reads the stored bytes. (vii) Evidence is information only — never
+authority, approval, execution eligibility or a reusable decision token.
+
+**Proof obligations.** The checkpoint's twenty adversarial cases; the reader
+matrix (tenant, org, site, device, device_class humans; approver without
+`fleet.view`; tenant-scoped and site-scoped machines) over every human surface
+and the machine dry-run; narrowing, revocation, site deletion and device move
+after creation; delimited hidden-count, rationale and generated-text
+sentinels; deletion equivalence for the viewer block including device and
+device_class personas; the stored row hashed before and after every read;
+mutation testing of the named breakages; real PostgreSQL (JSONB evidence
+round-trip with sentinels, the canonical outcome read under device and class
+reach); minimal Console Vitest; a fresh-wipe live gate with real Keycloak and
+real outcomes at two sites (tenant owner control, site-scoped approver,
+device- and class-scoped humans, grant narrowed after creation, real machine
+dry-run); every security regression group; the full suite; exact-head CI.
+
+**Found while implementing S3-E2 (recorded; no scope change).**
+
+1. *Two S3 pins recorded today's behaviour as a requirement.* A30.26's
+   `test_E2_a_stored_proposal_keeps_its_tenant_wide_outcome_statistic`
+   asserted that a site-A reader READ the tenant-wide 31. It is inverted
+   under a new name. Its "the stored row still says 31" assertion is
+   kept, and the site-A reader now reads 7 beside a withheld creation
+   record. A second S3 machine test asserted that a site-scoped machine's
+   dry-run CARRIED its site's and the cohort's learned signals; D9
+   inverts it. Neither pin is deleted.
+2. *The viewer claim is stronger than the checkpoint predicted.* The
+   checkpoint expected deletion equivalence to hold only below the
+   10000-row window, because `/api/autonomy` filters by site AFTER its
+   window. The viewer block instead reads the canonical outcome read,
+   which applies B0b's predicate in SQL BEFORE the window. Hidden volume
+   therefore never decides which of the reader's own outcomes are
+   counted, at any size (tested with 10000 hidden rows older than every
+   site-A row). What remains is the window over the reader's OWN set,
+   pinned by a strict xfail for F-E2-4.
+3. *The live gate needed the estate to discriminate.* On CI's estate the
+   device reader's record coincided with site A's, and the class
+   reader's with the tenant's, so the first live device and class
+   assertions were true but not discriminating. The proof now owns three
+   devices, added through the Site Manager's real device path (S4's
+   precedent), and refuses to run unless device ≠ site ≠ class ≠ tenant.
+4. *A gate-harness defect.* `docker compose exec -T` forwards its stdin,
+   so a psql helper placed on the right of a pipe consumed the payload.
+   Both first CI gates read an empty queue for that reason. The local
+   rehearsal had stubbed the helper with a command that reads no stdin;
+   the rehearsal stub now drains stdin exactly as docker exec does.
+5. *A decision batch loads the reader's view once.* Nothing a decision
+   does moves an outcome, so a request-local memo serves the whole
+   batch. This is pinned by counting loader calls.

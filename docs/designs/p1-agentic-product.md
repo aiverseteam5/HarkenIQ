@@ -6246,3 +6246,121 @@ to the package.
 * **The guard must not read build output.** CI's `pip install -e .` writes a root
   `SOURCES.txt` naming `tests/gate/`; the guard skips `*.egg-info` and
   `__pycache__` only, and asserts no tracked file lives there.
+
+## §34t — S3-E2: historical proposal evidence projection (A30.39)
+
+### What is stored, and what was returned
+
+`govern_proposal` freezes `evidence` (condition facts, `attention`,
+`outcome_evidence`, `learned_signals`, the device snapshot) and a `rationale`
+whose last sentence restates `outcome_evidence`. Both are composed over the
+whole tenant (`SiteAssessments.evidence_rows()`; §34r D7), and have been since
+A1. `proposal_dict` returned `rationale` raw and `evidence` through
+`AutonomyView.evidence`, which narrows and bounds `learned_signals` (S3/S4)
+and returns `outcome_evidence` and `attention` as stored. The human dry-run
+returns the same shape for what would be frozen now; the machine dry-run is
+the only machine surface carrying either field.
+
+### The one module: `harkeniq_cc.proposal_evidence`
+
+Pure, no I/O; its only intra-package imports are S4's marker vocabulary and
+the autonomy disposition constants.
+
+* **The writer's grammar.** `rationale_head(agent_name, device, condition,
+  candidate)` (no evidence argument, by construction) and
+  `track_record_clause(outcome_evidence)` (the only evidence-derived text).
+  `operational_agent._rationale` becomes their join, byte-identical.
+* **Creation view.** `project_creation_evidence(stored, *, tenant_wide,
+  autonomy)`: tenant-wide → `autonomy.evidence(stored)` (stored bytes);
+  otherwise the allow-list `CREATION_CONDITION_KEYS`, `learned_signals`
+  through `autonomy.evidence`, `attention` / `outcome_evidence` set to `null`,
+  every other stored key dropped, `projection: "scoped"`, sorted `withheld`.
+* **Rationale.** `project_rationale(stored, evidence, *, tenant_wide,
+  action_type, device_agent_id)`: tenant-wide → stored; else strip
+  `track_record_clause(evidence["outcome_evidence"])` from the end and append
+  `WITHHELD_TRACK_RECORD`; no exact suffix, a non-dict evidence, or a clause
+  that cannot be rendered → `withheld_rationale(action_type,
+  device_agent_id)`.
+* **Machine dry-run.** `machine_dry_run_evidence(stored)` (allow-list, the three
+  withheld keys `null`, `projection: "machine"`) and
+  `machine_rationale(action_type, device_agent_id, condition_kind, subsystem,
+  requires_human, disposition)` — closed labels for kind and disposition, the
+  subsystem only when it is a bounded code (lowercase, at most 64 characters
+  of `[a-z0-9_.:*-]`), constant text otherwise.
+
+### The type and the one loader, in `governance` beside `AutonomyView` and `LearningView`
+
+`ProposalEvidenceView(autonomy, tenant_wide, reach_empty, outcomes, as_of)`,
+frozen; `evidence()`, `rationale()`, `viewer(action_type)`, `evidence_scope`,
+and pass-throughs `blocking()` / `reason()` to the S3 view.
+`require_proposal_evidence_view()` raises `TypeError` on anything else, and
+`load_proposal_evidence_view(session, *, tenant_id, scope)` is its only
+constructor outside a test.
+
+`reach = read_reach(scope, "fleet.view")`; `autonomy_view(scope)` (the same
+reach); when the reach holds no grant the outcome read is skipped and the view
+answers `no_fleet_view_reach`; otherwise
+`OutcomeHistoryRepo.list_outcome_dicts(tenant_id, scope=reach)` — the
+canonical outcome read, B0b's `scope_device_owned` in SQL before the window —
+and `viewer(action_type)` is `_evidence_for(action_type, outcomes)`, memoised
+per class. Nothing resolves scope here; `read_reach` and the repository
+predicate are the only authorities.
+
+### Call sites
+
+`proposal_dict` / `proposal_dict_with_provenance` require the new view and add
+`creation_basis`, `evidence_scope`, `viewer_projected_evidence`; the approval
+queue (`list_pending`), `_decide_agent_proposal` (both returns; a batch loads
+the view once), `get_agent` and `list_proposals` (human branches) and the human
+dry-run load it once per request. Machine paths — `receipts.*`, the submit
+response — keep the `AutonomyView` they have and no evidence; the machine
+dry-run uses the two machine functions. The dispatch gate, the evaluator,
+`govern_proposal`'s stored output, `/api/autonomy` and B2's contracts are
+untouched.
+
+### Console
+
+`console-ui/src/proposalEvidence.ts` (+ Vitest) applies the server's reading
+rule: the track-record row shows the CURRENT in-scope record from
+`viewer_projected_evidence` and, when `evidence_scope` is
+`broader_than_current_view`, the bounded note "creation evidence outside your
+current scope"; a withheld creation record never renders as "too few outcomes
+to judge"; an absent or unrecognised block reads as unavailable, never as
+zero. `OperationalAgents.tsx`'s "in this tenant" becomes "in your current
+view". No other UI change.
+
+### Proof
+
+`tests/unit/cc/test_a30_39_historical_evidence.py` on the S3 persona stack
+under STRICT: the reader matrix over every human surface and the machine
+dry-run; deletion equivalence for the viewer block (tenant, org, site, device,
+device_class); the stored row hashed around every read and every grant or
+topology change; delimited sentinels; the golden from `main` for tenant-wide
+readers; structural pins (the head takes no evidence, `govern_proposal` reads
+`evidence_rows()`, every human projection requires the view, the dispatch gate
+reads no evidence field, `/api/autonomy` unchanged); the F-E2-4 window as a
+strict xfail. Real PostgreSQL in `tests/integration/`. Live gate steps
+S3-E2/CZ–DD after S3-E1/CY.
+
+### Found while implementing
+
+* **Two S3 pins inverted, never deleted.** A site-A reader used to READ the
+  tenant-wide 31, and a site-scoped machine's dry-run used to CARRY learned
+  signals. The first now reads 7 beside a withheld creation record, and the
+  stored row still says 31. The second now reads the three withheld keys.
+* **Deletion equivalence holds at any size.** The canonical outcome read
+  applies B0b's predicate in SQL before the window, so hidden rows never
+  displace the reader's own. That is stronger than `/api/autonomy`'s
+  post-window filter. The reader's OWN window is F-E2-4's, pinned by a
+  strict xfail.
+* **The live estate must discriminate.** CZ adds three proof-owned devices
+  through the Site Manager (a sibling at A, and at B one of the same class
+  and one of another class). It refuses to proceed unless the device, site,
+  class and tenant counts all differ. DD removes the devices and waits for
+  them to leave the fleet.
+* **`docker compose exec -T` reads stdin.** A psql helper on the right of a
+  pipe swallowed the queue payload in the first CI gates. Reads now happen
+  before the pipe. A rehearsal stub must drain stdin, or it cannot see this.
+* **Mutation:** 22 named breakages, all killed by the S3-E2 and S3 modules;
+  the unmutated kill set is green.
+

@@ -68,6 +68,7 @@ from harkeniq_cc.autonomy import (
     REQUIRES_APPROVAL,
     SCOPE_TENANT,
 )
+from harkeniq_cc.proposal_evidence import rationale_head, track_record_clause
 from harkeniq_cc.global_safety import (
     STATE_UNKNOWN,
     GlobalSafetyVerdict,
@@ -610,32 +611,18 @@ def _candidates_for(condition: dict, catalogue: dict) -> list[dict]:
 
 def _rationale(agent_name: str, device, condition: dict, candidate: dict,
                class_row: dict) -> str:
-    """One sentence an operator can act on without opening anything else."""
-    ev = class_row.get("evidence") or {}
-    rate = ev.get("success_rate")
-    device_label = getattr(device, "agent_name", "") or device.agent_id
-    detail = condition["detail"]
-    # Incident titles already name their device; repeating it produced
-    # "observed X: fan CRITICAL on X" on the live stack.
-    where = "" if device_label and device_label in detail else f" on {device_label}"
-    head = (
-        f"{agent_name} observed {detail}{where} and recommends "
-        f"{candidate['action_type'].replace('_', ' ').lower()}: "
-        f"{candidate['because']}."
+    """One sentence an operator can act on without opening anything else.
+
+    S3-E2 (A30.39, D2): the sentence is the writer's two halves, joined --
+    `rationale_head`, which takes no evidence, and `track_record_clause`,
+    the only part built from the outcome statistic. Joined, it is exactly
+    the sentence every writer since A1 stored; split, a projection can
+    re-render the clause from the stored statistic and remove exactly it.
+    """
+    return (
+        rationale_head(agent_name, device, condition, candidate)
+        + track_record_clause(class_row.get("evidence"))
     )
-    if rate is not None:
-        head += (
-            f" This class has succeeded {rate:.0%} of the time across "
-            f"{ev.get('executions', 0)} executions in this tenant."
-        )
-    elif ev.get("executions"):
-        head += (
-            f" The tenant has only {ev['executions']} recorded execution(s) "
-            f"of this class, too few to judge a success rate."
-        )
-    else:
-        head += " This tenant has no recorded outcome for this class yet."
-    return head
 
 
 #: Refusal codes that are normal traffic, not findings. A class the agent

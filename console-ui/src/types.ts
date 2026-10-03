@@ -1,4 +1,5 @@
 import type { ProposalProvenance } from "./proposalProvenance";
+import type { OutcomeEvidence, ViewerProjectedEvidence } from "./proposalEvidence";
 
 /** Paginated API response wrapper. */
 export interface PaginatedResponse<T> {
@@ -245,16 +246,24 @@ export interface AgentProposal {
     has_diagnosis?: boolean;
     remediation_provenance?: string;
     attention?: { rank?: number; band?: string; driver?: string; risk_score?: number } | null;
-    outcome_evidence?: {
-      executions: number;
-      success: number;
-      failure: number;
-      success_rate: number | null;
-      sufficient: boolean;
-    } | null;
-    learned_signals?: { statement: string; confidence: number | null }[];
+    /** A30.39: the CREATION record's statistic. `null` for a reader whose
+     *  scope is narrower than the tenant it was composed over -- withheld,
+     *  never "too few outcomes". Render through `trackRecordView`. */
+    outcome_evidence?: OutcomeEvidence | null;
+    learned_signals?: { statement: string; confidence: number | null }[] | null;
     device?: { vendor?: string; model?: string; health?: string; observation?: string };
+    /** A30.39: `scoped` when the server withheld part of the creation record. */
+    projection?: string;
+    withheld?: string[];
   };
+  /** A30.39: what the creation record was composed over ("tenant"). */
+  creation_basis?: string;
+  /** A30.39: `fully_visible` | `broader_than_current_view`, from the
+   *  reader's scope only. */
+  evidence_scope?: string;
+  /** A30.39: the reader's CURRENT track record for this class -- a separate
+   *  record, never the creation record restated. */
+  viewer_projected_evidence?: ViewerProjectedEvidence | null;
   disposition: string;
   disposition_reason: string;
   blocking_conditions: { code: string; detail: string; scope: string }[];

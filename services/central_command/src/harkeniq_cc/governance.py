@@ -13,7 +13,7 @@ So the fetch lives here once. The composition still lives in
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -383,6 +383,148 @@ def require_learning_view(view) -> LearningView:
         f"{type(view).__name__}: the stored evidence names sites the reader "
         "may not hold, and there is no reader-less projection of it "
         "(spec A30.28)"
+    )
+
+
+#: The permission a proposal's outcome evidence -- stored or current -- is
+#: read under (A30.39). The same basis as every autonomy fact (A30.26): the
+#: outcome statistic IS the autonomy contract's class evidence, and the
+#: current track record is the canonical outcome read `/api/outcomes/metrics`
+#: performs under this permission.
+PROPOSAL_EVIDENCE_PERMISSION = AUTONOMY_FACT_PERMISSION
+
+
+@dataclass(frozen=True)
+class ProposalEvidenceView:
+    """How ONE human reader may read a proposal's evidence (A30.39, S3-E2).
+
+    Two things with two names. The CREATION record (`evidence`,
+    `rationale`) is immutable and was composed over the whole tenant; a
+    reader whose reach is not the tenant is handed it through the
+    projection in `harkeniq_cc.proposal_evidence`, never rewritten. The
+    VIEWER projection is the reader's CURRENT track record, computed from
+    the rows their current canonical reach reads -- `outcomes`, fetched by
+    `load_proposal_evidence_view` and by nothing else.
+
+    A TYPE for the reason `AutonomyView` is one: a projection that forgot
+    its reader, or was handed ``None`` by a caller with nothing better,
+    would leak silently and pass its tests. `require_proposal_evidence_view`
+    refuses everything else, and the loader is its only constructor outside
+    a test.
+    """
+
+    #: S3/S4's view: blocking conditions, the reason and learned signals.
+    autonomy: AutonomyView
+    #: The reader's `fleet.view` read reach is the whole tenant.
+    tenant_wide: bool
+    #: The reader holds `fleet.view` nowhere.
+    reach_empty: bool
+    #: The outcome rows the reader's current reach reads, and nothing else.
+    outcomes: tuple
+    as_of: str
+    _memo: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def evidence_scope(self) -> str:
+        from harkeniq_cc.proposal_evidence import (
+            SCOPE_BROADER,
+            SCOPE_FULLY_VISIBLE,
+        )
+
+        return SCOPE_FULLY_VISIBLE if self.tenant_wide else SCOPE_BROADER
+
+    def evidence(self, stored) -> dict:
+        """The creation record's `evidence`, as this reader may read it.
+
+        A tenant-wide reader reads what was stored (S3/S4's identity). Anyone
+        else reads the allow-listed condition facts, the S3/S4-projected
+        learned signals, and nothing composed over the wider estate.
+        """
+        from harkeniq_cc.proposal_evidence import scoped_creation_evidence
+
+        projected = self.autonomy.evidence(stored)
+        if self.tenant_wide:
+            return projected
+        return scoped_creation_evidence(stored, projected.get("learned_signals"))
+
+    def rationale(self, stored, evidence, *, action_type: str,
+                  device_agent_id: str) -> str:
+        """The creation record's rationale, as this reader may read it."""
+        from harkeniq_cc.proposal_evidence import scoped_rationale
+
+        if self.tenant_wide:
+            return stored
+        return scoped_rationale(
+            stored, evidence, action_type=action_type,
+            device_agent_id=device_agent_id,
+        )
+
+    def viewer(self, action_type: str) -> dict:
+        """`viewer_projected_evidence` for one action class."""
+        from harkeniq_cc.autonomy import _evidence_for
+        from harkeniq_cc.proposal_evidence import viewer_block
+
+        key = str(action_type or "")
+        if key not in self._memo:
+            self._memo[key] = (
+                None if self.reach_empty else _evidence_for(key, self.outcomes)
+            )
+        return viewer_block(
+            self._memo[key], as_of=self.as_of, reach_empty=self.reach_empty,
+        )
+
+    def blocking(self, rows) -> list:
+        return self.autonomy.blocking(rows)
+
+    def reason(self, reason, rows) -> str:
+        return self.autonomy.reason(reason, rows)
+
+
+def require_proposal_evidence_view(view) -> ProposalEvidenceView:
+    """The projection boundary of A30.39: a `ProposalEvidenceView`, or a
+    TypeError. An `AutonomyView` is refused too -- it knows nothing about the
+    creation record's outcome statistic, which is what S3-E2 withholds."""
+    if isinstance(view, ProposalEvidenceView):
+        return view
+    raise TypeError(
+        "a human proposal projection needs the reader's ProposalEvidenceView "
+        "(harkeniq_cc.governance.load_proposal_evidence_view), not "
+        f"{type(view).__name__}: a stored proposal's evidence was composed "
+        "over the whole tenant, and there is no reader-less projection of it "
+        "(spec A30.26, A30.39)"
+    )
+
+
+async def load_proposal_evidence_view(
+    session: AsyncSession, *, tenant_id: str, scope,
+) -> ProposalEvidenceView:
+    """The ONE loader for a human reader's proposal-evidence view (A30.39).
+
+    Resolves nothing. The reach is S2's `read_reach(scope, "fleet.view")`,
+    and the rows are the canonical outcome read -- the call
+    `/api/outcomes/metrics` makes, B0b's `scope_device_owned` applied in SQL
+    BEFORE the row window -- so a tenant, org-unit, site, device or
+    device-class reader reads exactly the outcomes their grants cover, in
+    their native types. No site is synthesized for a device, and a
+    contextual site has no field to arrive through.
+    """
+    from datetime import datetime, timezone
+
+    reach = read_reach(scope, PROPOSAL_EVIDENCE_PERMISSION)
+    reach_empty = reach.is_empty()
+    outcomes: tuple = ()
+    if not reach_empty:
+        outcomes = tuple(
+            await OutcomeHistoryRepo(session).list_outcome_dicts(
+                tenant_id, scope=reach,
+            )
+        )
+    return ProposalEvidenceView(
+        autonomy=AutonomyView(sites=authorized_sites(reach)),
+        tenant_wide=reach.tenant_wide,
+        reach_empty=reach_empty,
+        outcomes=outcomes,
+        as_of=datetime.now(timezone.utc).isoformat(),
     )
 
 
