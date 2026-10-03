@@ -9393,11 +9393,14 @@ step "A30.40/DE: real outcome rows at two sites -- every reader's predictive ans
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
 S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
 P40_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'")
-[ "$(curl -sf -H "Authorization: Bearer $TOKEN" \
-      http://localhost:8090/api/tenant-settings/scope-enforcement \
-      | python3 -c "import sys,json; print(json.load(sys.stdin)['scope_enforcement'])")" = "strict" ] || {
-  echo "the tenant is not in strict enforcement: a never-granted person would be synthesized" >&2
-  exit 1; }
+# Strict enforcement, the posture a tenant is born with (A23-5): under the
+# legacy_open posture E1.2 returns the gate to, a never-granted person is
+# SYNTHESIZED tenant-wide (A23.10) and DF's third reader would mean nothing.
+# A26's helpers record the posture found and DI restores it.
+P40_MODE_BEFORE=$(a26_mode)
+[ "$P40_MODE_BEFORE" = "strict" ] || a26_set_mode strict
+[ "$(a26_mode)" = "strict" ] || { echo "could not put the tenant in strict enforcement" >&2; exit 1; }
+echo "  the proof runs under strict enforcement (found: $P40_MODE_BEFORE)"
 P40_CLASS=$(s1_cc "SELECT lower(device_class) FROM cc_fleet_cache WHERE site_id='$SITE_A'
                    AND device_class <> '' ORDER BY agent_id LIMIT 1")
 [ -n "$P40_CLASS" ] || { echo "the stack has no classed device at site A" >&2; exit 1; }
@@ -9584,6 +9587,9 @@ assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'propos
 print('  shipped image: the person selection, the bounded machine view, an internal entry that refuses a'
       ' reader; plane 14, contract 99, ceiling unchanged')" < /dev/null
 echo "  the machine agent retired, the signal and pattern, the four devices and every outcome row removed"
+[ "$P40_MODE_BEFORE" = "strict" ] || a26_set_mode "$P40_MODE_BEFORE"
+[ "$(a26_mode)" = "$P40_MODE_BEFORE" ] || { echo "the enforcement posture was not restored" >&2; exit 1; }
+echo "  enforcement restored to the posture found: $P40_MODE_BEFORE"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
