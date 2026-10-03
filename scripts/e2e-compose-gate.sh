@@ -3487,7 +3487,10 @@ api = (root / "services/central_command/src/harkeniq_cc/api/attention.py").read_
 # filter ran before ranking. A behavioural test alone would pass again
 # the moment somebody copies it back.
 assert "build_attention" not in api, "the router composes attention again"
-assert "load_attention" in api
+# A30.40 (D-P5): a person's attention enters the ONE composer through
+# `load_human_attention`, from their own selection; `load_attention` is now
+# the internal decision paths' entry and refuses a reader.
+assert "load_human_attention" in api
 print("the attention router is a thin caller over the one composer")
 A5PY
 
