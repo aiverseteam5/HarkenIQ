@@ -61,10 +61,14 @@ async def humans(variant: str) -> dict:
     return out
 
 
-#: A machine item's freshness carries the fleet row's wall-clock times,
-#: which the estate stamps once per PROCESS: equal within one recording,
-#: different across two. The state stays; the clock is not an answer.
-_CLOCK_FIELDS = ("last_seen_at", "snapshot_at")
+#: A machine item's freshness is the WALL CLOCK's answer, not the outcome
+#: history's: the estate stamps its fleet rows once per PROCESS, at import
+#: (`b2_2_estate.NOW_BASE`), so the same read differs across two processes
+#: by its clock fields, and -- 13 minutes into a long run -- by its state,
+#: which flips from fresh to stale under A30.35's 15-minute rule (a CI
+#: full-suite run on 3.12 found that). A30.41 does not touch freshness, so
+#: the whole block is normalised; its rule is A30.35's to prove.
+_CLOCK_FIELDS = ("state", "last_seen_at", "snapshot_at")
 
 
 def _without_clock(payload: dict) -> dict:

@@ -230,6 +230,14 @@ class TestBelowTheWindowsNothingMoved:
     async def test_every_machine_read_and_the_internal_paths(self):
         assert _section_digests("machines", await G.machines()) == _expected("machines")
 
+    async def test_the_machine_reads_do_not_depend_on_how_long_the_run_has_been(
+            self, monkeypatch):
+        """The estate stamps freshness once, at import, so a machine item's
+        freshness reads stale 13 minutes into a long run. As if this ran 20
+        minutes after import, the section must still be the golden's."""
+        monkeypatch.setitem(E.SEEN, "fresh", E.NOW_BASE - timedelta(minutes=20))
+        assert _section_digests("machines", await G.machines()) == _expected("machines")
+
     async def test_the_s3_e2_viewer_for_every_persona(self):
         viewer = await G.viewer()
         assert viewer == GOLDEN["full"]["viewer"]
