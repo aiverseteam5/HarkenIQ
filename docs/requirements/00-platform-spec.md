@@ -6452,3 +6452,41 @@ deferred. (e) The Site Manager's drain page (`LIMIT 100`, at-most-once
 delivery). (f) Whether a campaign's "last" outcome should mean execution time
 (`recorded_at`) rather than arrival is a campaign semantics question, not
 decided here.
+
+**Found while implementing A30.41 (recorded; no scope change).**
+
+1. *The golden's first stability check was too weak.* It recorded twice in
+   ONE process and wrote only if the two agreed — but `b2_2_estate` stamps
+   its fleet rows with a clock taken once at import, so two recordings in
+   one process agree on it and a test run in another process does not.
+   Comparing the changed code against that golden found it: every machine
+   Attention read differed in `freshness.last_seen_at` and `snapshot_at` by
+   one second, and in nothing else. The two clock fields are normalised
+   (the freshness state stays), and the golden was re-recorded from a
+   worktree whose production code equals `565154b`, in two SEPARATE
+   processes that agreed. The changed code then reproduced all 519 reads.
+2. *A gate step already runs `0028` in the middle of a chain.* S4's BN step
+   rewinds the live Central Command database to `0026` and runs
+   `alembic upgrade head`, so `0027` and `0028` now run in one invocation,
+   and `0028`'s autocommit block commits `0027`'s DDL partway through; a
+   fresh install runs `0001`–`0028` the same way. Both paths, and a
+   downgrade to `0027` and back, were proven on PostgreSQL before the gate
+   ran.
+3. *Two strict xfails became passes, as designed.* S3-E2's 10,000-row and
+   A30.40's 50,000-row pins were written for this slice to invert. Both are
+   inverted, never deleted; so is A30.40's tenant control, which asserted
+   the window existed (exactly 50,000) and now counts every row.
+4. *B0b's structural test named the predicates a scoped method may call.*
+   An outcome read now reaches `scope_device_owned` through the one builder,
+   `_authorized`, so the test accepts the builder by name — and, because the
+   builder takes a scope itself, the same loop holds IT to the owner rule.
+   The B0b matrix probes the builder for row identity.
+5. *The receipt and settlement now name one outcome.* For a key with two
+   rows the receipt read the newest and settlement the oldest; the receipt
+   now reads settlement's keyed read.
+6. *The live gate could not be rehearsed end to end on the development
+   host* — another session's stack holds its ports. Its SQL was rehearsed
+   against the throwaway PostgreSQL through a `docker` shim that forwards
+   stdin as `compose exec -T` does, and the real `settle_outcomes` settled
+   exactly the newest proposal past 10,001 older outcomes and 501 stuck
+   ones, which stayed `dispatched`. The fresh CI runner is the live proof.

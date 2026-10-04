@@ -6617,3 +6617,25 @@ a no-op, and the downgrade reverses them:
 
 The models declare the same indexes, so `create_all` (SQLite) builds them
 too.
+
+### What implementing found
+
+* **The golden's stability check has to cross processes.** Two recordings
+  in one process agreed on a clock `b2_2_estate` takes once at import; a
+  test run in another process did not (machine items'
+  `freshness.last_seen_at` / `snapshot_at`, by one second). Those two clock
+  fields are normalised, and the golden is re-recorded from a worktree whose
+  code equals `main`, in two separate processes.
+* **`0028` already runs mid-chain in the gate.** S4's BN step rewinds the
+  live database to `0026` and upgrades, so `0027` and `0028` run in one
+  invocation and the autocommit block commits `0027` partway through.
+  Fresh, mid-chain and downgrade paths were proven on PostgreSQL first.
+* **One mutant survived the first run:** an unordered tally. SQLite's
+  GROUP BY returns groups in key order, so nothing told first-appearance
+  order from key order. A test with two equal counts whose first appearance
+  and key order disagree now kills it: 18 of 18.
+* **Pins moved, intent kept, none deleted:** the A30.40 and S3-E2 window
+  xfails (now passes), A30.40's tenant control, B2-2's owner-rule read,
+  the cross-site and A6-2 reads, B0b's builder, the `0027` head pins.
+* **The receipt now reads settlement's keyed read**, so for a key with two
+  rows they name one outcome.
