@@ -61,13 +61,31 @@ async def humans(variant: str) -> dict:
     return out
 
 
+#: A machine item's freshness carries the fleet row's wall-clock times,
+#: which the estate stamps once per PROCESS: equal within one recording,
+#: different across two. The state stays; the clock is not an answer.
+_CLOCK_FIELDS = ("last_seen_at", "snapshot_at")
+
+
+def _without_clock(payload: dict) -> dict:
+    for item in payload.get("items", []):
+        fresh = item.get("freshness")
+        if isinstance(fresh, dict):
+            for field in _CLOCK_FIELDS:
+                if field in fresh:
+                    fresh[field] = "<clock>"
+    return payload
+
+
 async def machines() -> dict:
     """Every machine persona's Attention, and the internal decision paths."""
     stack = await E.build()
     out: dict = {}
     for name in E.MACHINES:
         out[name] = {
-            _key(q): E.normalised(await E.read(stack, name, **E._query(stack, q)))
+            _key(q): _without_clock(
+                E.normalised(await E.read(stack, name, **E._query(stack, q)))
+            )
             for q in MACHINE_QUERIES
         }
     return {"attention": canon(out), "internal": await E.internal_payloads(stack)}
