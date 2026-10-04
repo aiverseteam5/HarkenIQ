@@ -6317,3 +6317,138 @@ are not started.
    second push-event gate stopped at DE's own precondition for exactly that
    reason. DE-DI now set strict through A26's helpers, record the posture
    they found and restore it in DI.
+
+**A30.41 — Outcome window correctness — every outcome-history read is exact
+over the rows its caller may read; the evaluator's ranking window is
+untouched (the F-E2-4 slice A30.39 Q3/D14 and A30.40 D-P10 assigned;
+boundary produced by Claude and executed under Vinod's 2026-10-04
+delegation — a historical-correctness / data-access slice that alters no
+authorization, approval, dispatch, machine-authority or evaluator-ordering
+semantics proceeds without a separate ratification or independent review,
+and any such change would have stopped it; recorded BEFORE the code).** The
+checkpoint (on `565154b`) inventoried every read of `cc_outcome_history` and
+every window in front of one, and found: (a) `list_outcome_dicts` kept the
+OLDEST 10,000 rows by `ingested_at`, with no tie-breaker, and fed five
+consumers. Settlement: above 10,000 rows a new outcome was invisible, so its
+proposal stayed `dispatched` forever and kept its A24 operation fenced. The
+autonomy contract: its evidence said `"window": "all_time"`, and because the
+window ran over the WHOLE tenant before S3's site selection, a hidden site's
+volume could push a visible site's rows out — the membership side channel
+A30.39 recorded. The frozen evidence and track-record sentence of every NEW
+proposal (S3-E2's creation record). S3-E2's viewer track record and
+`/api/outcomes/metrics`, which apply the reader's reach BEFORE the window
+(completeness only). And the learning engine, through a timestamp-only cursor
+(`ingested_at > cursor`): rows sharing the timestamp at a 10,000-row cut, and
+rows committed late with an earlier timestamp, were skipped permanently, and
+a restart re-ingested history in 10,000-row batches across cycles. (b)
+`list_device_outcome_dicts` kept the oldest 50,000 rows by `recorded_at` for
+the predictive route and human and machine Attention (reach applied before
+the window; the rows dropped were the NEWEST, which carry the most weight),
+and for the three internal decision paths, whose Attention rank orders the
+devices that consume an agent's proposal budget. (c) Settlement read only the
+oldest 500 `dispatched` proposals per pass: 500 that never receive an outcome
+(the Site Manager marks an outcome reported before Central Command commits
+it) starve every newer one. (d) The receipt's keyed read took the NEWEST row
+for a key while settlement took the OLDEST, though its docstring calls it
+"the same exact join"; campaign wave settlement documents "last outcome per
+device wins" over a query with no ORDER BY, which a parallel scan answers in
+no particular order. (e) The table had no index on `action_id`, `site_id`,
+`actor` or time, so keyed settlement was a sequential scan.
+
+**The contract, per consumer.** *(1) Settlement is a keyed lookup, never a
+window.* Every `dispatched` proposal is visited, through keyset pages over
+`(created_at, id)`; each page's directive keys are read exactly
+(`action_id IN (...)`), and the outcome that settles a key is its OLDEST row
+by `(ingested_at, id)` — the join's existing choice, made total. A keyless
+(legacy) proposal reads only its own (device, action class) candidates, in
+`(ingested_at, id)` order, under the unchanged A25 rules. *(2) All-history
+tallies.* The autonomy contract (the decision paths and the principal
+contract alike), new proposals' frozen evidence and rationale, S3-E2's
+viewer, `/api/outcomes/metrics` and the learning engine read exact counts
+grouped by (site, action class, vendor, model, outcome, fault_resolved) over
+every row the caller may read; each consumer's arithmetic is unchanged and
+weighs a group by its count; `"window": "all_time"` becomes true. The
+learning engine rebuilds its cumulative aggregate from the whole-tenant
+tally every cycle (trend snapshots keep their per-cycle meaning) and its
+cursor is retired. *(3) Principal predictive and Attention read exact
+sufficient statistics.* Per device, the sample count and the two
+recency-weighted sums of the UNCHANGED formula,
+`0.5 ** (max(0, age_days) / 30)`, summed in SQL `ORDER BY recorded_at, id`;
+per cohort, exact (vendor, model, outcome) counts into the SAME
+`cohort_failure_rates`; `outcomes_considered` is their total. Machines still
+receive no cohort. *(4) The internal decision paths are UNTOUCHED.*
+`load_attention` keeps `list_device_outcome_dicts`, oldest 50,000 by
+`recorded_at`, byte-identical: it is the evaluator's ranking input, which
+Phase 3 (proposal-budget ordering) owns. Its `scope` parameter is removed, so
+no principal path can reach the window. *(5) One keyed read serves
+settlement and receipts.* Campaign settlement orders `(ingested_at, id)`,
+pinning "last" to arrival order — what an append-ordered scan returned
+whenever it returned anything definite. *(6) Indexes, not semantics.* CC
+migration `0028`, indexes only, created CONCURRENTLY on PostgreSQL:
+`action_id`; `site_id`; `(device_agent_id, recorded_at, id) INCLUDE
+(site_id, outcome)`, replacing the device-only index; and
+`actor varchar_pattern_ops`.
+
+**Deterministic order.** Every ordered outcome read ends in the primary key
+`id`, which is immutable and unique. It is random, so it breaks ties and
+never stands for time. Ties are common: `recorded_at` arrives in whole
+seconds.
+
+**Invariants (LOCKED).** (i) No principal outcome read carries a row limit:
+canonical reach → B0b owner predicate in SQL → authorized rows →
+calculation. (ii) Crossing 10,000 or 50,000 rows changes no conclusion
+except through the rows themselves. (iii) Hidden rows never decide which
+visible rows are counted: deletion equivalence holds at any size. (iv)
+Settlement visits every dispatched proposal and reads every key it needs.
+(v) Every ordered read is total. (vi) The evaluator's ranking input,
+proposal ranking, budget consumption and budget admission are byte-identical.
+(vii) Stored proposal evidence is never rewritten; a new proposal records
+exact all-time evidence. (viii) Below the old windows every output is
+byte-identical. (ix) Permissions (25), the machine ceiling, `ROUTE_CONTRACT`
+(99), `MACHINE_SURFACE` (14), response shapes and authorization semantics are
+unchanged.
+
+**What is claimed, exactly.** Exact over every authorized row, at any size,
+for settlement, the autonomy contract, S3-E2's viewer, outcome metrics, the
+learning aggregate and principal predictive and Attention. PostgreSQL computes
+the decay sums with `power()` in the order Python sums them; on the
+production image at 1.1M rows they were bit-identical to Python's per-row
+rate for 207 of 207 devices, and Attention ranks on the four-decimal score.
+SQLite (tests only) computes each weight with the Python function itself.
+Not claimed: the internal decision paths, which keep the legacy window until
+Phase 3.
+
+**Scale, measured on PG16 (the production image) at 1.1M rows.** Exact
+tenant-wide device statistics 0.69 s (an index-only scan in aggregate order,
+no sort; 4.2 s before the index), site- or class-scoped 0.16 s, one device
+4 ms; tallies 0.3 s tenant-wide; keyed settlement 4 ms (225 ms before the
+index); the campaign actor read 8 ms (79 ms). The old windowed reads took
+about 0.4 s and were wrong above their limits.
+
+**Change surface.** CC migration `0028`, indexes only: no column, no table,
+no backfill. No permission, ceiling, route, proto, response-shape or
+authorization change; no Site Manager, Console or agent change.
+
+**Proof obligations.** Boundary counts 9,999 / 10,000 / 10,001 and
+49,999 / 50,000 / 50,001 for each consumer; visible and hidden rows around
+each boundary; equal timestamps; concurrent inserts; late arrival; backfill;
+a moved device; revoked and expired grants; tenant, org-unit, site, device,
+device-class and zero-reach readers with a tenant-wide control; a
+deterministic rerun; a frozen proposal unchanged; the internal path
+byte-identical (golden) and still windowed (pinned for Phase 3); mutation of
+the old limits, cursor and orders; real PostgreSQL, plans included; a
+fresh-wipe live gate; every security regression group; the full suite;
+exact-head CI.
+
+**Recorded, not implemented.** (a) Proposal-history reads — the agent list
+and view (`list_for_agent`, 100 rows) and the proposal list route
+(`limit`) — apply the LIMIT before reach narrowing in Python, so a scoped
+reader's list and `activity` statistics depend on hidden proposals. That is
+a confidentiality fix: its own slice, with independent review. (b)
+`dispatch_decided` reads the oldest 500 `approved` proposals, and a withheld
+proposal stays `approved`: dispatch ordering, not this slice. (c) The
+internal decision paths' 50,000-row window belongs to Phase 3. (d) D-P8 stays
+deferred. (e) The Site Manager's drain page (`LIMIT 100`, at-most-once
+delivery). (f) Whether a campaign's "last" outcome should mean execution time
+(`recorded_at`) rather than arrival is a campaign semantics question, not
+decided here.
