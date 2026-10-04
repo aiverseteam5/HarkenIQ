@@ -390,8 +390,10 @@ async def _proposals(s, e, r):
 
 
 async def _outcomes(s, e, r):
-    rows = await OutcomeHistoryRepo(s).list_outcome_dicts(e.tenant, limit=1000, scope=r)
-    return {o["action_id"] for o in rows}
+    # A30.41: every outcome read -- tallies, device statistics -- selects
+    # through ONE builder, so its row identity is probed here directly.
+    stmt = OutcomeHistoryRepo._authorized(e.tenant, r, CCOutcomeHistory.action_id)
+    return {action_id for (action_id,) in (await s.execute(stmt)).all()}
 
 
 #: reader -> (permissions its route guard accepts, row family, fn)

@@ -244,13 +244,29 @@ class TestFilterBeforeAggregate:
     async def test_the_outcome_read_applies_the_owner_rule_before_its_limit(self):
         """A window cut BEFORE the predicate would let hidden rows displace
         visible ones. Hidden rows are the OLDEST here, so a limit applied
-        first would return nothing the reader may see."""
+        first would return nothing the reader may see.
+
+        A30.41: a machine's read has no limit left to cut -- it is the
+        database's exact statistics -- so the intent is now that hidden rows
+        never enter the aggregate at all, however many there are. The
+        windowed read is the internal paths' alone and takes no reach."""
         from harkeniq_cc.db.repos import OutcomeHistoryRepo
         from harkeniq_cc.governance import machine_attention_selection, load_scope
 
         full = await E.build()
         agent_id = await E.machine(full, "m-site-a")
+        visible = {E.agent(full, k) for k in ("a1", "a2", "a4", "mv")} | {
+            full.tagged("b22-ghost")}
         async with full.sessionmaker() as session:
+            scope = await load_scope(
+                session, tenant_id=full.tenant, principal_ref=agent_id,
+                role_permissions=list(E.ALL_PERMISSIONS), principal_type="agent",
+            )
+            reach = machine_attention_selection(scope).fleet
+            now = datetime.now(timezone.utc)
+            before = await OutcomeHistoryRepo(session).device_stats(
+                full.tenant, scope=reach, now=now, cohorts=False,
+            )
             for n in range(40):
                 session.add(CCOutcomeHistory(
                     site_id=full.site("C"), action_id=f"old-{n}", action_type="SEL_CLEAR",
@@ -259,17 +275,16 @@ class TestFilterBeforeAggregate:
                     ingested_at=E.T0,
                 ))
             await session.commit()
-            scope = await load_scope(
-                session, tenant_id=full.tenant, principal_ref=agent_id,
-                role_permissions=list(E.ALL_PERMISSIONS), principal_type="agent",
+            after = await OutcomeHistoryRepo(session).device_stats(
+                full.tenant, scope=reach, now=now, cohorts=False,
             )
-            reach = machine_attention_selection(scope).fleet
-            rows = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-                full.tenant, limit=5, scope=reach,
-            )
-        assert len(rows) == 5
-        assert {r["device_agent_id"] for r in rows} <= {
-            E.agent(full, k) for k in ("a1", "a2", "a4", "mv")} | {full.tagged("b22-ghost")}
+            with pytest.raises(TypeError):
+                await OutcomeHistoryRepo(session).list_device_outcome_dicts(
+                    full.tenant, limit=5, scope=reach,
+                )
+        assert set(after.devices) <= visible
+        assert after == before
+        assert after.cohort_tallies == ()       # no cohort for a machine
 
     async def test_no_hidden_pattern_or_signal_can_displace_a_visible_one(self):
         """The human path reads 200 patterns and 500 signals BEFORE S4 projects
@@ -1074,8 +1089,9 @@ class TestNothingMoved:
 
     def test_no_migration(self):
         root = pathlib.Path(__file__).resolve().parents[3] / "services"
+        # A30.41 added CC 0028 (indexes only); this slice added none.
         heads = {
-            "central_command/src/harkeniq_cc": "0027",
+            "central_command/src/harkeniq_cc": "0028",
             "site_manager/src/harkeniq_sm": "0011",
             "console/src/harkeniq_console": "0004",
         }

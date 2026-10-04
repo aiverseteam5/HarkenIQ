@@ -93,7 +93,8 @@ async def test_zero_reach_reads_zero_predictive_evidence_on_postgres(name):
 
 async def test_the_owner_predicate_runs_before_the_window_on_postgres():
     """50000 hidden rows OLDER than every site-A row: a site-A reader's answer
-    does not move, and the tenant control shows the window exists."""
+    does not move, and the tenant control counts every row (A30.41: it used
+    to show the window existed -- exactly 50000, the oldest)."""
     full = await _estate()
     before = _norm(full, await P.predictive(full, "h-site-a"))
     base = P.T0 - timedelta(days=400)
@@ -109,7 +110,8 @@ async def test_the_owner_predicate_runs_before_the_window_on_postgres():
             ])
         await session.commit()
     assert _norm(full, await P.predictive(full, "h-site-a")) == before
-    assert (await P.predictive(full, "h-owner"))["outcomes_considered"] == 50_000
+    assert (await P.predictive(full, "h-owner"))["outcomes_considered"] == \
+        50_000 + P.SENTINEL_TOTAL
 
 
 async def test_one_hidden_member_moves_nothing_on_postgres():

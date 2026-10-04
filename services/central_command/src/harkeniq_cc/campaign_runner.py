@@ -1189,9 +1189,18 @@ async def settle_dispatched_waves(session, *, tenant_id: str, campaign) -> dict:
     if not dispatched:
         return out
 
+    # A30.41: "last" is only a rule if the rows have an order. With none, a
+    # parallel scan returns them in no particular one, so which of a device's
+    # outcomes won depended on the plan. Arrival order -- (ingested_at, then
+    # the immutable id) -- is what an append-ordered scan returned whenever
+    # it returned anything definite; whether "last" should instead mean the
+    # latest EXECUTION (recorded_at) is a campaign question A30.41 records
+    # and does not decide.
     rows = (
         await session.execute(
-            select(CCOutcomeHistory).where(CCOutcomeHistory.actor == actor)
+            select(CCOutcomeHistory)
+            .where(CCOutcomeHistory.actor == actor)
+            .order_by(CCOutcomeHistory.ingested_at, CCOutcomeHistory.id)
         )
     ).scalars().all()
     outcomes: dict[str, str] = {}

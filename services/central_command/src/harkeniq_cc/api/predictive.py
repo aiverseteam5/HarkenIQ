@@ -47,26 +47,28 @@ async def device_risk(
     rows are now the reader's: B0b's owner rule, in SQL, before the window.
     Every device's history, the cohort prior (the same function, D-P9) and
     the count come from them. A tenant-wide reach reads every row, as before.
+
+    A30.41: EVERY row -- the database's exact statistics over all of them,
+    where the read used to keep the oldest 50,000 and drop the newest.
     """
+    from datetime import datetime, timezone
+
     reach = read_reach(scope, "fleet.view")
     devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
-    outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-        user.tenant_id, scope=reach,
+    stats = await OutcomeHistoryRepo(session).device_stats(
+        user.tenant_id, scope=reach, now=datetime.now(timezone.utc),
     )
     warranty_map = await WarrantyRepo(session).get_map(
         [d.service_tag for d in devices], tenant_id=user.tenant_id
     )
-    cohorts = cohort_failure_rates(outcomes)
-    by_device: dict[str, list[dict]] = {}
-    for oc in outcomes:
-        by_device.setdefault(oc["device_agent_id"], []).append(oc)
+    cohorts = cohort_failure_rates(stats.cohort_tallies)
 
     risks = []
     for dev in devices:
         warranty = warranty_map.get(dev.service_tag)
         risk = score_device(
             agent_id=dev.agent_id,
-            outcomes=by_device.get(dev.agent_id, []),
+            history=stats.devices.get(dev.agent_id),
             cohort_failure_rate=cohorts.get((dev.vendor, dev.model)),
             health=dev.health,
             warranty_status=warranty_status(warranty.end_date) if warranty else "",
@@ -87,6 +89,6 @@ async def device_risk(
     return {
         "risks": [r.to_dict() for r in risks],
         "devices_scored": len(devices),
-        "outcomes_considered": len(outcomes),
+        "outcomes_considered": stats.total,
         "tenant_id": user.tenant_id,
     }

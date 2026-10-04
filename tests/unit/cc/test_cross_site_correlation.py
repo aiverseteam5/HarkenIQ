@@ -154,13 +154,16 @@ def _history_row(site_id, action_type="FAN_RESET", vendor="dell",
 
 
 class TestRepos:
-    async def test_outcome_dicts_include_site(self, session):
+    # A30.41: the aggregator reads an exact tally, not rows behind a cursor;
+    # these three keep their intents over it.
+
+    async def test_outcome_tally_includes_site(self, session):
         site_a, site_b = await _seed_sites(session)
         session.add(_history_row(site_a.id))
         session.add(_history_row(site_b.id, outcome="SUCCESS"))
         await session.commit()
-        rows = await OutcomeHistoryRepo(session).list_outcome_dicts(TENANT)
-        assert len(rows) == 2
+        rows = await OutcomeHistoryRepo(session).tally(TENANT)
+        assert sum(r["count"] for r in rows) == 2
         assert {r["site_id"] for r in rows} == {site_a.id, site_b.id}
 
     async def test_tenant_scoping(self, session):
@@ -171,18 +174,24 @@ class TestRepos:
         session.add(_history_row(site_a.id))
         session.add(_history_row(other.id))
         await session.commit()
-        rows = await OutcomeHistoryRepo(session).list_outcome_dicts(TENANT)
-        assert len(rows) == 1
-        assert rows[0]["site_id"] == site_a.id
+        rows = await OutcomeHistoryRepo(session).tally(TENANT)
+        assert sum(r["count"] for r in rows) == 1
+        assert {r["site_id"] for r in rows} == {site_a.id}
 
-    async def test_since_cursor(self, session):
+    async def test_tally_rereads_exactly_and_counts_a_new_row_once(self, session):
+        """The cursor's job was "never ingest a row twice". An exact tally
+        cannot: reading it again gives the same counts, and one new row
+        adds exactly one."""
         site_a, _ = await _seed_sites(session)
         session.add(_history_row(site_a.id))
         await session.commit()
         repo = OutcomeHistoryRepo(session)
-        first = await repo.list_outcome_dicts(TENANT)
-        cursor = first[-1]["ingested_at"]
-        assert await repo.list_outcome_dicts(TENANT, since=cursor) == []
+        first = await repo.tally(TENANT)
+        assert await repo.tally(TENANT) == first
+        session.add(_history_row(site_a.id))
+        await session.commit()
+        assert sum(r["count"] for r in await repo.tally(TENANT)) == \
+            sum(r["count"] for r in first) + 1
 
     async def test_pattern_save_idempotent(self, session):
         pattern = FleetPattern(
@@ -233,7 +242,10 @@ class TestIntelligenceEngine:
         )
         assert len(stored) == 1
 
-    async def test_cycle_cursor_no_reingest(self, session):
+    async def test_cycle_rebuild_never_double_counts(self, session):
+        """A30.41: the aggregate is rebuilt exactly each cycle (it used to
+        grow behind a cursor), so a second cycle over the same rows leaves
+        every count where it was."""
         site_a, site_b = await _seed_sites(session)
         for _ in range(3):
             session.add(_history_row(site_a.id))

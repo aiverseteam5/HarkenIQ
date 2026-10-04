@@ -1,26 +1,25 @@
 """CC intelligence loop (R4-1, R-C2).
 
-Wires the R3b-3 learning components into the runtime: periodically reads
-new rows from cc_outcome_history, feeds the OutcomeAggregator (site-aware
-since R4-1), snapshots for trend detection, runs the PatternDetector
-(including cross-site correlation), and persists new patterns to
-cc_fleet_patterns.
+Wires the R3b-3 learning components into the runtime: periodically
+rebuilds the OutcomeAggregator (site-aware since R4-1) from an exact tally
+of cc_outcome_history, snapshots for trend detection, runs the
+PatternDetector (including cross-site correlation), and persists new
+patterns to cc_fleet_patterns.
 
-The aggregator and detector live across cycles; only rows ingested after
-the cursor are fed in, so aggregates are cumulative and the detector's
-dedup keys prevent re-emitting known patterns. On process restart the
-cursor resets and history is re-ingested from scratch -- FleetPatternRepo
-.save() is idempotent on pattern id and pattern dedup keys re-arm, which
-can re-emit a still-true pattern under a new id; acceptable, patterns
-describe current fleet state.
+A30.41: the aggregate is cumulative by construction -- every cycle it is
+exactly the whole tenant's history, read as a database tally. It used to be
+grown through an `ingested_at` cursor, which skipped rows sharing the
+timestamp at a 10,000-row cut and rows committed late, forever. The
+detector lives across cycles and its dedup keys prevent re-emitting known
+patterns. On process restart those keys re-arm, so a still-true pattern can
+be re-emitted under a new id (FleetPatternRepo.save() is idempotent on
+pattern id); acceptable, patterns describe current fleet state.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Optional
 
 from harkeniq_cc.db.repos import (
     CandidateSkillRepo,
@@ -43,7 +42,6 @@ class IntelligenceEngine:
         # QA-033 feedback half: the R-C1 cycle tracker finally runs inside
         # the loop instead of only in tests.
         self.feedback = LearningFeedbackTracker()
-        self._cursor: Optional[datetime] = None
 
     async def run_cycle(self, session, tenant_id: str) -> list[FleetPattern]:
         """One detection cycle. Returns newly detected (and persisted) patterns.
@@ -51,10 +49,13 @@ class IntelligenceEngine:
         Caller owns the commit.
         """
         repo = OutcomeHistoryRepo(session)
-        outcomes = await repo.list_outcome_dicts(tenant_id, since=self._cursor)
-        if outcomes:
-            self.aggregator.ingest(outcomes)
-            self._cursor = max(oc["ingested_at"] for oc in outcomes)
+        # A30.41: the aggregate is rebuilt EXACTLY from the whole-tenant
+        # tally every cycle. It used to grow through a cursor, `ingested_at >
+        # cursor` over 10,000-row batches: rows sharing the timestamp at a
+        # batch cut, and rows committed late with an earlier timestamp, were
+        # skipped for good, and a restart re-ingested history 10,000 rows a
+        # cycle -- an artificial trend in the first snapshots after it.
+        outcomes = self.aggregator.rebuild(await repo.tally(tenant_id))
         # Snapshot every cycle (even empty ones) so get_trend() windows
         # reflect elapsed cycles, not just data arrival.
         self.aggregator.snapshot()
@@ -74,8 +75,8 @@ class IntelligenceEngine:
                 # its evidence supports, so tomorrow's attention can use it.
                 await self._record_learned_signals(session, tenant_id, pattern)
             logger.info(
-                "Intelligence cycle: %d outcomes ingested, %d new patterns",
-                len(outcomes), len(new_patterns),
+                "Intelligence cycle: %d outcomes aggregated, %d new patterns",
+                outcomes, len(new_patterns),
             )
         await self._link_candidates(session, tenant_id)
         await self._track_outcomes(session, tenant_id)

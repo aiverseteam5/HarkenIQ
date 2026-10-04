@@ -42,6 +42,7 @@ from harkeniq_cc.db.repos import (
     OperationalAgentRepo,
     OutcomeHistoryRepo,
     SiteRepo,
+    outcome_dict,
 )
 from harkeniq_cc.governance import (
     SiteAssessments,
@@ -680,65 +681,100 @@ async def settle_outcomes(state, tenant_id: str) -> int:
     settled = 0
     async with state.sessionmaker() as session:
         prop_repo = AgentProposalRepo(session)
-        open_rows = await prop_repo.list_by_status(tenant_id, [PROPOSAL_DISPATCHED])
-        if not open_rows:
-            return 0
-        outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
+        outcome_repo = OutcomeHistoryRepo(session)
         audit = AuditRepo(session)
-
-        # A25.1: the EXACT key first. The Site Manager writes
-        # `directive:<directive_id>` for every directed execution, so a
-        # dispatched proposal that holds a directive id has exactly one
-        # outcome that belongs to it -- and settling by proximity instead
-        # let two proposals for one device and one action class settle
-        # each other.
-        by_action_id: dict[str, dict] = {}
-        # The legacy join, kept ONLY for proposals that can carry no key.
-        by_device_action: dict[tuple[str, str], list[dict]] = {}
-        for oc in outcomes:
-            action_id = oc.get("action_id", "")
-            if action_id:
-                by_action_id.setdefault(action_id, oc)
-            key = (oc.get("device_agent_id", ""), oc.get("action_type", ""))
-            by_device_action.setdefault(key, []).append(oc)
-
-        for proposal in open_rows:
-            directive_id = getattr(proposal, "directive_id", "") or ""
-            if directive_id:
-                # Exact, or nothing. A proposal whose outcome has not
-                # arrived stays `dispatched` rather than borrowing
-                # somebody else's: unsettled and visible beats settled and
-                # wrong, and `terminal correlation failure` is what
-                # surfaces one that never arrives.
-                match = by_action_id.get(f"{OUTCOME_ACTION_PREFIX}{directive_id}")
-                correlation = CORRELATION_EXACT
-            else:
-                # No directive id means no key could ever exist for this
-                # row, which is the one case the heuristic still serves.
-                # Counted, so retiring it later is a measurement.
-                match = _legacy_outcome_match(proposal, by_device_action)
-                correlation = CORRELATION_LEGACY
-            if match is None:
-                continue
-            _record_correlation(correlation)
-            await prop_repo.settle(proposal, match.get("outcome", "UNKNOWN"))
-            settled += 1
-            await audit.append(
-                actor=proposal.actor,
-                action="agent_proposal.settled",
-                subject=proposal.id,
-                tenant_id=tenant_id,
-                detail={
-                    "outcome": proposal.outcome,
-                    "action_type": proposal.action_type,
-                    "device_agent_id": proposal.device_agent_id,
-                    # A25.1: which join settled it. An operator auditing a
-                    # disputed execution needs to know whether the link
-                    # was exact or inferred.
-                    "correlation": correlation,
-                },
+        # A30.41: EVERY dispatched proposal, page after page, and for each
+        # page exactly the outcomes its proposals name -- never the oldest
+        # 10,000 outcomes (above that a new outcome was invisible and its
+        # proposal stayed `dispatched` forever) and never only the oldest
+        # 500 proposals (500 that never hear back starved every newer one).
+        after = None
+        while True:
+            page = await prop_repo.page_by_status(
+                tenant_id, [PROPOSAL_DISPATCHED], after=after, limit=SETTLE_PAGE,
             )
+            if not page:
+                break
+            after = (page[-1].created_at, page[-1].id)
+            settled += await _settle_page(page, tenant_id, prop_repo, outcome_repo, audit)
         await session.commit()
+    return settled
+
+
+#: Proposals per settlement page: a bound on one statement, never on what
+#: is settled -- every page is read.
+SETTLE_PAGE = 500
+
+
+async def _settle_page(page, tenant_id: str, prop_repo, outcome_repo, audit) -> int:
+    """Settle one page of dispatched proposals from the outcomes they name."""
+    # A25.1: the EXACT key first. The Site Manager writes
+    # `directive:<directive_id>` for every directed execution, so a
+    # dispatched proposal that holds a directive id has exactly one
+    # outcome that belongs to it -- and settling by proximity instead
+    # let two proposals for one device and one action class settle
+    # each other. Its OLDEST row, by (ingested_at, id): the choice this
+    # join always made, now total (A30.41).
+    by_action_id = {
+        key: outcome_dict(row)
+        for key, row in (await outcome_repo.first_by_action_ids(
+            tenant_id,
+            [f"{OUTCOME_ACTION_PREFIX}{p.directive_id}" for p in page
+             if getattr(p, "directive_id", "")],
+        )).items()
+    }
+    # The legacy join, kept ONLY for proposals that can carry no key, and
+    # read only for the pairs they name.
+    keyless = [p for p in page if not (getattr(p, "directive_id", "") or "")]
+    by_device_action: dict[tuple[str, str], list[dict]] = {}
+    if keyless:
+        floor = (
+            None if any(p.dispatched_at is None for p in keyless)
+            else min(p.dispatched_at for p in keyless)
+        )
+        by_device_action = await outcome_repo.legacy_candidates(
+            tenant_id,
+            {(p.device_agent_id, p.action_type) for p in keyless},
+            since=floor,
+        )
+
+    settled = 0
+    for proposal in page:
+        directive_id = getattr(proposal, "directive_id", "") or ""
+        if directive_id:
+            # Exact, or nothing. A proposal whose outcome has not
+            # arrived stays `dispatched` rather than borrowing
+            # somebody else's: unsettled and visible beats settled and
+            # wrong, and `terminal correlation failure` is what
+            # surfaces one that never arrives.
+            match = by_action_id.get(f"{OUTCOME_ACTION_PREFIX}{directive_id}")
+            correlation = CORRELATION_EXACT
+        else:
+            # No directive id means no key could ever exist for this
+            # row, which is the one case the heuristic still serves.
+            # Counted, so retiring it later is a measurement.
+            match = _legacy_outcome_match(proposal, by_device_action)
+            correlation = CORRELATION_LEGACY
+        if match is None:
+            continue
+        _record_correlation(correlation)
+        await prop_repo.settle(proposal, match.get("outcome", "UNKNOWN"))
+        settled += 1
+        await audit.append(
+            actor=proposal.actor,
+            action="agent_proposal.settled",
+            subject=proposal.id,
+            tenant_id=tenant_id,
+            detail={
+                "outcome": proposal.outcome,
+                "action_type": proposal.action_type,
+                "device_agent_id": proposal.device_agent_id,
+                # A25.1: which join settled it. An operator auditing a
+                # disputed execution needs to know whether the link
+                # was exact or inferred.
+                "correlation": correlation,
+            },
+        )
     return settled
 
 

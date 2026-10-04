@@ -240,21 +240,29 @@ def action_risk_map() -> dict[str, str]:
 
 
 def _evidence_for(action_type: str, outcomes: Iterable[dict]) -> dict[str, Any]:
-    """Outcome evidence for one action class. Counts only, no modelling."""
+    """Outcome evidence for one action class. Counts only, no modelling.
+
+    A30.41: `outcomes` is a database tally -- one row per (site, class,
+    vendor, model, outcome, fault_resolved) carrying `count` -- over EVERY
+    row its caller may read, so `"window": "all_time"` is now true (it was
+    the oldest 10,000 rows). A raw row weighs one; the integer sums are the
+    sums over the expanded rows.
+    """
     total = success = failure = resolved = 0
     sites: set[str] = set()
     for oc in outcomes:
         if oc.get("action_type") != action_type:
             continue
-        total += 1
+        n = int(oc.get("count", 1))
+        total += n
         result = (oc.get("outcome") or "").upper()
         if result == "SUCCESS":
-            success += 1
+            success += n
         elif result in ("FAILURE", "ROLLBACK", "ROLLBACK_TRIGGERED"):
-            failure += 1
+            failure += n
         if oc.get("fault_resolved"):
-            resolved += 1
-        if oc.get("site_id"):
+            resolved += n
+        if oc.get("site_id") and n > 0:
             sites.add(oc["site_id"])
     sufficient = total >= MIN_EVIDENCE_OUTCOMES
     return {

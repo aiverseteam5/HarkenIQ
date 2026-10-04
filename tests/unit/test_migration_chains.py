@@ -32,7 +32,8 @@ SERVICES = {
     # is what makes somebody say which one.
     # A30.29 adds CC 0027 (candidate generation provenance) and SM 0011
     # (per-site pattern store + candidate generation provenance).
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0027"),
+    # A30.41 adds CC 0028: the outcome-history indexes, indexes only.
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0028"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0011"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -1214,3 +1215,95 @@ class TestA3029GenerationProvenance:
         assert "sm_site_fleet_patterns" not in _tables(db)
         assert "generation_visibility" not in _columns(db, "sm_candidate_skills")
         assert "sm_fleet_patterns" in _tables(db)
+
+
+def _indexes(db_path: Path, table: str) -> set[str]:
+    con = sqlite3.connect(db_path)
+    try:
+        return {
+            r[0] for r in con.execute(
+                "select name from sqlite_master where type='index' and tbl_name=?",
+                (table,),
+            ) if r[0] and not r[0].startswith("sqlite_autoindex")
+        }
+    finally:
+        con.close()
+
+
+class TestA3041OutcomeIndexes:
+    """A30.41: CC 0028 adds the indexes exact outcome reads stand on, and
+    nothing else. A fresh database is born with them (0001 is a create_all
+    from current models); an existing one gains them without a row moving;
+    a re-run is a no-op; the downgrade restores 0027 exactly."""
+
+    NEW = {
+        "ix_outcome_history_action_id", "ix_outcome_history_site",
+        "ix_outcome_history_device_time", "ix_outcome_history_actor",
+    }
+    OLD = "ix_outcome_history_device"
+
+    def test_a_fresh_database_has_the_new_indexes_and_not_the_old(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0028"
+        found = _indexes(db, "cc_outcome_history")
+        assert self.NEW <= found
+        assert self.OLD not in found
+        assert "ix_outcome_history_type_vendor" in found
+
+    def test_cc_0028_lands_on_a_database_holding_rows_and_moves_none(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        for name in self.NEW:
+            con.execute(f"drop index {name}")
+        con.execute(f"create index {self.OLD} on cc_outcome_history (device_agent_id)")
+        con.execute(
+            "insert into cc_sites (id, tenant_id, site_name, sm_endpoint, "
+            "license_fingerprint, status, registered_at, last_seen_at) values "
+            "('s1', 't1', 'dc-1', 'sm:1', '', 'active', '2026-09-01 00:00:00', "
+            "'2026-09-01 00:00:00')"
+        )
+        con.executemany(
+            "insert into cc_outcome_history (id, site_id, action_id, action_type, "
+            "device_agent_id, vendor, model, outcome, fault_resolved, actor, "
+            "recorded_at, ingested_at) values (?, 's1', ?, 'SEL_CLEAR', 'node-1', "
+            "'Dell', 'R750', 'SUCCESS', 1, 'seed', '2026-09-01 00:00:00', "
+            "'2026-09-01 00:00:00')",
+            [(f"o{n}", f"directive:{n}") for n in range(5)],
+        )
+        con.execute("update alembic_version set version_num='0027'")
+        con.commit()
+        before = con.execute(
+            "select * from cc_outcome_history order by id").fetchall()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0028"
+        found = _indexes(db, "cc_outcome_history")
+        assert self.NEW <= found and self.OLD not in found
+        con = sqlite3.connect(db)
+        try:
+            after = con.execute(
+                "select * from cc_outcome_history order by id").fetchall()
+        finally:
+            con.close()
+        assert after == before, "an index migration moved a row"
+
+    def test_cc_0028_is_idempotent_and_downgrades(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0027'")
+        con.commit()
+        con.close()
+        _alembic("cc", db, "upgrade", "head")          # indexes already there: no-op
+        assert self.NEW <= _indexes(db, "cc_outcome_history")
+        _alembic("cc", db, "downgrade", "0027")
+        assert _version(db) == "0027"
+        found = _indexes(db, "cc_outcome_history")
+        assert not (self.NEW & found)
+        assert self.OLD in found
+        _alembic("cc", db, "upgrade", "head")          # and back again
+        assert _version(db) == "0028"
+        assert self.NEW <= _indexes(db, "cc_outcome_history")

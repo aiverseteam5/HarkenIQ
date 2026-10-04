@@ -75,12 +75,16 @@ class OutcomeAggregator:
         """Ingest a batch of outcome dicts and update aggregates.
 
         Each outcome dict has: action_type, vendor, model, outcome,
-        fault_resolved (optional), site_id (optional, R4-1 R-C2).
+        fault_resolved (optional), site_id (optional, R4-1 R-C2), and
+        `count` (optional, A30.41): a database tally of that many identical
+        rows weighs `count`, a raw row weighs one, and the integer sums are
+        the sums over the expanded rows.
 
         Returns number of outcomes ingested.
         """
         count = 0
         for oc in outcomes:
+            n = int(oc.get("count", 1))
             action_type = oc.get("action_type", "")
             vendor = oc.get("vendor", "")
             model = oc.get("model", "")
@@ -94,24 +98,38 @@ class OutcomeAggregator:
                     action_type=action_type, vendor=vendor, model=model,
                 )
             m = self._metrics[key]
-            m.total_count += 1
+            m.total_count += n
             failed = outcome in ("FAILURE", "ROLLBACK")
             if outcome == "SUCCESS":
-                m.success_count += 1
+                m.success_count += n
             elif failed:
-                m.failure_count += 1
+                m.failure_count += n
             elif outcome == "PARTIAL":
-                m.partial_count += 1
+                m.partial_count += n
             if fault_resolved:
-                m.fault_resolved_count += 1
-            if site_id:
-                m.site_counts[site_id] = m.site_counts.get(site_id, 0) + 1
+                m.fault_resolved_count += n
+            if site_id and n > 0:
+                m.site_counts[site_id] = m.site_counts.get(site_id, 0) + n
                 if failed:
                     m.site_failure_counts[site_id] = (
-                        m.site_failure_counts.get(site_id, 0) + 1
+                        m.site_failure_counts.get(site_id, 0) + n
                     )
-            count += 1
+            count += n
         return count
+
+    def rebuild(self, tallies: list[dict]) -> int:
+        """Replace the cumulative state with exactly what `tallies` say (A30.41).
+
+        The learning engine used to grow this state through a timestamp
+        cursor that skipped rows sharing a timestamp at a batch cut and rows
+        committed late; it now hands over the whole-tenant tally every cycle.
+        Snapshots already taken are untouched, so a trend still compares
+        cycle with cycle. `tallies` arrive ordered by first appearance, so
+        the (action, vendor, model) keys are inserted in the order the old
+        scan first met them and `get_metrics` ties keep their order.
+        """
+        self._metrics = {}
+        return self.ingest(tallies)
 
     def get_metrics(
         self,
