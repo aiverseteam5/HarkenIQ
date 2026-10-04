@@ -1,0 +1,1271 @@
+{
+ "digests": {
+  "humans_heavy/h-approve-only/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-approve-only/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-approve-only/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-approve-only/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-approve-only/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-approve-only/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-approve-only/autonomy/{}": "a001af8a40d89b57e98c8c5be74721742ce7ad05f07d7d89c62af349d7ee59ba",
+  "humans_heavy/h-approve-only/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-approve-only/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-approve-only/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-approve-only/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-approve-only/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-approve-only/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-approve-only/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-approve-only/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-class-server/attention/{\"band\": \"high\"}": "954bcfaf10c41ce6f63cc132bebffd5371b24eb9d125d6dc10ac91b8b68881a4",
+  "humans_heavy/h-class-server/attention/{\"band\": \"insufficient_data\"}": "bd39275e069427a9fe81e55ee83f322471bf28468fcc743076b8d07a701b913f",
+  "humans_heavy/h-class-server/attention/{\"band\": \"medium\"}": "1b6e7451cec6e0f3b46eb9301a9634c28dafd122814b2b58f6ea31e2602623bb",
+  "humans_heavy/h-class-server/attention/{\"limit\": 2}": "bd9f60ac4b4475317bdd0e963aa9e29d2d18f47f0f5fe78618044813c0cd4d09",
+  "humans_heavy/h-class-server/attention/{\"site_id\": \"A\"}": "68547c4b536d79c71d522a858ec0506bd61394cbdaf5373073d86e6b22bc7281",
+  "humans_heavy/h-class-server/attention/{}": "704426b7df15805068007401e4e50a12df49dbc575996b9bafc6dd47d9cca88b",
+  "humans_heavy/h-class-server/autonomy/{}": "94964a8e6aaf525f0d1eb798e9ff53e79d660b92ef29ef59c5211b1999b3ab72",
+  "humans_heavy/h-class-server/metrics/{\"action_type\": \"SEL_CLEAR\"}": "e787ad715134f0c1e9ccea6116b4b9fa805c1308d01bdcae1348e421aca87169",
+  "humans_heavy/h-class-server/metrics/{\"vendor\": \"Dell\"}": "e787ad715134f0c1e9ccea6116b4b9fa805c1308d01bdcae1348e421aca87169",
+  "humans_heavy/h-class-server/metrics/{}": "e787ad715134f0c1e9ccea6116b4b9fa805c1308d01bdcae1348e421aca87169",
+  "humans_heavy/h-class-server/predictive/{\"band\": \"high\"}": "0515ac84fe448d46450c89915f601bb444ee6e7c996d197807c3ef9952c3dcf0",
+  "humans_heavy/h-class-server/predictive/{\"band\": \"insufficient_data\"}": "55eabe6fd30b306eefc78663bd891815762626752f0862f743d95ce1f898cd94",
+  "humans_heavy/h-class-server/predictive/{\"band\": \"medium\"}": "b78f2a1b28ae15db4ba0e0285fada29ff460e59995584aeb6cce15c39482b33f",
+  "humans_heavy/h-class-server/predictive/{\"site_id\": \"A\"}": "b6bd02a0858190d9ca3dbbd43f0aceb5339f828dd2e61fdd644e39b7cccb3cc5",
+  "humans_heavy/h-class-server/predictive/{}": "e47ae8ce65b7a1c061cf5ea812ae49abd8936d8f2e92b0ebba9b128dd554f116",
+  "humans_heavy/h-class-switch/attention/{\"band\": \"high\"}": "16a94a7bf897159caa975356a88118b9e6b38b8d7c82a3e65e950e20a415bf67",
+  "humans_heavy/h-class-switch/attention/{\"band\": \"insufficient_data\"}": "ef54ad7537598528de38b5b2ba2e09444197c5763b60af42e4ca30ae3c0127ee",
+  "humans_heavy/h-class-switch/attention/{\"band\": \"medium\"}": "ef54ad7537598528de38b5b2ba2e09444197c5763b60af42e4ca30ae3c0127ee",
+  "humans_heavy/h-class-switch/attention/{\"limit\": 2}": "72727b86cb783b6fbe7e9f6b6ed238d19e2a49b0dcf37e527c066c21c9383a0a",
+  "humans_heavy/h-class-switch/attention/{\"site_id\": \"A\"}": "0f35122433833aff736ecbe0ee051c9a1795b30decdab3f8992e4d32e0164cca",
+  "humans_heavy/h-class-switch/attention/{}": "16a94a7bf897159caa975356a88118b9e6b38b8d7c82a3e65e950e20a415bf67",
+  "humans_heavy/h-class-switch/autonomy/{}": "3b244b67e39e0709b400773f7070635db6062eaec2376d83e95173eacac59727",
+  "humans_heavy/h-class-switch/metrics/{\"action_type\": \"SEL_CLEAR\"}": "5316c63c8df96f47d8b1449a8e6417b0fbe4a2dffb539ae4484b0ec570fd6b96",
+  "humans_heavy/h-class-switch/metrics/{\"vendor\": \"Dell\"}": "0bc804477ebeb0be50524f887eb62edf576fa3142df6ac8c0b476c12e424c159",
+  "humans_heavy/h-class-switch/metrics/{}": "0bc804477ebeb0be50524f887eb62edf576fa3142df6ac8c0b476c12e424c159",
+  "humans_heavy/h-class-switch/predictive/{\"band\": \"high\"}": "17a62cbbfa3d4750ad59dd7033ef1e1275568c9eb44abce81f38fe18bffd070f",
+  "humans_heavy/h-class-switch/predictive/{\"band\": \"insufficient_data\"}": "b2deac656f2340f9c768751be5317f58c33278f206c84bba821da71f7e007f01",
+  "humans_heavy/h-class-switch/predictive/{\"band\": \"medium\"}": "b2deac656f2340f9c768751be5317f58c33278f206c84bba821da71f7e007f01",
+  "humans_heavy/h-class-switch/predictive/{\"site_id\": \"A\"}": "40fdbdf9d94a299ef2845132b6f5bfa579c3967c2462677ccd6695ad4a218f9b",
+  "humans_heavy/h-class-switch/predictive/{}": "17a62cbbfa3d4750ad59dd7033ef1e1275568c9eb44abce81f38fe18bffd070f",
+  "humans_heavy/h-device-a2/attention/{\"band\": \"high\"}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_heavy/h-device-a2/attention/{\"band\": \"insufficient_data\"}": "3d9aa4ee5f987057d41f6ae57d5bc86276d0ca903fc2feb584a0e5e10e7e0a77",
+  "humans_heavy/h-device-a2/attention/{\"band\": \"medium\"}": "3d9aa4ee5f987057d41f6ae57d5bc86276d0ca903fc2feb584a0e5e10e7e0a77",
+  "humans_heavy/h-device-a2/attention/{\"limit\": 2}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_heavy/h-device-a2/attention/{\"site_id\": \"A\"}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_heavy/h-device-a2/attention/{}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_heavy/h-device-a2/autonomy/{}": "cc0ccc26589001f721eb03d845233c1049fd0d464784f64ed2c373abff3558a8",
+  "humans_heavy/h-device-a2/metrics/{\"action_type\": \"SEL_CLEAR\"}": "cf9a8c2038b6b47a3ade98ea043b937945738b5a43914324438cef40b03ad31d",
+  "humans_heavy/h-device-a2/metrics/{\"vendor\": \"Dell\"}": "cf9a8c2038b6b47a3ade98ea043b937945738b5a43914324438cef40b03ad31d",
+  "humans_heavy/h-device-a2/metrics/{}": "cf9a8c2038b6b47a3ade98ea043b937945738b5a43914324438cef40b03ad31d",
+  "humans_heavy/h-device-a2/predictive/{\"band\": \"high\"}": "1c2f0e687da369593e49807e0d90724428a99b0c92afa42c530f8b4520e9fb70",
+  "humans_heavy/h-device-a2/predictive/{\"band\": \"insufficient_data\"}": "e48218851c19a4125607a300ee8a0e1207ec9fdca3d6b6e56d2be269e7660007",
+  "humans_heavy/h-device-a2/predictive/{\"band\": \"medium\"}": "e48218851c19a4125607a300ee8a0e1207ec9fdca3d6b6e56d2be269e7660007",
+  "humans_heavy/h-device-a2/predictive/{\"site_id\": \"A\"}": "1c2f0e687da369593e49807e0d90724428a99b0c92afa42c530f8b4520e9fb70",
+  "humans_heavy/h-device-a2/predictive/{}": "1c2f0e687da369593e49807e0d90724428a99b0c92afa42c530f8b4520e9fb70",
+  "humans_heavy/h-device-mv/attention/{\"band\": \"high\"}": "d0cc62fd970dc10a1c713f0a6caeb2f9a1db1d09d0baf6a506baa9091a8e3fad",
+  "humans_heavy/h-device-mv/attention/{\"band\": \"insufficient_data\"}": "d0cc62fd970dc10a1c713f0a6caeb2f9a1db1d09d0baf6a506baa9091a8e3fad",
+  "humans_heavy/h-device-mv/attention/{\"band\": \"medium\"}": "d0cc62fd970dc10a1c713f0a6caeb2f9a1db1d09d0baf6a506baa9091a8e3fad",
+  "humans_heavy/h-device-mv/attention/{\"limit\": 2}": "198cdae5736a7dc2e0ef78972aca27c98dd986730bdafc954a8e7b20bf982542",
+  "humans_heavy/h-device-mv/attention/{\"site_id\": \"A\"}": "198cdae5736a7dc2e0ef78972aca27c98dd986730bdafc954a8e7b20bf982542",
+  "humans_heavy/h-device-mv/attention/{}": "198cdae5736a7dc2e0ef78972aca27c98dd986730bdafc954a8e7b20bf982542",
+  "humans_heavy/h-device-mv/autonomy/{}": "eb3c0af291ee700fa9391cc7a591a18c16420f4ba70b96a9e2dd02e8a7fdb84c",
+  "humans_heavy/h-device-mv/metrics/{\"action_type\": \"SEL_CLEAR\"}": "612884e40aa3f1b43b71fe46e65885be10e4d46b4298326e68ea616f303a2dc7",
+  "humans_heavy/h-device-mv/metrics/{\"vendor\": \"Dell\"}": "612884e40aa3f1b43b71fe46e65885be10e4d46b4298326e68ea616f303a2dc7",
+  "humans_heavy/h-device-mv/metrics/{}": "612884e40aa3f1b43b71fe46e65885be10e4d46b4298326e68ea616f303a2dc7",
+  "humans_heavy/h-device-mv/predictive/{\"band\": \"high\"}": "60d44b860eb1b30bbbb3aba87a7b741a92154dac158a0453bbcd692b3cad5cd9",
+  "humans_heavy/h-device-mv/predictive/{\"band\": \"insufficient_data\"}": "60d44b860eb1b30bbbb3aba87a7b741a92154dac158a0453bbcd692b3cad5cd9",
+  "humans_heavy/h-device-mv/predictive/{\"band\": \"medium\"}": "60d44b860eb1b30bbbb3aba87a7b741a92154dac158a0453bbcd692b3cad5cd9",
+  "humans_heavy/h-device-mv/predictive/{\"site_id\": \"A\"}": "9015cc747d287a3f6bdc6f539da3e34660b68f7d023e38fe8438be734531edf3",
+  "humans_heavy/h-device-mv/predictive/{}": "9015cc747d287a3f6bdc6f539da3e34660b68f7d023e38fe8438be734531edf3",
+  "humans_heavy/h-expired/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-expired/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-expired/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-expired/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-expired/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-expired/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-expired/autonomy/{}": "45442ce65e41a69a04d56f96f78110d25442a5da1de1e65108ddb1d8ea635ed6",
+  "humans_heavy/h-expired/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-expired/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-expired/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-expired/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-expired/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-expired/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-expired/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-expired/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-lapsed-all/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-lapsed-all/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-lapsed-all/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-lapsed-all/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-lapsed-all/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-lapsed-all/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-lapsed-all/autonomy/{}": "064e5e38a00e861d12f01bbe0b026789fda5ddb6f0f7dd41e5a264923b24f7a9",
+  "humans_heavy/h-lapsed-all/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-lapsed-all/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-lapsed-all/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-lapsed-all/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-lapsed-all/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-lapsed-all/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-lapsed-all/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-lapsed-all/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-mixed-incident/attention/{\"band\": \"high\"}": "62429be3bcfb06e424c0c0f7ee9f1a3eee7d107c5535243d874a4d5cd97b8412",
+  "humans_heavy/h-mixed-incident/attention/{\"band\": \"insufficient_data\"}": "a7ffeea0d993e7bc9b2ef5ec6094e15aa528e125fa311a2653c98e1c859464f7",
+  "humans_heavy/h-mixed-incident/attention/{\"band\": \"medium\"}": "2e6a3b751d093814c2ecfb8cf2982dc537f9067d128ca55db18718f5af5b355b",
+  "humans_heavy/h-mixed-incident/attention/{\"limit\": 2}": "435af7e17d218f23555cf2f7c876c7386ca0723c1f7d6dc39e370551653ef1f4",
+  "humans_heavy/h-mixed-incident/attention/{\"site_id\": \"A\"}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_heavy/h-mixed-incident/attention/{}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_heavy/h-mixed-incident/autonomy/{}": "f2b2ee1f417628715b2417698972ef0328d233e9465fc0a871e44610e1cc5520",
+  "humans_heavy/h-mixed-incident/metrics/{\"action_type\": \"SEL_CLEAR\"}": "38f39ca4eeb795ba820df09800ed2325b52f8a5a7b333f8c6d8f81284a6645d2",
+  "humans_heavy/h-mixed-incident/metrics/{\"vendor\": \"Dell\"}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_heavy/h-mixed-incident/metrics/{}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_heavy/h-mixed-incident/predictive/{\"band\": \"high\"}": "c99ff7a71d4a5ad675f8c2fd6a6b8df0fa6a4a1765f90b90ac58245da142d006",
+  "humans_heavy/h-mixed-incident/predictive/{\"band\": \"insufficient_data\"}": "d99573c1f8894f13cf05f890fa760fbdbc05d9eefbfd8b6ade9402b28fde744b",
+  "humans_heavy/h-mixed-incident/predictive/{\"band\": \"medium\"}": "36eedb91e34159a840651c357715424a5a2ddbc6e54621c1640d094b2a9c3172",
+  "humans_heavy/h-mixed-incident/predictive/{\"site_id\": \"A\"}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_heavy/h-mixed-incident/predictive/{}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_heavy/h-mixed/attention/{\"band\": \"high\"}": "2adce19b929bb87817ca5e96f48ef93086364f397884610db9c754386746c8a9",
+  "humans_heavy/h-mixed/attention/{\"band\": \"insufficient_data\"}": "642a738bd9f84512b1ac44096bd78eb724a585483fec83d417e7a4bfe4e3a2da",
+  "humans_heavy/h-mixed/attention/{\"band\": \"medium\"}": "69671b7caac60ccf3490bf4e0a0fe12b9494290f2d41f633be77caee5be06520",
+  "humans_heavy/h-mixed/attention/{\"limit\": 2}": "1389e24abf5ca7d7d7e7f1a7533cca22e64f2ab7c102c00420428e9e9396de50",
+  "humans_heavy/h-mixed/attention/{\"site_id\": \"A\"}": "efbd4499c04977f8ec93100cd80cb7556d0f5808fdd248bbd21e94f2a50081c7",
+  "humans_heavy/h-mixed/attention/{}": "930e0d1d01c5278e15767014ea8724e0c2c3753378973b01d6030d75ab7a0cfe",
+  "humans_heavy/h-mixed/autonomy/{}": "507bd71186ec91972a2c2d1f4aeb749a488e56ea41e0ebd062792f6224cd2e32",
+  "humans_heavy/h-mixed/metrics/{\"action_type\": \"SEL_CLEAR\"}": "22e0004258da206c7fc02ca56e861c69e29a586989018b3e9e6840ccdcee07ea",
+  "humans_heavy/h-mixed/metrics/{\"vendor\": \"Dell\"}": "43769c5e94156ccfa9946eb608bd988a3af6571d8ec9365134e54b88a412c612",
+  "humans_heavy/h-mixed/metrics/{}": "43769c5e94156ccfa9946eb608bd988a3af6571d8ec9365134e54b88a412c612",
+  "humans_heavy/h-mixed/predictive/{\"band\": \"high\"}": "fc4221ab1c2f2399bf24fc3e301167af2b34dafb3c112f8533058bacc8e20f78",
+  "humans_heavy/h-mixed/predictive/{\"band\": \"insufficient_data\"}": "a5f06439e6eb3bff5f0aef72ef1eaf905e54bcf2d419439313e05c956ab31d05",
+  "humans_heavy/h-mixed/predictive/{\"band\": \"medium\"}": "7bf63dd76052d75d6a964cc5564eb4a1a24b3fc276de8cccf944b8f9f409f2d9",
+  "humans_heavy/h-mixed/predictive/{\"site_id\": \"A\"}": "ff9e998f044c1cbb8b892c06edb59e49f958119d434006d8e2fcc307e10a6198",
+  "humans_heavy/h-mixed/predictive/{}": "31a6451b64ff9074f924ae8db231cd7485847033403ba74a68416d6e29911d78",
+  "humans_heavy/h-no-grant/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-no-grant/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-no-grant/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-no-grant/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-no-grant/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-no-grant/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-no-grant/autonomy/{}": "31a22475b611539dc82930058f76ca9b54ea3c02dc8764cbee78283b98b8153c",
+  "humans_heavy/h-no-grant/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-no-grant/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-no-grant/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-no-grant/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-no-grant/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-no-grant/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-no-grant/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-no-grant/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-org-ab/attention/{\"band\": \"high\"}": "469a4cf01fed3c298230ca1ae40bed32ae3cc77194ced2ae909e4068cadb3b47",
+  "humans_heavy/h-org-ab/attention/{\"band\": \"insufficient_data\"}": "654479f6065524c909afac311ccda600572d0575abfe5a14b43420bdf105d3e7",
+  "humans_heavy/h-org-ab/attention/{\"band\": \"medium\"}": "66dbb8d0ef204c64c7002d9cbcb22af32321a1aa1bd5b2984f162240770d7462",
+  "humans_heavy/h-org-ab/attention/{\"limit\": 2}": "6fe73df74d7bd389863e13b8fbc3ba30bda2a232ce4e8a7776b4fdfa2eff1c6a",
+  "humans_heavy/h-org-ab/attention/{\"site_id\": \"A\"}": "31133f0423b5d71be012a1b1527286f44b9463fc27ce15b82d79b16fb089b194",
+  "humans_heavy/h-org-ab/attention/{}": "708afbbf5b2b83aed3f3fe5fa3915cc8070ff66e0ed6f62bd449087b64935c64",
+  "humans_heavy/h-org-ab/autonomy/{}": "e12b03e7a514f26592e5cf65723c140355cd031f4784cdcc6216c5a4d46f7bb2",
+  "humans_heavy/h-org-ab/metrics/{\"action_type\": \"SEL_CLEAR\"}": "e14a715246bcb9979f30b0691f87325d951dc8854b4bef119911eb9030e8efbf",
+  "humans_heavy/h-org-ab/metrics/{\"vendor\": \"Dell\"}": "e69e27ea64ad6ca147a7f07c4bbb1d63d3487b5e66b26ff760512a4282f24696",
+  "humans_heavy/h-org-ab/metrics/{}": "e69e27ea64ad6ca147a7f07c4bbb1d63d3487b5e66b26ff760512a4282f24696",
+  "humans_heavy/h-org-ab/predictive/{\"band\": \"high\"}": "141177fa16d06928b242516e106aed0cca15b501174895b172a317e815b6ccd0",
+  "humans_heavy/h-org-ab/predictive/{\"band\": \"insufficient_data\"}": "09364994b2b54b9c0074e36ea79e29a2e12c4a4999a1887dee98f59be39e2af8",
+  "humans_heavy/h-org-ab/predictive/{\"band\": \"medium\"}": "6a1cee07489c97354975c65933e34f7750a226131c1e907a1130dc03780270de",
+  "humans_heavy/h-org-ab/predictive/{\"site_id\": \"A\"}": "a4ab3810bf167c5478d8692656b29befefea8f94fb9b1fcf20137192fd56e214",
+  "humans_heavy/h-org-ab/predictive/{}": "4d515c052ef3d67759aeb1d51ab923f2f0d2d8f905991e44c0c6b1a30c7d2b2a",
+  "humans_heavy/h-owner/attention/{\"band\": \"high\"}": "b0fc068777ddb326a19f015d48dc8c5b37d2e9b863bd38adc053a4c000db4c51",
+  "humans_heavy/h-owner/attention/{\"band\": \"insufficient_data\"}": "2ef920854b44e17c5c128e096fcfa83cefd50315007ed3821a611f3e393edb16",
+  "humans_heavy/h-owner/attention/{\"band\": \"medium\"}": "e306aefe3069405b1fadde393a3ce8e310fcf8048bce44ae32aa4f6185599632",
+  "humans_heavy/h-owner/attention/{\"limit\": 2}": "bdd5bb1dec88a810d99d35667da20d859193f05ddfcf216ef20211a5bf39f1c3",
+  "humans_heavy/h-owner/attention/{\"site_id\": \"A\"}": "dc55f46253fe1e3d81ba24a4e5768b5fe41e8cb9810fb8e9a4ab9d212be66efc",
+  "humans_heavy/h-owner/attention/{}": "6c0ba13c17c5cc38de4d6b906dce5cf82e7009d916a01d6aa9c8c0745d947959",
+  "humans_heavy/h-owner/autonomy/{}": "05f5f024ad337b4841afa50e7ddd76f4e0b71c17336103807375a88c816453d6",
+  "humans_heavy/h-owner/metrics/{\"action_type\": \"SEL_CLEAR\"}": "2d1569f7c158af1af386469d301bc2a9b929272d40981dd334c2249fc393f07d",
+  "humans_heavy/h-owner/metrics/{\"vendor\": \"Dell\"}": "2d5adb0f8fb4d8f48910b7454803059c361b686d85938c3d5715d5b35516a533",
+  "humans_heavy/h-owner/metrics/{}": "2d5adb0f8fb4d8f48910b7454803059c361b686d85938c3d5715d5b35516a533",
+  "humans_heavy/h-owner/predictive/{\"band\": \"high\"}": "ef4a0730cb52f812852c28000705cc9c7ef357ed9f45d9eadab6de25a4c82742",
+  "humans_heavy/h-owner/predictive/{\"band\": \"insufficient_data\"}": "84523fc3d08b72f0320c1b22d8fdb90c8788f420fdcbfbd0f4ff418c97822e31",
+  "humans_heavy/h-owner/predictive/{\"band\": \"medium\"}": "16bea9687a2ec533590d7b31a4cdfaaf49bec507b6b0ed61cc29df636104e866",
+  "humans_heavy/h-owner/predictive/{\"site_id\": \"A\"}": "59986e46f054b9085b0cefeac96e7b917bd8c3f95f0a1cad620e6caac186bcc0",
+  "humans_heavy/h-owner/predictive/{}": "1d5782c3bddd14dae1092aad55160cdf1810cb9b3e11fde7c4deef0844e4da33",
+  "humans_heavy/h-revoked/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-revoked/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-revoked/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-revoked/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-revoked/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-revoked/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_heavy/h-revoked/autonomy/{}": "02282f32916f01d767b31eb680e4bcd87a837f95f50c29d771e2a1cb1c2caa83",
+  "humans_heavy/h-revoked/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-revoked/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-revoked/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_heavy/h-revoked/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-revoked/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-revoked/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-revoked/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-revoked/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_heavy/h-site-a/attention/{\"band\": \"high\"}": "62429be3bcfb06e424c0c0f7ee9f1a3eee7d107c5535243d874a4d5cd97b8412",
+  "humans_heavy/h-site-a/attention/{\"band\": \"insufficient_data\"}": "a7ffeea0d993e7bc9b2ef5ec6094e15aa528e125fa311a2653c98e1c859464f7",
+  "humans_heavy/h-site-a/attention/{\"band\": \"medium\"}": "2e6a3b751d093814c2ecfb8cf2982dc537f9067d128ca55db18718f5af5b355b",
+  "humans_heavy/h-site-a/attention/{\"limit\": 2}": "435af7e17d218f23555cf2f7c876c7386ca0723c1f7d6dc39e370551653ef1f4",
+  "humans_heavy/h-site-a/attention/{\"site_id\": \"A\"}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_heavy/h-site-a/attention/{}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_heavy/h-site-a/autonomy/{}": "bcf29f12570d84453b790e027ab93e011f095ee772f936068a01380652d3241d",
+  "humans_heavy/h-site-a/metrics/{\"action_type\": \"SEL_CLEAR\"}": "38f39ca4eeb795ba820df09800ed2325b52f8a5a7b333f8c6d8f81284a6645d2",
+  "humans_heavy/h-site-a/metrics/{\"vendor\": \"Dell\"}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_heavy/h-site-a/metrics/{}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_heavy/h-site-a/predictive/{\"band\": \"high\"}": "c99ff7a71d4a5ad675f8c2fd6a6b8df0fa6a4a1765f90b90ac58245da142d006",
+  "humans_heavy/h-site-a/predictive/{\"band\": \"insufficient_data\"}": "d99573c1f8894f13cf05f890fa760fbdbc05d9eefbfd8b6ade9402b28fde744b",
+  "humans_heavy/h-site-a/predictive/{\"band\": \"medium\"}": "36eedb91e34159a840651c357715424a5a2ddbc6e54621c1640d094b2a9c3172",
+  "humans_heavy/h-site-a/predictive/{\"site_id\": \"A\"}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_heavy/h-site-a/predictive/{}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_light/h-approve-only/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-approve-only/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-approve-only/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-approve-only/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-approve-only/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-approve-only/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-approve-only/autonomy/{}": "a001af8a40d89b57e98c8c5be74721742ce7ad05f07d7d89c62af349d7ee59ba",
+  "humans_light/h-approve-only/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-approve-only/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-approve-only/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-approve-only/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-approve-only/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-approve-only/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-approve-only/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-approve-only/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-class-server/attention/{\"band\": \"high\"}": "954bcfaf10c41ce6f63cc132bebffd5371b24eb9d125d6dc10ac91b8b68881a4",
+  "humans_light/h-class-server/attention/{\"band\": \"insufficient_data\"}": "bd39275e069427a9fe81e55ee83f322471bf28468fcc743076b8d07a701b913f",
+  "humans_light/h-class-server/attention/{\"band\": \"medium\"}": "1b6e7451cec6e0f3b46eb9301a9634c28dafd122814b2b58f6ea31e2602623bb",
+  "humans_light/h-class-server/attention/{\"limit\": 2}": "bd9f60ac4b4475317bdd0e963aa9e29d2d18f47f0f5fe78618044813c0cd4d09",
+  "humans_light/h-class-server/attention/{\"site_id\": \"A\"}": "68547c4b536d79c71d522a858ec0506bd61394cbdaf5373073d86e6b22bc7281",
+  "humans_light/h-class-server/attention/{}": "704426b7df15805068007401e4e50a12df49dbc575996b9bafc6dd47d9cca88b",
+  "humans_light/h-class-server/autonomy/{}": "94964a8e6aaf525f0d1eb798e9ff53e79d660b92ef29ef59c5211b1999b3ab72",
+  "humans_light/h-class-server/metrics/{\"action_type\": \"SEL_CLEAR\"}": "e787ad715134f0c1e9ccea6116b4b9fa805c1308d01bdcae1348e421aca87169",
+  "humans_light/h-class-server/metrics/{\"vendor\": \"Dell\"}": "e787ad715134f0c1e9ccea6116b4b9fa805c1308d01bdcae1348e421aca87169",
+  "humans_light/h-class-server/metrics/{}": "e787ad715134f0c1e9ccea6116b4b9fa805c1308d01bdcae1348e421aca87169",
+  "humans_light/h-class-server/predictive/{\"band\": \"high\"}": "0515ac84fe448d46450c89915f601bb444ee6e7c996d197807c3ef9952c3dcf0",
+  "humans_light/h-class-server/predictive/{\"band\": \"insufficient_data\"}": "55eabe6fd30b306eefc78663bd891815762626752f0862f743d95ce1f898cd94",
+  "humans_light/h-class-server/predictive/{\"band\": \"medium\"}": "b78f2a1b28ae15db4ba0e0285fada29ff460e59995584aeb6cce15c39482b33f",
+  "humans_light/h-class-server/predictive/{\"site_id\": \"A\"}": "b6bd02a0858190d9ca3dbbd43f0aceb5339f828dd2e61fdd644e39b7cccb3cc5",
+  "humans_light/h-class-server/predictive/{}": "e47ae8ce65b7a1c061cf5ea812ae49abd8936d8f2e92b0ebba9b128dd554f116",
+  "humans_light/h-class-switch/attention/{\"band\": \"high\"}": "16a94a7bf897159caa975356a88118b9e6b38b8d7c82a3e65e950e20a415bf67",
+  "humans_light/h-class-switch/attention/{\"band\": \"insufficient_data\"}": "ef54ad7537598528de38b5b2ba2e09444197c5763b60af42e4ca30ae3c0127ee",
+  "humans_light/h-class-switch/attention/{\"band\": \"medium\"}": "ef54ad7537598528de38b5b2ba2e09444197c5763b60af42e4ca30ae3c0127ee",
+  "humans_light/h-class-switch/attention/{\"limit\": 2}": "72727b86cb783b6fbe7e9f6b6ed238d19e2a49b0dcf37e527c066c21c9383a0a",
+  "humans_light/h-class-switch/attention/{\"site_id\": \"A\"}": "0f35122433833aff736ecbe0ee051c9a1795b30decdab3f8992e4d32e0164cca",
+  "humans_light/h-class-switch/attention/{}": "16a94a7bf897159caa975356a88118b9e6b38b8d7c82a3e65e950e20a415bf67",
+  "humans_light/h-class-switch/autonomy/{}": "3b244b67e39e0709b400773f7070635db6062eaec2376d83e95173eacac59727",
+  "humans_light/h-class-switch/metrics/{\"action_type\": \"SEL_CLEAR\"}": "5316c63c8df96f47d8b1449a8e6417b0fbe4a2dffb539ae4484b0ec570fd6b96",
+  "humans_light/h-class-switch/metrics/{\"vendor\": \"Dell\"}": "0bc804477ebeb0be50524f887eb62edf576fa3142df6ac8c0b476c12e424c159",
+  "humans_light/h-class-switch/metrics/{}": "0bc804477ebeb0be50524f887eb62edf576fa3142df6ac8c0b476c12e424c159",
+  "humans_light/h-class-switch/predictive/{\"band\": \"high\"}": "17a62cbbfa3d4750ad59dd7033ef1e1275568c9eb44abce81f38fe18bffd070f",
+  "humans_light/h-class-switch/predictive/{\"band\": \"insufficient_data\"}": "b2deac656f2340f9c768751be5317f58c33278f206c84bba821da71f7e007f01",
+  "humans_light/h-class-switch/predictive/{\"band\": \"medium\"}": "b2deac656f2340f9c768751be5317f58c33278f206c84bba821da71f7e007f01",
+  "humans_light/h-class-switch/predictive/{\"site_id\": \"A\"}": "40fdbdf9d94a299ef2845132b6f5bfa579c3967c2462677ccd6695ad4a218f9b",
+  "humans_light/h-class-switch/predictive/{}": "17a62cbbfa3d4750ad59dd7033ef1e1275568c9eb44abce81f38fe18bffd070f",
+  "humans_light/h-device-a2/attention/{\"band\": \"high\"}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_light/h-device-a2/attention/{\"band\": \"insufficient_data\"}": "3d9aa4ee5f987057d41f6ae57d5bc86276d0ca903fc2feb584a0e5e10e7e0a77",
+  "humans_light/h-device-a2/attention/{\"band\": \"medium\"}": "3d9aa4ee5f987057d41f6ae57d5bc86276d0ca903fc2feb584a0e5e10e7e0a77",
+  "humans_light/h-device-a2/attention/{\"limit\": 2}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_light/h-device-a2/attention/{\"site_id\": \"A\"}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_light/h-device-a2/attention/{}": "8aff628fd59c53764de73cb4c5578f6221d6c5dd0413d1222e359dfc6ef2638a",
+  "humans_light/h-device-a2/autonomy/{}": "cc0ccc26589001f721eb03d845233c1049fd0d464784f64ed2c373abff3558a8",
+  "humans_light/h-device-a2/metrics/{\"action_type\": \"SEL_CLEAR\"}": "cf9a8c2038b6b47a3ade98ea043b937945738b5a43914324438cef40b03ad31d",
+  "humans_light/h-device-a2/metrics/{\"vendor\": \"Dell\"}": "cf9a8c2038b6b47a3ade98ea043b937945738b5a43914324438cef40b03ad31d",
+  "humans_light/h-device-a2/metrics/{}": "cf9a8c2038b6b47a3ade98ea043b937945738b5a43914324438cef40b03ad31d",
+  "humans_light/h-device-a2/predictive/{\"band\": \"high\"}": "1c2f0e687da369593e49807e0d90724428a99b0c92afa42c530f8b4520e9fb70",
+  "humans_light/h-device-a2/predictive/{\"band\": \"insufficient_data\"}": "e48218851c19a4125607a300ee8a0e1207ec9fdca3d6b6e56d2be269e7660007",
+  "humans_light/h-device-a2/predictive/{\"band\": \"medium\"}": "e48218851c19a4125607a300ee8a0e1207ec9fdca3d6b6e56d2be269e7660007",
+  "humans_light/h-device-a2/predictive/{\"site_id\": \"A\"}": "1c2f0e687da369593e49807e0d90724428a99b0c92afa42c530f8b4520e9fb70",
+  "humans_light/h-device-a2/predictive/{}": "1c2f0e687da369593e49807e0d90724428a99b0c92afa42c530f8b4520e9fb70",
+  "humans_light/h-device-mv/attention/{\"band\": \"high\"}": "d0cc62fd970dc10a1c713f0a6caeb2f9a1db1d09d0baf6a506baa9091a8e3fad",
+  "humans_light/h-device-mv/attention/{\"band\": \"insufficient_data\"}": "d0cc62fd970dc10a1c713f0a6caeb2f9a1db1d09d0baf6a506baa9091a8e3fad",
+  "humans_light/h-device-mv/attention/{\"band\": \"medium\"}": "d0cc62fd970dc10a1c713f0a6caeb2f9a1db1d09d0baf6a506baa9091a8e3fad",
+  "humans_light/h-device-mv/attention/{\"limit\": 2}": "198cdae5736a7dc2e0ef78972aca27c98dd986730bdafc954a8e7b20bf982542",
+  "humans_light/h-device-mv/attention/{\"site_id\": \"A\"}": "198cdae5736a7dc2e0ef78972aca27c98dd986730bdafc954a8e7b20bf982542",
+  "humans_light/h-device-mv/attention/{}": "198cdae5736a7dc2e0ef78972aca27c98dd986730bdafc954a8e7b20bf982542",
+  "humans_light/h-device-mv/autonomy/{}": "eb3c0af291ee700fa9391cc7a591a18c16420f4ba70b96a9e2dd02e8a7fdb84c",
+  "humans_light/h-device-mv/metrics/{\"action_type\": \"SEL_CLEAR\"}": "612884e40aa3f1b43b71fe46e65885be10e4d46b4298326e68ea616f303a2dc7",
+  "humans_light/h-device-mv/metrics/{\"vendor\": \"Dell\"}": "612884e40aa3f1b43b71fe46e65885be10e4d46b4298326e68ea616f303a2dc7",
+  "humans_light/h-device-mv/metrics/{}": "612884e40aa3f1b43b71fe46e65885be10e4d46b4298326e68ea616f303a2dc7",
+  "humans_light/h-device-mv/predictive/{\"band\": \"high\"}": "60d44b860eb1b30bbbb3aba87a7b741a92154dac158a0453bbcd692b3cad5cd9",
+  "humans_light/h-device-mv/predictive/{\"band\": \"insufficient_data\"}": "60d44b860eb1b30bbbb3aba87a7b741a92154dac158a0453bbcd692b3cad5cd9",
+  "humans_light/h-device-mv/predictive/{\"band\": \"medium\"}": "60d44b860eb1b30bbbb3aba87a7b741a92154dac158a0453bbcd692b3cad5cd9",
+  "humans_light/h-device-mv/predictive/{\"site_id\": \"A\"}": "9015cc747d287a3f6bdc6f539da3e34660b68f7d023e38fe8438be734531edf3",
+  "humans_light/h-device-mv/predictive/{}": "9015cc747d287a3f6bdc6f539da3e34660b68f7d023e38fe8438be734531edf3",
+  "humans_light/h-expired/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-expired/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-expired/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-expired/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-expired/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-expired/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-expired/autonomy/{}": "45442ce65e41a69a04d56f96f78110d25442a5da1de1e65108ddb1d8ea635ed6",
+  "humans_light/h-expired/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-expired/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-expired/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-expired/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-expired/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-expired/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-expired/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-expired/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-lapsed-all/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-lapsed-all/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-lapsed-all/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-lapsed-all/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-lapsed-all/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-lapsed-all/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-lapsed-all/autonomy/{}": "064e5e38a00e861d12f01bbe0b026789fda5ddb6f0f7dd41e5a264923b24f7a9",
+  "humans_light/h-lapsed-all/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-lapsed-all/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-lapsed-all/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-lapsed-all/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-lapsed-all/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-lapsed-all/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-lapsed-all/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-lapsed-all/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-mixed-incident/attention/{\"band\": \"high\"}": "62429be3bcfb06e424c0c0f7ee9f1a3eee7d107c5535243d874a4d5cd97b8412",
+  "humans_light/h-mixed-incident/attention/{\"band\": \"insufficient_data\"}": "a7ffeea0d993e7bc9b2ef5ec6094e15aa528e125fa311a2653c98e1c859464f7",
+  "humans_light/h-mixed-incident/attention/{\"band\": \"medium\"}": "2e6a3b751d093814c2ecfb8cf2982dc537f9067d128ca55db18718f5af5b355b",
+  "humans_light/h-mixed-incident/attention/{\"limit\": 2}": "435af7e17d218f23555cf2f7c876c7386ca0723c1f7d6dc39e370551653ef1f4",
+  "humans_light/h-mixed-incident/attention/{\"site_id\": \"A\"}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_light/h-mixed-incident/attention/{}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_light/h-mixed-incident/autonomy/{}": "f2b2ee1f417628715b2417698972ef0328d233e9465fc0a871e44610e1cc5520",
+  "humans_light/h-mixed-incident/metrics/{\"action_type\": \"SEL_CLEAR\"}": "38f39ca4eeb795ba820df09800ed2325b52f8a5a7b333f8c6d8f81284a6645d2",
+  "humans_light/h-mixed-incident/metrics/{\"vendor\": \"Dell\"}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_light/h-mixed-incident/metrics/{}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_light/h-mixed-incident/predictive/{\"band\": \"high\"}": "c99ff7a71d4a5ad675f8c2fd6a6b8df0fa6a4a1765f90b90ac58245da142d006",
+  "humans_light/h-mixed-incident/predictive/{\"band\": \"insufficient_data\"}": "d99573c1f8894f13cf05f890fa760fbdbc05d9eefbfd8b6ade9402b28fde744b",
+  "humans_light/h-mixed-incident/predictive/{\"band\": \"medium\"}": "36eedb91e34159a840651c357715424a5a2ddbc6e54621c1640d094b2a9c3172",
+  "humans_light/h-mixed-incident/predictive/{\"site_id\": \"A\"}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_light/h-mixed-incident/predictive/{}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_light/h-mixed/attention/{\"band\": \"high\"}": "ff67329ec8fccf5c07d20d4795e67aba4921bfec93afc68f969face5f04b7532",
+  "humans_light/h-mixed/attention/{\"band\": \"insufficient_data\"}": "fd4480ba7ed80e910a38098a13ac3529b1c9fe0075deb57727dabed74ab87154",
+  "humans_light/h-mixed/attention/{\"band\": \"medium\"}": "0ce3655c04de5744941ba0b0977a579165b4aacdffff5c5f2f5c13305282be31",
+  "humans_light/h-mixed/attention/{\"limit\": 2}": "cd471d5669918fbb696a484857e6c9163c51d0b79eeb565ac4a63cbe73e6e111",
+  "humans_light/h-mixed/attention/{\"site_id\": \"A\"}": "b6b8325dbb48909e6f3036d1ca9484ff1c98c1dc84e308b090a662182f8f3905",
+  "humans_light/h-mixed/attention/{}": "7d3b48ea051beeb1e36d5ffb9e709f577683459d5361b9752eebb410ebcb590c",
+  "humans_light/h-mixed/autonomy/{}": "84f95c72034309b0e32684f111dc09c3c7a8365cb5a67791bcf0ee243c95bbff",
+  "humans_light/h-mixed/metrics/{\"action_type\": \"SEL_CLEAR\"}": "9d25215394c9aeb2b4f8f3514821ae28600b36cc434ea25dc85a5a3f1355882f",
+  "humans_light/h-mixed/metrics/{\"vendor\": \"Dell\"}": "fdabbb11e3ec8338de2a0965883acdeef0d6084434f9ffb22ca603bda194f95e",
+  "humans_light/h-mixed/metrics/{}": "fdabbb11e3ec8338de2a0965883acdeef0d6084434f9ffb22ca603bda194f95e",
+  "humans_light/h-mixed/predictive/{\"band\": \"high\"}": "b981d48b7963596ce8a44f3ec8ac421d27327a5a2779664acd85b3680d812d82",
+  "humans_light/h-mixed/predictive/{\"band\": \"insufficient_data\"}": "773dfcb94b0f25595d9b0a9eb6e95251ea59e6b16df11ef186c9b61923c9b362",
+  "humans_light/h-mixed/predictive/{\"band\": \"medium\"}": "b7c2f61e10fa7629e2d31722ee8e2e319b5c02b55e7dcb3034f1dafa25918e60",
+  "humans_light/h-mixed/predictive/{\"site_id\": \"A\"}": "d7937388ecadb6b6b89941ff5b99caf5764984bd8efe3986c73a21b1c44c0852",
+  "humans_light/h-mixed/predictive/{}": "30e1f1aa6a20e2c6445d6388a6ecee91fc9bdaaf1c82900ad7d8cb591e292267",
+  "humans_light/h-no-grant/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-no-grant/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-no-grant/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-no-grant/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-no-grant/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-no-grant/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-no-grant/autonomy/{}": "31a22475b611539dc82930058f76ca9b54ea3c02dc8764cbee78283b98b8153c",
+  "humans_light/h-no-grant/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-no-grant/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-no-grant/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-no-grant/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-no-grant/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-no-grant/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-no-grant/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-no-grant/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-org-ab/attention/{\"band\": \"high\"}": "469a4cf01fed3c298230ca1ae40bed32ae3cc77194ced2ae909e4068cadb3b47",
+  "humans_light/h-org-ab/attention/{\"band\": \"insufficient_data\"}": "654479f6065524c909afac311ccda600572d0575abfe5a14b43420bdf105d3e7",
+  "humans_light/h-org-ab/attention/{\"band\": \"medium\"}": "66dbb8d0ef204c64c7002d9cbcb22af32321a1aa1bd5b2984f162240770d7462",
+  "humans_light/h-org-ab/attention/{\"limit\": 2}": "6fe73df74d7bd389863e13b8fbc3ba30bda2a232ce4e8a7776b4fdfa2eff1c6a",
+  "humans_light/h-org-ab/attention/{\"site_id\": \"A\"}": "31133f0423b5d71be012a1b1527286f44b9463fc27ce15b82d79b16fb089b194",
+  "humans_light/h-org-ab/attention/{}": "708afbbf5b2b83aed3f3fe5fa3915cc8070ff66e0ed6f62bd449087b64935c64",
+  "humans_light/h-org-ab/autonomy/{}": "e12b03e7a514f26592e5cf65723c140355cd031f4784cdcc6216c5a4d46f7bb2",
+  "humans_light/h-org-ab/metrics/{\"action_type\": \"SEL_CLEAR\"}": "e14a715246bcb9979f30b0691f87325d951dc8854b4bef119911eb9030e8efbf",
+  "humans_light/h-org-ab/metrics/{\"vendor\": \"Dell\"}": "e69e27ea64ad6ca147a7f07c4bbb1d63d3487b5e66b26ff760512a4282f24696",
+  "humans_light/h-org-ab/metrics/{}": "e69e27ea64ad6ca147a7f07c4bbb1d63d3487b5e66b26ff760512a4282f24696",
+  "humans_light/h-org-ab/predictive/{\"band\": \"high\"}": "141177fa16d06928b242516e106aed0cca15b501174895b172a317e815b6ccd0",
+  "humans_light/h-org-ab/predictive/{\"band\": \"insufficient_data\"}": "09364994b2b54b9c0074e36ea79e29a2e12c4a4999a1887dee98f59be39e2af8",
+  "humans_light/h-org-ab/predictive/{\"band\": \"medium\"}": "6a1cee07489c97354975c65933e34f7750a226131c1e907a1130dc03780270de",
+  "humans_light/h-org-ab/predictive/{\"site_id\": \"A\"}": "a4ab3810bf167c5478d8692656b29befefea8f94fb9b1fcf20137192fd56e214",
+  "humans_light/h-org-ab/predictive/{}": "4d515c052ef3d67759aeb1d51ab923f2f0d2d8f905991e44c0c6b1a30c7d2b2a",
+  "humans_light/h-owner/attention/{\"band\": \"high\"}": "cddafb6175536da0448042de3a6a79f1f4055dadd6d0d188fcf9212dc1ed95da",
+  "humans_light/h-owner/attention/{\"band\": \"insufficient_data\"}": "9e88f0b7171b29d87aadeb36b81c112cedeccd2b4a3f1db5da41241aea32c114",
+  "humans_light/h-owner/attention/{\"band\": \"medium\"}": "0b8ace9a37a16ba9e6003a8e92863fec0f079f10625f342e34d0bb67884ef9ca",
+  "humans_light/h-owner/attention/{\"limit\": 2}": "099ce00ffebdf465c60b1b851e5c86a9400ec65818727bf48b6b13ff01f99746",
+  "humans_light/h-owner/attention/{\"site_id\": \"A\"}": "ee8383df846b939ed57d00f400d9137eb5081114242cae70762c62418376b205",
+  "humans_light/h-owner/attention/{}": "4b7d7263ac6fbcb1f3699c1e08db00a65a498d1367eaf45547571cc072b2f20f",
+  "humans_light/h-owner/autonomy/{}": "78df2df36697f30d954428aa3a5b09fc8b54cb60ec5236bcc39cd42131880771",
+  "humans_light/h-owner/metrics/{\"action_type\": \"SEL_CLEAR\"}": "c2c4725b755e46dfc65cbb0f7578f73f55c819675b8a8430dfa4ad8e3a00cc3f",
+  "humans_light/h-owner/metrics/{\"vendor\": \"Dell\"}": "6130b5e5134644f4fbf3c3638ed6a7ee51ffff11ebde6dbb15d64db67a00da61",
+  "humans_light/h-owner/metrics/{}": "6130b5e5134644f4fbf3c3638ed6a7ee51ffff11ebde6dbb15d64db67a00da61",
+  "humans_light/h-owner/predictive/{\"band\": \"high\"}": "6c6265ac7f3fa7524c189c36d04da7d101cbc72dca336bef7a49193b24c03ad8",
+  "humans_light/h-owner/predictive/{\"band\": \"insufficient_data\"}": "7c4a2f9bf34ef11cdb9083956b48709a81042d753eda79bf98a926de8fcbe2b2",
+  "humans_light/h-owner/predictive/{\"band\": \"medium\"}": "69ab867d8bbfedcf1d7e6ba2487d560c3394e6dd0d6732173d9084a19aa4e7e0",
+  "humans_light/h-owner/predictive/{\"site_id\": \"A\"}": "65c8f623289560515369e861e53afc996205b5be6c4fbf86dff319138513e1b7",
+  "humans_light/h-owner/predictive/{}": "f8420a5b89311022b3e2827b1b39fb401616a2fdc07942fecbf028d2623b140d",
+  "humans_light/h-revoked/attention/{\"band\": \"high\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-revoked/attention/{\"band\": \"insufficient_data\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-revoked/attention/{\"band\": \"medium\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-revoked/attention/{\"limit\": 2}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-revoked/attention/{\"site_id\": \"A\"}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-revoked/attention/{}": "f0ffe2a6afa94438ffe27a26ebf4c26dfd2544c29f436137534804be26bec8b8",
+  "humans_light/h-revoked/autonomy/{}": "02282f32916f01d767b31eb680e4bcd87a837f95f50c29d771e2a1cb1c2caa83",
+  "humans_light/h-revoked/metrics/{\"action_type\": \"SEL_CLEAR\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-revoked/metrics/{\"vendor\": \"Dell\"}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-revoked/metrics/{}": "7387fba9ded9cb6acdafc02b05fb3c48beee9b518659ef4cbff84579319dfdf3",
+  "humans_light/h-revoked/predictive/{\"band\": \"high\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-revoked/predictive/{\"band\": \"insufficient_data\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-revoked/predictive/{\"band\": \"medium\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-revoked/predictive/{\"site_id\": \"A\"}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-revoked/predictive/{}": "b5d4292303a8cc01b55c2ea224c15038cc03b5c2c92bf78d6fb03184af63bc08",
+  "humans_light/h-site-a/attention/{\"band\": \"high\"}": "62429be3bcfb06e424c0c0f7ee9f1a3eee7d107c5535243d874a4d5cd97b8412",
+  "humans_light/h-site-a/attention/{\"band\": \"insufficient_data\"}": "a7ffeea0d993e7bc9b2ef5ec6094e15aa528e125fa311a2653c98e1c859464f7",
+  "humans_light/h-site-a/attention/{\"band\": \"medium\"}": "2e6a3b751d093814c2ecfb8cf2982dc537f9067d128ca55db18718f5af5b355b",
+  "humans_light/h-site-a/attention/{\"limit\": 2}": "435af7e17d218f23555cf2f7c876c7386ca0723c1f7d6dc39e370551653ef1f4",
+  "humans_light/h-site-a/attention/{\"site_id\": \"A\"}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_light/h-site-a/attention/{}": "c71ad62de91ace76ce9b9a01dee93e00dc59a59239072fe226c7e6d92178b5b8",
+  "humans_light/h-site-a/autonomy/{}": "bcf29f12570d84453b790e027ab93e011f095ee772f936068a01380652d3241d",
+  "humans_light/h-site-a/metrics/{\"action_type\": \"SEL_CLEAR\"}": "38f39ca4eeb795ba820df09800ed2325b52f8a5a7b333f8c6d8f81284a6645d2",
+  "humans_light/h-site-a/metrics/{\"vendor\": \"Dell\"}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_light/h-site-a/metrics/{}": "dd2f17a99b44a86ea77487556d926df65d625bdae27f33858fed13b8c22125a6",
+  "humans_light/h-site-a/predictive/{\"band\": \"high\"}": "c99ff7a71d4a5ad675f8c2fd6a6b8df0fa6a4a1765f90b90ac58245da142d006",
+  "humans_light/h-site-a/predictive/{\"band\": \"insufficient_data\"}": "d99573c1f8894f13cf05f890fa760fbdbc05d9eefbfd8b6ade9402b28fde744b",
+  "humans_light/h-site-a/predictive/{\"band\": \"medium\"}": "36eedb91e34159a840651c357715424a5a2ddbc6e54621c1640d094b2a9c3172",
+  "humans_light/h-site-a/predictive/{\"site_id\": \"A\"}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "humans_light/h-site-a/predictive/{}": "2a0156425017a553dcd30c862cd6b749b1a86a0eb9e836124094ab671e59b8db",
+  "learning": "7da6fdda7942cd50d195fae3cd8a0d7681d3b48a10211ba5cf363fb6f2cf8602",
+  "machines/attention/m-attention-only/{\"band\": \"high\"}": "6bb01a2114629d3586c38c718307e833844bfd779b2091dc219a1571a1f263b1",
+  "machines/attention/m-attention-only/{\"limit\": 2}": "a820bf2c42189d062753cdb226b4b64633d599907c5edd7285585e9f030549d7",
+  "machines/attention/m-attention-only/{\"site_id\": \"A\"}": "4269e34a40d96572c9e97969facf49fe9260583171b9e9a49623d6168be33fca",
+  "machines/attention/m-attention-only/{}": "4269e34a40d96572c9e97969facf49fe9260583171b9e9a49623d6168be33fca",
+  "machines/attention/m-class-switch/{\"band\": \"high\"}": "d0a80966ca809b5999ef89554eb1e9bd39fba983af4cfdd064c61cc788cfc1b0",
+  "machines/attention/m-class-switch/{\"limit\": 2}": "dbaa0c4ae1e841b3f47cfef3b4462aab23f1c845b00f335306ebba28a155aced",
+  "machines/attention/m-class-switch/{\"site_id\": \"A\"}": "2a67058dd025bc7a061e0b3178e0872fc90a04530d949dc7784cf07e2608665f",
+  "machines/attention/m-class-switch/{}": "d0a80966ca809b5999ef89554eb1e9bd39fba983af4cfdd064c61cc788cfc1b0",
+  "machines/attention/m-device-a1/{\"band\": \"high\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-device-a1/{\"limit\": 2}": "2a638f25f52b3072b1da4984c7c3dfd32ffe2a347a567f228be286e32e1f0fff",
+  "machines/attention/m-device-a1/{\"site_id\": \"A\"}": "2a638f25f52b3072b1da4984c7c3dfd32ffe2a347a567f228be286e32e1f0fff",
+  "machines/attention/m-device-a1/{}": "2a638f25f52b3072b1da4984c7c3dfd32ffe2a347a567f228be286e32e1f0fff",
+  "machines/attention/m-expired/{\"band\": \"high\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-expired/{\"limit\": 2}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-expired/{\"site_id\": \"A\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-expired/{}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-incident-c/{\"band\": \"high\"}": "6dbd24964bd7dd910c7fedddb37fa80db81dc4c383da814f4bf2fe3d2644674b",
+  "machines/attention/m-incident-c/{\"limit\": 2}": "d2f082913759da40f10ec98740e4e6fa42cf395f1fcca017bebaf0b39d77eae9",
+  "machines/attention/m-incident-c/{\"site_id\": \"A\"}": "1a2f7a4f28e07d5a6a3adc97e23af3852681f21fce3bd1904c87136733aef529",
+  "machines/attention/m-incident-c/{}": "334fc58df93e83d08c026278c5fe18a2e75b2637c33134e292883a039228e080",
+  "machines/attention/m-lapsed-all/{\"band\": \"high\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-lapsed-all/{\"limit\": 2}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-lapsed-all/{\"site_id\": \"A\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-lapsed-all/{}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-mixed/{\"band\": \"high\"}": "b0321f643907533e1795ca7414cf2c8e0da72101174c8c1c5a9d25b62a130ef2",
+  "machines/attention/m-mixed/{\"limit\": 2}": "a30ddb5b72fbffb4a5ae142af76551d5e4f052d37bfeca12783cc5c128aefdbb",
+  "machines/attention/m-mixed/{\"site_id\": \"A\"}": "178019dd3087d5ebfd5585dbce67fb1bee70150937aeb07c4b4b09f84e77fc2e",
+  "machines/attention/m-mixed/{}": "31b9753a15ce0a826cbf445e83193b6bf470930e66bc1368377231a5b9badc4c",
+  "machines/attention/m-none/{\"band\": \"high\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-none/{\"limit\": 2}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-none/{\"site_id\": \"A\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-none/{}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-org-ab/{\"band\": \"high\"}": "5fc3d86aae6acfa3895ef4170deab67ee32b97d85f3a60c42eddda1925750d4f",
+  "machines/attention/m-org-ab/{\"limit\": 2}": "2194ce0d380c45568875ce3a780460370ca213f346751a812a3405404e6dc6b7",
+  "machines/attention/m-org-ab/{\"site_id\": \"A\"}": "1a2f7a4f28e07d5a6a3adc97e23af3852681f21fce3bd1904c87136733aef529",
+  "machines/attention/m-org-ab/{}": "0e6f280014635cb6203221ad37d86061643752ffe346661a57e0c92e96e63aa5",
+  "machines/attention/m-revoked/{\"band\": \"high\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-revoked/{\"limit\": 2}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-revoked/{\"site_id\": \"A\"}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-revoked/{}": "17f0986a2717a47ba646d3569851313efeb94ce44eb0781e2301bc2dae107427",
+  "machines/attention/m-site-a/{\"band\": \"high\"}": "6dbd24964bd7dd910c7fedddb37fa80db81dc4c383da814f4bf2fe3d2644674b",
+  "machines/attention/m-site-a/{\"limit\": 2}": "d2f082913759da40f10ec98740e4e6fa42cf395f1fcca017bebaf0b39d77eae9",
+  "machines/attention/m-site-a/{\"site_id\": \"A\"}": "1a2f7a4f28e07d5a6a3adc97e23af3852681f21fce3bd1904c87136733aef529",
+  "machines/attention/m-site-a/{}": "1a2f7a4f28e07d5a6a3adc97e23af3852681f21fce3bd1904c87136733aef529",
+  "machines/attention/m-tenant/{\"band\": \"high\"}": "8e24b2fece41263e80ff9970302e0fb5fd193334725799c4a234449d4087d3d2",
+  "machines/attention/m-tenant/{\"limit\": 2}": "8ac776a95bf324bf923c2a86fa1e96c103201c5e340fb30ca83b52d252a1ac28",
+  "machines/attention/m-tenant/{\"site_id\": \"A\"}": "178019dd3087d5ebfd5585dbce67fb1bee70150937aeb07c4b4b09f84e77fc2e",
+  "machines/attention/m-tenant/{}": "90e4796641dbe72881c02529cd752c1fc4044480fd6cee92160c06bd186fe524",
+  "machines/internal/m-class-switch": "e808e35d5af95487035e3462cd44f691d94519bb2506a75b482ccba61d880f56",
+  "machines/internal/m-device-a1": "286577bf4b2f1e3837397ce234a50216cee4c435f5a314ffb54c60eae6598e53",
+  "machines/internal/m-org-ab": "0395123f42b878e0ab1400d244123ce08ae7b1181db8a9fc64843f4d9ee5ae20",
+  "machines/internal/m-site-a": "a6664de784b37eaedb864a5394b1d88211ee495a7b608fd6b2ce53e0d8de40a3",
+  "machines/internal/tenant": "d8cf07fe52a2b6305946cfd142ef60fdca2377dc8c15f17158789f50ac88095b",
+  "viewer/a_plus_approve_c/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/a_plus_approve_c/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/a_plus_approve_c/SEL_CLEAR": "3e9e52630ff5d88d0f6e654d523d5ecb347a314e779dea86d4c13216839c2411",
+  "viewer/a_plus_device_c/BMC_RESET": "4f0a4c07438a09d6f2dc1a4cbe065eeada9d87422c512a0fd9c5fb5e98951e98",
+  "viewer/a_plus_device_c/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/a_plus_device_c/SEL_CLEAR": "dea3b12954dc8f18f82b80879bf0f72d56b04743fa03ecac5b467facd959e87b",
+  "viewer/a_plus_narrow_c/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/a_plus_narrow_c/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/a_plus_narrow_c/SEL_CLEAR": "3e9e52630ff5d88d0f6e654d523d5ecb347a314e779dea86d4c13216839c2411",
+  "viewer/approve_only_a/BMC_RESET": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/approve_only_a/IDENTIFY_LED": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/approve_only_a/SEL_CLEAR": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/class_server/BMC_RESET": "4f0a4c07438a09d6f2dc1a4cbe065eeada9d87422c512a0fd9c5fb5e98951e98",
+  "viewer/class_server/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/class_server/SEL_CLEAR": "1a35f0056692ded7a31cf5563586a1bfcead88d1927ddb2a5409b259bf61f71d",
+  "viewer/class_switch/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/class_switch/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/class_switch/SEL_CLEAR": "c76bae9242dea7c268e7900bfbe9cdd2215c4584576ba812bf539bd4a878e9ef",
+  "viewer/device_a/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/device_a/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/device_a/SEL_CLEAR": "df86d01eee1c4b06d8cd933715f517c2a4e25a932e63cc473f674db20f78c0d4",
+  "viewer/device_a2/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/device_a2/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/device_a2/SEL_CLEAR": "0614efb265a3bf90c7dcdbf0dea56f664a264df1efb136a3dc414cc359d03924",
+  "viewer/no_scope/BMC_RESET": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/no_scope/IDENTIFY_LED": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/no_scope/SEL_CLEAR": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/org_ab/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/org_ab/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/org_ab/SEL_CLEAR": "9d77330fd8aefdf88e7855b4810b0e10cf90aa732d013d6c640a2f8b74cf1bd5",
+  "viewer/site_a/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/site_a/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/site_a/SEL_CLEAR": "3e9e52630ff5d88d0f6e654d523d5ecb347a314e779dea86d4c13216839c2411",
+  "viewer/site_b/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/site_b/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/site_b/SEL_CLEAR": "4e412dfe7430095361a4d6446c3fc2732d29e8efd873b835ed7ea9281ba4f8eb",
+  "viewer/site_d/BMC_RESET": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/site_d/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/site_d/SEL_CLEAR": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/tenant/BMC_RESET": "4f0a4c07438a09d6f2dc1a4cbe065eeada9d87422c512a0fd9c5fb5e98951e98",
+  "viewer/tenant/IDENTIFY_LED": "0c196c7acd5caeaa88c226fb77518deeca2c629b60ef36bedc0749aaef271ae6",
+  "viewer/tenant/SEL_CLEAR": "1ee7684d6d4c6500a9cf8bce5f8ccba9d6844688a1d2d2c1e74f921be9f04aaa",
+  "viewer/tenant_narrow/BMC_RESET": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/tenant_narrow/IDENTIFY_LED": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1",
+  "viewer/tenant_narrow/SEL_CLEAR": "e98da9263e239656ba5231e7803a7110684f1652cd36b901ebde8012d3d447e1"
+ },
+ "full": {
+  "learning": {
+   "cycles": [
+    [
+     {
+      "description": "IDENTIFY_LED fails at 50% on Dell S5248 (3/6)",
+      "scope": {
+       "action_type": "IDENTIFY_LED",
+       "model": "S5248",
+       "vendor": "Dell"
+      },
+      "severity": null,
+      "type": "batch_failure"
+     },
+     {
+      "description": "INTERFACE_ENABLE fails at 100% on Dell S5248 (15/15)",
+      "scope": {
+       "action_type": "INTERFACE_ENABLE",
+       "model": "S5248",
+       "vendor": "Dell"
+      },
+      "severity": null,
+      "type": "batch_failure"
+     },
+     {
+      "description": "INTERFACE_ENABLE fails at 100% on Dell S5248 across 2 sites (15/15)",
+      "scope": {
+       "action_type": "INTERFACE_ENABLE",
+       "model": "S5248",
+       "sites": "s3-site-a,s3-site-c",
+       "vendor": "Dell"
+      },
+      "severity": null,
+      "type": "cross_site_batch"
+     },
+     {
+      "description": "SEL_CLEAR fails at 91% on Dell R750 (3929/4300)",
+      "scope": {
+       "action_type": "SEL_CLEAR",
+       "model": "R750",
+       "vendor": "Dell"
+      },
+      "severity": null,
+      "type": "batch_failure"
+     },
+     {
+      "description": "SEL_CLEAR fails at 91% on Dell R750 across 3 sites (3929/4300)",
+      "scope": {
+       "action_type": "SEL_CLEAR",
+       "model": "R750",
+       "sites": "s3-site-a,s3-site-b,s3-site-c",
+       "vendor": "Dell"
+      },
+      "severity": null,
+      "type": "cross_site_batch"
+     }
+    ],
+    [],
+    [],
+    []
+   ],
+   "metrics": [
+    {
+     "action_type": "SEL_CLEAR",
+     "failure": 3929,
+     "model": "R750",
+     "partial": 0,
+     "resolved": 371,
+     "site_counts": {
+      "A": 13,
+      "B": 1,
+      "C": 4286
+     },
+     "site_failure_counts": {
+      "A": 6,
+      "B": 1,
+      "C": 3922
+     },
+     "success": 371,
+     "total": 4300,
+     "vendor": "Dell"
+    },
+    {
+     "action_type": "INTERFACE_ENABLE",
+     "failure": 15,
+     "model": "S5248",
+     "partial": 0,
+     "resolved": 0,
+     "site_counts": {
+      "A": 5,
+      "C": 10
+     },
+     "site_failure_counts": {
+      "A": 5,
+      "C": 10
+     },
+     "success": 0,
+     "total": 15,
+     "vendor": "Dell"
+    },
+    {
+     "action_type": "IDENTIFY_LED",
+     "failure": 3,
+     "model": "S5248",
+     "partial": 0,
+     "resolved": 3,
+     "site_counts": {
+      "B": 6
+     },
+     "site_failure_counts": {
+      "B": 3
+     },
+     "success": 3,
+     "total": 6,
+     "vendor": "Dell"
+    },
+    {
+     "action_type": "SEL_CLEAR",
+     "failure": 1,
+     "model": "R780",
+     "partial": 0,
+     "resolved": 2,
+     "site_counts": {
+      "C": 3
+     },
+     "site_failure_counts": {
+      "C": 1
+     },
+     "success": 2,
+     "total": 3,
+     "vendor": "Dell"
+    },
+    {
+     "action_type": "SEL_CLEAR",
+     "failure": 1,
+     "model": "R760",
+     "partial": 0,
+     "resolved": 0,
+     "site_counts": {
+      "C": 1
+     },
+     "site_failure_counts": {
+      "C": 1
+     },
+     "success": 0,
+     "total": 1,
+     "vendor": "Dell"
+    },
+    {
+     "action_type": "SEL_CLEAR",
+     "failure": 0,
+     "model": "R770",
+     "partial": 0,
+     "resolved": 1,
+     "site_counts": {
+      "C": 1
+     },
+     "site_failure_counts": {},
+     "success": 1,
+     "total": 1,
+     "vendor": "Dell"
+    }
+   ]
+  },
+  "viewer": {
+   "a_plus_approve_c": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 11,
+      "failure": 1,
+      "resolution_rate": 0.9091,
+      "sites_observed": 1,
+      "success": 10,
+      "success_rate": 0.9091,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "a_plus_device_c": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 6,
+      "failure": 0,
+      "resolution_rate": 1.0,
+      "sites_observed": 1,
+      "success": 6,
+      "success_rate": 1.0,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 24,
+      "failure": 14,
+      "resolution_rate": 0.4167,
+      "sites_observed": 2,
+      "success": 10,
+      "success_rate": 0.4167,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "a_plus_narrow_c": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 11,
+      "failure": 1,
+      "resolution_rate": 0.9091,
+      "sites_observed": 1,
+      "success": 10,
+      "success_rate": 0.9091,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "approve_only_a": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    }
+   },
+   "class_server": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 6,
+      "failure": 0,
+      "resolution_rate": 1.0,
+      "sites_observed": 1,
+      "success": 6,
+      "success_rate": 1.0,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 23,
+      "failure": 14,
+      "resolution_rate": 0.3913,
+      "sites_observed": 2,
+      "success": 9,
+      "success_rate": 0.3913,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "class_switch": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 12,
+      "failure": 2,
+      "resolution_rate": 0.8333,
+      "sites_observed": 2,
+      "success": 10,
+      "success_rate": 0.8333,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "device_a": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 7,
+      "failure": 0,
+      "resolution_rate": 1.0,
+      "sites_observed": 1,
+      "success": 7,
+      "success_rate": 1.0,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "device_a2": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 3,
+      "failure": 1,
+      "resolution_rate": null,
+      "sites_observed": 1,
+      "success": 2,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "no_scope": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    }
+   },
+   "org_ab": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 27,
+      "failure": 4,
+      "resolution_rate": 0.8519,
+      "sites_observed": 2,
+      "success": 23,
+      "success_rate": 0.8519,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "site_a": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 11,
+      "failure": 1,
+      "resolution_rate": 0.9091,
+      "sites_observed": 1,
+      "success": 10,
+      "success_rate": 0.9091,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "site_b": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 16,
+      "failure": 3,
+      "resolution_rate": 0.8125,
+      "sites_observed": 1,
+      "success": 13,
+      "success_rate": 0.8125,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "site_d": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "tenant": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 6,
+      "failure": 0,
+      "resolution_rate": 1.0,
+      "sites_observed": 1,
+      "success": 6,
+      "success_rate": 1.0,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 0,
+      "failure": 0,
+      "resolution_rate": null,
+      "sites_observed": 0,
+      "success": 0,
+      "success_rate": null,
+      "sufficient": false,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": {
+      "executions": 40,
+      "failure": 17,
+      "resolution_rate": 0.575,
+      "sites_observed": 3,
+      "success": 23,
+      "success_rate": 0.575,
+      "sufficient": true,
+      "window": "all_time"
+     },
+     "unavailable_reason": null
+    }
+   },
+   "tenant_narrow": {
+    "BMC_RESET": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    },
+    "IDENTIFY_LED": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    },
+    "SEL_CLEAR": {
+     "basis": "current_reach",
+     "outcome_evidence": null,
+     "unavailable_reason": "no_fleet_view_reach"
+    }
+   }
+  }
+ },
+ "production_code_equals": "565154be7c9f1e7e151793f437b8342d5521df0d",
+ "recorded_at_commit": "d411884c1bacc7bec698291b54c4b1c7fd2c21d0"
+}
