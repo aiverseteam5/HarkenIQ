@@ -6465,6 +6465,13 @@ decided here.
    (the freshness state stays), and the golden was re-recorded from a
    worktree whose production code equals `565154b`, in two SEPARATE
    processes that agreed. The changed code then reproduced all 519 reads.
+   Exact-head CI then found the second half on Python 3.12 alone: the same
+   import-time stamp makes a "fresh" device read STALE 13 minutes into a
+   long run (A30.35's 15-minute rule), and the 3.12 full suite reached the
+   module 13 minutes in. Freshness is not outcome history, so the whole
+   freshness block is normalised; a test replays the machine section as if
+   20 minutes after import; and the golden was re-recorded with the second
+   process shifted 20 minutes, again agreeing.
 2. *A gate step already runs `0028` in the middle of a chain.* S4's BN step
    rewinds the live Central Command database to `0026` and runs
    `alembic upgrade head`, so `0027` and `0028` now run in one invocation,
@@ -6490,3 +6497,9 @@ decided here.
    stdin as `compose exec -T` does, and the real `settle_outcomes` settled
    exactly the newest proposal past 10,001 older outcomes and 501 stuck
    ones, which stayed `dispatched`. The fresh CI runner is the live proof.
+7. *The first live gate found two faults in the proof itself, none in the
+   code.* DJ's synthetic proposals named DL's proof device, so DL counted
+   one row too many; and DK's site-A reader asserted 0 against an oracle of
+   0, true under the old code as well. DJ now names a device of its own,
+   and DK seeds five site-A rows NEWER than the 10,001 at site B -- the rows
+   an oldest-first window would have pushed out -- and requires them.

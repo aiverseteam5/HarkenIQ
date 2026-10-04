@@ -6625,7 +6625,12 @@ too.
   test run in another process did not (machine items'
   `freshness.last_seen_at` / `snapshot_at`, by one second). Those two clock
   fields are normalised, and the golden is re-recorded from a worktree whose
-  code equals `main`, in two separate processes.
+  code equals `main`, in two separate processes. Exact-head CI on 3.12 then
+  found the freshness STATE moves too, 13 minutes into a long run; the whole
+  block is normalised and a test replays the section 20 minutes "later".
+* **Every live assertion needs a non-vacuity condition.** The first live
+  gate passed a site-A check at 0 = 0, which the old code would also pass,
+  and let two proof steps share a device id. Both fixed.
 * **`0028` already runs mid-chain in the gate.** S4's BN step rewinds the
   live database to `0026` and upgrades, so `0027` and `0028` run in one
   invocation and the autocommit block commits `0027` partway through.
