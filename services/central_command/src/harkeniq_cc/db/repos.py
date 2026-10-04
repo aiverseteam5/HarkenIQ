@@ -1913,13 +1913,16 @@ class OutcomeHistoryRepo:
         Uses the ix_outcome_history_device access path; returns dicts
         with device attribution and recorded_at for recency weighting.
 
-        `scope=None` is every caller before A30.35 -- the human attention
-        route and the internal decision paths -- and reads the whole
-        tenant, unchanged. A MACHINE principal's attention (A30.35, D2)
-        passes its `fleet.view` reach: B0b's owner predicate, in the WHERE,
-        BEFORE the row limit, so a row the machine may not read can never
-        displace one it may. A moved device's rows at a site the reader does
-        not hold are SITE-owned there and excluded.
+        `scope=None` is the three internal decision paths, and reads the
+        whole tenant, unchanged. Every PRINCIPAL passes its `fleet.view`
+        reach -- a machine's attention (A30.35, D2), a person's attention
+        and the predictive route (A30.40): B0b's owner predicate, in the
+        WHERE, BEFORE the row limit, so a row the reader may not read can
+        never displace one it may. A moved device's rows at a site the
+        reader does not hold are SITE-owned there and excluded.
+
+        The limit keeps the OLDEST rows. That window is F-E2-4's, with the
+        10k window of `list_outcome_dicts` (A30.40, D-P10).
         """
         stmt = (
             _where(

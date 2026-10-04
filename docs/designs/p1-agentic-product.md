@@ -6364,3 +6364,161 @@ S3-E2/CZ–DD after S3-E1/CY.
 * **Mutation:** 22 named breakages, all killed by the S3-E2 and S3 modules;
   the unmutated kill set is green.
 
+
+## §34u — Predictive / privacy projection hardening (A30.40)
+
+### What was composed, and from what
+
+`GET /api/predictive/risk` and the human branch of `GET /api/attention/` both
+scored devices with `predictive.score_device`, fed by
+`OutcomeHistoryRepo.list_device_outcome_dicts(tenant_id)` with no scope. The
+device list was the reader's; the outcome rows were the tenant's. Every value
+built from those rows — a device's recency-weighted history and sample count,
+the (vendor, model) cohort prior, `outcomes_considered`, and from them the
+score, band, basis, rank, driver, next step, rollups, summary and the
+`reasons` text — therefore moved with sites the reader cannot see. A30.35 had
+fixed exactly this for machines, by selection; the human branch and the
+predictive route kept the unscoped read.
+
+### The one read
+
+`list_device_outcome_dicts(tenant, scope=reach)` already exists (A30.35 added
+the `scope` parameter for machines): B0b's `scope_device_owned`, in SQL,
+before `ORDER BY recorded_at LIMIT 50000`. A row naming a device is the
+device's only where that device resolves at the row's own site; otherwise it
+is the site's. A moved device's rows at its old site are therefore the old
+site's, and a reader who does not hold that site does not read them. A
+tenant-wide reach compiles to no predicate (`_where` leaves the statement
+alone), so a tenant-wide reader's rows — and everything computed from them —
+are unchanged. An empty reach compiles to `false()`.
+
+### Predictive route
+
+`api/predictive.py:device_risk` passes `scope=reach` (its existing
+`read_reach(scope, "fleet.view")`) to the outcome read. Nothing else changes:
+the same `cohort_failure_rates`, the same `score_device`, the same sort.
+`outcomes_considered` is `len()` of the reader's rows.
+
+### Human Attention: a selection, mirroring A30.35
+
+```python
+@dataclass(frozen=True)
+class HumanAttentionSelection:
+    fleet: ReadReach        # read_reach(scope, "fleet.view")
+    learning: LearningView  # learning_view(scope) -- the SAME resolved scope
+```
+
+`human_attention_selection(scope)` is the only constructor outside a test;
+`require_human_attention_selection` refuses anything else (a bare
+`ReadReach` included). `load_human_attention(session, *, tenant_id,
+selection, site_id, band, limit)` enters the ONE body, `_compose_attention`,
+with `human=selection`:
+
+* outcomes: `list_device_outcome_dicts(tenant, scope=selection.fleet)`;
+* the cohort prior: `cohort_failure_rates` over those rows (unlike the
+  machine, whose prior is none);
+* devices, pending approvals, sites, incidents: exactly as before, under the
+  same reach;
+* learning: `selection.learning`, read through the existing windows (500 /
+  200) — D-P8 is deferred;
+* devices are handed to the composer in the fleet read's order, as before (a
+  tenant-wide reader's payload is byte-identical, golden-pinned).
+
+`load_attention` keeps its signature and its three internal callers, and
+refuses a `LearningView` with a `TypeError` naming the two principal entries.
+The human route calls `load_human_attention`; the machine branch is
+untouched.
+
+### Wording (D-P6)
+
+`build_attention(..., current_view: bool = False)`. `current_view` is
+`not selection.fleet.tenant_wide` on the human entry and `False` everywhere
+else. With it set:
+
+* `_confidence` explanations say the device was scored from its outcomes, or
+  from the same vendor and model's, "in your current view"; and "not enough
+  evidence in your current view";
+* `_reasons` says "… (recency-weighted, N outcomes in your current view)",
+  "… peers in your current view fail at X%", and "… or its model in your
+  current view — unscored, not proven healthy".
+
+The anomaly sentence and the learned-signal sentences are tenant knowledge
+under A23 and S4 and do not change. No Console change is needed: the Console
+renders the server's explanation and reasons. The optional Fleet drawer label
+is not taken.
+
+### Machines (D-P7)
+
+`governance.machine_learning_view(session, tenant_id, view)` returns the
+reader's own view when it is already bounded (a scoped machine), and for a
+tenant-wide machine a `LearningView` holding every current site of the
+tenant. With a site set, S4's projection takes its BOUNDED path even though
+nothing is hidden: rates to 5%, confidence to the 0.25 grid, counts withheld
+and named, statements and descriptions re-rendered from projected evidence.
+It is applied in `_compose_attention` when `machine` is given (signals and
+patterns), and in the machine branch of `GET /api/incidents/{id}` to the
+learned signals behind `prior_learning`. `machine_diagnosis` keeps the
+reader's own view: A30.29's generated-content gate is a different rule.
+
+### Structural pins that move, intent kept
+
+* A5 `test_the_router_no_longer_carries_its_own_copy` asserted the router
+  names `load_attention`; it now asserts the router names
+  `load_human_attention` and still never `build_attention`.
+* A30.28 `test_every_attention_caller_names_its_reader` counted at least four
+  `load_attention` calls (the human route was the fourth); the human route
+  now names its reader by TYPE, so the count is the three internal paths, and
+  a new pin requires the human route to build its selection.
+* A30.35 `test_one_composer_one_body` lists the functions that may call
+  `_compose_attention`; `load_human_attention` joins `load_attention` and
+  `load_machine_attention`.
+* B2-2's golden `a30_35_human_attention.json` stays byte-for-byte as main
+  recorded it. Its tenant-wide persona (`h-owner`) must still equal it; the
+  scoped personas now must DIFFER from it and equal the reduced-estate
+  oracle. `test_non_vacuity_the_human_composer_still_shows_b2_f5` is inverted
+  under a new name, never deleted.
+
+### Proof
+
+`tests/unit/cc/test_a30_40_predictive_privacy.py` on the B2-2 production
+stack, with personas added for org, device (`a2`, scored on a cohort prior),
+device_class `server`, mixed grants, revoked, expired, lapsed-all, no grant
+and approve-only. Deletion equivalence compares a scoped reader of the
+poisoned full estate with a TENANT-WIDE reader of an independently reduced
+estate — the predictive payload byte-for-byte, Attention with the D-P6 wording
+normalized and S4's class-B learning excluded — plus the same scoped reader
+over both estates byte-for-byte; the tenant-wide control must change. Poison:
+hidden failures, hidden successes, a model cohort seen only at a hidden site,
+one hidden member added and removed, edge rates (0%, 100%, 1/N), exact count
+and rate sentinels, moved-device history, repeated reads across poisoning,
+and hidden rows chosen to cross band and rank thresholds. A tenant-wide golden
+for the predictive route and the internal decision paths is recorded from
+unmodified code before the change. Machine bounded learning is proven for the
+tenant-wide machine on Attention and incident detail. The reader's own 50k
+window is pinned by a strict xfail. Real PostgreSQL in
+`tests/integration/test_a30_40_predictive_privacy_pg.py`; live gate steps
+after S3-E2/DD.
+
+### Found while implementing
+
+* **One entry served two kinds of caller.** `load_attention` took a person
+  (with a `LearningView`) and the internal paths (with `learning=None`), and
+  nothing tied the reach to the reader. A person's attention now enters
+  through `HumanAttentionSelection`, and `load_attention` refuses a reader.
+* **Pins moved, intent kept.** A5's router check and its live twin, gate step
+  A5/J; A30.28's caller count; A30.35's one-composer set. B2-2's golden
+  stays main's recording: the tenant owner still equals it, the scoped
+  personas now differ, and the B2-F5 non-vacuity test is inverted under a
+  new name.
+* **Two code texts corrected:** the machine selection's refusal message and
+  the outcome read's docstring both described the old human path.
+* **D-P7's boundary inside the incident route.** Prior learning is bounded;
+  the generated block keeps the reader's own view (pinned by a test and by
+  a named mutant).
+* **The gate runs DE–DI under strict.** E1.2 returns the demo tenant to
+  `legacy_open`, where a never-granted person is synthesized; A26's helpers
+  set strict and DI restores the posture found.
+* **OpenAPI:** one leaf differs, the description of `GET /api/predictive/risk`
+  (FastAPI publishes the handler's docstring).
+* **Mutation:** 18 named breakages, all killed by the A30.40 and B2-2
+  modules; the unmutated kill set is green.

@@ -36,13 +36,22 @@ async def device_risk(
     """Per-device failure risk, riskiest first.
 
     A23: one row per DEVICE, so the device list is the caller's scope
-    (E1.2 layer 2), not the tenant's. The cohort prior is still computed
-    over the tenant's outcomes -- an aggregate rate names no device.
+    (E1.2 layer 2), not the tenant's.
+
+    A30.40 (D-P2, D-P3, D-P4): so are the OUTCOMES. They used to be the
+    tenant's -- "an aggregate rate names no device" -- and that rate was
+    published to four decimal places, so two reads either side of one hidden
+    outcome solved the hidden cohort exactly; `outcomes_considered` handed
+    the tenant total even to a principal with no reach at all; and a moved
+    device kept the history it left at a site the reader does not hold. The
+    rows are now the reader's: B0b's owner rule, in SQL, before the window.
+    Every device's history, the cohort prior (the same function, D-P9) and
+    the count come from them. A tenant-wide reach reads every row, as before.
     """
     reach = read_reach(scope, "fleet.view")
     devices = await FleetCacheRepo(session).list_all(user.tenant_id, scope=reach)
     outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-        user.tenant_id
+        user.tenant_id, scope=reach,
     )
     warranty_map = await WarrantyRepo(session).get_map(
         [d.service_tag for d in devices], tenant_id=user.tenant_id

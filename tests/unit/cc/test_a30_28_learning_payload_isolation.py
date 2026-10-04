@@ -801,8 +801,14 @@ def _attention_calls():
 class TestLearnedKnowledgeCannotBeReadWithoutAReader:
     def test_every_attention_caller_names_its_reader(self):
         calls = list(_attention_calls())
-        assert len(calls) >= 4, calls
+        # A30.40 (D-P5): the human route was the fourth caller. A person's
+        # attention now comes through `load_human_attention`, whose reader is
+        # named by TYPE (`HumanAttentionSelection` carries the LearningView),
+        # and `load_attention` refuses a reader; the three internal paths
+        # remain and still name theirs (`learning=None`).
+        assert len(calls) >= 3, calls
         assert [c[:2] for c in calls if c[2] is None] == []
+        assert ("api/attention.py", "attention") not in {c[:2] for c in calls}
 
     def test_only_the_decision_paths_read_unprojected_learning(self):
         unprojected = {
