@@ -9609,6 +9609,9 @@ echo "  enforcement restored to the posture found: $P40_MODE_BEFORE"
 P41_TAG="gate-a3041-$(date +%s)"
 P41_AGENT=gatea3041agent000000000000000000
 P41_DEV=gate-p41-b1
+# DJ's synthetic proposals and their outcome name a device of their own, so
+# the device DL scores holds only DL's rows.
+P41_SETTLE=gate-a3041-settle
 p41_rows() {  # $1 site, $2 device, $3 count, $4 outcome, $5 recorded age, $6 ingested age, $7 key
   docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
     "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
@@ -9626,7 +9629,7 @@ p41_proposals() {  # $1 how many, $2 key, $3 created age -> dispatched proposals
           disposition_reason, authorization_basis, status, decided_by, dedupe_key,
           directive_id, dispatch_reason, outcome, created_at, dispatched_at)
      SELECT substr(md5('$P41_TAG-$2-' || g), 1, 32), '$P41_TENANT', '$P41_AGENT',
-            'op-agent:$P41_AGENT@v1', 1, '$SITE_B', '$P41_DEV', 'SEL_CLEAR', '{}', 'a3041',
+            'op-agent:$P41_AGENT@v1', 1, '$SITE_B', '$P41_SETTLE', 'SEL_CLEAR', '{}', 'a3041',
             '{}', 'requires_approval', '', 'human_approval', 'dispatched', 'gate-a3041',
             '$P41_TAG-$2-' || g, '$P41_TAG-$2-' || g, '', '',
             now() - interval '$3' + g * interval '1 second', now() - interval '$3'
@@ -9667,7 +9670,7 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
         vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
    VALUES (substr(md5('$P41_TAG-live'), 1, 32), '$SITE_B', 'directive:$P41_TAG-live-1',
-           'SEL_CLEAR', '$P41_DEV', 'GateA41', 'A3041P', 'SUCCESS', true, 'gate-a3041',
+           'SEL_CLEAR', '$P41_SETTLE', 'GateA41', 'A3041P', 'SUCCESS', true, 'gate-a3041',
            now(), now())" > /dev/null < /dev/null
 wait_for "the live loop to settle the newest proposal past 501 stuck ones" 300 p41_live_settled
 P41_STUCK=$(s1_cc "SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$P41_AGENT'
@@ -9677,6 +9680,9 @@ echo "  settled completed:SUCCESS past 10,001 older outcomes; the 501 with no ou
 
 step "A30.41/DK: all-history evidence is exact -- the owner's autonomy evidence and metrics count every row, and 10,001 hidden rows at site B cannot crowd out a site-A reader"
 S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+# Rows at site A NEWER than the 10,001 at site B: an oldest-10,000 window over
+# the whole tenant would hold only site B's, so the old code read none of these.
+p41_rows "$SITE_A" gate-a3041-a 5 SUCCESS '1 day' '1 day' site-a
 p41_read "$TOKEN" "/api/outcomes/metrics" "true"
 printf '%s' "$P41_BODY" | P41_N="$P41_N" python3 -c "
 import sys, json, os
@@ -9698,7 +9704,7 @@ import sys, json, os
 d = json.load(sys.stdin)
 ev = next(c for c in d['action_classes'] if c['action_type'] == 'SEL_CLEAR')['evidence']
 n = int(os.environ['P41_N'])
-assert ev['executions'] == n, (ev, n)
+assert ev['executions'] == n and n >= 5, (ev, n)
 print('  site-A person: SEL_CLEAR executions %d = site A alone; the 10,001 at site B decided nothing' % n)"
 
 step "A30.41/DL: 50,000 rows for one device, then one recent failure -- the predictive answer counts every row, and the newest moves the rate"
