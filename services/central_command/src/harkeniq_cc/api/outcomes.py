@@ -39,11 +39,11 @@ async def outcome_metrics(
     model), with per-site attribution. Backing data for the Console's
     vendor reliability comparison."""
     reach = read_reach(scope, "fleet.view")
-    outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(
-        user.tenant_id, scope=reach
-    )
+    # A30.41: an exact tally over EVERY row the reader's reach reads; it was
+    # the oldest 10,000 of them.
+    outcomes = await OutcomeHistoryRepo(session).tally(user.tenant_id, scope=reach)
     aggregator = OutcomeAggregator()
-    aggregator.ingest(outcomes)
+    total = aggregator.ingest(outcomes)
     metrics = aggregator.get_metrics(action_type=action_type, vendor=vendor)
     return {
         "metrics": [
@@ -64,7 +64,7 @@ async def outcome_metrics(
             }
             for m in metrics
         ],
-        "total_outcomes": len(outcomes),
+        "total_outcomes": total,
         "tenant_id": user.tenant_id,
     }
 

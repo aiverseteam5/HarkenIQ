@@ -11,13 +11,19 @@ from datetime import datetime, timezone
 from typing import Iterable, Any, Optional, Sequence
 
 from sqlalchemy import (
+    DateTime,
+    Float,
     and_,
+    bindparam,
+    case,
     delete as sa_delete,
     exists,
     false as sa_false,
     func,
+    literal,
     or_,
     select,
+    tuple_,
     update as sa_update,
 )
 from sqlalchemy.exc import IntegrityError
@@ -1810,69 +1816,236 @@ class StopSwitchRepo:
         return row
 
 
+def outcome_dict(r: CCOutcomeHistory) -> dict:
+    """One outcome row as the dict settlement and its legacy join read."""
+    return {
+        "action_type": r.action_type,
+        "vendor": r.vendor,
+        "model": r.model,
+        "outcome": r.outcome,
+        "fault_resolved": bool(r.fault_resolved),
+        "site_id": r.site_id,
+        "ingested_at": r.ingested_at,
+        "recorded_at": r.recorded_at,
+        # A1: evidence that cannot name its actor cannot answer "what did
+        # MY agent do", which is half of trusting one.
+        "actor": r.actor or "",
+        "device_agent_id": r.device_agent_id,
+        # A25.1: the EXACT execution key. The Site Manager writes
+        # `directive:<directive_id>` for every directed execution.
+        "action_id": r.action_id or "",
+    }
+
+
+def _chunks(items: list, size: int):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+#: Keys or pairs per IN list: a bound on a statement's size, never on what
+#: is read -- every chunk is read.
+_IN_CHUNK = 500
+
+
 class OutcomeHistoryRepo:
     """Read path for cc_outcome_history (R4-1: written by the fleet poller,
-    read by the intelligence loop and the outcomes API)."""
+    read by the intelligence loop, the outcome-facing APIs and settlement).
+
+    A30.41: every read is exact over the rows its caller may read. They all
+    select through ONE statement builder, `_authorized`; no principal read
+    carries a row limit, and every ordered read ends in the immutable `id`.
+    The one window left is `list_device_outcome_dicts`, the internal
+    decision paths' ranking input, kept byte-identical for Phase 3
+    (proposal-budget ordering).
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def list_outcome_dicts(
-        self,
-        tenant_id: str,
-        since: Optional[datetime] = None,
-        limit: int = 10000,
-        scope=None,
-    ) -> list[dict]:
-        """Outcome rows as aggregator-ready dicts (site_id included).
+    @staticmethod
+    def _authorized(tenant_id: str, scope, *columns):
+        """SELECT `columns` over the outcome rows `scope` may read.
 
-        Tenant scoping goes through cc_sites: an outcome belongs to the
-        tenant that owns the site it was polled from. E1.2 narrows that
-        further to the caller's own sites; `scope=None` is the internal
-        caller (the IntelligenceEngine), which is fleet-wide by design.
+        The ONLY way an outcome read selects rows. Tenant scoping goes
+        through cc_sites: an outcome belongs to the tenant that owns the
+        site it was polled from. Then B0b's owner rule (A30.25): a row whose
+        device resolves at its own site is that device's, otherwise the
+        site's, so no device or class grant reads a site-owned row and the
+        read is never widened to fit an identifier. `scope` is a principal's
+        `ReadReach`, or `None` for an internal caller (the whole tenant); a
+        bare `ResolvedScope` raises (S2).
         """
-        # A30.25: an outcome is about one device. A row whose
-        # `device_agent_id` does not resolve at its site (D10: the SM's
-        # non-canonical fallback, were it ever to fire) is SITE-owned, so
-        # no device or class grant reads it -- the read is never widened
-        # to fit an identifier.
-        stmt = _where(
-            select(CCOutcomeHistory)
+        return _where(
+            select(*columns)
+            .select_from(CCOutcomeHistory)
             .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
             .where(CCSite.tenant_id == tenant_id),
             scope_device_owned(
                 CCOutcomeHistory.site_id, CCOutcomeHistory.device_agent_id, scope,
             ),
-        ).order_by(CCOutcomeHistory.ingested_at).limit(limit)
-        if since is not None:
-            stmt = stmt.where(CCOutcomeHistory.ingested_at > since)
-        rows = (await self.session.execute(stmt)).scalars().all()
+        )
+
+    async def tally(self, tenant_id: str, *, scope=None) -> list[dict]:
+        """Exact counts over EVERY row `scope` may read (A30.41).
+
+        One row per (site, action class, vendor, model, outcome,
+        fault_resolved), carrying `count`. The autonomy contract, a new
+        proposal's frozen evidence, S3-E2's viewer, outcome metrics and the
+        learning engine read this where they read the oldest 10,000 rows:
+        their arithmetic weighs a row by `count`, so it is the arithmetic
+        over the expanded rows. Groups are ordered by first appearance
+        (`min(ingested_at)`), then the group key, so a consumer that inserts
+        keys as it meets them -- the aggregator -- meets them in the order the
+        old ingested_at scan did, and ties are total.
+        """
+        resolved = func.coalesce(CCOutcomeHistory.fault_resolved, False)
+        key = (
+            CCOutcomeHistory.site_id, CCOutcomeHistory.action_type,
+            CCOutcomeHistory.vendor, CCOutcomeHistory.model,
+            CCOutcomeHistory.outcome, resolved,
+        )
+        first_seen = func.min(CCOutcomeHistory.ingested_at)
+        stmt = (
+            self._authorized(tenant_id, scope, *key, func.count(), first_seen)
+            .group_by(*key)
+            .order_by(first_seen, *key)
+        )
         return [
             {
-                "action_type": r.action_type,
-                "vendor": r.vendor,
-                "model": r.model,
-                "outcome": r.outcome,
-                "fault_resolved": bool(r.fault_resolved),
-                "site_id": r.site_id,
-                "ingested_at": r.ingested_at,
-                "recorded_at": r.recorded_at,
-                # A1: evidence that cannot name its actor cannot answer
-                # "what did MY agent do", which is half of trusting one.
-                "actor": r.actor or "",
-                "device_agent_id": r.device_agent_id,
-                # A25.1: the EXACT execution key. The Site Manager writes
-                # `directive:<directive_id>` for every directed execution
-                # and it has been stored here since A1 -- but this
-                # projection dropped it, so settlement fell back to
-                # matching on device, action class, actor and a time
-                # window. Two dispatched proposals for one device and one
-                # action class could settle each other's outcome, and
-                # nothing downstream could tell.
-                "action_id": r.action_id or "",
+                "site_id": site_id,
+                "action_type": action_type,
+                "vendor": vendor,
+                "model": model,
+                "outcome": outcome,
+                "fault_resolved": bool(fault_resolved),
+                "count": int(n),
             }
-            for r in rows
+            for site_id, action_type, vendor, model, outcome, fault_resolved, n, _first
+            in (await self.session.execute(stmt)).all()
         ]
+
+    async def device_stats(
+        self, tenant_id: str, *, scope, now: datetime, cohorts: bool = True,
+    ):
+        """A principal's predictive inputs, over EVERY row `scope` may read.
+
+        Per device: the sample count and the two recency-weighted sums of
+        `predictive.weighted_failure_rate`, summed by the database in the
+        order Python sums them (`recorded_at`, then `id`). Per cohort: exact
+        (vendor, model, outcome) counts for the SAME `cohort_failure_rates`
+        -- skipped for a machine, which is never scored on a cohort. The
+        rows these replace were the OLDEST 50,000, so above that the newest
+        rows -- the heaviest -- were the ones dropped.
+        """
+        from harkeniq_cc.db.outcome_sql import decay_weight, ordered_sum
+        from harkeniq_cc.predictive import (
+            FAILURE_OUTCOMES,
+            DeviceHistory,
+            DeviceOutcomeStats,
+        )
+
+        weight = decay_weight(
+            bindparam("decay_now", now, type_=DateTime(timezone=True)),
+            CCOutcomeHistory.recorded_at,
+        )
+        failed = CCOutcomeHistory.outcome.in_(FAILURE_OUTCOMES)
+        order = (CCOutcomeHistory.recorded_at, CCOutcomeHistory.id)
+        per_device = (
+            self._authorized(
+                tenant_id, scope,
+                CCOutcomeHistory.device_agent_id,
+                func.count(),
+                ordered_sum(weight, *order),
+                ordered_sum(case((failed, weight), else_=literal(0.0, Float)), *order),
+            )
+            .group_by(CCOutcomeHistory.device_agent_id)
+            .order_by(CCOutcomeHistory.device_agent_id)
+        )
+        devices = {
+            device: DeviceHistory(
+                count=int(n),
+                weighted_total=float(total or 0.0),
+                weighted_failed=float(failed_sum or 0.0),
+            )
+            for device, n, total, failed_sum in (await self.session.execute(per_device)).all()
+        }
+        cohort_tallies: tuple = ()
+        if cohorts:
+            cohort = (
+                CCOutcomeHistory.vendor, CCOutcomeHistory.model, CCOutcomeHistory.outcome,
+            )
+            stmt = (
+                self._authorized(tenant_id, scope, *cohort, func.count())
+                .group_by(*cohort)
+                .order_by(*cohort)
+            )
+            cohort_tallies = tuple(
+                {"vendor": vendor, "model": model, "outcome": outcome, "count": int(n)}
+                for vendor, model, outcome, n in (await self.session.execute(stmt)).all()
+            )
+        return DeviceOutcomeStats(
+            devices=devices,
+            cohort_tallies=cohort_tallies,
+            total=sum(h.count for h in devices.values()),
+        )
+
+    async def first_by_action_ids(
+        self, tenant_id: str, action_ids: Iterable[str],
+    ) -> dict[str, CCOutcomeHistory]:
+        """The outcome each execution key names: its OLDEST row (A30.41).
+
+        Settlement's exact join (A25.1) and the machine receipt's -- one
+        read, so a receipt names the outcome settlement used. Oldest by
+        `(ingested_at, id)`: the choice settlement always made, made total.
+        Every key is read, in bounded IN lists, with no window.
+        """
+        keys = sorted({k for k in action_ids if k})
+        found: dict[str, CCOutcomeHistory] = {}
+        for chunk in _chunks(keys, _IN_CHUNK):
+            stmt = (
+                self._authorized(tenant_id, None, CCOutcomeHistory)
+                .where(CCOutcomeHistory.action_id.in_(chunk))
+                .order_by(
+                    CCOutcomeHistory.action_id,
+                    CCOutcomeHistory.ingested_at,
+                    CCOutcomeHistory.id,
+                )
+            )
+            for row in (await self.session.execute(stmt)).scalars():
+                found.setdefault(row.action_id, row)
+        return found
+
+    async def legacy_candidates(
+        self, tenant_id: str, pairs: Iterable[tuple[str, str]], *,
+        since: Optional[datetime] = None,
+    ) -> dict[tuple[str, str], list[dict]]:
+        """Candidate outcomes for KEYLESS proposals, by (device, action class).
+
+        The pre-A25 heuristic's inputs, read only for the pairs a keyless
+        proposal names and only from `since` (the earliest dispatch among
+        them -- an outcome ingested before a dispatch cannot belong to it),
+        in `(ingested_at, id)` order. The rules that pick among them are
+        settlement's, unchanged.
+        """
+        wanted = sorted(set(pairs))
+        out: dict[tuple[str, str], list[dict]] = {}
+        for chunk in _chunks(wanted, _IN_CHUNK):
+            stmt = (
+                self._authorized(tenant_id, None, CCOutcomeHistory)
+                .where(
+                    tuple_(
+                        CCOutcomeHistory.device_agent_id, CCOutcomeHistory.action_type,
+                    ).in_(chunk)
+                )
+                .order_by(CCOutcomeHistory.ingested_at, CCOutcomeHistory.id)
+            )
+            if since is not None:
+                stmt = stmt.where(CCOutcomeHistory.ingested_at >= since)
+            for row in (await self.session.execute(stmt)).scalars():
+                out.setdefault(
+                    (row.device_agent_id, row.action_type), [],
+                ).append(outcome_dict(row))
+        return out
 
     async def count(self, tenant_id: str) -> int:
         result = await self.session.execute(
@@ -1887,53 +2060,34 @@ class OutcomeHistoryRepo:
     ) -> Optional[CCOutcomeHistory]:
         """The outcome an execution key names (A25.1).
 
-        The same exact join settlement uses, exposed for the machine
-        receipt so a caller sees the canonical classification rather than
-        the two-value collapse `settle` writes onto the proposal.
+        The machine receipt's read. It took the NEWEST row for a key while
+        settlement took the OLDEST; it is now settlement's own read
+        (A30.41), so the receipt and the proposal it describes cannot name
+        two different outcomes.
         """
         if not action_id:
             return None
-        return (
-            await self.session.execute(
-                select(CCOutcomeHistory)
-                .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
-                .where(
-                    CCSite.tenant_id == tenant_id,
-                    CCOutcomeHistory.action_id == action_id,
-                )
-                .order_by(CCOutcomeHistory.ingested_at.desc())
-            )
-        ).scalars().first()
+        return (await self.first_by_action_ids(tenant_id, [action_id])).get(action_id)
 
     async def list_device_outcome_dicts(
-        self, tenant_id: str, limit: int = 50000, scope=None,
+        self, tenant_id: str, limit: int = 50000,
     ) -> list[dict]:
-        """Per-device outcome rows for risk scoring (R4-3 P20).
+        """The internal decision paths' ranking input -- UNCHANGED (A30.41).
 
-        Uses the ix_outcome_history_device access path; returns dicts
-        with device attribution and recorded_at for recency weighting.
+        Per-device outcome rows for risk scoring (R4-3 P20): the OLDEST
+        `limit` rows by `recorded_at`, over the whole tenant. The evaluator's
+        Attention rank decides which devices consume an agent's proposal
+        budget, and A30.41 changes no evaluator ordering, so this read stays
+        byte-identical until Phase 3 (proposal-budget ordering) owns it.
 
-        `scope=None` is the three internal decision paths, and reads the
-        whole tenant, unchanged. Every PRINCIPAL passes its `fleet.view`
-        reach -- a machine's attention (A30.35, D2), a person's attention
-        and the predictive route (A30.40): B0b's owner predicate, in the
-        WHERE, BEFORE the row limit, so a row the reader may not read can
-        never displace one it may. A moved device's rows at a site the
-        reader does not hold are SITE-owned there and excluded.
-
-        The limit keeps the OLDEST rows. That window is F-E2-4's, with the
-        10k window of `list_outcome_dicts` (A30.40, D-P10).
+        Internal only: it takes no reach. Every principal -- the predictive
+        route, a person's and a machine's Attention -- reads `device_stats`,
+        which has no window.
         """
         stmt = (
-            _where(
-                select(CCOutcomeHistory)
-                .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
-                .where(CCSite.tenant_id == tenant_id),
-                scope_device_owned(
-                    CCOutcomeHistory.site_id, CCOutcomeHistory.device_agent_id,
-                    scope,
-                ),
-            )
+            select(CCOutcomeHistory)
+            .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
+            .where(CCSite.tenant_id == tenant_id)
             .order_by(CCOutcomeHistory.recorded_at)
             .limit(limit)
         )
@@ -3080,6 +3234,44 @@ class AgentProposalRepo:
                 .limit(limit)
             )
         ).scalars().all()
+
+    async def page_by_status(
+        self,
+        tenant_id: str,
+        statuses: Sequence[str],
+        *,
+        after: Optional[tuple[datetime, str]] = None,
+        limit: int = 500,
+    ) -> Sequence[CCAgentProposal]:
+        """One keyset page of proposals in `statuses`, by `(created_at, id)`.
+
+        A30.41: settlement walks EVERY dispatched proposal with this, page
+        after page. `list_by_status` hands back the oldest `limit` and no
+        more, so 500 proposals that never receive an outcome would starve
+        every newer one. `after` is the last page's final `(created_at,
+        id)`; a row that leaves `statuses` meanwhile simply is not met again.
+        (Dispatch still reads `list_by_status`: its ordering is not this
+        slice's to change.)
+        """
+        stmt = (
+            select(CCAgentProposal)
+            .where(
+                CCAgentProposal.tenant_id == tenant_id,
+                CCAgentProposal.status.in_(list(statuses)),
+            )
+            .order_by(CCAgentProposal.created_at, CCAgentProposal.id)
+            .limit(limit)
+        )
+        if after is not None:
+            created_at, proposal_id = after
+            stmt = stmt.where(or_(
+                CCAgentProposal.created_at > created_at,
+                and_(
+                    CCAgentProposal.created_at == created_at,
+                    CCAgentProposal.id > proposal_id,
+                ),
+            ))
+        return (await self.session.execute(stmt)).scalars().all()
 
     async def count_since(
         self, tenant_id: str, agent_id: str, since: datetime

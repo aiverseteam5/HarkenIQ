@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
@@ -111,16 +111,18 @@ async def test_the_outcome_predicate_is_before_the_limit_on_postgres():
             role_permissions=list(E.ALL_PERMISSIONS), principal_type="agent",
         )
         reach = machine_attention_selection(scope).fleet
-        rows = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-            stack.tenant, limit=5, scope=reach,
+        # A30.41: the machine's read is the database's exact statistics --
+        # no limit left to cut -- so the hidden rows never enter it at all.
+        stats = await OutcomeHistoryRepo(session).device_stats(
+            stack.tenant, scope=reach, now=datetime.now(timezone.utc), cohorts=False,
         )
         everything = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
             stack.tenant, limit=5,
         )
     visible = {E.agent(stack, k) for k in ("a1", "a2", "a4", "mv")} | {stack.tagged("b22-ghost")}
-    assert len(rows) == 5 and {r["device_agent_id"] for r in rows} <= visible
-    # The unscoped read (every earlier caller) is unchanged: the hidden rows,
-    # being the oldest, fill its window.
+    assert stats.devices and set(stats.devices) <= visible
+    # The internal decision paths' read is unchanged (Phase 3 owns it): the
+    # hidden rows, being the oldest, still fill its window.
     assert {r["device_agent_id"] for r in everything} == {E.agent(stack, "c1")}
 
 

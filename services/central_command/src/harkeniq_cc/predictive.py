@@ -38,6 +38,9 @@ RISK_MEDIUM = 0.3
 HEALTH_BUMP = {"critical": 0.20, "warning": 0.10}
 WARRANTY_EXPIRED_BUMP = 0.10
 _FAILURE_OUTCOMES = ("FAILURE", "ROLLBACK")
+#: What counts as a failed outcome for risk scoring -- public so the
+#: database aggregates (A30.41) and the Python sums name ONE set.
+FAILURE_OUTCOMES = _FAILURE_OUTCOMES
 
 
 @dataclass
@@ -82,6 +85,20 @@ def _age_days(recorded_at: Optional[datetime], now: datetime) -> float:
     return max(0.0, (now - recorded_at).total_seconds() / 86400.0)
 
 
+def decay_weight(
+    recorded_at: Optional[datetime],
+    now: datetime,
+    half_life_days: float = DECAY_HALF_LIFE_DAYS,
+) -> float:
+    """The weight of ONE outcome: 0.5 ** (age_days / half_life).
+
+    The one definition. `weighted_failure_rate` sums it over rows, and A30.41
+    computes the same sums in SQL: PostgreSQL mirrors this float pipeline
+    (`db.outcome_sql.decay_weight`), and SQLite calls this function itself.
+    """
+    return 0.5 ** (_age_days(recorded_at, now) / half_life_days)
+
+
 def weighted_failure_rate(
     outcomes: list[dict],
     now: Optional[datetime] = None,
@@ -96,13 +113,50 @@ def weighted_failure_rate(
     total = 0.0
     failed = 0.0
     for oc in outcomes:
-        weight = 0.5 ** (_age_days(oc.get("recorded_at"), current) / half_life_days)
+        weight = decay_weight(oc.get("recorded_at"), current, half_life_days)
         total += weight
         if oc.get("outcome") in _FAILURE_OUTCOMES:
             failed += weight
     if total <= 0.0:
         return 0.0, 0.0
     return failed / total, total
+
+
+@dataclass(frozen=True)
+class DeviceHistory:
+    """A device's outcome history as its sufficient statistics (A30.41).
+
+    `count` rows, and the two recency-weighted sums `weighted_failure_rate`
+    would have produced over them -- computed by the database over EVERY
+    row the reader may read, where the rows themselves were once read under
+    a 50,000-row window that kept the oldest and dropped the newest.
+    """
+
+    count: int
+    weighted_total: float
+    weighted_failed: float
+
+    def rate(self) -> float:
+        """`weighted_failure_rate`'s rate: failed / total, 0.0 with no weight."""
+        if self.weighted_total <= 0.0:
+            return 0.0
+        return self.weighted_failed / self.weighted_total
+
+
+@dataclass(frozen=True)
+class DeviceOutcomeStats:
+    """Everything a principal's predictive answer reads from outcome history
+    (A30.41), computed by the database over EVERY row the reader may read.
+
+    `devices` maps a device to its `DeviceHistory`; `cohort_tallies` are
+    (vendor, model, outcome, count) rows for `cohort_failure_rates` (empty
+    for a machine, which is never scored on a cohort); `total` is the number
+    of rows read -- `outcomes_considered`.
+    """
+
+    devices: dict
+    cohort_tallies: tuple
+    total: int
 
 
 def band_for(score: float) -> str:
@@ -115,20 +169,34 @@ def band_for(score: float) -> str:
 
 def score_device(
     agent_id: str,
-    outcomes: list[dict],
+    outcomes: list[dict] = (),
     cohort_failure_rate: Optional[float] = None,
     health: str = "",
     warranty_status: str = "",
     vendor: str = "",
     model: str = "",
     now: Optional[datetime] = None,
+    history: Optional[DeviceHistory] = None,
 ) -> DeviceRisk:
-    """Score one device. See module docstring for the composition."""
-    sample_count = len(outcomes)
+    """Score one device. See module docstring for the composition.
+
+    `outcomes` is the device's rows (the internal decision paths, which keep
+    their window until Phase 3). `history` is the same device's sufficient
+    statistics, read by the database over every row (A30.41): given, it
+    decides the sample count and the recency-weighted rate, and the rest of
+    the composition is shared, line for line.
+    """
+    if history is not None:
+        sample_count = history.count
+    else:
+        sample_count = len(outcomes)
     factors: dict = {}
 
     if sample_count >= MIN_DEVICE_SAMPLES:
-        base, _ = weighted_failure_rate(outcomes, now=now)
+        if history is not None:
+            base = history.rate()
+        else:
+            base, _ = weighted_failure_rate(outcomes, now=now)
         factors["weighted_failure_rate"] = round(base, 4)
         factors["basis"] = "device_history"
     elif cohort_failure_rate is not None:
@@ -163,14 +231,20 @@ def score_device(
 
 
 def cohort_failure_rates(outcomes: list[dict]) -> dict[tuple[str, str], float]:
-    """Plain (unweighted) failure rate per (vendor, model) cohort."""
+    """Plain (unweighted) failure rate per (vendor, model) cohort.
+
+    A row may carry `count` (A30.41: a database tally of that many identical
+    rows); it weighs the row, and a raw row weighs one. The integer sums are
+    the sums over the expanded rows.
+    """
     totals: dict[tuple[str, str], int] = {}
     failures: dict[tuple[str, str], int] = {}
     for oc in outcomes:
         key = (oc.get("vendor", ""), oc.get("model", ""))
-        totals[key] = totals.get(key, 0) + 1
+        n = int(oc.get("count", 1))
+        totals[key] = totals.get(key, 0) + n
         if oc.get("outcome") in _FAILURE_OUTCOMES:
-            failures[key] = failures.get(key, 0) + 1
+            failures[key] = failures.get(key, 0) + n
     return {
         key: failures.get(key, 0) / total
         for key, total in totals.items() if total > 0

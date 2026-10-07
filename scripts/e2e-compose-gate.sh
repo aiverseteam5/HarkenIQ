@@ -9591,6 +9591,205 @@ echo "  the machine agent retired, the signal and pattern, the four devices and 
 [ "$(a26_mode)" = "$P40_MODE_BEFORE" ] || { echo "the enforcement posture was not restored" >&2; exit 1; }
 echo "  enforcement restored to the posture found: $P40_MODE_BEFORE"
 
+# ===========================================================================
+# A30.41, live: outcome window correctness. Central Command's outcome reads
+# kept the OLDEST 10,000 rows (`list_outcome_dicts`: settlement, the autonomy
+# contract, new proposals' frozen evidence, S3-E2's viewer, outcome metrics,
+# the learning engine) and the OLDEST 50,000 (`list_device_outcome_dicts`:
+# the predictive route and Attention), and settlement read only the oldest
+# 500 dispatched proposals. Every read is now exact over the rows its caller
+# may read; only the internal decision paths keep their window (Phase 3).
+#
+# This proof owns its estate: rows OLDER than everything else in the tenant
+# -- exactly the rows an oldest-first window keeps -- so with the old code
+# every newer row would have fallen out. They sit at site B, so a site-A
+# reader is also the side-channel probe. Expected values are independent SQL
+# counts, bracketed against the live poller's own ingest.
+# ===========================================================================
+P41_TAG="gate-a3041-$(date +%s)"
+P41_AGENT=gatea3041agent000000000000000000
+P41_DEV=gate-p41-b1
+# DJ's synthetic proposals and their outcome name a device of their own, so
+# the device DL scores holds only DL's rows.
+P41_SETTLE=gate-a3041-settle
+p41_rows() {  # $1 site, $2 device, $3 count, $4 outcome, $5 recorded age, $6 ingested age, $7 key
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+          vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+     SELECT substr(md5(random()::text || g::text || '$7'), 1, 32), '$1',
+            '$P41_TAG-$7-' || g, 'SEL_CLEAR', '$2', 'GateA41', 'A3041P',
+            '$4', '$4' = 'SUCCESS', 'gate-a3041',
+            now() - interval '$5' - g * interval '1 second', now() - interval '$6'
+     FROM generate_series(1, $3) g" > /dev/null < /dev/null
+}
+p41_proposals() {  # $1 how many, $2 key, $3 created age -> dispatched proposals of a synthetic agent
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_agent_proposals (id, tenant_id, agent_id, actor, agent_version, site_id,
+          device_agent_id, action_type, params, rationale, evidence, disposition,
+          disposition_reason, authorization_basis, status, decided_by, dedupe_key,
+          directive_id, dispatch_reason, outcome, created_at, dispatched_at)
+     SELECT substr(md5('$P41_TAG-$2-' || g), 1, 32), '$P41_TENANT', '$P41_AGENT',
+            'op-agent:$P41_AGENT@v1', 1, '$SITE_B', '$P41_SETTLE', 'SEL_CLEAR', '{}', 'a3041',
+            '{}', 'requires_approval', '', 'human_approval', 'dispatched', 'gate-a3041',
+            '$P41_TAG-$2-' || g, '$P41_TAG-$2-' || g, '', '',
+            now() - interval '$3' + g * interval '1 second', now() - interval '$3'
+     FROM generate_series(1, $1) g" > /dev/null < /dev/null
+}
+p41_count() {  # $1 extra SQL predicate over `o`
+  s1_cc "SELECT count(*) FROM cc_outcome_history o JOIN cc_sites s ON s.id = o.site_id
+         WHERE s.tenant_id='$P41_TENANT' AND ($1)" < /dev/null
+}
+p41_read() {  # $1 token, $2 path, $3 count predicate -> P41_BODY, and P41_N bracketing the read
+  local before after
+  for _ in 1 2 3 4 5; do
+    before=$(p41_count "$3")
+    P41_BODY=$(s2_get "$1" "$2")
+    after=$(p41_count "$3")
+    [ "$before" = "$after" ] && { P41_N=$before; return 0; }
+    sleep 2
+  done
+  echo "the estate kept moving under the read" >&2; exit 1
+}
+
+step "A30.41/DJ: 10,001 OLDER outcomes and 501 proposals that will never hear back -- the live loop still settles the newest proposal, by its key"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+P41_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'" < /dev/null)
+p41_rows "$SITE_B" gate-a3041-old 10001 SUCCESS '400 days' '400 days' old
+[ "$(p41_count "o.ingested_at < now() - interval '399 days'")" -ge 10001 ] || {
+  echo "the older rows did not land" >&2; exit 1; }
+# 501 dispatched proposals whose outcomes will never arrive, created first:
+# settlement used to read the oldest 500 and stop.
+p41_proposals 501 stuck '2 days'
+p41_proposals 1 live '1 day'
+p41_live_settled() {
+  [ "$(s1_cc "SELECT status || ':' || outcome FROM cc_agent_proposals
+              WHERE directive_id='$P41_TAG-live-1'" < /dev/null)" = "completed:SUCCESS" ]
+}
+# Its outcome arrives NEWEST -- past 10,001 older rows the old window kept.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+        vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+   VALUES (substr(md5('$P41_TAG-live'), 1, 32), '$SITE_B', 'directive:$P41_TAG-live-1',
+           'SEL_CLEAR', '$P41_SETTLE', 'GateA41', 'A3041P', 'SUCCESS', true, 'gate-a3041',
+           now(), now())" > /dev/null < /dev/null
+wait_for "the live loop to settle the newest proposal past 501 stuck ones" 300 p41_live_settled
+P41_STUCK=$(s1_cc "SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$P41_AGENT'
+                   AND status='dispatched'" < /dev/null)
+[ "$P41_STUCK" = "501" ] || { echo "a stuck proposal settled without an outcome: $P41_STUCK" >&2; exit 1; }
+echo "  settled completed:SUCCESS past 10,001 older outcomes; the 501 with no outcome stay dispatched"
+
+step "A30.41/DK: all-history evidence is exact -- the owner's autonomy evidence and metrics count every row, and 10,001 hidden rows at site B cannot crowd out a site-A reader"
+S3_A=$(tenant_token gate-s3-a@demo gate-s3-a)
+# Rows at site A NEWER than the 10,001 at site B: an oldest-10,000 window over
+# the whole tenant would hold only site B's, so the old code read none of these.
+p41_rows "$SITE_A" gate-a3041-a 5 SUCCESS '1 day' '1 day' site-a
+p41_read "$TOKEN" "/api/outcomes/metrics" "true"
+printf '%s' "$P41_BODY" | P41_N="$P41_N" python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+n = int(os.environ['P41_N'])
+assert d['total_outcomes'] == n and n > 10_000, (d['total_outcomes'], n)
+print('  owner metrics: total_outcomes %d = the SQL oracle' % n)"
+p41_read "$TOKEN" "/api/autonomy/" "o.action_type='SEL_CLEAR'"
+printf '%s' "$P41_BODY" | P41_N="$P41_N" python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+ev = next(c for c in d['action_classes'] if c['action_type'] == 'SEL_CLEAR')['evidence']
+n = int(os.environ['P41_N'])
+assert (ev['executions'], ev['window']) == (n, 'all_time') and n > 10_000, (ev, n)
+print('  owner autonomy: SEL_CLEAR executions %d = the SQL oracle, window all_time (and true)' % n)"
+p41_read "$S3_A" "/api/autonomy/" "o.action_type='SEL_CLEAR' AND o.site_id='$SITE_A'"
+printf '%s' "$P41_BODY" | P41_N="$P41_N" python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+ev = next(c for c in d['action_classes'] if c['action_type'] == 'SEL_CLEAR')['evidence']
+n = int(os.environ['P41_N'])
+assert ev['executions'] == n and n >= 5, (ev, n)
+print('  site-A person: SEL_CLEAR executions %d = site A alone; the 10,001 at site B decided nothing' % n)"
+
+step "A30.41/DL: 50,000 rows for one device, then one recent failure -- the predictive answer counts every row, and the newest moves the rate"
+p40_sm_device gatedeva3041b1000000000000000000 "$SITE_B" "$P41_DEV" server
+p41_device_polled() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache WHERE agent_id='$P41_DEV'
+              AND site_id='$SITE_B'" < /dev/null)" = "1" ]
+}
+wait_for "the poller to carry the proof's device to Central Command" 180 p41_device_polled
+p41_rows "$SITE_B" "$P41_DEV" 50000 SUCCESS '400 days' '1 hour' bulk
+p41_rate() {  # the device's recency-weighted failure rate, from its rows, by the Python formula
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tA -F, -c \
+    "SELECT outcome, extract(epoch from recorded_at) FROM cc_outcome_history
+     WHERE device_agent_id='$P41_DEV' ORDER BY recorded_at, id" < /dev/null | python3 -c "
+import sys, time
+now, total, failed = time.time(), 0.0, 0.0
+for line in sys.stdin:
+    outcome, at = line.strip().split(',')
+    w = 0.5 ** (max(0.0, (now - float(at)) / 86400.0) / 30.0)
+    total += w
+    failed += w if outcome in ('FAILURE', 'ROLLBACK') else 0.0
+print(round(failed / total, 4) if total else 0.0)"
+}
+p41_check_device() {  # $1 expected samples -> asserts the owner's answer; prints the rate
+  p41_read "$TOKEN" "/api/predictive/risk" "true"
+  printf '%s' "$P41_BODY" | P41_N="$P41_N" P41_RATE="$(p41_rate)" P41_SAMPLES="$1" \
+    P41_DEV="$P41_DEV" P41_OUT="$P41_OUT" python3 -c "
+import sys, json, os
+d = json.load(sys.stdin)
+n = int(os.environ['P41_N'])
+assert d['outcomes_considered'] == n and n > 50_000, (d['outcomes_considered'], n)
+row = next(r for r in d['risks'] if r['agent_id'] == os.environ['P41_DEV'])
+assert row['sample_count'] == int(os.environ['P41_SAMPLES']), row
+assert row['factors']['basis'] == 'device_history', row
+rate = row['factors']['weighted_failure_rate']
+assert rate == float(os.environ['P41_RATE']), (rate, os.environ['P41_RATE'])
+print('  outcomes_considered %d = the SQL oracle; %s over %d rows, rate %s = the Python formula' % (
+    n, os.environ['P41_DEV'], row['sample_count'], rate))
+open(os.environ['P41_OUT'], 'w').write(str(rate))"
+}
+P41_OUT=$(mktemp)
+p41_check_device 50000
+P41_R1=$(cat "$P41_OUT")
+p41_rows "$SITE_B" "$P41_DEV" 1 FAILURE '1 day' '0 seconds' newest
+p41_check_device 50001
+P41_R2=$(cat "$P41_OUT")
+python3 -c "assert float('$P41_R2') > float('$P41_R1'), ('$P41_R1', '$P41_R2')"
+echo "  the newest failure moved the rate $P41_R1 -> $P41_R2 (an oldest-50,000 window dropped exactly that row)"
+rm -f "$P41_OUT"
+
+step "A30.41/DM: this proof owns its state -- and the shipped image reads exactly, with migration 0028 live"
+s1_cc "DELETE FROM cc_agent_proposals WHERE agent_id='$P41_AGENT'" > /dev/null < /dev/null
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM devices WHERE id='gatedeva3041b1000000000000000000'" > /dev/null < /dev/null
+p41_device_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_fleet_cache WHERE agent_id='$P41_DEV'" < /dev/null)" = "0" ]
+}
+wait_for "the proof's device to leave Central Command's fleet" 180 p41_device_gone
+s1_cc "DELETE FROM cc_outcome_history WHERE actor='gate-a3041' AND (action_id LIKE '$P41_TAG-%'
+       OR action_id='directive:$P41_TAG-live-1')" > /dev/null < /dev/null
+[ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE actor='gate-a3041'" < /dev/null)" = "0" ] || {
+  echo "the A30.41 outcome rows were not removed" >&2; exit 1; }
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0028" ] || {
+  echo "Central Command is not at migration 0028" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname IN ('ix_outcome_history_action_id', 'ix_outcome_history_site',
+                                'ix_outcome_history_device_time', 'ix_outcome_history_actor')
+              AND i.indisvalid" < /dev/null)" = "4" ] || {
+  echo "the 0028 indexes are missing or invalid" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import inspect, sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.db.repos import OutcomeHistoryRepo as R
+from harkeniq_cc.intelligence import IntelligenceEngine
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert all(hasattr(R, n) for n in ('tally', 'device_stats', 'first_by_action_ids', 'legacy_candidates'))
+assert not hasattr(R, 'list_outcome_dicts')
+assert 'scope' not in inspect.signature(R.list_device_outcome_dicts).parameters
+assert not hasattr(IntelligenceEngine(), '_cursor')
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: exact tallies and statistics, keyed settlement, no cursor, the windowed read internal'
+      ' only; plane 14, contract 99, ceiling unchanged')" < /dev/null
+echo "  the 502 synthetic proposals, the proof's device and every A30.41 outcome row removed; 0028 live, 4 indexes valid"
+
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
 

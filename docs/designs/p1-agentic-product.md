@@ -6522,3 +6522,125 @@ after S3-E2/DD.
   (FastAPI publishes the handler's docstring).
 * **Mutation:** 18 named breakages, all killed by the A30.40 and B2-2
   modules; the unmutated kill set is green.
+
+## §34v — Outcome window correctness (A30.41)
+
+### The inventory (on `565154b`)
+
+| Read | Window and order | Consumer | Reach before window | Contract after |
+|---|---|---|---|---|
+| `list_outcome_dicts` | oldest 10,000 by `ingested_at`, no tie-breaker | settlement | n/a (internal) | keyed lookup |
+| | | autonomy contract (decisions, principal contract, new proposals' frozen evidence) | NO — whole tenant, then S3 site selection | all-history tally |
+| | | S3-E2 viewer | yes | all-history tally over reach |
+| | | `/api/outcomes/metrics` | yes | all-history tally over reach |
+| | | learning engine (cursor `ingested_at > cursor`) | n/a (internal) | tally rebuilt each cycle |
+| `list_device_outcome_dicts` | oldest 50,000 by `recorded_at`, no tie-breaker | predictive, human and machine Attention | yes | exact device statistics over reach |
+| | | internal decision paths (`load_attention`) | n/a (internal) | UNCHANGED — Phase 3 |
+| `list_by_status(DISPATCHED)` | oldest 500 by `created_at` | settlement | n/a | keyset pages, every proposal |
+| `find_by_action_id` | newest by `ingested_at` | receipts | n/a | settlement's keyed read (oldest) |
+| campaign actor read | none, no ORDER BY | campaign wave settlement | n/a | `(ingested_at, id)` |
+| budget consumption count | none (exact COUNT) | D2 budget | n/a | UNCHANGED |
+
+### One statement builder
+
+`OutcomeHistoryRepo._authorized(tenant_id, scope, *columns)` is the only way a
+read selects outcome rows: `cc_outcome_history JOIN cc_sites` on the tenant,
+then B0b's `scope_device_owned(site_id, device_agent_id, scope)`. `scope` is a
+`ReadReach` for a principal or `None` for an internal caller, and a bare
+`ResolvedScope` raises (S2). Every aggregate below is built on it, and the B0b
+matrix probes it for row identity.
+
+### Tallies
+
+`tally(tenant_id, *, scope=None)` groups by (site, action class, vendor,
+model, outcome, `coalesce(fault_resolved, false)`) and orders the groups by
+`min(ingested_at)`, then the group key. Each row carries `count`. Three pure
+functions weigh a row by `count` (default 1, so raw rows still mean what they
+meant): autonomy's `_evidence_for`, `OutcomeAggregator.ingest` and
+`predictive.cohort_failure_rates`. The integer arithmetic is the arithmetic
+over the expanded rows. Ordering groups by first-seen time inserts the
+aggregator's (action class, vendor, model) keys in the order the old
+ingested_at scan first met them, so `get_metrics` ties keep their order.
+
+### Device statistics
+
+`device_stats(tenant_id, *, scope, now, cohorts=True)` runs two aggregates
+over `_authorized`:
+
+* per device — `count(*)`, `sum(w ORDER BY recorded_at, id)` and
+  `sum(CASE WHEN failed THEN w ELSE 0 END ORDER BY recorded_at, id)`, where `w`
+  is `decay_weight(now, recorded_at)`;
+* per cohort — `count(*)` by (vendor, model, outcome), skipped for machines.
+
+`decay_weight` is a SQL construct compiled per dialect. PostgreSQL:
+`power(0.5::float8, greatest(0.0::float8, extract(epoch from (now -
+recorded_at))::float8 / 86400.0::float8) / 30.0::float8)`, the exact float
+pipeline of `predictive._age_days` and `weighted_failure_rate`. SQLite (tests
+only): `harkeniq_decay_weight(now, recorded_at)`, registered by `make_engine`
+on every SQLite connection and implemented by `predictive.decay_weight`, the
+one Python weight. The ordered sum is `sum(x ORDER BY ...)` on PostgreSQL and
+on SQLite 3.44 or later, and a plain `sum` on older SQLite.
+
+`predictive.DeviceHistory(count, weighted_total, weighted_failed)` carries
+the result. `score_device(..., history=...)` scores from it, and the
+row-list form is unchanged for the internal path.
+
+### Settlement
+
+`settle_outcomes` pages `dispatched` proposals with
+`AgentProposalRepo.page_by_status(..., after=(created_at, id), limit=500)`.
+For each page it reads `first_by_action_ids` (the oldest row per directive
+key, by `(ingested_at, id)`) and, for keyless proposals only,
+`legacy_candidates(pairs)` in `(ingested_at, id)` order. `_legacy_outcome_match`
+and the A25.1 rules are unchanged. `find_by_action_id`, the receipt's read,
+delegates to `first_by_action_ids`.
+
+### What does not move
+
+`load_attention` (internal) still calls `list_device_outcome_dicts(tenant_id)`
+— the same query, the same Python scoring, byte-identical — so the evaluator
+ranks the same devices first. Its `scope` parameter is gone, so no principal
+path can call the windowed read. The D2 budget count, `dispatch_decided`,
+D-P8's learning windows and the Site Manager are untouched.
+
+### Migration 0028
+
+Indexes only, each created with `CREATE INDEX CONCURRENTLY` inside an
+autocommit block on PostgreSQL. Each is guarded by existence, so a re-run is
+a no-op, and the downgrade reverses them:
+
+* `ix_outcome_history_action_id (action_id)`
+* `ix_outcome_history_site (site_id)`
+* `ix_outcome_history_device_time (device_agent_id, recorded_at, id)
+  INCLUDE (site_id, outcome)`, replacing `ix_outcome_history_device`
+* `ix_outcome_history_actor (actor varchar_pattern_ops)`
+
+The models declare the same indexes, so `create_all` (SQLite) builds them
+too.
+
+### What implementing found
+
+* **The golden's stability check has to cross processes.** Two recordings
+  in one process agreed on a clock `b2_2_estate` takes once at import; a
+  test run in another process did not (machine items'
+  `freshness.last_seen_at` / `snapshot_at`, by one second). Those two clock
+  fields are normalised, and the golden is re-recorded from a worktree whose
+  code equals `main`, in two separate processes. Exact-head CI on 3.12 then
+  found the freshness STATE moves too, 13 minutes into a long run; the whole
+  block is normalised and a test replays the section 20 minutes "later".
+* **Every live assertion needs a non-vacuity condition.** The first live
+  gate passed a site-A check at 0 = 0, which the old code would also pass,
+  and let two proof steps share a device id. Both fixed.
+* **`0028` already runs mid-chain in the gate.** S4's BN step rewinds the
+  live database to `0026` and upgrades, so `0027` and `0028` run in one
+  invocation and the autocommit block commits `0027` partway through.
+  Fresh, mid-chain and downgrade paths were proven on PostgreSQL first.
+* **One mutant survived the first run:** an unordered tally. SQLite's
+  GROUP BY returns groups in key order, so nothing told first-appearance
+  order from key order. A test with two equal counts whose first appearance
+  and key order disagree now kills it: 18 of 18.
+* **Pins moved, intent kept, none deleted:** the A30.40 and S3-E2 window
+  xfails (now passes), A30.40's tenant control, B2-2's owner-rule read,
+  the cross-site and A6-2 reads, B0b's builder, the `0027` head pins.
+* **The receipt now reads settlement's keyed read**, so for a key with two
+  rows they name one outcome.

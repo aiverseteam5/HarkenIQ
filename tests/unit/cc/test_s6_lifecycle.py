@@ -403,6 +403,68 @@ class TestWaveSettlement:
             assert "reached no device" in site.halt_reason
 
     @pytest.mark.asyncio
+    async def test_the_last_outcome_is_the_last_to_arrive(self, stack):
+        """A30.41: "last outcome per device wins" was read over a query with
+        no ORDER BY, so "last" was whatever order the scan returned -- and a
+        parallel scan returns none in particular. Arrival order (ingested_at,
+        then the immutable id) decides now, whatever order the rows were
+        STORED in. Here the failure is stored first and arrived last."""
+        from datetime import datetime, timedelta, timezone
+
+        from harkeniq_cc.campaign_runner import settle_dispatched_waves
+        from harkeniq_cc.db.models import CCOutcomeHistory
+
+        state, cc_db, _ = stack
+        async with cc_db() as session:
+            campaign = await _campaign(session)
+            await _preflight(state, session, campaign)
+            await build_waves(
+                session, tenant_id=TENANT, campaign=campaign, autonomous=False,
+            )
+            await _approve_all_waves(session, campaign)
+            campaign.status = "running"
+            await session.commit()
+            await advance_campaign(session, state, tenant_id=TENANT, campaign=campaign)
+            await session.commit()
+
+            repo = CampaignRepo(session)
+            wave = min(
+                (w for w in await repo.waves(campaign.id) if w.status == "dispatched"),
+                key=lambda w: w.wave_index,
+            )
+            rows = [
+                d for d in await repo.dispatches(campaign.id)
+                if d.site_id == wave.site_id and d.wave_index == wave.wave_index
+                and d.plan_hash == wave.plan_hash
+            ]
+            assert rows, "fixture should dispatch the first wave"
+            for d in rows:
+                d.accepted = True      # as a site with a directive transport would
+            actor = campaign_actor(campaign.id, campaign.version)
+            t0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+            first, *others = sorted(d.device_agent_id for d in rows)
+
+            def outcome(key, device, result, arrived):
+                return CCOutcomeHistory(
+                    site_id=CC_SITE_ID, action_id=key, action_type=campaign.action_type,
+                    device_agent_id=device, outcome=result, actor=actor,
+                    recorded_at=t0, ingested_at=arrived,
+                )
+
+            session.add(outcome("c-late", first, "FAILURE", t0 + timedelta(seconds=2)))
+            await session.flush()      # stored FIRST
+            session.add(outcome("c-early", first, "SUCCESS", t0 + timedelta(seconds=1)))
+            for n, device in enumerate(others):
+                session.add(outcome(f"c-{n}", device, "SUCCESS", t0))
+            await session.commit()
+
+            result = await settle_dispatched_waves(
+                session, tenant_id=TENANT, campaign=campaign,
+            )
+            await session.commit()
+        assert result["halted"] == 1 and result["completed"] == 0, result
+
+    @pytest.mark.asyncio
     async def test_a_halted_site_voids_its_remaining_waves(self, stack):
         """Q3, end to end: stale authorization is never left standing."""
         from harkeniq_cc.campaign_runner import settle_dispatched_waves

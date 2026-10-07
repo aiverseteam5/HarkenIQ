@@ -515,7 +515,24 @@ class CCOutcomeHistory(Base):
 
     __table_args__ = (
         Index("ix_outcome_history_type_vendor", "action_type", "vendor"),
-        Index("ix_outcome_history_device", "device_agent_id"),
+        # A30.41 (migration 0028): the indexes exact outcome reads stand on.
+        # Keyed settlement and receipts.
+        Index("ix_outcome_history_action_id", "action_id"),
+        # Site-scoped tallies and device statistics.
+        Index("ix_outcome_history_site", "site_id"),
+        # The ordered per-device decay sums: index-only, already in the
+        # aggregate's order. Its prefix replaces the device-only index.
+        Index(
+            "ix_outcome_history_device_time",
+            "device_agent_id", "recorded_at", "id",
+            postgresql_include=["site_id", "outcome"],
+        ),
+        # Campaign settlement's actor read; also serves the D2 budget
+        # count's `actor LIKE '<prefix>%'` under a non-C collation.
+        Index(
+            "ix_outcome_history_actor", "actor",
+            postgresql_ops={"actor": "varchar_pattern_ops"},
+        ),
     )
 
 

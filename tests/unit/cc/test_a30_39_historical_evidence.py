@@ -387,7 +387,9 @@ class TestTheReadersType:
         assert len(offenders) == 1 and offenders[0].startswith("governance.py:"), offenders
         source = inspect.getsource(load_proposal_evidence_view)
         assert "read_reach(scope, PROPOSAL_EVIDENCE_PERMISSION)" in source
-        assert "list_outcome_dicts(" in source and "scope=reach" in source
+        # A30.41: the canonical read is now an exact tally -- still under
+        # the reader's reach, now over every row.
+        assert "tally(" in source and "scope=reach" in source
         assert governance.PROPOSAL_EVIDENCE_PERMISSION == "fleet.view"
 
     def test_the_loader_resolves_nothing(self):
@@ -972,16 +974,16 @@ class TestExecutionReadsNoEvidence:
 
 
 # ---------------------------------------------------------------------------
-# 13. The 10000-row window is F-E2-4's, stated and pinned
+# 13. The 10000-row window was F-E2-4's; A30.41 removed it
 # ---------------------------------------------------------------------------
 
 
 class TestTheWindowIsNotClaimedAway:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F-E2-4 (A30.39 D11, D14): the canonical outcome read keeps the "
-        "oldest 10000 rows of the reader's OWN set. The reach filter runs "
-        "before the window, so hidden volume never decides membership; the "
-        "window itself is the F-E2-4 correctness slice's to remove."))
+    """D11/D14 pinned the reader's own 10,000-row window with a strict xfail
+    for the F-E2-4 slice to invert. A30.41 is that slice: the canonical read
+    is an exact tally over every row, so the pin is inverted here -- never
+    deleted -- and A30.41's module proves the boundary from both sides."""
+
     async def test_a_reader_with_more_than_10000_outcomes_counts_them_all(self):
         stack = await E.build()
         subject = await E.persona(stack, "site_a")

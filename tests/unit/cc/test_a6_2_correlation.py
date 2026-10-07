@@ -309,16 +309,23 @@ class TestCorrelationIsObservable:
             m._registry = saved
 
     async def test_the_outcome_projection_carries_the_key(self):
-        """The one-line regression: the projection must not drop it again."""
-        from harkeniq_cc.db.repos import OutcomeHistoryRepo
+        """The one-line regression: the projection must not drop it again.
+
+        A30.41: settlement no longer reads a projection of the oldest
+        10,000 rows -- it reads exactly the keys its proposals name. The
+        intent is unchanged: the key reaches settlement, on the keyed read
+        AND on the dict settlement matches against."""
+        from harkeniq_cc.db.repos import OutcomeHistoryRepo, outcome_dict
 
         state, site_id = await _stack()
         await _outcome(state, site_id, action_id="directive:dir-Z",
                        outcome="SUCCESS", at=datetime.now(timezone.utc))
         async with state.sessionmaker() as session:
-            rows = await OutcomeHistoryRepo(session).list_outcome_dicts(TENANT)
-        assert rows and rows[0]["action_id"] == "directive:dir-Z", (
-            "list_outcome_dicts dropped action_id -- settlement falls back "
+            found = await OutcomeHistoryRepo(session).first_by_action_ids(
+                TENANT, ["directive:dir-Z"])
+        assert set(found) == {"directive:dir-Z"}
+        assert outcome_dict(found["directive:dir-Z"])["action_id"] == "directive:dir-Z", (
+            "the outcome projection dropped action_id -- settlement falls back "
             "to matching on device, action class and a time window"
         )
 

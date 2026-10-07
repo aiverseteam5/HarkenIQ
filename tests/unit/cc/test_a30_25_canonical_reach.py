@@ -1148,7 +1148,11 @@ class TestDeviceBearingReadersAskTheOwnerRule:
                     continue
                 calls = {getattr(n.func, "id", getattr(n.func, "attr", ""))
                          for n in ast.walk(fn) if isinstance(n, ast.Call)}
-                assert calls & {"scope_fleet_devices", "scope_device_owned", "_owned"}, (
+                # A30.41: an outcome read selects through ONE builder,
+                # `OutcomeHistoryRepo._authorized` -- which takes a scope
+                # itself, so this same loop holds IT to scope_device_owned.
+                assert calls & {"scope_fleet_devices", "scope_device_owned", "_owned",
+                                "_authorized"}, (
                     f"{name}.{fn.name} takes a scope and applies no device-aware predicate")
 
     def test_the_guard_is_targeted_not_a_ban(self):

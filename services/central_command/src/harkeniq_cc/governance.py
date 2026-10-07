@@ -503,10 +503,11 @@ async def load_proposal_evidence_view(
     Resolves nothing. The reach is S2's `read_reach(scope, "fleet.view")`,
     and the rows are the canonical outcome read -- the call
     `/api/outcomes/metrics` makes, B0b's `scope_device_owned` applied in SQL
-    BEFORE the row window -- so a tenant, org-unit, site, device or
-    device-class reader reads exactly the outcomes their grants cover, in
-    their native types. No site is synthesized for a device, and a
-    contextual site has no field to arrive through.
+    -- so a tenant, org-unit, site, device or device-class reader reads
+    exactly the outcomes their grants cover, in their native types. No site
+    is synthesized for a device, and a contextual site has no field to
+    arrive through. A30.41: an exact tally over EVERY such row; it was the
+    oldest 10,000 of them.
     """
     from datetime import datetime, timezone
 
@@ -515,9 +516,7 @@ async def load_proposal_evidence_view(
     outcomes: tuple = ()
     if not reach_empty:
         outcomes = tuple(
-            await OutcomeHistoryRepo(session).list_outcome_dicts(
-                tenant_id, scope=reach,
-            )
+            await OutcomeHistoryRepo(session).tally(tenant_id, scope=reach)
         )
     return ProposalEvidenceView(
         autonomy=AutonomyView(sites=authorized_sites(reach)),
@@ -643,7 +642,11 @@ async def load_autonomy_inputs(session: AsyncSession, tenant_id: str) -> Autonom
 
     budgets = await AutonomyBudgetRepo(session).list_all(tenant_id)
     stop_switch = await StopSwitchRepo(session).get(tenant_id)
-    outcomes = await OutcomeHistoryRepo(session).list_outcome_dicts(tenant_id)
+    # A30.41: an exact tally over every row, so a class's evidence is all
+    # time, as it says, and S3's site selection below runs over complete
+    # counts: a hidden site's volume can no longer push a visible site's
+    # rows out of a 10,000-row window it never saw.
+    outcomes = await OutcomeHistoryRepo(session).tally(tenant_id)
     safety_rows = await SafetyStateRepo(session).list_for_tenant(tenant_id)
     sites = await SiteRepo(session).list_all(tenant_id)
     learned = await LearnedSignalRepo(session).list_active(tenant_id)
@@ -1168,7 +1171,8 @@ async def _compose_attention(
     Where `machine` is given, and only there, the inputs differ (A30.35):
 
     * outcomes pass B0b's owner predicate under the machine's `fleet.view`
-      reach, in SQL before the row limit;
+      reach, in SQL, into the database's exact statistics -- no window
+      (A30.41);
     * there is NO cohort prior -- a device is scored on its own visible
       history or is `insufficient_data`;
     * incidents are read under the machine's `incident.view` reach, for
@@ -1180,20 +1184,24 @@ async def _compose_attention(
     * the devices are handed to the composer in a total order.
 
     Where `human` is given (A30.40), the outcomes pass the same owner
-    predicate under the person's `fleet.view` reach, in SQL before the row
-    limit, and the cohort prior is computed over THOSE rows (D-P2, D-P3,
-    D-P5); a person whose reach is not the tenant is told the answer is "in
+    predicate under the person's `fleet.view` reach, in SQL, into exact
+    statistics over every such row (A30.41), and the cohort prior is
+    computed over THOSE rows (D-P2, D-P3, D-P5); a person whose reach is
+    not the tenant is told the answer is "in
     your current view" (D-P6). Everything else is a person's as it was --
     learning read through the existing windows (D-P8 is deferred).
 
-    With neither, the outcomes are the whole tenant's: the evaluator's
-    shape, byte-identical (proposal-budget ordering stays OPEN).
+    With neither, the outcomes are the whole tenant's oldest 50,000 rows:
+    the evaluator's shape, byte-identical (proposal-budget ordering stays
+    OPEN, and Phase 3 owns this window -- A30.41).
 
     Nothing else differs: one composer, one scorer, one sort, one
     `_recommend`, and `band` and `limit` after ranking.
     """
     if machine is not None and human is not None:
         raise TypeError("an attention answer is composed for ONE principal")
+    from datetime import datetime, timezone
+
     from harkeniq_cc.attention import build_attention
     from harkeniq_cc.db.repos import (
         ApprovalRouteRepo,
@@ -1207,27 +1215,39 @@ async def _compose_attention(
     from harkeniq_cc.predictive import cohort_failure_rates, score_device
     from harkeniq_cc.warranty.base import warranty_status
 
+    now = datetime.now(timezone.utc)
     devices = await FleetCacheRepo(session).list_all(tenant_id, scope=scope)
     if site_id:
         devices = [d for d in devices if d.site_id == site_id]
     if machine is not None:
         devices = sorted(devices, key=_machine_device_order)
+    # A30.41: a principal's outcome history is read EXACTLY -- the database's
+    # sufficient statistics over every row its reach reads, where it was the
+    # oldest 50,000 rows (so above that the newest, heaviest rows were the
+    # ones dropped). `outcomes` is the internal paths' rows; `stats` is a
+    # principal's statistics; exactly one of them is set.
+    outcomes = stats = None
     if machine is not None:
         # D2: only the rows this machine may read, selected in SQL before
-        # the row limit -- never the whole tenant, stripped afterwards.
-        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-            tenant_id, scope=machine.fleet,
+        # any aggregate -- never the whole tenant, stripped afterwards. No
+        # cohort: a machine is never scored on one.
+        stats = await OutcomeHistoryRepo(session).device_stats(
+            tenant_id, scope=machine.fleet, now=now, cohorts=False,
         )
     elif human is not None:
         # A30.40 (D-P3, D-P5): only the rows this person's CURRENT canonical
-        # reach reads -- B0b's owner rule, in SQL, before the row limit. A
+        # reach reads -- B0b's owner rule, in SQL, before any aggregate. A
         # moved device's rows at a site the person does not hold are that
         # site's, not the device's, and are not read. A tenant-wide reach
-        # compiles to no predicate: the same rows as before, in the same order.
-        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-            tenant_id, scope=human.fleet,
+        # compiles to no predicate: every row, as before.
+        stats = await OutcomeHistoryRepo(session).device_stats(
+            tenant_id, scope=human.fleet, now=now,
         )
     else:
+        # The internal decision paths: UNCHANGED (A30.41). Their Attention
+        # rank decides which devices consume an agent's proposal budget, so
+        # this read -- the oldest 50,000 rows -- stays byte-identical until
+        # Phase 3 (proposal-budget ordering) owns it.
         outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
     warranty_map = await WarrantyRepo(session).get_map(
         [d.service_tag for d in devices], tenant_id=tenant_id,
@@ -1288,9 +1308,11 @@ async def _compose_attention(
     # A30.40 (D-P2, D-P9): a person IS scored on a cohort -- the same
     # function, over the rows selected above, so for a scoped person it is
     # the cohort of their current view and nothing more.
-    cohorts = cohort_failure_rates(outcomes) if machine is None else {}
+    cohorts = cohort_failure_rates(
+        outcomes if stats is None else stats.cohort_tallies,
+    ) if machine is None else {}
     by_device: dict[str, list[dict]] = {}
-    for oc in outcomes:
+    for oc in outcomes or ():
         by_device.setdefault(oc["device_agent_id"], []).append(oc)
 
     risks = []
@@ -1299,6 +1321,7 @@ async def _compose_attention(
         risk = score_device(
             agent_id=dev.agent_id,
             outcomes=by_device.get(dev.agent_id, []),
+            history=None if stats is None else stats.devices.get(dev.agent_id),
             cohort_failure_rate=cohorts.get((dev.vendor, dev.model)),
             health=dev.health,
             warranty_status=warranty_status(warranty.end_date) if warranty else "",

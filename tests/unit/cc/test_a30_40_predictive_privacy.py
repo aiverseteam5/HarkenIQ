@@ -449,10 +449,14 @@ class TestStructure:
                     selection=ReadReach(tenant_id=full.tenant, permissions=("fleet.view",)))
 
     def test_the_predictive_route_reads_outcomes_under_its_reach(self):
+        # A30.41: the one read is now `device_stats` -- exact, no window --
+        # and the windowed read is the internal paths' alone.
         fn = next(f for f in ast.walk(_tree("api/predictive.py"))
                   if isinstance(f, ast.AsyncFunctionDef) and f.name == "device_risk")
+        attrs = [getattr(n.func, "attr", "") for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        assert "list_device_outcome_dicts" not in attrs
         calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
-                 and getattr(n.func, "attr", "") == "list_device_outcome_dicts"]
+                 and getattr(n.func, "attr", "") == "device_stats"]
         assert len(calls) == 1
         scope = {k.arg: k.value for k in calls[0].keywords}.get("scope")
         assert isinstance(scope, ast.Name) and scope.id == "reach"
@@ -491,11 +495,12 @@ async def _bulk(stack, site: str, device: str, n: int, *, outcome: str, days_ago
 
 
 class TestTheWindowIsF_E2_4s:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F-E2-4 (A30.40 D-P10): the predictive read keeps the OLDEST 50000 rows "
-        "of the reader's own set. Canonical reach is applied before the window, "
-        "so hidden volume never decides membership; the window itself is the "
-        "F-E2-4 correctness slice's to remove, with the 10k window."))
+    """D-P10 named the reader's own 50,000-row window as F-E2-4's to remove,
+    and pinned it with a strict xfail for that slice to invert. A30.41 is
+    that slice: the predictive read is exact over every row, so the pin is
+    inverted here -- never deleted -- and A30.41's own module proves the
+    boundary from both sides."""
+
     async def test_a_reader_with_more_than_50000_outcomes_counts_them_all(self):
         full = await P.build()
         await _bulk(full, "A", "a1", 50_000, outcome="SUCCESS", days_ago=1)
@@ -510,4 +515,7 @@ class TestTheWindowIsF_E2_4s:
         await _bulk(full, "C", "c1", 50_000, outcome="FAILURE", days_ago=400)
         assert await _both(full, "h-site-a") == before
         tenant = await P.predictive(full, "h-owner")
-        assert tenant["outcomes_considered"] == 50_000   # the window exists
+        # A30.41: the control used to show the window existed (exactly
+        # 50,000 -- the oldest rows, the hidden ones, and none of the rest).
+        # It now reads every row.
+        assert tenant["outcomes_considered"] == 50_000 + _oracle_count("h-owner")
