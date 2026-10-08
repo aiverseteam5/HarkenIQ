@@ -6644,3 +6644,139 @@ too.
   the cross-site and A6-2 reads, B0b's builder, the `0027` head pins.
 * **The receipt now reads settlement's keyed read**, so for a key with two
   rows they name one outcome.
+
+## §34w — Proposal-budget ordering: Model F ratified (A30.42) — recorded, not built
+
+A30.42 records the decisions; this section is the shape the three slices
+(PB-0, PB-1, PB-2) build against. Nothing here is code. A design that departs
+from it is a new amendment first. Paths: `harkeniq_cc/` (CC),
+`harkeniq_sm/` (SM), `harkeniq/` (node).
+
+### The pipeline as found (on `c218884`)
+
+| # | Stage | Where | Found |
+|---|---|---|---|
+| 0 | Trigger | `runtime` → `agent_runtime.operational_agent_loop`, 120 s | runs on EVERY CC replica; no leader |
+| 1 | Evaluator inputs | `agent_runtime` | fleet tenant-wide; open incidents tenant-wide newest 1,000, no tie-break; catalogue `(subsystem, action_type)`; reach from `load_agent_reach`; attention from `load_attention(where_reach)` = the tenant's oldest 50,000 outcomes + a tenant-wide cohort prior; `all_dedupe_keys` = every key ever; `proposals_today` read BEFORE any lock |
+| 2 | Generate | `operational_agent.evaluate` | devices by `(attention rank, agent_id)`; one proposal per device per pass; stops at `budget_left == 0`, decremented in memory |
+| 3 | Govern | `govern_proposal` | site-local assessment (S3-E1); DENIED → `blocked`, AUTONOMOUS → `approved`, else `awaiting_approval`; freezes evidence and attention |
+| 4 | Admit | `proposal_admission.admit_proposal` | tenant advisory lock; dedupe + operation fence re-checked; NO budget check |
+| 5 | Approval | `api/approvals._decide_agent_proposal` | status read without a lock; E0.1 ledger; SM called BEFORE commit; a transport error leaves `approved` |
+| 6 | Dispatch selection | `dispatch_decided` | oldest 500 `approved` by `created_at`, no `id`, no row lock; one commit per pass |
+| 7 | Revalidation | `revalidate_dispatch` → `dispatch_permitted` | current state; the gate named `budget` checks pause |
+| 8 | Unattended budget | `_unattended_allowed` → `executions_used` | counts every attributed outcome + in-flight dispatches, any basis; no lock |
+| 9 | SM routing | `DispatchAction` → `directives.enqueue_action` | inserts unconditionally; no idempotency on `proposal_id`; site window not consulted (F-8) |
+| 10 | Node | `agent` gate funnel | allow list, preconditions, stop, lease, blast radius on both bases — final |
+| 11–12 | Outcome, settlement | SM `outcomes`; `settle_outcomes` | `directive:<id>`; exact keyed join (A30.41) |
+| 13 | Retry | — | no claim, no expiry, no cancel, no reconciliation of SM-accepted-but-uncommitted |
+
+### Budgets, after Model F
+
+| Budget | Question it answers | Charged | Enforced at | Released |
+|---|---|---|---|---|
+| Admission (`max_proposals_per_day`) | more work in front of governance today? | non-`blocked` row insert | `admit_proposal`, inside the tenant lock, both callers | never |
+| Unattended (`execution_budget`/`budget_period`) | delegated work launched without a human this period? | reserved at the claim, committed on SM acceptance | the dispatch claim, under a per-agent lock | only if the SM refuses before queueing |
+| SM site window | final local autonomous safety capacity | node-path `ReportAction` today; directed work after D-PB12's SM slice | SM | (SM-owned) |
+| Node blast radius, lease | execution safety | every execution, both bases | node | (node-owned) |
+
+Human-approved work consumes the admission budget only; it never consumes or
+waits on the unattended budget, and stays bounded by the safety budgets
+(blast radius, halts, the global gate). Autonomous work consumes admission at
+admission and unattended at SM acceptance; exhaustion returns it to the human
+queue (`withhold_unattended`, A19 D2). A budget is never an input to
+disposition, basis, scope, approval, the dispatch gates or the node.
+
+### PB-0 — dispatch idempotency
+
+* **The claim.** `UPDATE cc_agent_proposals SET dispatch_claimed_at = now()
+  WHERE id = :id AND status = 'approved' AND (dispatch_claimed_at IS NULL OR
+  dispatch_claimed_at < now() - :lease) RETURNING …` — one winner. Committed
+  BEFORE the SM call on BOTH paths: `dispatch_decided` and the synchronous
+  approval path, which commits the approval and the claim first. The lease
+  length is PB-0's boundary to present.
+* **The SM key.** `sm_directives.idempotency_key = 'proposal:<id>'`, unique;
+  `DispatchAction` on a conflict returns the existing directive, and CC
+  records `idempotent_replay: true` on `agent_proposal.dispatched`.
+* **Selection.** Keyset over every `approved` proposal by `(created_at, id)`,
+  replacing the oldest-500 read; a withheld proposal no longer starves newer
+  ones.
+* **Recovery.** A committed claim found on the next pass (crash, lost ack,
+  another replica) is re-sent with the same key; the SM answers with the
+  directive it already holds. No lock is held across the network call.
+
+### PB-1 — budget semantics
+
+* **Admission.** Inside `pg_advisory_xact_lock(cc.proposal_admission.{tenant})`:
+  COUNT today's non-`blocked` rows for (tenant, agent), refuse
+  `proposal_budget_exhausted` at the limit, else insert. `evaluate()` keeps a
+  soft cut for its own selection only.
+* **Transient denials (T1).** Tenant stop switch and SM halt produce no row;
+  the dry-run's withheld list and discovery say why; the condition is
+  proposed again after the switch lifts. A1's `test_stop_switch_blocks_*`
+  pins are inverted under new names, intent kept.
+* **Unattended.** Per-agent lock `cc.agent_execution.{tenant}.{agent}`:
+  count reserved + committed `autonomous_grant` claims in the window, claim,
+  commit, release — then call the SM. SM refusal before queueing releases
+  (`failed`); node refusal or failure after acceptance keeps the charge.
+  `count_executions` gains its tenant predicate; human-approved executions
+  stop counting (the stated one-time headroom widening). Discovery's
+  `execution_budget.used` changes meaning and `discovery_version` is bumped.
+* **Cleanups.** `DISPATCH_GATES` `budget` → `agent_pause`; the fake
+  `actions_used` stops (null-with-reason vs derived: PB-1's boundary);
+  `/runtime` `proposals_in_window` uses the proposal day.
+
+### PB-2 — evaluator ordering
+
+* **Inputs.** Select, then compose over the agent's `where_reach`: exact
+  per-device statistics (A30.41 `device_stats(scope=…)`, no window); open
+  incidents read under that reach with no tenant-wide pre-window. NO cohort
+  prior. `list_device_outcome_dicts` is deleted — it has no remaining caller.
+* **Total order.** Devices `(driver, band, -score, agent_id, site_id)` —
+  `site_id` added in the evaluator only, the shared composer's sort
+  untouched; conditions `unreachable` first, then incidents by
+  `(opened_at desc, incident_id)`; candidates by catalogue
+  `(subsystem, action_type)` (documented accident; explicit priority is a
+  later catalogue decision).
+* **Ingress and dry-run.** Ingress admissibility stops depending on the rank
+  cut; the dry-run lists cut candidates with `proposal_budget_exhausted`.
+* **Oracle.** For every scoped agent, decisions over the full estate equal
+  decisions over the estate reduced to its reach (admitted set, order, dedupe
+  keys, frozen `evidence.attention`, dry-run order, the cut), with a
+  tenant-wide control that differs and the current code failing it.
+* **Cost.** Exact `device_stats` measured 0.16 s site-scoped, 0.69 s
+  tenant-wide at 1.1M rows, per agent per 120 s pass: fine for tens of
+  agents; for hundreds, memoize per pass by reach signature (the existing
+  incremental-aggregate follow-up).
+
+### Migrations (ratified)
+
+* CC `0029`: `cc_agent_proposals.dispatch_claimed_at` (nullable
+  timestamptz); indexes `(tenant_id, agent_id, created_at)`,
+  `(tenant_id, status, created_at, id)`,
+  `(tenant_id, agent_id, authorization_basis, dispatched_at)` — CONCURRENTLY,
+  guarded, as `0028`.
+* SM `0012`: `sm_directives.idempotency_key` (nullable, unique), written for
+  new directives only; existing duplicates untouched.
+* No proto change (`proposal_id` already rides `DispatchAction`, tag 9). No
+  new table.
+
+### Why not the other models
+
+* **A — charge at creation:** today's proposal budget; charges `blocked` rows
+  and transient denials (PB-F3). Right as an admission quota only.
+* **B — charge after governance eligibility:** the refinement adopted for
+  admission (the lock already exists, so no race).
+* **C — charge before dispatch:** adopted for the unattended budget; needs
+  PB-0 first.
+* **D — separate budgets:** the frame Model F keeps.
+* **E — reservation ledger:** a second lifecycle duplicating the proposal's;
+  the proposal row is already the unique, idempotent reservation handle. Its
+  semantics are kept, its table is not.
+
+### Out of this phase
+
+PB-F12 (F-8/F-10) → the Site Manager slice of D-PB12 (consume at
+`DispatchAction` acceptance and persist the windows together). PB-F14
+(campaign check → SM → insert) → needs an owner. Loop leadership →
+efficiency follow-up (D-PB13). Expiry and cancellation → product follow-up
+(D-PB14). D-P8 → deferred. Taxonomy → not started.
