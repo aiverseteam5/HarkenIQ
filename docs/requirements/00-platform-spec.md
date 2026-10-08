@@ -6503,3 +6503,293 @@ decided here.
    0, true under the old code as well. DJ now names a device of its own,
    and DK seeds five site-A rows NEWER than the 10,001 at site B -- the rows
    an oldest-first window would have pushed out -- and requires them.
+
+**A30.42 — Proposal-budget ordering: Model F RATIFIED — separated capacities,
+ledgers derived from rows, each enforced at one point; dispatch idempotent end
+to end; ordering over the agent's own reach only (Phase 3 of Vinod's
+2026-10-04 sequence; architecture checkpoint produced by Claude on `c218884`;
+decided: Vinod, 2026-10-08 — D-PB1–D-PB14 ratified AS RECOMMENDED, the schema
+recommendation included; docs only, NOT implemented).** A30.41 left the
+internal decision paths' oldest-50,000 outcome read byte-identical as the
+input this phase owns, and recorded `dispatch_decided`'s oldest-500 read as
+dispatch ordering. The checkpoint traced the whole proposal pipeline —
+evaluator inputs → `evaluate` → `govern_proposal` → `admit_proposal` →
+approval routing → dispatch selection → `revalidate_dispatch` → the unattended
+budget → Site Manager `DispatchAction` → node → outcome → settlement → retry —
+inventoried 21 budget-like quantities, and found fourteen defects or
+ambiguities (PB-F1–PB-F14). Seven reproductions EXECUTED against `c218884`,
+outside the repository, all confirm their defect; the rest were established
+from the code. Each is marked below.
+
+**What the checkpoint found.** **PB-F1 (HIGH, safety): one approved proposal
+can produce two directives and two executions** (reproduced: R3, R3b). Four
+ways: a lost `DispatchAction` acknowledgement leaves the proposal `approved`
+and the next pass re-sends it; a mid-pass commit failure rolls back every
+mark of a pass whose directives the Site Manager already holds
+(`dispatch_decided` commits once, at the end); the background loops run on
+EVERY Central Command replica with no row lock and no leader; and two
+approvers completing at once both read the status without a lock and call the
+Site Manager before committing. `directives.enqueue_action` inserts
+unconditionally — there is no idempotency on `proposal_id` — and every extra
+execution writes an extra attributed outcome, charging the execution budget
+and the SITE ERROR BUDGET twice; a node blast-radius refusal of the duplicate
+becomes a FAILURE that can trigger drop-back. **PB-F2 (MEDIUM):** the daily
+proposal budget is read before the admission lock, inside `evaluate()`, and
+`admit_proposal` never checks it, so concurrent admitters exceed it
+(reproduced: R2). **PB-F3 (MEDIUM):** a transient safety denial (tenant stop
+switch, Site Manager halt) becomes a `blocked` row that spends a daily slot,
+and because `all_dedupe_keys` returns every key ever used, that condition is
+NEVER proposed again after the switch lifts — against D16, under which only a
+DENIAL is final (reproduced: R1). **PB-F4 (MEDIUM, semantic):**
+human-approved executions spend the UNATTENDED budget; A19.7 says both that
+the budget "counts actions executed under the agent's attribution key" and
+that it is the "delegated unattended allowance", and the code follows the
+first sentence, so approving work by hand starves autonomy (reproduced: R4).
+**PB-F5 (MEDIUM, privacy/ordering):** outcome rows at sites OUTSIDE the
+agent's reach decide which in-reach device gets a scarce slot — the
+tenant-wide cohort prior, a moved device's history at another site, the
+oldest-50,000 cutoff (past 50,000 outcomes no new outcome moves the rank), and
+an untie-broken cut (reproduced: R5; the control removes the hidden rows and
+the choice flips). **PB-F6 (MEDIUM):** the evaluator's open-incident read is
+tenant-wide and limited to the newest 1,000, so incident volume outside the
+agent's reach can push in-reach conditions out of evaluation (code). **PB-F7
+(MEDIUM):** ingress can only match candidates above the internal rank cut, so
+an external runtime's chosen candidate is refused `candidate_not_current`, and
+the dry-run omits cut candidates with no reason (reproduced: R6, dry-run
+part). **PB-F8 (LOW–MEDIUM):** dispatch reads only the oldest 500 approved
+proposals and a withheld one stays `approved`, starving newer ones (A30.41
+(b); code). **PB-F9 (LOW):** `count_executions` has no tenant predicate; an
+outcome ingested while its proposal is still `dispatched` is counted twice
+transiently; window kinds are mixed (calendar day vs rolling 7/30 days); and
+`/runtime`'s `proposals_in_window` uses the execution window, not the
+proposal day (code). **PB-F10 (LOW):** `cc_autonomy_budgets.actions_used` has
+no writer yet is published as `0` in `/api/policies` and the autonomy posture
+(code). **PB-F11 (LOW, naming):** the dispatch gate named `budget` checks
+PAUSE (code). **PB-F12:** the recorded F-8/F-10 — directed autonomous work
+neither consumes nor is refused by the Site Manager's in-memory per-site
+window (S3-E1-0). **PB-F13 (LOW, ordering):** candidate preference within a
+condition is alphabetical by `action_type` (an accident of the catalogue's
+`ORDER BY`); incident order has no tie-break; `attention_by_device` is keyed
+by `agent_id` alone (code). **PB-F14 (same class as PB-F1, outside this
+phase):** campaign dispatch is check → Site Manager → insert, so replicas can
+double-dispatch a wave target (code). Also from the code: the evaluator's
+`proposals_today` is read before any lock, its decrement is in memory only,
+and nothing expires, cancels or reconciles a dispatch the Site Manager
+accepted and Central Command did not commit.
+
+**Model F — the ratified target model.** *(1) The proposal (admission)
+budget* is `max_proposals_per_day` and answers: may this agent put more work
+in front of governance today? It is checked AND charged by `admit_proposal`,
+for both callers (evaluator and ingress), INSIDE the existing tenant admission
+lock; it counts admitted rows that are not `blocked`, per UTC day, and is
+never released. `evaluate()` keeps only a soft cut for its own selection; it
+stops being the budget's authority. *(2) The unattended execution budget* is
+`execution_budget`/`budget_period` and answers: how much delegated work may
+launch without a human this period? It counts ONLY `autonomous_grant`
+dispatches the Site Manager ACCEPTED — reserved at the dispatch claim,
+committed on acceptance, released only if the Site Manager refuses before
+queueing. Human-approved work never touches it. *(3) Dispatch idempotency* is
+the precondition for both: on every path a per-proposal claim (a conditional
+`UPDATE`) is committed BEFORE the Site Manager call, and `DispatchAction` is
+idempotent on `proposal_id`. One proposal → at most one directive → at most
+one charge. *(4) Ordering* happens only where scarcity forces a choice — the
+evaluator's own selection, and FIFO among approved autonomous work — over
+inputs drawn from the agent's own reach, in a total deterministic order. *(5)
+Budget is never authority.* A budget can only refuse, withhold, or return
+work to the human queue (A19 D2's ratified shape); it is never an input to
+disposition, basis, scope, approval, the dispatch gates or the node, and this
+is pinned structurally. The canonical separation: *should this candidate
+become a governed proposal?* — evaluation (`govern_proposal`); *have approval
+requirements been satisfied?* — the E0.1 ledger; *may it progress without a
+human?* — autonomy (S5 / S3-E1, D11); *is scarce capacity available for this
+class of work?* — the two agent budgets; *is it still authorized and eligible
+now?* — `revalidate_dispatch`; *is it executable safely on the target?* — the
+node.
+
+**The ratified decisions (D-PB1–D-PB14, as recommended).**
+**D-PB1:** two separate agent budgets — admission and unattended — are kept.
+**D-PB2:** the admission budget is checked and charged inside the admission
+lock; the count excludes `blocked`; per UTC day; never released.
+**D-PB3 — T1:** a transient denial (tenant stop switch, Site Manager halt)
+creates NO proposal row; it is explained in the dry-run's withheld list and
+in discovery, and the condition is proposed again once the switch lifts. This
+REVERSES A1's pinned behaviour (`test_stop_switch_blocks_*`), which the
+implementing slice inverts under new names with the intent kept. (T2 —
+record `blocked` but neither count nor fence the key — was not chosen.)
+**D-PB4:** the unattended budget counts only Site Manager-accepted
+`autonomous_grant` dispatches. This AMENDS A19.7's wording: "executions under
+the attribution key" becomes "unattended dispatches". Transition effect,
+stated: on upgrade the human-approved executions already inside the current
+window stop counting, which widens unattended headroom ONCE, by at most that
+number.
+**D-PB5:** a dispatch claim plus Site Manager idempotency, on both paths
+(background and synchronous approval), shipped FIRST as PB-0.
+**D-PB6:** keyset dispatch selection over EVERY approved proposal by
+`(created_at, id)` (closes PB-F8); unattended capacity is allocated FIFO by
+admission.
+**D-PB7:** the evaluator ranks over its OWN reach (select, then compose over
+`where_reach`); the oldest-50,000 read `list_device_outcome_dicts` is DELETED;
+the cohort prior is NONE, matching machine Attention (A30.35 D2), so the
+evaluator ranks exactly as the agent's own machine Attention ranks. (An
+own-reach cohort, A30.40 D-P9 style, was not chosen.)
+**D-PB8:** a total deterministic order — devices `(driver, band, -score,
+agent_id, site_id)`, with the shared composer's sort untouched and `site_id`
+added in the evaluator only; conditions `unreachable` first, then incidents by
+`(opened_at desc, incident_id)`; candidates in catalogue order
+`(subsystem, action_type)`. The alphabetical candidate preference is
+documented as a product accident; an explicit priority is a later catalogue
+decision.
+**D-PB9:** ingress admissibility is decoupled from the rank cut, and the
+dry-run reports cut candidates (code `proposal_budget_exhausted`, bounded).
+**D-PB10:** the in-reach shared-pool channel is DISCLOSED, not partitioned
+(per-site quotas were not chosen) — see H2 below.
+**D-PB11:** cleanups — the misnamed `budget` dispatch gate is renamed
+`agent_pause`; the fake `actions_used` stops being published (whether it
+becomes null-with-a-reason or derived is presented in PB-1's boundary);
+`/runtime`'s `proposals_in_window` uses the proposal day.
+**D-PB12:** F-8/F-10 (PB-F12) stay a SEPARATE Site Manager-owned slice —
+consume the window at `DispatchAction` acceptance AND persist it — because
+making dispatch consume an in-memory window would let a restart refill it.
+Until then this phase pins the existing relationship: Central Command never
+dispatches autonomous work into a site that reports
+`budget_window_exhausted`.
+**D-PB13:** loop leadership across replicas is an EFFICIENCY follow-up only;
+after the claim and the Site Manager key, correctness no longer depends on a
+single replica.
+**D-PB14:** no expiry and no cancellation in this work. The admission charge
+is permanent and the unattended charge happens only on acceptance, so neither
+needs a release path; expiry/cancellation is a product follow-up, and the
+tests assert its absence (no hidden release path).
+
+**Hidden state.** *H1 — outside the agent's reach — MUST close.* Sites the
+agent cannot reach may not influence ranking, admission, or which visible
+proposal appears first (PB-F5, PB-F6). The oracle the implementation adopts,
+for site-, org-unit-, device-, device_class- and mixed-scoped agents: *the
+agent's decisions over the full estate == its decisions over an estate reduced
+to its own reach* — compared over the set of admitted proposals, their order,
+dedupe keys, frozen `evidence.attention`, dry-run order and the budget cut;
+excluded by ratified design are S3-E2's creation record (D2/D7) and the
+closed global gate (A30.30(c): it may reduce eligibility, never order or
+admit). Non-vacuity: the current code fails the oracle (R5), and a
+tenant-wide control must differ. *H2 — inside the agent's reach, hidden from
+an observer — DISCLOSED (D-PB10).* An approver who sees only site A of an
+agent spanning A and B can infer that B's work consumed slots. Per-observer
+equivalence is impossible for ANY shared capacity (only a per-device budget
+would remove it, which defeats a budget); the leak is bounded to whether and
+when the observer's own visible proposals appear, and rank, band and score
+stay withheld from scoped readers and machines (S3-E2). Hidden state is not a
+factor in budget consumption (only the agent's own rows count), suppression
+(target site only, S3-E1), or dispatch delay (only through the ratified
+closed gate).
+
+**Concurrency (no path checks then decrements).** Admission: the existing
+`pg_advisory_xact_lock(cc.proposal_admission.{tenant})`, then the COUNT of
+today's counted rows AFTER the lock, then insert, then commit — under READ
+COMMITTED the second racer's COUNT starts after the first commit. Unattended
+dispatch: a per-agent advisory lock `cc.agent_execution.{tenant}.{agent}`,
+count reserved + committed in the window, claim, then COMMIT AND RELEASE
+BEFORE THE NETWORK CALL. Same-proposal dispatch: `UPDATE … SET
+dispatch_claimed_at = now() WHERE id = :id AND status = 'approved' AND
+(dispatch_claimed_at IS NULL OR dispatch_claimed_at < now() - :lease)
+RETURNING` — exactly one winner. Site Manager: a unique idempotency key, an
+insert conflict returning the existing directive. NO lock is ever held across
+the Site Manager round trip. Rejected: a counter row with `UPDATE … WHERE
+remaining > 0` (hot row, daily resets, drift from the facts); SERIALIZABLE
+(retry storms); a version column (equivalent to the CAS).
+
+**Lifecycle.** No new status value; the receipts and approvals vocabularies
+stay closed. The admission charge happens when a non-`blocked` row is inserted
+and never changes — approval, denial, dispatch, failure, scope revocation and
+the stop switch release nothing. The unattended charge is derived per
+proposal: `uncharged` → **reserved** (claim committed, basis autonomous, no
+directive yet) → **committed** (Site Manager accepted; `directive_id` set) or
+**released** (Site Manager refused → `failed`). A crash while reserved is
+resolved by an idempotent re-send; revoked scope, the stop switch and safety
+are caught by revalidation BEFORE the claim, so nothing is reserved; failure
+or node refusal after commit keeps the charge; exhaustion is
+`withhold_unattended` (A19 D2) and reserves nothing. Retry: a transient Site
+Manager failure keeps the claim and the next pass re-sends with the same key;
+a node refusal settles FAILURE and is never re-dispatched (A1, unchanged);
+ingress replay returns the original answer (A24, unchanged); a new condition
+is a new key and a new admission.
+
+**Layering.** Central Command's budgets are admission and scheduling capacity
+for an agent; the Site Manager's site window is the final LOCAL autonomous
+safety capacity; the node is the final EXECUTION authority. They never compete
+as authorities: the Central Command budgets only narrow, and the Site Manager
+and node checks run after them, independently.
+
+**Auditability and exposure.** The only new durable state is
+`dispatch_claimed_at`; no `budget_before`/`budget_after` columns (derivable,
+and they would go stale). Never admitted: the dry-run `withheld` list and the
+ingress refusal gain code `proposal_budget_exhausted` (recorded as an attempt,
+not chained — A24.16); discovery already shows `remaining_today`. Admitted but
+not dispatched: the existing `dispatch_reason` and `dispatch_withheld` /
+`unattended_withheld` audit entries, one per distinct cause. Dispatched:
+`agent_proposal.dispatched` gains `idempotent_replay: true` when the Site
+Manager returned an existing directive. Discovery's `execution_budget.used`
+CHANGES MEANING (unattended only), so `discovery_version` is bumped. Never
+exposed: tenant-wide counts, other agents' usage, and rank, score or band to
+machines or scoped humans (S3-E2 unchanged).
+
+**Schema, ratified (additive, nullable, no backfill; no proto change, no new
+table — Model E's reservation ledger is not needed because the proposal row is
+already the unique, idempotent reservation handle).** CC migration `0029`:
+`cc_agent_proposals.dispatch_claimed_at` (nullable timestamptz) and the
+indexes `(tenant_id, agent_id, created_at)`, `(tenant_id, status, created_at,
+id)` and `(tenant_id, agent_id, authorization_basis, dispatched_at)`, built
+CONCURRENTLY like `0028`. SM migration `0012`: `sm_directives.idempotency_key`
+(nullable, unique), written as `proposal:<id>` for NEW directives only —
+historical duplicates (R3 shows they can exist) stay untouched, so the
+migration cannot fail on existing data. `proposal_id` already rides
+`DispatchAction` (tag 9).
+
+**Change surface, stated so it cannot drift.** Permissions — UNCHANGED.
+Machine ceiling — UNCHANGED. Routes — UNCHANGED (no route added or removed;
+additive response codes; one discovery field changes meaning). Authorization
+model — UNCHANGED. Approval model — UNCHANGED (ledger, policy and completion
+rule untouched; only the commit order around the Site Manager call moves,
+which is dispatch). Dispatch model — CHANGE REQUIRED (claim before call,
+idempotent Site Manager, keyset selection, the unattended charge point; every
+gate unchanged). Node semantics and node finality — UNCHANGED. Historical
+proposal rows — NEVER rewritten. D-P8 — DEFERRED. Taxonomy — NOT STARTED.
+
+**Implementation sequence (ratified; none started).** Each is its own PR,
+merged and main-verified before the next begins, and each requires independent
+Codex review because each changes dispatch, budget or ordering semantics:
+**PB-0 — dispatch idempotency** (PB-F1, PB-F8; D-PB5, D-PB6's keyset; the
+safety prerequisite, FIRST). **PB-1 — budget semantics** (PB-F2, PB-F3,
+PB-F4, PB-F9, PB-F10, PB-F11; D-PB2, D-PB3, D-PB4, D-PB11). **PB-2 — evaluator
+ordering** (PB-F5, PB-F6, PB-F7, PB-F13 and the 50,000-row path; D-PB7,
+D-PB8, D-PB9). Each slice presents its own implementation boundary before any
+code; a boundary that departs from this text is a new dated amendment first.
+**Separate owners, not in this sequence:** PB-F12 → the Site Manager slice of
+D-PB12; PB-F14 (campaign double dispatch) → needs an owner.
+
+**Proof obligations the slices inherit.** Master oracle: H1 deletion
+equivalence with a tenant-wide control and non-vacuity against the current
+code. Budget arithmetic (0, 1, N; across versions; `blocked` not counted; UTC
+day boundary; 20 deterministic reruns). Races on REAL PostgreSQL (two racers
+for the last slot; 100 concurrent admitters admitting exactly N; duplicate
+ingress keys; evaluator and ingress at once). Dispatch idempotency (a lost
+ack; a crash after Site Manager acceptance and before Central Command commit;
+two replicas; two approvers completing together; concurrent same key at the
+Site Manager) — exactly one directive and one charge in each. Basis
+(human-approved never charged or gated; autonomous charged on acceptance only;
+Site Manager refusal releases; node refusal keeps). Lifecycle (denied,
+global-gate-withheld, halted and stop-switched — no row, re-proposed after
+lifting — revoked, expired and moved targets uncharged; expiry and cancel
+absent). Hidden state (poisoned hidden site: outcomes, incidents beyond 1,000,
+a moved device, more than 50,000 rows, a backfill; equal timestamps and
+ranks). Preservation (historical proposal rows byte-identical; S3-E2 creation
+and viewer outputs for old rows; A30.40/A30.41 principal goldens; internal
+goldens DELIBERATELY inverted with intent kept; every S1–S4, B0b, B0c, B1, B2,
+G12, A23/A26, A6-4A and S3-E1 group at its count). Structural (budget absent
+from `dispatch_permitted`, `effective_disposition`, `revalidate_dispatch` and
+the admission verdicts; exactly one admission charge site and one claim site;
+`list_device_outcome_dicts` has no callers). Live gate (duplicate-free
+dispatch under an injected ack loss; the last-slot race; a lifted stop switch
+re-proposes; hidden-site rows leave a site-A choice byte-identical).
+
+**Unchanged by this amendment:** no production code, no migration, no route,
+no permission, no ceiling; CC head `0028`, SM `0011`, Console `0004`.
