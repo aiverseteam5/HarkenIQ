@@ -3419,15 +3419,26 @@ cc = root / "services/central_command/src/harkeniq_cc"
 rt = (cc / "agent_runtime.py").read_text()
 ap = (cc / "api/approvals.py").read_text()
 
-body = rt.split("async def dispatch_decided(")[1]
-loop = body.split("for proposal in pending:")[1]
+# PB-0 (A30.43) moved the background pass's per-proposal body into
+# `_dispatch_one` and both paths' Site Manager call into ONE sender,
+# `_send_claimed`; the rule is unchanged and now also covers the claim:
+# gate, then claim, then send -- on both paths.
+assert "_dispatch_one(" in rt.split("async def dispatch_decided(")[1].split("\nasync def ")[0]
+loop = rt.split("async def _dispatch_one(")[1].split("\nasync def ")[0]
 gate = loop.index("revalidate_dispatch(")
 basis = loop.index("BASIS_AUTONOMOUS")
 assert gate < basis, "the lifecycle gate must run BEFORE the basis is consulted"
+assert gate < loop.index("claim_dispatch(") < loop.index("_send_claimed("), (
+    "background: gate, then claim, then the Site Manager call")
+assert "dispatch_action(" not in loop
 
 sync = ap.split("async def _decide_agent_proposal(")[1].split("\nasync def ")[0]
-assert sync.index("revalidate_dispatch(") < sync.index("dispatch_action("), (
-    "the synchronous approval path must ask the ONE gate before the SM call")
+assert (sync.index("revalidate_dispatch(") < sync.index("claim_dispatch(")
+        < sync.index("_send_claimed(")), (
+    "the synchronous approval path must ask the ONE gate, then claim, before the SM call")
+assert "dispatch_action(" not in sync
+sender = rt.split("async def _send_claimed(")[1].split("\nasync def ")[0]
+assert "dispatch_action(" in sender and "timeout=DISPATCH_RPC_TIMEOUT_S" in sender
 
 check = rt.split("async def revalidate_dispatch(")[1].split("\nasync def ")[0]
 code = check.split('"""', 2)[2]
@@ -3440,7 +3451,7 @@ for expected in ("STATUS_ACTIVE", "paused_reason", "AgentIdentityRepo",
                  "bound_action_classes", "dispatch_permitted("):
     assert expected in code, expected
 print("ONE dispatch gate: lifecycle, identity, stop switch, reach and binding,"
-      " asked on both paths before the basis and before the SM call")
+      " asked on both paths before the basis, the claim and the SM call")
 A5PY
 
 # And the credential really does stop the moment the agent is retired.
