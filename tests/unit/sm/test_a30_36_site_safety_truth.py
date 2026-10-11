@@ -536,9 +536,19 @@ class TestCentralCommandDifferential:
 
     async def test_a_truthfully_reported_halt_is_a_local_denial(self):
         """R3(f) over THIS branch's Site Manager, which reports the halt it
-        enforces (E1-0, F-1): the site's classes are denied and its
-        proposals blocked -- nothing about it is left for a human to
-        approve. Before the halt, CC reads exactly what main read."""
+        enforces (E1-0, F-1): the site's classes are denied and nothing
+        about it is left for a human to approve. Before the halt, CC reads
+        exactly what main read.
+
+        PB-1 (A30.42 D-PB3, T1) changed only the RECORD of that denial: a
+        halt at the target's own site is transient, so it creates no
+        proposal row (it was a `blocked` row from E1-0 until PB-1) and the
+        condition is proposed again once the halt lifts. The denial itself
+        -- every class denied, naming the halt -- is unchanged."""
+        from harkeniq_cc.autonomy import action_risk_map, never_budget_grantable
+        from harkeniq_cc.operational_agent import transient_denial_code
+
+        risk = action_risk_map()
         ours = await E.run_stages("single")
         for recorded, now in zip(GOLDEN["single"], ours):
             cc = now["cc"]
@@ -551,8 +561,19 @@ class TestCentralCommandDifferential:
                 assert any(b["code"] == "site_stop_switch_active"
                            for b in row["blocking_conditions"]), name
                 assert recorded["cc"]["classes"][name]["disposition"] != "denied", name
-            assert {p["status"] for p in cc["proposals"]} == {"blocked"}
-            assert "blocked" not in {p["status"] for p in recorded["cc"]["proposals"]}
+                # The absence below is T1's, by the one rule: the class is
+                # not fenced, so its denial is the halt's and is transient.
+                fenced = never_budget_grantable(risk[name])
+                assert not fenced, name
+                assert transient_denial_code(
+                    row["disposition"], {"never_budget_grantable": fenced},
+                    row["blocking_conditions"],
+                ) == "site_stop_switch_active", name
+            # NON-VACUITY: main, which never reported the halt, proposed for
+            # this very condition at this stage -- so the halt is what
+            # removed it, and nothing remains for a human to approve.
+            assert recorded["cc"]["proposals"], "main proposed nothing here"
+            assert cc["proposals"] == []
 
     async def test_multi_site_inputs_differ_only_by_the_corrections(self):
         ours = await E.run_stages("multi")
