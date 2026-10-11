@@ -3419,15 +3419,26 @@ cc = root / "services/central_command/src/harkeniq_cc"
 rt = (cc / "agent_runtime.py").read_text()
 ap = (cc / "api/approvals.py").read_text()
 
-body = rt.split("async def dispatch_decided(")[1]
-loop = body.split("for proposal in pending:")[1]
+# PB-0 (A30.43) moved the background pass's per-proposal body into
+# `_dispatch_one` and both paths' Site Manager call into ONE sender,
+# `_send_claimed`; the rule is unchanged and now also covers the claim:
+# gate, then claim, then send -- on both paths.
+assert "_dispatch_one(" in rt.split("async def dispatch_decided(")[1].split("\nasync def ")[0]
+loop = rt.split("async def _dispatch_one(")[1].split("\nasync def ")[0]
 gate = loop.index("revalidate_dispatch(")
 basis = loop.index("BASIS_AUTONOMOUS")
 assert gate < basis, "the lifecycle gate must run BEFORE the basis is consulted"
+assert gate < loop.index("claim_dispatch(") < loop.index("_send_claimed("), (
+    "background: gate, then claim, then the Site Manager call")
+assert "dispatch_action(" not in loop
 
 sync = ap.split("async def _decide_agent_proposal(")[1].split("\nasync def ")[0]
-assert sync.index("revalidate_dispatch(") < sync.index("dispatch_action("), (
-    "the synchronous approval path must ask the ONE gate before the SM call")
+assert (sync.index("revalidate_dispatch(") < sync.index("claim_dispatch(")
+        < sync.index("_send_claimed(")), (
+    "the synchronous approval path must ask the ONE gate, then claim, before the SM call")
+assert "dispatch_action(" not in sync
+sender = rt.split("async def _send_claimed(")[1].split("\nasync def ")[0]
+assert "dispatch_action(" in sender and "timeout=DISPATCH_RPC_TIMEOUT_S" in sender
 
 check = rt.split("async def revalidate_dispatch(")[1].split("\nasync def ")[0]
 code = check.split('"""', 2)[2]
@@ -3440,7 +3451,7 @@ for expected in ("STATUS_ACTIVE", "paused_reason", "AgentIdentityRepo",
                  "bound_action_classes", "dispatch_permitted("):
     assert expected in code, expected
 print("ONE dispatch gate: lifecycle, identity, stop switch, reach and binding,"
-      " asked on both paths before the basis and before the SM call")
+      " asked on both paths before the basis, the claim and the SM call")
 A5PY
 
 # And the credential really does stop the moment the agent is retired.
@@ -9767,8 +9778,9 @@ s1_cc "DELETE FROM cc_outcome_history WHERE actor='gate-a3041' AND (action_id LI
        OR action_id='directive:$P41_TAG-live-1')" > /dev/null < /dev/null
 [ "$(s1_cc "SELECT count(*) FROM cc_outcome_history WHERE actor='gate-a3041'" < /dev/null)" = "0" ] || {
   echo "the A30.41 outcome rows were not removed" >&2; exit 1; }
-[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0028" ] || {
-  echo "Central Command is not at migration 0028" >&2; exit 1; }
+# 0028 is applied; PB-0's 0029 is the head now, and its own step checks it.
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" \> "0027" ] || {
+  echo "Central Command is not at migration 0028 or later" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
             WHERE c.relname IN ('ix_outcome_history_action_id', 'ix_outcome_history_site',
                                 'ix_outcome_history_device_time', 'ix_outcome_history_actor')
@@ -9789,6 +9801,227 @@ assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'propos
 print('  shipped image: exact tallies and statistics, keyed settlement, no cursor, the windowed read internal'
       ' only; plane 14, contract 99, ceiling unchanged')" < /dev/null
 echo "  the 502 synthetic proposals, the proof's device and every A30.41 outcome row removed; 0028 live, 4 indexes valid"
+
+# ---------------------------------------------------------------------------
+# PB-0 (A30.42/A30.43): one proposal -> at most one Site Manager directive.
+# The proof owns its state: its own agent, its own synthetic proposals (each
+# with its own id), its own second approver token, and it retires the agent
+# at the end. Every count is per proposal id, read from the Site Manager's
+# OWN table -- never from Central Command's belief about it.
+# ---------------------------------------------------------------------------
+PB0_TAG="pb0-$(date +%s)"
+pb0_id() { python3 -c "import hashlib; print(hashlib.md5(b'$PB0_TAG-$1').hexdigest())"; }
+pb0_proposal() {  # $1 key, $2 status, $3 decided_by -> a synthetic proposal of the PB-0 agent
+  local id; id=$(pb0_id "$1")
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_agent_proposals (id, tenant_id, agent_id, actor, agent_version, site_id,
+          device_agent_id, action_type, params, rationale, evidence, disposition,
+          disposition_reason, authorization_basis, status, decided_by, dedupe_key,
+          directive_id, dispatch_reason, outcome, created_at)
+     VALUES ('$id', '$PB0_TENANT', '$PB0_AGENT', 'op-agent:$PB0_AGENT@v$PB0_VERSION',
+             $PB0_VERSION, '$A5_SITE', '$PB0_TARGET', 'COLLECT_DIAGNOSTICS', '{}',
+             'pb0 duplicate-dispatch proof', '{}', 'requires_approval', '',
+             'human_approval', '$2', '$3', '$PB0_TAG-$1', '', '', '', now())" \
+    > /dev/null < /dev/null
+  echo "$id"
+}
+pb0_inject() {  # $1 proposal id -> the directive the SM queues while CC never hears the ack
+  docker compose exec -T central-command python -c "
+import asyncio, sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.sm_client import SMClient
+async def main():
+    ack = await SMClient('').dispatch_action(
+        '$PB0_SM_ENDPOINT', '$PB0_SM_TOKEN', tenant_id='$PB0_TENANT',
+        site_id='$A5_SITE', device_agent_id='$PB0_TARGET',
+        action_type='COLLECT_DIAGNOSTICS', params_json='{}',
+        actor='op-agent:$PB0_AGENT@v$PB0_VERSION', authorization='human_approval',
+        decided_by='gate-owner@demo', proposal_id='$1', timeout=20)
+    assert ack['accepted'] and ack['reason'] == '', ack
+    print(ack['directive_id'])
+asyncio.run(main())" < /dev/null | tr -d '\r'
+}
+pb0_sm() {  # "<count>|<key of the only row>" for one proposal, from the SM's own table
+  s1_sm "SELECT count(*) || '|' || coalesce(max(idempotency_key), '')
+         FROM sm_directives WHERE proposal_id='$1'" < /dev/null
+}
+
+step "PB-0/DN: a LOST acknowledgement -- the Site Manager already holds the directive; the approval's send gets the SAME one"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+PB0_TARGET=$(b0r_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$A5_SITE'
+                     ORDER BY agent_id LIMIT 1" < /dev/null)
+PB0_TENANT=$(b0r_cc "SELECT tenant_id FROM cc_sites WHERE id='$A5_SITE'" < /dev/null)
+PB0_SM_ENDPOINT=$(b0r_cc "SELECT sm_endpoint FROM cc_sites WHERE id='$A5_SITE'" < /dev/null)
+PB0_SM_TOKEN=$(b0r_cc "SELECT coalesce(sm_token, '') FROM cc_sites WHERE id='$A5_SITE'" < /dev/null)
+[ -n "$PB0_TARGET" ] && [ -n "$PB0_SM_ENDPOINT" ] || {
+  echo "no target device or Site Manager endpoint at $A5_SITE" >&2; exit 1; }
+PB0_AGENT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$PB0_TAG\",
+       \"scopes\":[{\"scope_type\":\"site\",\"scope_ref\":\"$A5_SITE\"}],
+       \"capabilities\":[
+         {\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+  http://localhost:8090/api/operational-agents/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+PB0_ACK=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$PB0_AGENT/preflight" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['requires_acknowledgement'])")
+if [ "$PB0_ACK" = "True" ]; then
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$PB0_AGENT/acknowledge" > /dev/null
+fi
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$PB0_AGENT/activate" | python3 -c "
+import sys, json
+a = json.load(sys.stdin)
+assert a['status'] == 'active', a
+print('PB-0 agent active at v%d on site $A5_SITE, bound to COLLECT_DIAGNOSTICS' % a['activated_version'])
+"
+PB0_VERSION=$(b0r_cc "SELECT version FROM cc_operational_agents WHERE id='$PB0_AGENT'" < /dev/null)
+PB0_SYNC=$(pb0_proposal sync awaiting_approval "")
+[ "$(pb0_sm "$PB0_SYNC")" = "0|" ] || { echo "the proof's proposal already has a directive" >&2; exit 1; }
+# The lost acknowledgement, injected: the SM accepts and queues; Central
+# Command never records it, so its row still says awaiting/no directive.
+PB0_D1=$(pb0_inject "$PB0_SYNC")
+[ -n "$PB0_D1" ] || { echo "the Site Manager did not queue the injected dispatch" >&2; exit 1; }
+[ "$(pb0_sm "$PB0_SYNC")" = "1|proposal:$PB0_SYNC" ] || {
+  echo "the injected directive was not keyed by its proposal: $(pb0_sm "$PB0_SYNC")" >&2; exit 1; }
+echo "  the SM holds directive $PB0_D1 (key proposal:$PB0_SYNC); Central Command does not know"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$PB0_SYNC/approve" | PB0_D1=$PB0_D1 python3 -c '
+import sys, json, os
+d = json.load(sys.stdin)
+assert d.get("decision") == "approved", d
+dl = d["delivery"]
+assert dl["delivered"] is True, dl
+assert dl["directive_id"] == os.environ["PB0_D1"], (dl, os.environ["PB0_D1"])
+assert dl.get("idempotent_replay") is True, dl
+print("  approved by", d["decided_by"], "-> delivered as the SAME directive", dl["directive_id"], "(idempotent replay)")
+'
+[ "$(pb0_sm "$PB0_SYNC")" = "1|proposal:$PB0_SYNC" ] || {
+  echo "a second directive for one proposal: $(pb0_sm "$PB0_SYNC")" >&2; exit 1; }
+b0r_cc_text "SELECT p.status || '|' || p.directive_id || '|' ||
+    (p.dispatch_claimed_at IS NOT NULL) || '|' ||
+    (SELECT a.detail->>'idempotent_replay' FROM cc_audit_log a WHERE a.subject = p.id
+       AND a.action = 'agent_proposal.dispatched')
+  FROM cc_agent_proposals p WHERE p.id = '$PB0_SYNC'" < /dev/null | PB0_D1=$PB0_D1 python3 -c "
+import sys, os
+status, directive, claimed, replay = sys.stdin.read().strip().split('|')
+# The settle pass may already have moved it on: the node can have run the
+# injected directive before anyone approved, so its outcome was waiting.
+assert status in ('dispatched', 'completed', 'failed'), status
+assert directive == os.environ['PB0_D1'], (directive, os.environ['PB0_D1'])
+# A boolean concatenated into text renders 'true', not psql's bare 't'.
+assert claimed == 'true' and replay == 'true', (claimed, replay)
+print('  exactly ONE directive at the SM; CC dispatched it, claimed it, and audited idempotent_replay=true')
+"
+
+step "PB-0/DO: a LOST acknowledgement on the BACKGROUND path -- the live loop re-sends and gets the SAME directive"
+# Injected FIRST, before Central Command holds the row: the live loop runs
+# every 20 s, and a row that existed first could be dispatched before the
+# loss was staged -- the proof would then be a replay of itself.
+PB0_D2=$(pb0_inject "$(pb0_id background)")
+PB0_BG=$(pb0_proposal background approved gate-owner@demo)
+[ "$(pb0_sm "$PB0_BG")" = "1|proposal:$PB0_BG" ] || { echo "injected dispatch not queued" >&2; exit 1; }
+pb0_bg_dispatched() {
+  # Keyed on the directive id, never on `dispatched`: the settle pass moves
+  # that status on, and a wait on it could time out AFTER it succeeded.
+  [ "$(b0r_cc "SELECT directive_id FROM cc_agent_proposals
+               WHERE id='$PB0_BG'" < /dev/null)" = "$PB0_D2" ]
+}
+wait_for "the live operational-agent loop to dispatch the approved proposal" 180 pb0_bg_dispatched
+[ "$(pb0_sm "$PB0_BG")" = "1|proposal:$PB0_BG" ] || {
+  echo "the live loop made a second directive: $(pb0_sm "$PB0_BG")" >&2; exit 1; }
+[ "$(b0r_cc "SELECT detail->>'idempotent_replay' FROM cc_audit_log
+             WHERE subject='$PB0_BG' AND action='agent_proposal.dispatched'" < /dev/null)" = "true" ] || {
+  echo "the background dispatch was not audited as a replay" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM audit_log WHERE subject='$PB0_D2'
+            AND action='directive.replayed'" < /dev/null)" = "1" ] || {
+  echo "the Site Manager did not audit the replay" >&2; exit 1; }
+echo "  the live loop re-sent it; the SM answered with $PB0_D2 -- ONE directive, replay audited on both chains"
+
+step "PB-0/DP: two approvers race -- ONE decision dispatches, the other reads it; ten concurrent sends of one proposal make ONE directive"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+B0R_APPROVER_TOKEN=$(tenant_token gate-b0r-approver@demo gate-b0r-approver)
+PB0_RACE=$(pb0_proposal race awaiting_approval "")
+curl -s -o /tmp/pb0_a.json -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/approvals/$PB0_RACE/approve" > /tmp/pb0_a.code &
+curl -s -o /tmp/pb0_b.json -w '%{http_code}' -X POST -H "Authorization: Bearer $B0R_APPROVER_TOKEN" \
+  "http://localhost:8090/api/approvals/$PB0_RACE/approve" > /tmp/pb0_b.code &
+wait
+PB0_CODES=$(printf '%s\n%s\n' "$(cat /tmp/pb0_a.code)" "$(cat /tmp/pb0_b.code)" | sort | tr '\n' ' ')
+[ "$PB0_CODES" = "200 409 " ] || {
+  echo "two approvers: expected one 200 and one 409, got $PB0_CODES" >&2
+  cat /tmp/pb0_a.json /tmp/pb0_b.json >&2; exit 1; }
+[ "$(pb0_sm "$PB0_RACE")" = "1|proposal:$PB0_RACE" ] || {
+  echo "two approvers made $(pb0_sm "$PB0_RACE") directives" >&2; exit 1; }
+[ "$(b0r_cc "SELECT count(*) FROM cc_approval_records WHERE subject_ref='$PB0_RACE'" < /dev/null)" = "1" ] || {
+  echo "the losing approver's decision was recorded beside the winner's" >&2; exit 1; }
+echo "  approvals answered $PB0_CODES-- ONE record on the ledger, ONE directive at the SM"
+rm -f /tmp/pb0_a.json /tmp/pb0_b.json /tmp/pb0_a.code /tmp/pb0_b.code
+# The Site Manager's unique index, raced directly on the live database by
+# ten concurrent sends of one proposal over the real CC -> SM channel.
+PB0_TEN=$(pb0_id ten)
+docker compose exec -T central-command python -c "
+import asyncio, sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.sm_client import SMClient
+from harkeniq.dispatch_idempotency import REPLAY_REASON
+async def one():
+    return await SMClient('').dispatch_action(
+        '$PB0_SM_ENDPOINT', '$PB0_SM_TOKEN', tenant_id='$PB0_TENANT',
+        site_id='$A5_SITE', device_agent_id='$PB0_TARGET',
+        action_type='COLLECT_DIAGNOSTICS', params_json='{}',
+        actor='op-agent:$PB0_AGENT@v$PB0_VERSION', authorization='human_approval',
+        decided_by='gate-owner@demo', proposal_id='$PB0_TEN', timeout=20)
+async def main():
+    acks = await asyncio.gather(*(one() for _ in range(10)))
+    assert all(a['accepted'] for a in acks), acks
+    assert len({a['directive_id'] for a in acks}) == 1, acks
+    assert sorted(a['reason'] for a in acks) == [''] + [REPLAY_REASON] * 9, acks
+    print('  ten concurrent sends of one proposal: one queued, nine idempotent replays')
+asyncio.run(main())" < /dev/null
+[ "$(pb0_sm "$PB0_TEN")" = "1|proposal:$PB0_TEN" ] || {
+  echo "ten concurrent sends made $(pb0_sm "$PB0_TEN") directives" >&2; exit 1; }
+
+step "PB-0/DQ: this proof owns its state -- and the shipped image carries the claim, with CC 0029 and SM 0012 live"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/api/operational-agents/$PB0_AGENT/retire" > /dev/null
+[ "$(b0r_cc "SELECT status FROM cc_operational_agents WHERE id='$PB0_AGENT'" < /dev/null)" = "retired" ] || {
+  echo "the PB-0 agent was not retired" >&2; exit 1; }
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0029" ] || {
+  echo "Central Command is not at migration 0029" >&2; exit 1; }
+[ "$(s1_sm "SELECT version_num FROM alembic_version" < /dev/null)" = "0012" ] || {
+  echo "the Site Manager is not at migration 0012" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname IN ('ix_agent_proposals_tenant_status_created',
+                                'ix_agent_proposals_tenant_agent_created',
+                                'ix_agent_proposals_tenant_agent_basis_dispatched')
+              AND i.indisvalid" < /dev/null)" = "3" ] || {
+  echo "the 0029 indexes are missing or invalid" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'ux_sm_directives_idempotency_key'
+              AND i.indisvalid AND i.indisunique" < /dev/null)" = "1" ] || {
+  echo "the 0012 unique index is missing or invalid" >&2; exit 1; }
+[ "$(s1_sm "SELECT count(*) FROM sm_directives WHERE idempotency_key IS NOT NULL
+            GROUP BY idempotency_key HAVING count(*) > 1" < /dev/null)" = "" ] || {
+  echo "a key names more than one directive" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc import agent_runtime as R
+from harkeniq_cc.db.repos import AgentProposalRepo as P
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert hasattr(P, 'claim_dispatch') and hasattr(P, 'release_claim')
+assert not hasattr(P, 'list_by_status')
+assert 0 < R.DISPATCH_RPC_TIMEOUT_S < P.DISPATCH_CLAIM_LEASE.total_seconds() < 120
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: claim + release, no oldest-500 read, deadline %ss inside a %ss lease;'
+      ' plane 14, contract 99, ceiling unchanged' % (int(R.DISPATCH_RPC_TIMEOUT_S),
+      int(P.DISPATCH_CLAIM_LEASE.total_seconds())))" < /dev/null
+echo "  PB-0 agent retired; CC 0029 (3 indexes valid) and SM 0012 (unique index valid) live; no key names two directives"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

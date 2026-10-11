@@ -985,6 +985,7 @@ class DirectiveRepo:
         actor: str = "",
         authorization_basis: str = "",
         proposal_id: str = "",
+        idempotency_key: Optional[str] = None,
     ) -> DirectedDirective:
         directive = DirectedDirective(
             device_id=device_id, kind=kind, action_type=action_type,
@@ -992,7 +993,7 @@ class DirectiveRepo:
             yaml_content=yaml_content, tier=tier,
             validation_state=validation_state, issued_by=issued_by,
             actor=actor, authorization_basis=authorization_basis,
-            proposal_id=proposal_id,
+            proposal_id=proposal_id, idempotency_key=idempotency_key,
         )
         self.session.add(directive)
         await self.session.flush()
@@ -1000,6 +1001,20 @@ class DirectiveRepo:
 
     async def get(self, directive_id: str) -> Optional[DirectedDirective]:
         return await self.session.get(DirectedDirective, directive_id)
+
+    async def get_by_idempotency_key(
+        self, key: str
+    ) -> Optional[DirectedDirective]:
+        """The directive already queued under `key` (PB-0), if any."""
+        if not key:
+            return None
+        return (
+            await self.session.execute(
+                select(DirectedDirective).where(
+                    DirectedDirective.idempotency_key == key
+                )
+            )
+        ).scalar_one_or_none()
 
     async def pending_for_device(
         self, device_id: str

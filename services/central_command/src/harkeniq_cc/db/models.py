@@ -1324,6 +1324,17 @@ class CCAgentProposal(Base):
     dispatched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: PB-0 (A30.42/A30.43): the dispatch claim. Set by ONE conditional
+    #: UPDATE (`AgentProposalRepo.claim_dispatch`) and committed BEFORE the
+    #: Site Manager is called, so exactly one dispatcher -- one replica,
+    #: one approver, one pass -- owns the next transition of an approved
+    #: proposal. A claim older than the lease is taken over and re-sent
+    #: under the same Site Manager idempotency key. Nullable with no
+    #: backfill: a proposal decided before PB-0 was never claimed, and
+    #: asserting otherwise would invent a fact.
+    dispatch_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     outcome: Mapped[str] = mapped_column(String(32), default="")
     outcome_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1334,6 +1345,22 @@ class CCAgentProposal(Base):
 
     __table_args__ = (
         Index("ix_agent_proposals_tenant_status", "tenant_id", "status"),
+        # A30.42 schema (CC 0029). The keyset dispatch selection walks
+        # (tenant, status) in (created_at, id) order; the other two serve
+        # PB-1's admission and unattended counts and ship with the column
+        # because the ratified migration names all three.
+        Index(
+            "ix_agent_proposals_tenant_status_created",
+            "tenant_id", "status", "created_at", "id",
+        ),
+        Index(
+            "ix_agent_proposals_tenant_agent_created",
+            "tenant_id", "agent_id", "created_at",
+        ),
+        Index(
+            "ix_agent_proposals_tenant_agent_basis_dispatched",
+            "tenant_id", "agent_id", "authorization_basis", "dispatched_at",
+        ),
     )
 
 

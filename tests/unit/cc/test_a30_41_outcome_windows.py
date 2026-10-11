@@ -698,7 +698,10 @@ class TestStructure:
         ordered = "ORDER BY cc_outcome_history.recorded_at, cc_outcome_history.id)"
         assert stats.count(ordered) == (2 if SQLITE_ORDERED_AGGREGATES else 0)
 
-    def test_settlement_pages_every_proposal_and_dispatch_is_untouched(self):
+    def test_settlement_and_dispatch_both_page_every_proposal(self):
+        """A30.41 left dispatch on the oldest-500 read because its ordering
+        was not that slice's to change; PB-0 (A30.42 D-PB6) changed it, so
+        the pin inverts with its intent kept: neither pass can starve."""
         runtime = self._tree("agent_runtime.py")
 
         def calls_in(name):
@@ -708,7 +711,10 @@ class TestStructure:
 
         assert "page_by_status" in calls_in("settle_outcomes")
         assert "list_by_status" not in calls_in("settle_outcomes")
-        assert "list_by_status" in calls_in("dispatch_decided")
+        assert "page_by_status" in calls_in("dispatch_decided")
+        assert "list_by_status" not in calls_in("dispatch_decided")
+        from harkeniq_cc.db.repos import AgentProposalRepo
+        assert not hasattr(AgentProposalRepo, "list_by_status")
 
     def test_the_learning_engine_keeps_no_cursor(self):
         assert not hasattr(IntelligenceEngine(), "_cursor")

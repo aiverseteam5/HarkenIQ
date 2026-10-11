@@ -6780,3 +6780,18 @@ PB-F12 (F-8/F-10) → the Site Manager slice of D-PB12 (consume at
 (campaign check → SM → insert) → needs an owner. Loop leadership →
 efficiency follow-up (D-PB13). Expiry and cancellation → product follow-up
 (D-PB14). D-P8 → deferred. Taxonomy → not started.
+
+## §34x — PB-0 dispatch idempotency: the boundary as built (A30.43)
+
+| Concern | PB-0 |
+|---|---|
+| Claim | `AgentProposalRepo.claim_dispatch(proposal, now)` — one conditional `UPDATE`, rowcount 1 = owner; condition on status `approved`, the gated basis, and `dispatch_claimed_at` NULL or older than `DISPATCH_CLAIM_LEASE` (60 s) |
+| RPC | `SMClient.dispatch_action(..., timeout=)`; both proposal paths pass `DISPATCH_RPC_TIMEOUT_S` (20 s); campaigns pass nothing (unchanged) |
+| Background | `dispatch_decided`: keyset pages of `approved` by `(created_at, id)`; per proposal: gates → claim (send / withhold / site-missing) → commit → SM → result → commit |
+| Synchronous | `_decide_agent_proposal`: `get_for_decision` (`FOR UPDATE`, `populate_existing`) → ledger → decide → gates → claim → commit → SM → result → commit |
+| Withhold | `withhold_unattended` releases the claim (`dispatch_claimed_at = NULL`) — the proposal is a fresh human decision again |
+| Failed call | `release_claim` clears the caller's OWN claim (conditional on the exact timestamp it took) after a transport error; the next pass re-sends under the same key; a crash leaves the claim to the lease |
+| SM key | `harkeniq.dispatch_idempotency.idempotency_key(proposal_id)` = `proposal:<id>`; `sm_directives.idempotency_key` unique (`ux_sm_directives_idempotency_key`) |
+| SM replay | lookup by key before the safety decision; same device + action → accepted, existing id, `reason = REPLAY_REASON`; mismatch → refused; unique-index loss → the same replay |
+| Audit | CC `agent_proposal.dispatched.detail.idempotent_replay`; SM `directive.replayed` |
+| Migrations | CC `0029`: `dispatch_claimed_at` + the three A30.42 indexes, CONCURRENTLY, guarded, INVALID rebuilt (the `0028` pattern); SM `0012`: `idempotency_key` + unique index, CONCURRENTLY; no backfill |

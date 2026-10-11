@@ -7,7 +7,7 @@ so multi-table updates remain atomic.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Any, Optional, Sequence
 
 from sqlalchemy import (
@@ -3079,6 +3079,13 @@ class AgentProposalRepo:
         "denied",
     )
 
+    #: PB-0 (A30.43): how long a dispatch claim excludes every other
+    #: dispatcher. Longer than proposal dispatch's RPC deadline
+    #: (`agent_runtime.DISPATCH_RPC_TIMEOUT_S`), so a live claimer always
+    #: finishes or gives up inside it; shorter than the 120 s evaluation
+    #: pass, so a crashed or lost-ack claim is re-sent on the next pass.
+    DISPATCH_CLAIM_LEASE = timedelta(seconds=60)
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -3097,6 +3104,142 @@ class AgentProposalRepo:
                 )
             )
         ).scalar_one_or_none()
+
+    async def get_for_decision(
+        self, tenant_id: str, proposal_id: str
+    ) -> Optional[CCAgentProposal]:
+        """The proposal, row-locked for a human's decision (PB-0, A30.43).
+
+        Two approvers finishing at once used to read `awaiting_approval`
+        without a lock, both decide, and both call the Site Manager. The
+        lock serializes them: the second waits for the first to commit,
+        then reads the status the first committed -- exactly what a
+        sequential second decision always read. It is released at the
+        decision's commit, which precedes the Site Manager call, so it
+        never spans the network.
+
+        `populate_existing`: the approvals route has usually loaded this
+        row already in the same session, and without it the identity map
+        would hand back the UNLOCKED read's stale status.
+        """
+        return (
+            await self.session.execute(
+                select(CCAgentProposal)
+                .where(
+                    CCAgentProposal.id == proposal_id,
+                    CCAgentProposal.tenant_id == tenant_id,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
+    async def claim_dispatch(
+        self, proposal: CCAgentProposal, *, now: Optional[datetime] = None
+    ) -> bool:
+        """Take the dispatch claim on an approved proposal. True = owner.
+
+        PB-0 (A30.42 D-PB5, A30.43): ONE conditional UPDATE, so exactly one
+        caller -- one replica's pass, one approver's request -- wins, and
+        the winner commits the claim BEFORE it calls the Site Manager. The
+        condition is the proposal as the caller's gates judged it: still
+        `approved`, still on the basis the gates were asked of, and either
+        never claimed or claimed longer ago than the lease. A lapsed claim
+        (a crash, a lost acknowledgement, a timed-out call) is taken over
+        and re-sent under the same Site Manager idempotency key, which
+        answers with the directive it already holds.
+
+        The caller commits; this only flushes pending changes first so the
+        UPDATE sees this transaction's own decision. The ORM object is
+        brought in line without marking it dirty.
+        """
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        now = now or utcnow()
+        await self.session.flush()
+        result = await self.session.execute(
+            sa_update(CCAgentProposal)
+            .where(
+                CCAgentProposal.id == proposal.id,
+                CCAgentProposal.tenant_id == proposal.tenant_id,
+                CCAgentProposal.status == "approved",
+                CCAgentProposal.authorization_basis
+                == (proposal.authorization_basis or ""),
+                or_(
+                    CCAgentProposal.dispatch_claimed_at.is_(None),
+                    CCAgentProposal.dispatch_claimed_at
+                    < now - self.DISPATCH_CLAIM_LEASE,
+                ),
+            )
+            .values(dispatch_claimed_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return False
+        set_committed_value(proposal, "dispatch_claimed_at", now)
+        return True
+
+    async def release_claim(self, proposal: CCAgentProposal) -> bool:
+        """Give back THIS caller's claim after a failed call. True = released.
+
+        A transport failure means the call has ended, so nobody needs to be
+        excluded any longer: the next pass may re-send at once, and the Site
+        Manager's key answers with the directive it already holds if the
+        lost call had in fact been accepted. Conditional on the claim still
+        being exactly the one this caller took, so a claim another
+        dispatcher has since taken over is never cleared. The lease is for
+        the claimer that never comes back -- a crash -- not for this.
+        """
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        mine = proposal.dispatch_claimed_at
+        if mine is None:
+            return False
+        result = await self.session.execute(
+            sa_update(CCAgentProposal)
+            .where(
+                CCAgentProposal.id == proposal.id,
+                CCAgentProposal.tenant_id == proposal.tenant_id,
+                CCAgentProposal.status == "approved",
+                CCAgentProposal.dispatch_claimed_at == mine,
+            )
+            .values(dispatch_claimed_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return False
+        set_committed_value(proposal, "dispatch_claimed_at", None)
+        return True
+
+    async def note_dispatch_withheld(
+        self, proposal: CCAgentProposal, reason: str
+    ) -> bool:
+        """Record why an approved proposal was not dispatched. True = new cause.
+
+        Reason only -- no claim is taken for work that may not run, and the
+        decision is left exactly as it stands (A22.12). Conditional so a
+        dispatcher holding a stale copy can never write a refusal onto a
+        proposal another dispatcher has since moved on (PB-0), and so the
+        caller audits each distinct cause once however many replicas see it.
+        """
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        reason = reason[:512]
+        result = await self.session.execute(
+            sa_update(CCAgentProposal)
+            .where(
+                CCAgentProposal.id == proposal.id,
+                CCAgentProposal.tenant_id == proposal.tenant_id,
+                CCAgentProposal.status == "approved",
+                CCAgentProposal.dispatch_reason != reason,
+            )
+            .values(dispatch_reason=reason)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return False
+        set_committed_value(proposal, "dispatch_reason", reason)
+        return True
 
     async def all_dedupe_keys(self, tenant_id: str) -> set[str]:
         """Every condition this tenant's agents have already proposed for.
@@ -3220,21 +3363,6 @@ class AgentProposalRepo:
             await self.session.execute(stmt.order_by(CCAgentProposal.created_at))
         ).scalars().all()
 
-    async def list_by_status(
-        self, tenant_id: str, statuses: Sequence[str], limit: int = 500
-    ) -> Sequence[CCAgentProposal]:
-        return (
-            await self.session.execute(
-                select(CCAgentProposal)
-                .where(
-                    CCAgentProposal.tenant_id == tenant_id,
-                    CCAgentProposal.status.in_(list(statuses)),
-                )
-                .order_by(CCAgentProposal.created_at)
-                .limit(limit)
-            )
-        ).scalars().all()
-
     async def page_by_status(
         self,
         tenant_id: str,
@@ -3246,12 +3374,12 @@ class AgentProposalRepo:
         """One keyset page of proposals in `statuses`, by `(created_at, id)`.
 
         A30.41: settlement walks EVERY dispatched proposal with this, page
-        after page. `list_by_status` hands back the oldest `limit` and no
-        more, so 500 proposals that never receive an outcome would starve
-        every newer one. `after` is the last page's final `(created_at,
-        id)`; a row that leaves `statuses` meanwhile simply is not met again.
-        (Dispatch still reads `list_by_status`: its ordering is not this
-        slice's to change.)
+        after page; PB-0 (A30.42 D-PB6) moved dispatch onto it too. The
+        oldest-`limit` read both used to take handed back 500 rows and no
+        more, so 500 proposals that never moved -- never heard back, or
+        were withheld -- starved every newer one. `after` is the last
+        page's final `(created_at, id)`; a row that leaves `statuses`
+        meanwhile simply is not met again.
         """
         stmt = (
             select(CCAgentProposal)
@@ -3360,6 +3488,10 @@ class AgentProposalRepo:
         proposal.decided_by = ""
         proposal.decided_at = None
         proposal.dispatch_reason = reason[:512]
+        # PB-0: the dispatcher claimed the proposal to withhold it. Back in
+        # the human queue it is a fresh decision, and the approval that
+        # follows must not wait out a lease nobody is using.
+        proposal.dispatch_claimed_at = None
 
     async def count_in_flight(
         self, tenant_id: str, agent_id: str, since: datetime

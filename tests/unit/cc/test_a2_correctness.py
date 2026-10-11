@@ -703,7 +703,7 @@ class TestBudgetIsEnforcedAndConfigurable:
 
         # Withheld, not destroyed: it returns to the human queue.
         async with stack.sessionmaker() as session:
-            rows = await AgentProposalRepo(session).list_by_status(
+            rows = await AgentProposalRepo(session).page_by_status(
                 TENANT, ["awaiting_approval"],
             )
             assert len(rows) == 1

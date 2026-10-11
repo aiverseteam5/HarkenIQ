@@ -1089,10 +1089,11 @@ class TestNothingMoved:
 
     def test_no_migration(self):
         root = pathlib.Path(__file__).resolve().parents[3] / "services"
-        # A30.41 added CC 0028 (indexes only); this slice added none.
+        # A30.41 added CC 0028 (indexes only) and PB-0 CC 0029 + SM 0012
+        # (the dispatch claim and the directive key); this slice added none.
         heads = {
-            "central_command/src/harkeniq_cc": "0028",
-            "site_manager/src/harkeniq_sm": "0011",
+            "central_command/src/harkeniq_cc": "0029",
+            "site_manager/src/harkeniq_sm": "0012",
             "console/src/harkeniq_console": "0004",
         }
         for package, head in heads.items():

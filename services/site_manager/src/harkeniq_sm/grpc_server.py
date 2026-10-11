@@ -23,6 +23,7 @@ from typing import Optional
 import grpc
 from sqlalchemy import func, select
 
+from harkeniq.dispatch_idempotency import REPLAY_REASON, idempotency_key
 from harkeniq.proto import harkeniq_pb2, harkeniq_pb2_grpc
 from harkeniq_sm.approvals import ApprovalService
 from harkeniq_sm.auth import BearerTokenInterceptor
@@ -774,6 +775,21 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 reason=f"device {request.device_agent_id!r} is not known at this site",
             )
 
+        # PB-0 (A30.42/A30.43): one proposal, at most one directive. A
+        # repeat of a dispatch this Site Manager already queued -- a lost
+        # acknowledgement, a second Central Command replica, a re-send
+        # after a crash -- is answered with the directive it holds, BEFORE
+        # the safety decision is re-run: the directive already exists, so
+        # refusing now would only make Central Command record a failure
+        # for work that will still be delivered. The node remains final.
+        key = idempotency_key(request.proposal_id)
+        if key:
+            replay = await self._replay_dispatch(
+                key, request, device_id=device_id, action_type=action_type,
+            )
+            if replay is not None:
+                return replay
+
         # Safety belongs to the site, so the site enforces it here rather
         # than trusting the caller's snapshot of it. The node re-checks
         # everything again; this refusal just avoids queueing work that
@@ -806,7 +822,7 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
                 accepted=False, reason=decision.reason
             )
 
-        directive_id = await self.directives.enqueue_action(
+        enqueue = dict(
             device_id=device_id,
             action_type=action_type,
             params=params,
@@ -815,6 +831,21 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             authorization_basis=request.authorization,
             proposal_id=request.proposal_id,
         )
+        if key:
+            directive_id, replayed = await self.directives.enqueue_action_once(
+                idempotency_key=key, **enqueue,
+            )
+            if replayed:
+                # A concurrent request with the same key won the insert.
+                # Answer with ITS directive, checked like any other replay.
+                replay = await self._replay_dispatch(
+                    key, request, device_id=device_id, action_type=action_type,
+                )
+                if replay is not None:
+                    return replay
+        else:
+            # Not proposal-driven (a campaign step): unkeyed, as before.
+            directive_id = await self.directives.enqueue_action(**enqueue)
         logger.info(
             "DispatchAction %s on %s for %s (%s) -> directive %s",
             action_type, request.device_agent_id, request.actor or "unattributed",
@@ -822,6 +853,43 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
         )
         return harkeniq_pb2.ActionDispatchAck(
             accepted=True, directive_id=directive_id
+        )
+
+    async def _replay_dispatch(
+        self, key: str, request, *, device_id: str, action_type: str,
+    ):
+        """The ack for a dispatch whose key already names a directive, or None.
+
+        Same device and same action class: accepted, the EXISTING directive,
+        `reason = REPLAY_REASON`, audited. Anything else is refused -- one
+        proposal never answers for different work, and is never handed
+        another proposal's directive.
+        """
+        existing = await self.directives.get_by_idempotency_key(key)
+        if existing is None:
+            return None
+        if existing.device_id != device_id or existing.action_type != action_type:
+            logger.warning(
+                "DispatchAction refused: key %s already names directive %s "
+                "for different work", key, existing.id,
+            )
+            return harkeniq_pb2.ActionDispatchAck(
+                accepted=False,
+                reason=(
+                    f"proposal {request.proposal_id!r} already has a directive "
+                    "for a different device or action"
+                ),
+            )
+        await self.directives.record_replay(
+            existing.id, actor=request.actor,
+            proposal_id=request.proposal_id, key=key,
+        )
+        logger.info(
+            "DispatchAction %s replayed: directive %s already queued",
+            key, existing.id,
+        )
+        return harkeniq_pb2.ActionDispatchAck(
+            accepted=True, directive_id=existing.id, reason=REPLAY_REASON,
         )
 
     async def RegisterSite(self, request, context):

@@ -6793,3 +6793,70 @@ re-proposes; hidden-site rows leave a site-A choice byte-identical).
 
 **Unchanged by this amendment:** no production code, no migration, no route,
 no permission, no ceiling; CC head `0028`, SM `0011`, Console `0004`.
+
+**A30.43 — PB-0 dispatch idempotency: implementation boundary (implements
+A30.42 D-PB5 and D-PB6's keyset; recorded before code, 2026-10-11; departs
+from nothing in A30.42 — it fills in what A30.42 left to PB-0's boundary).**
+Goal: one proposal → at most one Site Manager directive → at most one
+execution. **The claim.** `dispatch_claimed_at` is taken by one conditional
+`UPDATE … WHERE id AND tenant AND status = 'approved' AND
+authorization_basis = <the basis the gates were asked of> AND
+(dispatch_claimed_at IS NULL OR dispatch_claimed_at < now − lease)`;
+exactly one caller wins. **Lease: 60 s**, and proposal dispatch gains a
+**20 s RPC deadline** (it had none — a hung Site Manager held a claim
+forever and an approver's request forever): a live claimer finishes or gives
+up well inside its lease. A call that FAILS (transport error, deadline,
+lost acknowledgement) has ended, so the claimer releases its own claim —
+conditionally, never one another dispatcher has since taken — and the next
+pass re-sends at once under the same key; only a claimer that never comes
+back (a crash) leaves a claim for the lease to expire, after which the next
+pass re-sends. Timestamps are Central Command's clock; replica skew can
+only make a re-send early, which the Site Manager key absorbs. **Ownership.**
+Nothing transitions an `approved` proposal on the background path without
+first winning the claim: the send, the unattended withhold (which releases
+the claim, because the proposal returns to the human queue as a fresh
+decision) and the site-missing failure. Gate refusals stay reason-only and
+take no claim, so nothing is held for work that may not run (A30.42: gates
+BEFORE the claim). **Both paths.** The background pass commits each
+proposal's claim before its Site Manager call and its result after it — one
+commit per proposal, never one per pass; the synchronous approval path reads
+the proposal `FOR UPDATE` (PB-F1's "status read without a lock"), commits
+the decision and the claim together, and only then calls the Site Manager.
+The row lock never spans the network call; ledger, policy and completion
+rule are untouched, and a decision that loses the race reads the status the
+winner committed exactly as a sequential one always did (409). **Selection.**
+`(created_at, id)` keyset pages over EVERY `approved` proposal replace the
+oldest-500 read, and `list_by_status`, left with no caller, is deleted.
+**The Site Manager key.** `sm_directives.idempotency_key =
+'proposal:<proposal_id>'`, unique, written only when `DispatchAction`
+carries a proposal id (campaigns carry none and are unchanged — PB-F14 keeps
+its own owner). A request whose key exists is answered with the existing
+directive BEFORE the Site Manager's safety decision is re-run — the
+directive already exists, and refusing now would only make Central Command
+record a failure for work that will still be delivered; the node remains
+final — provided the existing directive names the same device and action
+class (a mismatch is refused, never answered with another directive). A
+concurrent insert that loses the unique index answers the same way. The
+replay is signalled on the accepted ack as `reason = "idempotent_replay"`
+(no proto change: `reason` was empty on every accepted ack), defined once in
+the shared `harkeniq` package for both services; Central Command records
+`idempotent_replay: true` on `agent_proposal.dispatched` and the Site
+Manager audits `directive.replayed`. Upgrade order: Site Manager first (a
+new Central Command against an old Site Manager is no worse than today).
+**Unchanged:** budgets and their semantics (PB-1), ordering (PB-2), every
+dispatch gate, approval policy and ledger, permissions, ceiling, routes,
+proto, node finality; historical proposals and directives are never
+rewritten. **Recorded, not built:** a claimed proposal whose authority
+lapses before its re-send is withheld, and if the earlier send had in fact
+been accepted its directive runs under the node's own funnel unreconciled —
+the no-reconciliation case A30.42 already records (D-PB14 family). A replay
+answers with the directive AS QUEUED: if a lost-ack autonomous send was
+later withheld to a human and approved, the human's send is answered with
+the autonomous directive (stricter at the node, never a second execution),
+and Central Command's audit names the basis of the re-send, not of the
+directive — reconciling the two is the same follow-up. The upgrade window:
+a proposal whose last pre-upgrade send was accepted unkeyed can be re-sent
+once after the upgrade, because historical directives carry no key and are
+never rewritten — the duplicate the old code would have made anyway, now
+bounded to one per proposal straddling the upgrade. Campaign dispatch stays
+unkeyed (PB-F14). Migrations: CC `0029`, SM `0012`, both additive.
