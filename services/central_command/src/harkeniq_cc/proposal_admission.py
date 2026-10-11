@@ -49,6 +49,7 @@ real PostgreSQL at the gate.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger("harkeniq.cc.proposal_admission")
@@ -111,6 +112,59 @@ REASON_OPERATION_IN_FLIGHT = (
 )
 
 
+#: PB-1 (A30.42 D-PB2, A30.44): the agent's admission budget
+#: (`max_proposals_per_day`) is spent for today. Recorded on an ingress
+#: submission as an attempt, never chained (A24.16), and listed by the
+#: dry-run with the same code when the evaluator's own cut is reached.
+CODE_PROPOSAL_BUDGET_EXHAUSTED = "proposal_budget_exhausted"
+REASON_PROPOSAL_BUDGET_EXHAUSTED = (
+    "this agent's proposal budget for today is spent; nothing new is put in "
+    "front of governance until the next UTC day"
+)
+
+#: The proposing agent no longer exists. Reachable only by a caller racing
+#: a deletion: both callers load the agent before they govern anything.
+CODE_AGENT_MISSING = "agent_missing"
+
+
+def admission_day_start(now: Optional[datetime] = None) -> datetime:
+    """The start of the admission budget's window: the current UTC day.
+
+    ONE definition, so the admission check, the evaluator's soft cut, the
+    ingress re-derivation, the dry-run, discovery and `/runtime` cannot
+    disagree about which day a proposal was charged to.
+    """
+    now = now or datetime.now(timezone.utc)
+    return now.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+
+
+async def admitted_today(
+    session: Any, tenant_id: str, agent_id: str, *, now: Optional[datetime] = None,
+) -> int:
+    """How much of this agent's admission budget today has spent.
+
+    The number `admit_proposal` enforces, read the same way everywhere
+    else: rows that are not `blocked`, since the UTC day began, across the
+    agent's configuration versions (D-PB2).
+    """
+    from harkeniq_cc.db.repos import AgentProposalRepo
+
+    return await AgentProposalRepo(session).count_admitted_since(
+        tenant_id, agent_id, admission_day_start(now),
+    )
+
+
+def charges_admission(payload: dict) -> bool:
+    """Whether admitting this payload spends the admission budget.
+
+    A `blocked` row records a final denial and puts nothing in front of
+    governance, so it charges nothing (D-PB2).
+    """
+    return (payload.get("status") or "") != "blocked"
+
+
 async def lock_proposal_admission(session: Any, tenant_id: str) -> bool:
     """Serialize this tenant's proposal admission for the rest of this
     transaction.
@@ -154,14 +208,42 @@ async def admit_proposal(
     deliberately NOT an authorization input: an externally submitted
     proposal is governed identically to an internally derived one.
 
+    It also owns the admission budget (PB-1, A30.42 D-PB2): a row that
+    would be charged is refused once the agent's `max_proposals_per_day`
+    is spent, with `proposal_budget_exhausted`. This is the budget's only
+    authority; the evaluator's cut is a selection, not a check.
+
     Returns ``(row_or_None, code, reason)``.
     """
     from harkeniq.capabilities import operation_key
-    from harkeniq_cc.db.repos import AgentProposalRepo, AuditRepo
+    from harkeniq_cc.db.repos import (
+        AgentProposalRepo,
+        AuditRepo,
+        OperationalAgentRepo,
+    )
 
     await lock_proposal_admission(session, tenant_id)
 
     repo = AgentProposalRepo(session)
+
+    # PB-1 (A30.42 D-PB2): the admission budget is checked and charged
+    # HERE, after the lock, for both callers. The count starts after any
+    # earlier admitter committed (READ COMMITTED) and includes this
+    # transaction's own earlier inserts, so no path checks and then
+    # decrements: lock -> count -> check -> insert -> the caller commits.
+    agent_id = payload.get("agent_id", "") or ""
+    agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
+    if agent is None:
+        return None, CODE_AGENT_MISSING, "the proposing agent no longer exists"
+    if charges_admission(payload):
+        limit = int(getattr(agent, "max_proposals_per_day", 0) or 0)
+        if await admitted_today(session, tenant_id, agent_id) >= limit:
+            return (
+                None,
+                CODE_PROPOSAL_BUDGET_EXHAUSTED,
+                REASON_PROPOSAL_BUDGET_EXHAUSTED,
+            )
+
     dedupe_key = payload.get("dedupe_key") or ""
     if dedupe_key and dedupe_key in await repo.all_dedupe_keys(tenant_id):
         return None, CODE_DUPLICATE, REASON_DUPLICATE

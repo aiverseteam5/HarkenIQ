@@ -3401,17 +3401,68 @@ class AgentProposalRepo:
             ))
         return (await self.session.execute(stmt)).scalars().all()
 
-    async def count_since(
+    async def count_admitted_since(
         self, tenant_id: str, agent_id: str, since: datetime
     ) -> int:
+        """Proposals CHARGED to this agent's admission budget since `since`.
+
+        PB-1 (A30.42 D-PB2, A30.44): every admitted row that is not
+        `blocked`, across the agent's configuration versions. `blocked` is
+        written only at creation and no transition reaches it later, so a
+        row's charge is fixed at insert and nothing releases it (D-PB14) --
+        approval, denial, dispatch, failure and revocation all leave the
+        count where it was. Read by `admit_proposal` UNDER the tenant
+        admission lock; every other reader reports the same number.
+        """
         result = await self.session.execute(
             select(func.count(CCAgentProposal.id)).where(
                 CCAgentProposal.tenant_id == tenant_id,
                 CCAgentProposal.agent_id == agent_id,
                 CCAgentProposal.created_at >= since,
+                CCAgentProposal.status != "blocked",
             )
         )
-        return result.scalar() or 0
+        return int(result.scalar() or 0)
+
+    async def count_unattended(
+        self, tenant_id: str, agent_id: str, since: datetime
+    ) -> int:
+        """Unattended dispatches charged to this agent's execution budget.
+
+        PB-1 (A30.42 D-PB4, A30.44): ONLY `autonomous_grant` work counts --
+        a human's decision never spends delegated capacity. Derived from
+        the proposal rows, per proposal, so it cannot drift from them:
+
+          committed  the Site Manager accepted it: `mark_dispatched` set
+                     `dispatched_at`, inside the window. Kept whatever the
+                     node later did with it -- a node refusal is a FAILURE
+                     outcome, never a refund.
+          reserved   still `approved`, a dispatch claim held, no
+                     directive yet -- a send in progress, or one a crashed
+                     claimer left for the lease. Counted from the claim's
+                     own time, so a stale claim leaves the window with it.
+
+        Released is everything else: a Site Manager refusal before queueing
+        marks the proposal failed with no `dispatched_at`; a transport
+        error releases the claim. Read UNDER the per-agent execution lock
+        by the background dispatch pass.
+        """
+        result = await self.session.execute(
+            select(func.count(CCAgentProposal.id)).where(
+                CCAgentProposal.tenant_id == tenant_id,
+                CCAgentProposal.agent_id == agent_id,
+                CCAgentProposal.authorization_basis == "autonomous_grant",
+                or_(
+                    CCAgentProposal.dispatched_at >= since,
+                    and_(
+                        CCAgentProposal.status == "approved",
+                        CCAgentProposal.dispatch_claimed_at.is_not(None),
+                        CCAgentProposal.dispatch_claimed_at >= since,
+                    ),
+                ),
+            )
+        )
+        return int(result.scalar() or 0)
 
     async def find_by_directive(
         self, directive_id: str
@@ -3492,40 +3543,6 @@ class AgentProposalRepo:
         # the human queue it is a fresh decision, and the approval that
         # follows must not wait out a lease nobody is using.
         proposal.dispatch_claimed_at = None
-
-    async def count_in_flight(
-        self, tenant_id: str, agent_id: str, since: datetime
-    ) -> int:
-        """Unattended work this agent has already launched but not settled.
-
-        Outcome history is the source of truth for what RAN, but it lags
-        dispatch: an outcome only exists once the node has reported. Left
-        at that, an agent with a budget of one could dispatch a hundred
-        proposals in a single pass, because none of them had come back
-        yet -- the budget would be real in the report and meaningless in
-        the runtime.
-
-        A dispatched action is an execution in flight, so it counts
-        against the allowance. Settled proposals leave `dispatched`, so
-        this never double-counts what outcome history already holds.
-
-        Matched on the agent across versions, for the same reason
-        `count_executions` is: work launched under v1 is still this
-        agent's work after an edit makes it v2.
-        """
-        return int(
-            (
-                await self.session.execute(
-                    select(func.count(CCAgentProposal.id)).where(
-                        CCAgentProposal.tenant_id == tenant_id,
-                        CCAgentProposal.agent_id == agent_id,
-                        CCAgentProposal.status == "dispatched",
-                        CCAgentProposal.dispatched_at >= since,
-                    )
-                )
-            ).scalar()
-            or 0
-        )
 
     async def settle(self, proposal: CCAgentProposal, outcome: str) -> None:
         proposal.status = "completed" if outcome == "SUCCESS" else "failed"
@@ -4555,45 +4572,6 @@ class AgentPreflightRepo:
             CCAgentSkillInstall, (agent_id, agent_version, skill_id, device)
         )
         return row is not None
-
-    async def count_executions(
-        self, tenant_id: str, agent_id: str, since: datetime
-    ) -> int:
-        """Executions attributed to this AGENT in the budget window (D2).
-
-        Counts what actually RAN, from the existing outcome history --
-        not proposals. A proposal that is never executed consumes
-        nothing, because intent is not consumption.
-
-        Matched on the agent, ACROSS its configuration versions, and
-        that distinction is the whole correctness of the budget. Each
-        outcome still records the exact version that decided it (D3
-        requires attribution to name the configuration), but the
-        allowance belongs to the agent: keyed to `op-agent:<id>@v<n>`
-        exactly, editing a description bumped the version and silently
-        refilled a spent budget -- so the one control a customer sets to
-        bound unattended work was reset by the most routine edit there
-        is.
-
-        The prefix is a generated hex id, so it carries no LIKE
-        wildcards; the value is parameterised regardless.
-        """
-        from harkeniq_cc.db.models import CCOutcomeHistory
-        from harkeniq_cc.operational_agent import ATTRIBUTION_PREFIX
-
-        return int(
-            (
-                await self.session.execute(
-                    select(func.count(CCOutcomeHistory.id)).where(
-                        CCOutcomeHistory.actor.like(
-                            f"{ATTRIBUTION_PREFIX}{agent_id}@v%"
-                        ),
-                        CCOutcomeHistory.recorded_at >= since,
-                    )
-                )
-            ).scalar()
-            or 0
-        )
 
 
 class AgentIdentityRepo:

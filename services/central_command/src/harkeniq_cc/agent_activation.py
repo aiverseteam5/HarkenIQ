@@ -343,9 +343,10 @@ def check_approval(agent, unattended: list[str]) -> dict:
 def check_budget(agent, executions_used: int) -> dict:
     """Per-agent EXECUTION budget (D2).
 
-    Counts actions actually executed under this agent's attribution, the
-    way S5 budgets count actions -- not proposals. A proposal that is
-    never executed consumes nothing, because intent is not consumption.
+    PB-1 (A30.42 D-PB4): counts UNATTENDED dispatches -- `autonomous_grant`
+    work the Site Manager accepted or a claim has reserved
+    (`agent_lifecycle.executions_used`). Human-approved work never counts.
+    Proposals are never counted either; that is the admission budget.
 
     Exhaustion stops UNATTENDED execution only. It means "this agent has
     spent its delegated unattended allowance", never "this agent is
@@ -363,13 +364,14 @@ def check_budget(agent, executions_used: int) -> dict:
     if remaining == 0:
         return _row(
             "budget", WARN,
-            f"the {period} execution budget of {limit} is spent, so nothing "
-            f"runs unattended until it resets; the agent still observes, "
-            f"proposes, and executes what a human approves",
+            f"the {period} unattended execution budget of {limit} is spent, so "
+            f"nothing runs unattended until it resets; the agent still "
+            f"observes, proposes, and executes what a human approves",
             limit=limit, used=int(executions_used), remaining=0, exhausted=True,
         )
     return _row("budget", READY,
-                f"{remaining} of {limit} execution(s) remaining this {period}",
+                f"{remaining} of {limit} unattended dispatch(es) remaining this "
+                f"{period}",
                 limit=limit, used=int(executions_used), remaining=remaining,
                 exhausted=False)
 
@@ -867,7 +869,10 @@ DISPATCH_GATES = (
     "agent_active",
     "tenant_scope",
     "stop_switch",
-    "budget",
+    # PB-1 (A30.42 D-PB11): was `budget`, and only ever asked pause. The
+    # unattended budget is not a dispatch gate -- it caps delegated work on
+    # the autonomous branch alone, and a budget is never authority.
+    "agent_pause",
     "effective_scope",
     "capability_binding",
     # S3-E1 (A30.37). After every gate above, so scope, pause, stop and

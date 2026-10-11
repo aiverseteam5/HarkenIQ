@@ -167,6 +167,9 @@ class TestProvenanceIsPersisted:
         from harkeniq_cc.proposal_admission import admit_proposal
 
         _app, sm, estate = await _stack()
+        # PB-1 (A30.44): admission reads the proposing agent's budget, so
+        # the agent must exist -- as it always does in production.
+        await _agents(sm, estate.sites["site-1"])
         async with sm() as session:
             row, code, _ = await admit_proposal(
                 session, tenant_id=TENANT,
@@ -189,6 +192,9 @@ class TestProvenanceIsPersisted:
         from harkeniq_cc.proposal_admission import admit_proposal
 
         _app, sm, estate = await _stack()
+        # PB-1 (A30.44): admission reads the proposing agent's budget, so
+        # the agent must exist -- as it always does in production.
+        await _agents(sm, estate.sites["site-1"])
         async with sm() as session:
             row, code, _ = await admit_proposal(
                 session, tenant_id=TENANT,
@@ -212,6 +218,9 @@ class TestProvenanceIsPersisted:
         from harkeniq_cc.proposal_admission import admit_proposal
 
         _app, sm, estate = await _stack()
+        # PB-1 (A30.44): admission reads the proposing agent's budget, so
+        # the agent must exist -- as it always does in production.
+        await _agents(sm, estate.sites["site-1"])
         payload = dict(
             tenant_id=TENANT, agent_id=AGENT, actor="op-agent:agent-A@v1",
             agent_version=1, site_id=estate.sites["site-1"],

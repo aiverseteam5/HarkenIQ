@@ -777,6 +777,17 @@ def govern_proposal(
     ):
         blocking = blocking + [global_row()]
 
+    # PB-1 (A30.42 D-PB3, T1): a denial that exists ONLY because a stop is
+    # in force -- the tenant stop switch, or a halt at the target's own Site
+    # Manager -- writes no row. A `blocked` row fences its dedupe key for
+    # ever (`all_dedupe_keys` reads every key), so recording a transient
+    # stop made a condition unproposable after the switch lifted, and D16
+    # makes only a DENIAL final. The dry-run lists it; discovery reports
+    # both stops; the condition is proposed again once the stop lifts.
+    transient = transient_denial_code(disposition, class_row, blocking)
+    if transient:
+        return _refused(transient, TRANSIENT_DENIAL_REASONS[transient])
+
     if disposition == DENIED:
         status = PROPOSAL_BLOCKED
     elif disposition == AUTONOMOUS:
@@ -859,6 +870,44 @@ def govern_proposal(
     }
 
 
+#: PB-1 (A30.42 D-PB3): the blocking codes of a stop that LIFTS. Constant
+#: reasons naming no site -- a dry-run's `withheld` list is read by the
+#: agent and by humans whose reach may not include the stopped site.
+CODE_TENANT_STOP = "stop_switch_active"
+CODE_SITE_HALT = "site_stop_switch_active"
+TRANSIENT_DENIAL_REASONS: dict[str, str] = {
+    CODE_TENANT_STOP: (
+        "the tenant stop switch is active; nothing is proposed while it holds, "
+        "and this condition is proposed again once it lifts"
+    ),
+    CODE_SITE_HALT: (
+        "the Site Manager at this device's site is halted; nothing is "
+        "proposed there while it holds, and this condition is proposed again "
+        "once it lifts"
+    ),
+}
+
+
+def transient_denial_code(disposition: str, class_row: dict, blocking) -> str:
+    """The stop that is the whole reason for this denial, or "".
+
+    Today a class is DENIED for exactly three reasons: it is fenced (risk
+    `high` is never budget-grantable -- permanent, and recorded as a
+    `blocked` row, D16), the tenant stop switch, or a halt at the target
+    site. A fenced class is never transient whatever else holds; otherwise
+    a DENIED verdict carrying a stop's code is that stop's.
+    """
+    if disposition != DENIED or class_row.get("never_budget_grantable"):
+        return ""
+    codes = {
+        row.get("code") for row in (blocking or ()) if isinstance(row, dict)
+    }
+    for code in (CODE_TENANT_STOP, CODE_SITE_HALT):
+        if code in codes:
+            return code
+    return ""
+
+
 #: Scheme tag inside the candidate digest. Bumping it invalidates every
 #: outstanding reference at once, which is the only safe way to change
 #: what a reference means.
@@ -898,10 +947,10 @@ def candidate_ref(tenant_id: str, dedupe_key: str) -> str:
 def proposal_budget_left(agent, proposals_today: int) -> int:
     """How many more proposals this agent may make today. ONE rule.
 
-    The evaluator stops at zero, and so does the ingress re-derivation
-    that runs it; discovery reports the same number (A30.32), so a
-    runtime is told it is out of proposals by the arithmetic that will
-    actually stop it.
+    PB-1 (A30.42 D-PB2): `proposals_today` is `admitted_today` -- the count
+    `admit_proposal` enforces under the admission lock. The evaluator and
+    the ingress re-derivation cut their selection at zero; discovery
+    reports the same number (A30.32). Only admission refuses.
     """
     return max(
         0, int(getattr(agent, "max_proposals_per_day", 0) or 0) - int(proposals_today)
@@ -1013,7 +1062,11 @@ def evaluate(
                     continue
                 proposals.append(verdict["proposal"])
                 open_keys.add(verdict["dedupe_key"])
-                budget_left -= 1
+                # PB-1 (D-PB2): the soft cut follows the budget's own rule
+                # -- a `blocked` row charges nothing. `admit_proposal` is
+                # the authority; this only decides what to put to it.
+                if verdict["proposal"]["status"] != PROPOSAL_BLOCKED:
+                    budget_left -= 1
                 made_for_device = True
                 break
 

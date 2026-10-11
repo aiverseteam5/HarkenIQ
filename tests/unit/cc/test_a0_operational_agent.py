@@ -359,16 +359,23 @@ class TestEvaluate:
         assert got[0]["status"] == PROPOSAL_AWAITING
         assert got[0]["authorization_basis"] == BASIS_HUMAN
 
-    def test_stop_switch_blocks_rather_than_hides(self):
-        """A stopped tenant still records what the agent wanted to do."""
+    def test_stop_switch_withholds_rather_than_hides(self):
+        """A stopped tenant still says what the agent wanted to do.
+
+        PB-1 (A30.42 D-PB3, T1) inverts A1's pin, intent kept: the intent
+        is no longer a `blocked` row -- which fenced the condition for ever
+        once the switch lifted -- but a reasoned entry in the withheld list,
+        and no row at all.
+        """
+        withheld: list = []
         got = self._run(
             _agent(), [_cap("action_class", "SEL_CLEAR")], [_device("d1")],
             {"d1": [{"incident_id": "i1", "subsystem": "log", "title": "SEL"}]},
-            _assessments(level=2, stop=True),
+            _assessments(level=2, stop=True), withheld=withheld,
         )
-        assert got[0]["status"] == PROPOSAL_BLOCKED
-        assert got[0]["disposition"] == "denied"
-        assert "stop switch" in got[0]["disposition_reason"]
+        assert got == []
+        assert [w["code"] for w in withheld] == ["stop_switch_active"]
+        assert "stop switch" in withheld[0]["reason"]
 
     def test_error_budget_dropback_forces_a_human(self):
         safety = SimpleNamespace(

@@ -53,7 +53,11 @@ from harkeniq_cc.governance import (
 )
 from harkeniq_cc.autonomy import ACTOR_AGENT
 from harkeniq_cc.scope import where_reach
-from harkeniq_cc.proposal_admission import ORIGIN_EVALUATOR, admit_proposal
+from harkeniq_cc.proposal_admission import (
+    ORIGIN_EVALUATOR,
+    admit_proposal,
+    admitted_today,
+)
 from harkeniq_cc.operational_agent import (
     BASIS_AUTONOMOUS,
     EVALUATING_STATUSES,
@@ -142,10 +146,6 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             for sub in {r.subsystem for r in catalogue_rows}
         }
 
-        midnight = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0,
-        )
-
         # S3-E1 (A30.37): the composer's inputs, read ONCE per pass. Every
         # agent below reads each target's SITE-LOCAL assessment and the
         # gate from them -- never the tenant-wide fold.
@@ -203,8 +203,10 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 ),
                 attention_by_device=attention,
                 open_dedupe_keys=seen_keys,
-                proposals_today=await prop_repo.count_since(
-                    tenant_id, agent.id, midnight,
+                # PB-1 (D-PB2): the count admission enforces. A soft cut
+                # for this pass's own selection; `admit_proposal` refuses.
+                proposals_today=await admitted_today(
+                    session, tenant_id, agent.id,
                 ),
             )
             for payload in proposals:
@@ -456,7 +458,9 @@ async def revalidate_dispatch(
         # caps unattended work (D2) and is asked on the autonomous branch.
         # A paused agent is a different matter: pausing is an explicit
         # safety act, and it refuses on either basis.
-        budget=(
+        # PB-1 (D-PB11): named for what it asks. It was `budget`, and it has
+        # only ever checked pause.
+        agent_pause=(
             f"the agent is paused: {agent.paused_reason}"
             if agent.paused_reason else True
         ),
@@ -498,7 +502,7 @@ async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, 
     check -- not a second budget rule written here.
     """
     from harkeniq_cc.agent_activation import unattended_permitted
-    from harkeniq_cc.agent_lifecycle import executions_used
+    from harkeniq_cc.agent_lifecycle import executions_used, lock_unattended_budget
     from harkeniq_cc.operational_agent import parse_attribution
 
     parsed = parse_attribution(getattr(proposal, "actor", "") or "")
@@ -509,6 +513,11 @@ async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, 
     agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
     if agent is None:
         return False, "the agent that made this proposal no longer exists"
+    # PB-1 (A30.42 D-PB4): lock, THEN count. The caller holds this lock
+    # through the claim's commit, so the reservation it takes is visible to
+    # the next counter before the Site Manager is called -- no replica sees
+    # the last unit free twice, and nothing is held across the network.
+    await lock_unattended_budget(session, tenant_id, agent.id)
     return unattended_permitted(agent, await executions_used(
         session, tenant_id, agent,
     ))

@@ -72,6 +72,7 @@ from harkeniq_cc.scope import (
     read_reach,
     where_reach,
 )
+from harkeniq_cc.proposal_admission import admitted_today
 from harkeniq_cc.provenance import provenance_block
 from harkeniq_cc.operational_agent import (
     AGENT_STATUSES,
@@ -2140,9 +2141,6 @@ async def dry_run_agent(
         for sub in {r.subsystem for r in catalogue_rows}
     }
     prop_repo = AgentProposalRepo(session)
-    midnight = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
 
     # The SAME resolver the evaluator uses, so "in scope" here and "in
     # scope" there cannot drift (the A17 lesson, applied to the preview).
@@ -2161,9 +2159,7 @@ async def dry_run_agent(
         unattended_approved=unattended_approved,
         attention_by_device=attention,
         open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
-        proposals_today=await prop_repo.count_since(
-            tenant_id, agent_id, midnight,
-        ),
+        proposals_today=await admitted_today(session, tenant_id, agent_id),
         withheld=withheld,
     )
 
@@ -2350,9 +2346,6 @@ async def agent_discovery(
             tenant_id
         )
     ]
-    midnight = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
     # S3-E1 (A30.37): what admission reads for a target at each site of
     # THIS composition -- that site's own local assessment -- and the gate.
     # Only sites the composition already holds are assessed (A30.26(j)); a
@@ -2385,9 +2378,7 @@ async def agent_discovery(
         contract=contract,
         catalogue=catalogue,
         executions_used=await executions_used(session, tenant_id, agent),
-        proposals_today=await AgentProposalRepo(session).count_since(
-            tenant_id, agent.id, midnight,
-        ),
+        proposals_today=await admitted_today(session, tenant_id, agent.id),
         site_contracts={
             site_id: assessments.local_contract((site_id,))
             for site_id in composition
@@ -2688,9 +2679,6 @@ async def submit_proposal(
         for sub in {r.subsystem for r in catalogue_rows}
     }
     prop_repo = AgentProposalRepo(session)
-    midnight = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
     repo = OperationalAgentRepo(session)
     would_propose = evaluate(
         catalogue=catalogue,
@@ -2724,9 +2712,7 @@ async def submit_proposal(
             ))["items"]
         },
         open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
-        proposals_today=await prop_repo.count_since(
-            tenant_id, agent_id, midnight,
-        ),
+        proposals_today=await admitted_today(session, tenant_id, agent_id),
     )
 
     match = next(

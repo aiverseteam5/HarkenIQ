@@ -35,6 +35,23 @@ LEARNING_CYCLES = 4
 FULL_SECTIONS = ("viewer", "learning")
 
 
+def _before_pb1(payload):
+    """The ONE ratified change PB-1 makes to these reads, mapped back.
+
+    A30.44 (D-PB11): `posture.actions_used` had no writer, so it was always
+    0 here and is now published as null beside `actions_used_reason:
+    "not_tracked"` (asserted in `test_pb1_budget_semantics`). Mapping exactly
+    that pair back to the recorded 0 keeps every other byte of every read
+    under this golden -- the point of the golden.
+    """
+    posture = payload.get("posture") if isinstance(payload, dict) else None
+    if isinstance(posture, dict) and posture.get("actions_used_reason") == "not_tracked":
+        assert posture.get("actions_used") is None, posture
+        posture.pop("actions_used_reason")
+        posture["actions_used"] = 0
+    return payload
+
+
 def _key(q: dict) -> str:
     return json.dumps(q, sort_keys=True)
 
@@ -55,7 +72,9 @@ async def humans(variant: str) -> dict:
             reads["attention"][_key(q)] = await P.attention(stack, name, **P.query(stack, q))
         for q in METRICS_QUERIES:
             reads["metrics"][_key(q)] = await P.get(stack, name, "/api/outcomes/metrics", **q)
-        reads["autonomy"]["{}"] = E.normalised(await P.get(stack, name, "/api/autonomy/"))
+        reads["autonomy"]["{}"] = _before_pb1(
+            E.normalised(await P.get(stack, name, "/api/autonomy/"))
+        )
         out[name] = canon(reads)
     stack.as_person()
     return out

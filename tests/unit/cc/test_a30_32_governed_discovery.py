@@ -937,13 +937,21 @@ class TestGovernance:
         await _clear_safety(stack, ("A",))
         await _agent(stack, "b1-budget", budget=1)
         await _grant(stack, "b1-budget", "tenant")
+        # PB-1 (A30.42 D-PB4): the budget is spent by an UNATTENDED dispatch
+        # the Site Manager accepted -- no longer by any attributed outcome.
+        from harkeniq_cc.db.models import CCAgentProposal
+
         async with stack.sessionmaker() as session:
-            session.add(CCOutcomeHistory(
-                site_id=stack.site("A"), action_id="b1-exec-1",
-                action_type="SEL_CLEAR", device_agent_id=stack.device("A"),
-                vendor="Dell", model="R750", outcome="SUCCESS",
-                actor="op-agent:b1-budget@v1",
-                recorded_at=datetime.now(timezone.utc),
+            session.add(CCAgentProposal(
+                tenant_id=stack.tenant, agent_id="b1-budget",
+                actor="op-agent:b1-budget@v1", agent_version=1,
+                site_id=stack.site("A"), device_agent_id=stack.device("A"),
+                action_type="SEL_CLEAR", params={}, rationale="done",
+                evidence={}, disposition="autonomous",
+                authorization_basis="autonomous_grant", status="completed",
+                outcome="SUCCESS", directive_id="b1-dir-1",
+                dispatched_at=datetime.now(timezone.utc),
+                dedupe_key="b1-budget:done",
             ))
             await session.commit()
         body = await _discover(stack, "b1-budget")
