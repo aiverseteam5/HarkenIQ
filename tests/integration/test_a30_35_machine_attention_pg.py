@@ -116,14 +116,11 @@ async def test_the_outcome_predicate_is_before_the_limit_on_postgres():
         stats = await OutcomeHistoryRepo(session).device_stats(
             stack.tenant, scope=reach, now=datetime.now(timezone.utc), cohorts=False,
         )
-        everything = await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-            stack.tenant, limit=5,
-        )
     visible = {E.agent(stack, k) for k in ("a1", "a2", "a4", "mv")} | {stack.tagged("b22-ghost")}
     assert stats.devices and set(stats.devices) <= visible
-    # The internal decision paths' read is unchanged (Phase 3 owns it): the
-    # hidden rows, being the oldest, still fill its window.
-    assert {r["device_agent_id"] for r in everything} == {E.agent(stack, "c1")}
+    # PB-2 (A30.42 D-PB7): the internal decision paths' oldest-rows window,
+    # which these hidden rows used to fill, no longer exists.
+    assert not hasattr(OutcomeHistoryRepo, "list_device_outcome_dicts")
 
 
 async def test_the_held_device_incident_read_on_postgres():

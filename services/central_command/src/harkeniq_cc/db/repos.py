@@ -1854,9 +1854,9 @@ class OutcomeHistoryRepo:
     A30.41: every read is exact over the rows its caller may read. They all
     select through ONE statement builder, `_authorized`; no principal read
     carries a row limit, and every ordered read ends in the immutable `id`.
-    The one window left is `list_device_outcome_dicts`, the internal
-    decision paths' ranking input, kept byte-identical for Phase 3
-    (proposal-budget ordering).
+    PB-2 (A30.42 D-PB7) deleted the last window, `list_device_outcome_dicts`
+    -- the internal decision paths' oldest-50,000 ranking input; they read
+    `device_stats` over the agent's own reach now.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -2068,40 +2068,6 @@ class OutcomeHistoryRepo:
         if not action_id:
             return None
         return (await self.first_by_action_ids(tenant_id, [action_id])).get(action_id)
-
-    async def list_device_outcome_dicts(
-        self, tenant_id: str, limit: int = 50000,
-    ) -> list[dict]:
-        """The internal decision paths' ranking input -- UNCHANGED (A30.41).
-
-        Per-device outcome rows for risk scoring (R4-3 P20): the OLDEST
-        `limit` rows by `recorded_at`, over the whole tenant. The evaluator's
-        Attention rank decides which devices consume an agent's proposal
-        budget, and A30.41 changes no evaluator ordering, so this read stays
-        byte-identical until Phase 3 (proposal-budget ordering) owns it.
-
-        Internal only: it takes no reach. Every principal -- the predictive
-        route, a person's and a machine's Attention -- reads `device_stats`,
-        which has no window.
-        """
-        stmt = (
-            select(CCOutcomeHistory)
-            .join(CCSite, CCOutcomeHistory.site_id == CCSite.id)
-            .where(CCSite.tenant_id == tenant_id)
-            .order_by(CCOutcomeHistory.recorded_at)
-            .limit(limit)
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
-        return [
-            {
-                "device_agent_id": r.device_agent_id,
-                "vendor": r.vendor,
-                "model": r.model,
-                "outcome": r.outcome,
-                "recorded_at": r.recorded_at,
-            }
-            for r in rows
-        ]
 
 
 class FleetPatternRepo:
@@ -4720,6 +4686,12 @@ class CapabilityCatalogueRepo:
             await self.session.execute(
                 select(CCCapabilityCatalogue)
                 .where(CCCapabilityCatalogue.tenant_id == tenant_id)
+                # PB-2 (A30.42 D-PB8): candidates in catalogue order on EVERY
+                # read, this re-read under the lock included.
+                .order_by(
+                    CCCapabilityCatalogue.subsystem,
+                    CCCapabilityCatalogue.action_type,
+                )
             )
         ).scalars().all()
         if rows:

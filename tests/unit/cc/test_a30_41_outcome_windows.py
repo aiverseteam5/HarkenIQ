@@ -209,6 +209,17 @@ def _section_digests(name: str, value) -> dict:
     return {k: v for k, v in out.items() if k.startswith(name)}
 
 
+def _machine_attention_digests(reads) -> dict:
+    return {k: v for k, v in _section_digests("machines", reads).items()
+            if k.startswith("machines/attention/")}
+
+
+async def _internal_matches_machine():
+    full = await E.build()
+    for name, (internal, machine) in (await E.internal_matches_machine(full)).items():
+        assert internal and internal == machine, name
+
+
 class TestBelowTheWindowsNothingMoved:
     """Recorded by `a30_41_golden` with production code byte-identical to
     main 565154b, in two processes that agreed. Below 10,000 and 50,000 rows
@@ -228,7 +239,12 @@ class TestBelowTheWindowsNothingMoved:
         assert _section_digests("humans_light", await G.humans("light")) == _expected("humans_light")
 
     async def test_every_machine_read_and_the_internal_paths(self):
-        assert _section_digests("machines", await G.machines()) == _expected("machines")
+        reads = await G.machines()
+        # PB-2 (A30.42 D-PB7) re-anchored the internal paths deliberately:
+        # every machine read stays the golden's, and the internal answer is
+        # pinned to each agent's own machine Attention instead.
+        assert _machine_attention_digests(reads) == _expected("machines/attention/")
+        await _internal_matches_machine()
 
     async def test_the_machine_reads_do_not_depend_on_how_long_the_run_has_been(
             self, monkeypatch):
@@ -236,7 +252,8 @@ class TestBelowTheWindowsNothingMoved:
         freshness reads stale 13 minutes into a long run. As if this ran 20
         minutes after import, the section must still be the golden's."""
         monkeypatch.setitem(E.SEEN, "fresh", E.NOW_BASE - timedelta(minutes=20))
-        assert _section_digests("machines", await G.machines()) == _expected("machines")
+        reads = await G.machines()
+        assert _machine_attention_digests(reads) == _expected("machines/attention/")
 
     async def test_the_s3_e2_viewer_for_every_persona(self):
         viewer = await G.viewer()
@@ -321,7 +338,7 @@ class TestTheFiftyThousandBoundary:
     The principal answer is exact at every size; the internal decision
     paths keep their window, which is pinned for Phase 3."""
 
-    async def test_principals_are_exact_and_the_internal_window_stays(self):
+    async def test_principals_and_the_internal_paths_are_exact(self):
         stack = await P.build()
         site, a1 = stack.site("A"), P.agent(stack, "a1")
         base = await _count(stack)
@@ -359,13 +376,25 @@ class TestTheFiftyThousandBoundary:
 
         # The newest row moved the answer, as it should.
         assert seen[50_001][0] != seen[50_000][0]
-        # The internal decision paths still read the OLDEST 50,000 rows:
-        # at 50,001 they miss exactly the newest -- Phase 3 owns this.
-        from harkeniq_cc.governance import load_attention
+        # PB-2 (A30.42 D-PB7) inverts the window pin, intent kept: the
+        # internal decision paths used to read the OLDEST 50,000 rows and
+        # miss exactly the newest here. They read exact statistics over the
+        # agent's own reach now, so they see it -- and, scored on no cohort,
+        # agree with the tenant agent's own machine Attention.
+        from harkeniq_cc.agent_runtime import decision_attention
+        from harkeniq_cc.governance import load_agent_scope
+        from harkeniq_cc.scope import where_reach
 
         async with stack.sessionmaker() as session:
-            internal = await load_attention(session, tenant_id=stack.tenant, learning=None)
-        assert _item(internal, a1)["risk_score"] == seen[50_000][0]
+            scope = await load_agent_scope(
+                session, tenant_id=stack.tenant, agent_id=machine,
+            )
+            internal = await decision_attention(
+                session, stack.tenant, where_reach(scope),
+            )
+        mine = internal[(site, a1)]
+        assert mine["risk_score"] == seen[50_001][0]
+        assert mine["band"] == seen[50_001][1]["risk"]["band"]
 
 
 # ---------------------------------------------------------------------------
@@ -632,11 +661,12 @@ class TestStructure:
                      if "list_outcome_dicts" in p.read_text()]
         assert offenders == []
 
-    def test_the_windowed_read_is_the_internal_paths_alone(self):
+    def test_the_windowed_read_is_gone(self):
+        """PB-2 (A30.42 D-PB7) deleted the last window -- the internal
+        decision paths' oldest-50,000 read -- with its last caller."""
         from harkeniq_cc.db.repos import OutcomeHistoryRepo as Repo
 
-        params = inspect.signature(Repo.list_device_outcome_dicts).parameters
-        assert "scope" not in params
+        assert not hasattr(Repo, "list_device_outcome_dicts")
         callers = set()
         for path in SRC.rglob("*.py"):
             for fn in ast.walk(ast.parse(path.read_text())):
@@ -645,7 +675,7 @@ class TestStructure:
                         if isinstance(node, ast.Call) and getattr(
                                 node.func, "attr", "") == "list_device_outcome_dicts":
                             callers.add((str(path.relative_to(SRC)), fn.name))
-        assert callers == {("governance.py", "_compose_attention")}
+        assert callers == set()
 
     def test_every_outcome_read_selects_through_the_one_builder(self):
         repo = next(n for n in self._tree("db/repos.py").body
@@ -656,8 +686,7 @@ class TestStructure:
                 continue
             calls = {getattr(n.func, "attr", getattr(n.func, "id", ""))
                      for n in ast.walk(fn) if isinstance(n, ast.Call)}
-            if "select" in calls and fn.name not in ("_authorized", "count",
-                                                    "list_device_outcome_dicts"):
+            if "select" in calls and fn.name not in ("_authorized", "count"):
                 unbuilt.append(fn.name)
             if fn.name in ("tally", "device_stats", "first_by_action_ids",
                            "legacy_candidates"):
@@ -680,11 +709,9 @@ class TestStructure:
             await repo.first_by_action_ids("t1", ["directive:a"])
             await repo.legacy_candidates("t1", [("node-1", "SEL_CLEAR")])
             principal = list(statements)
-            statements.clear()
-            await repo.list_device_outcome_dicts("t1")
-            internal = list(statements)
+        # PB-2 (A30.42 D-PB7): no outcome read carries a window any more --
+        # the internal paths' LIMIT went with `list_device_outcome_dicts`.
         assert principal and all(" LIMIT " not in s.upper() for s in principal)
-        assert internal and " LIMIT " in internal[0].upper()
         # The keyed reads -- settlement's and the receipt's, and the legacy
         # candidates -- end in the immutable id.
         keyed = [s for s in principal

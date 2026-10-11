@@ -180,8 +180,9 @@ def score_device(
 ) -> DeviceRisk:
     """Score one device. See module docstring for the composition.
 
-    `outcomes` is the device's rows (the internal decision paths, which keep
-    their window until Phase 3). `history` is the same device's sufficient
+    `outcomes` is the device's rows, for a caller that holds them; no
+    runtime path does since PB-2 (A30.42 D-PB7) moved the internal decision
+    paths onto exact statistics. `history` is the same device's sufficient
     statistics, read by the database over every row (A30.41): given, it
     decides the sample count and the recency-weighted rate, and the rest of
     the composition is shared, line for line.

@@ -649,25 +649,66 @@ async def human_payloads(stack) -> dict:
     return json.loads(json.dumps(out, sort_keys=True))
 
 
+#: The internal decision paths' personas: a tenant-scoped agent and four
+#: scoped ones (PB-2 needs the tenant one to be an AGENT -- there is no
+#: whole-tenant internal answer any more).
+INTERNAL_AGENTS = ("m-tenant", "m-site-a", "m-device-a1", "m-class-switch", "m-org-ab")
+
+
 async def internal_payloads(stack) -> dict:
-    """The three internal decision paths' shape: `learning=None`, with no
-    scope and with an agent's WHERE-only scope."""
+    """The internal decision paths' shape: `learning=None` over an agent's
+    WHERE-only scope.
+
+    PB-2 (A30.42 D-PB7): `load_attention` refuses a missing reach, so the
+    "tenant" entry is a tenant-scoped agent's reach (`m-tenant`), and every
+    entry is now composed over the agent's own reach with no cohort prior.
+    """
     from harkeniq_cc.governance import load_agent_scope, load_attention
     from harkeniq_cc.scope import where_reach
 
     out: dict = {}
-    async with stack.sessionmaker() as session:
-        out["tenant"] = normalised(await load_attention(
-            session, tenant_id=stack.tenant, learning=None,
-        ))
-    for name in ("m-site-a", "m-device-a1", "m-class-switch", "m-org-ab"):
+    for name in INTERNAL_AGENTS:
         agent_id = await machine(stack, name)
         async with stack.sessionmaker() as session:
             scope = await load_agent_scope(session, tenant_id=stack.tenant, agent_id=agent_id)
-            out[name] = normalised(await load_attention(
+            out["tenant" if name == "m-tenant" else name] = normalised(await load_attention(
                 session, tenant_id=stack.tenant, scope=where_reach(scope), learning=None,
             ))
     return json.loads(json.dumps(out, sort_keys=True))
+
+
+def _internal_ranking(payload: dict) -> list:
+    """The facts the evaluator reads off an internal item, in rank order."""
+    return [
+        ((i.get("site_id") or ""), i["agent_id"], i["attention_driver"], i["band"],
+         (i.get("confidence") or {}).get("basis"))
+        for i in sorted(payload["items"], key=lambda i: i["rank"])
+    ]
+
+
+def _machine_ranking(payload: dict) -> list:
+    return [
+        (i["target"]["site_id"], i["target"]["device_agent_id"], i["driver"],
+         i["risk"]["band"], i["risk"]["basis"])
+        for i in sorted(payload["items"], key=lambda i: i["order"])
+    ]
+
+
+async def internal_matches_machine(stack) -> dict:
+    """PB-2 (A30.42 D-PB7): the identity the internal paths now hold.
+
+    For each internal persona: the evaluator's ranking -- order, driver,
+    band and basis -- equals that same agent's own machine Attention over
+    HTTP. Returns {name: (internal, machine)} for the caller to compare.
+    """
+    internal = await internal_payloads(stack)
+    out = {}
+    for name in INTERNAL_AGENTS:
+        machine_answer = await read(stack, name)
+        key = "tenant" if name == "m-tenant" else name
+        out[name] = (_internal_ranking(internal[key]), _machine_ranking(machine_answer))
+    stack.as_person()
+    return out
 
 
 def leaves(node, path=()):

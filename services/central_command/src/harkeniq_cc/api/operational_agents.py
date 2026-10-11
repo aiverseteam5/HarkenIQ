@@ -2039,13 +2039,17 @@ async def dry_run_agent(
     # follow-up, not something A5 fixes in passing while standing next
     # to it. Using the runtime's own constant keeps the preview and the
     # runtime asking the contract the same way.
-    from harkeniq_cc.agent_runtime import AGENT_PERMISSIONS, _incidents_by_device
+    from harkeniq_cc.agent_runtime import (
+        AGENT_PERMISSIONS,
+        _incidents_by_device,
+        decision_attention,
+    )
     from harkeniq_cc.capability_catalogue import candidates_for
     from harkeniq_cc.db.repos import (
         AgentProposalRepo, CapabilityCatalogueRepo, FleetCacheRepo,
     )
     from harkeniq_cc.governance import (
-        load_agent_reach, load_attention, load_site_assessments,
+        load_agent_reach, load_site_assessments,
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
@@ -2098,7 +2102,6 @@ async def dry_run_agent(
         await _refuse_preview_outside_caller_scope(session, agent_id, scope)
 
     devices = await FleetCacheRepo(session).list_all(tenant_id)
-    incidents = await _incidents_by_device(session, tenant_id)
     caps = await repo.list_capabilities(agent_id)
     # A30.10: what the agent WOULD do resolves through canonical reach.
     # A dry-run that previewed devices an expired grant reached would be
@@ -2107,15 +2110,12 @@ async def dry_run_agent(
         session, tenant_id=tenant_id, agent_id=agent_id,
     )
     agent_scope = agent_reach.scope
-    attention = {
-        item["agent_id"]: item
-        # A30.28: an INTERNAL DECISION -- the preview reasons as the
-        # runtime does and returns rank/band/driver/score, never the items.
-        for item in (await load_attention(
-            session, tenant_id=tenant_id, scope=where_reach(agent_scope),
-            learning=None,
-        ))["items"]
-    }
+    # PB-2 (A30.42 D-PB7, PB-F6): the SAME selection the runtime reads --
+    # the agent's own reach, then compose. A30.28: an INTERNAL DECISION --
+    # the preview reasons as the runtime does and returns nothing of it.
+    own = where_reach(agent_scope)
+    attention = await decision_attention(session, tenant_id, own)
+    incidents = await _incidents_by_device(session, tenant_id, own)
     # S3-E1 (A30.37): an INTERNAL DECISION. A22.6 requires the preview to
     # reason exactly as the runtime does, so it reads each target's own
     # site-local assessment and the gate -- the same `SiteAssessments` the
@@ -2476,7 +2476,11 @@ async def submit_proposal(
     gates, the Site Manager's live safety state and the node's own allow
     list, exactly as an internally derived one does.
     """
-    from harkeniq_cc.agent_runtime import AGENT_PERMISSIONS, _incidents_by_device
+    from harkeniq_cc.agent_runtime import (
+        AGENT_PERMISSIONS,
+        _incidents_by_device,
+        decision_attention,
+    )
     from harkeniq_cc.capability_catalogue import candidates_for
     from harkeniq_cc.db.repos import (
         AgentIngressAttemptRepo, AgentProposalRepo, AgentSubmissionRepo,
@@ -2488,7 +2492,7 @@ async def submit_proposal(
         lock_agent_ingress, record_throttled,
     )
     from harkeniq_cc.governance import (
-        load_agent_reach, load_attention, load_site_assessments,
+        load_agent_reach, load_site_assessments,
     )
     from harkeniq_cc.machine_identity import is_machine
     from harkeniq_cc.operational_agent import (
@@ -2687,7 +2691,10 @@ async def submit_proposal(
         resolved_site_ids=agent_reach.site_ids,
         capabilities=await repo.list_capabilities(agent_id),
         devices=devices,
-        incidents_by_device=await _incidents_by_device(session, tenant_id),
+        # PB-2 (A30.42 PB-F6): the same reach-selected incidents.
+        incidents_by_device=await _incidents_by_device(
+            session, tenant_id, where_reach(agent_scope),
+        ),
         # S3-E1 (A30.37): an INTERNAL DECISION -- the same site-local
         # assessments and gate the evaluator reads, or a re-derivation
         # could admit what the runtime would not. Never returned; the
@@ -2703,16 +2710,16 @@ async def submit_proposal(
         unattended_approved=await _activation_approved(
             session, tenant_id, agent,
         ),
-        attention_by_device={
-            item["agent_id"]: item
-            # A30.28: an INTERNAL DECISION (the ingress re-derivation).
-            for item in (await load_attention(
-                session, tenant_id=tenant_id, scope=where_reach(agent_scope),
-                learning=None,
-            ))["items"]
-        },
+        # A30.28: an INTERNAL DECISION (the ingress re-derivation).
+        attention_by_device=await decision_attention(
+            session, tenant_id, where_reach(agent_scope),
+        ),
         open_dedupe_keys=await prop_repo.all_dedupe_keys(tenant_id),
         proposals_today=await admitted_today(session, tenant_id, agent_id),
+        # PB-2 (A30.42 D-PB9): ingress admissibility is decoupled from the
+        # evaluator's rank cut. A candidate below that cut is still current;
+        # `admit_proposal` alone decides whether the budget allows it.
+        cut_at_budget=False,
     )
 
     match = next(

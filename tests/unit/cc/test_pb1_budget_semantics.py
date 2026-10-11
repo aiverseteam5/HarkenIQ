@@ -676,16 +676,26 @@ class TestStructure:
         assert "agent_pause" in DISPATCH_GATES
 
     def test_exactly_one_admission_refusal_site(self):
-        """Only `admit_proposal` refuses on the admission budget."""
+        """Only `admit_proposal` refuses on the admission budget. The one
+        other reader of the code is the evaluator's dry-run report of what
+        its own cut withheld (PB-2, D-PB9) -- a report, never a refusal."""
         import pathlib
 
+        from harkeniq_cc import operational_agent
+
         root = pathlib.Path(proposal_admission.__file__).parent
-        hits = [
+        hits = sorted(
             p.relative_to(root).as_posix()
             for p in root.rglob("*.py")
             if "CODE_PROPOSAL_BUDGET_EXHAUSTED" in p.read_text()
-        ]
-        assert hits == ["proposal_admission.py"], hits
+        )
+        assert hits == ["operational_agent.py", "proposal_admission.py"], hits
+        assert "CODE_PROPOSAL_BUDGET_EXHAUSTED" in inspect.getsource(
+            operational_agent.evaluate)
+        assert "CODE_PROPOSAL_BUDGET_EXHAUSTED" not in inspect.getsource(
+            operational_agent.govern_proposal)
+        assert "CODE_PROPOSAL_BUDGET_EXHAUSTED" in inspect.getsource(
+            proposal_admission.admit_proposal)
 
     def test_the_unattended_count_is_read_under_its_lock(self):
         src = inspect.getsource(agent_runtime._unattended_allowed)

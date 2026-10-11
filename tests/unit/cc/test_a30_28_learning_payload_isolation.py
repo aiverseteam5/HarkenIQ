@@ -778,10 +778,12 @@ PACKAGE = pathlib.Path(harkeniq_cc.__file__).parent
 
 #: INTERNAL DECISION paths (A30.28): they read rank, band, driver and score
 #: off each attention item and never return the payload.
+#: PB-2 (A30.42 D-PB7): the three paths -- the evaluator, the dry-run and
+#: the ingress re-derivation -- now share ONE read, `decision_attention`,
+#: so they cannot select differently. Intent kept: only that internal
+#: decision read takes unprojected learning.
 INTERNAL_ATTENTION = {
-    ("agent_runtime.py", "evaluate_agents"),
-    ("api/operational_agents.py", "dry_run_agent"),
-    ("api/operational_agents.py", "submit_proposal"),
+    ("agent_runtime.py", "decision_attention"),
 }
 
 
@@ -806,7 +808,7 @@ class TestLearnedKnowledgeCannotBeReadWithoutAReader:
         # named by TYPE (`HumanAttentionSelection` carries the LearningView),
         # and `load_attention` refuses a reader; the three internal paths
         # remain and still name theirs (`learning=None`).
-        assert len(calls) >= 3, calls
+        assert len(calls) >= 1, calls
         assert [c[:2] for c in calls if c[2] is None] == []
         assert ("api/attention.py", "attention") not in {c[:2] for c in calls}
 
