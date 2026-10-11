@@ -6849,5 +6849,14 @@ proto, node finality; historical proposals and directives are never
 rewritten. **Recorded, not built:** a claimed proposal whose authority
 lapses before its re-send is withheld, and if the earlier send had in fact
 been accepted its directive runs under the node's own funnel unreconciled —
-the no-reconciliation case A30.42 already records (D-PB14 family).
-Migrations: CC `0029`, SM `0012`, both additive.
+the no-reconciliation case A30.42 already records (D-PB14 family). A replay
+answers with the directive AS QUEUED: if a lost-ack autonomous send was
+later withheld to a human and approved, the human's send is answered with
+the autonomous directive (stricter at the node, never a second execution),
+and Central Command's audit names the basis of the re-send, not of the
+directive — reconciling the two is the same follow-up. The upgrade window:
+a proposal whose last pre-upgrade send was accepted unkeyed can be re-sent
+once after the upgrade, because historical directives carry no key and are
+never rewritten — the duplicate the old code would have made anyway, now
+bounded to one per proposal straddling the upgrade. Campaign dispatch stays
+unkeyed (PB-F14). Migrations: CC `0029`, SM `0012`, both additive.
