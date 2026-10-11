@@ -6917,3 +6917,42 @@ Console renders "not tracked". The column stays. *Unchanged:* permissions,
 ceiling, routes, authorization, approval ledger/policy/completion, every
 dispatch gate's question, PB-0's claim and Site Manager key, node finality,
 historical rows; no migration (CC `0029`, SM `0012`, Console `0004`).
+
+**A30.45 — PB-2 evaluator ordering: implementation boundary (implements
+A30.42 D-PB7, D-PB8 and D-PB9; recorded before code, 2026-10-11; departs
+from nothing in A30.42; delivered with PB-1 per A30.44).** *Selection
+(D-PB7, H1).* The internal decision paths — the evaluator, the dry-run's
+reasoning and the ingress re-derivation — read their Attention through ONE
+function, `agent_runtime.decision_attention`, which calls `load_attention`
+with the agent's `where_reach` (REQUIRED: a missing reach is refused, never
+read as the tenant). The composer's internal branch selects exactly as
+machine Attention does: outcomes through B0b's owner rule in SQL into exact
+statistics (`device_stats`, A30.41), NO cohort prior, a total device input
+order; the shared composer's sort is untouched. The oldest-50,000 read
+`list_device_outcome_dicts` is deleted with its last caller. The evaluator's
+incident input (`_incidents_by_device`) is read over the same reach with no
+row limit — PB-F6's tenant-wide newest-1,000 window is gone. Rank inputs that
+remain (pending approvals, warranty, health) are already reach-selected or
+per device; learned signals, fleet patterns and attention's own incident
+list feed reasons the evaluator does not read, and are unchanged. *Order
+(D-PB8).* Attention is keyed by `(site_id, agent_id)`; devices are worked by
+`(rank, agent_id, site_id)`; a device's incidents newest first then by
+incident id, `unreachable` first; an incident recorded at another site is
+not a condition of this device's row; candidates in catalogue order
+`(subsystem, action_type)` on every catalogue read (the re-read under the
+seed lock gains the `ORDER BY`). *Cut (D-PB9).* `evaluate(cut_at_budget=)`:
+the evaluator cuts at its soft budget; the ingress re-derivation passes
+False, so an external runtime's candidate is not refused for falling below
+the evaluator's cut — `admit_proposal` alone enforces the budget; the
+dry-run keeps governing past the cut and lists each further admissible
+candidate under `withheld` with code `proposal_budget_exhausted` and its
+`candidate_ref` — no rank, band or score. *Oracle.* An agent's admitted
+proposals, their order, dedupe keys, frozen `evidence.attention`, the
+dry-run order and the cut over the full estate equal those over an estate
+reduced to its own reach, for site-, org-unit-, device-, device_class- and
+mixed-scoped agents, with a tenant-wide control that differs; excluded by
+ratified design: S3-E2's creation record and the closed global gate.
+Internal goldens (A30.35, A30.40, A30.41) are deliberately re-anchored with
+intent kept; principal goldens stay byte-identical. *Unchanged:* every
+principal read, permissions, ceiling, routes, authorization, approval,
+dispatch, node finality; no migration.

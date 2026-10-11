@@ -6810,3 +6810,14 @@ efficiency follow-up (D-PB13). Expiry and cancellation → product follow-up
 | Gate rename | `DISPATCH_GATES`: `budget` → `agent_pause` |
 | `actions_used` | published `null` + `actions_used_reason: "not_tracked"`; Console renders "not tracked" |
 | Versions | `DISCOVERY_VERSION` `2`; `/runtime` budget `counts: "unattended_dispatches"` |
+
+## §34z — PB-2 evaluator ordering: the boundary (A30.45)
+
+| Concern | PB-2 |
+|---|---|
+| Attention input | `agent_runtime.decision_attention(session, tenant, where_reach)` → `load_attention(scope=<ReadReach, required>, learning=None)`; keyed `(site_id, agent_id)` |
+| Outcomes | internal branch → `device_stats(scope=reach, cohorts=False)`; no cohort prior; `list_device_outcome_dicts` deleted |
+| Incidents | `_incidents_by_device(session, tenant, reach)` — reach-owned, no limit, `(opened_at desc nulls last, incident_id)` per device |
+| Order | devices `(rank, agent_id, site_id)`; composer sort untouched; total device input order; catalogue `(subsystem, action_type)` everywhere |
+| Cut | `evaluate(cut_at_budget=True)`; ingress `False`; dry-run lists cut candidates `proposal_budget_exhausted` + `candidate_ref` |
+| Callers | evaluator, dry-run, ingress → the same two loaders |
