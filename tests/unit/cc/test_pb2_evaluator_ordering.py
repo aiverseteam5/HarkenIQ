@@ -151,6 +151,9 @@ async def _agent(stack, name: str, *, per_day: int = PER_DAY) -> str:
             version=1, activated_version=1, max_proposals_per_day=per_day,
             require_approval_always=True,
         ))
+        # The capability rows reference the agent: PostgreSQL enforces the
+        # foreign key that sqlite does not.
+        await session.flush()
         for ref in ("attention", "autonomy"):
             session.add(CCAgentCapability(
                 agent_id=AGENT_ID, tenant_id=stack.tenant, kind="read",

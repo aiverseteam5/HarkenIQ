@@ -10033,17 +10033,20 @@ echo "  PB-0 agent retired; CC 0029 (3 indexes valid) and SM 0012 (unique index 
 # hidden-site poison at site B, and it retires and removes all of it.
 # Evaluation runs the SHIPPED evaluator in the Central Command container
 # against the live PostgreSQL; the stop switch flips through the real API.
+# The agents bind FAN_RESET (a thermal fault) -- a class no other gate agent
+# binds -- so no other still-active agent can propose for, or fence (A24.12),
+# the one physical operation this proof watches.
 # ---------------------------------------------------------------------------
 PB12_TAG="pb12-$(date +%s)"
 PB12_INC="$PB12_TAG-inc"
-pb12_agent() {  # $1 name, $2 scopes JSON, $3 per-day, $4 "active"|"draft" -> an agent bound to COLLECT_DIAGNOSTICS
+pb12_agent() {  # $1 name, $2 scopes JSON, $3 per-day, $4 "active"|"draft" -> an agent bound to FAN_RESET
   # Only an ACTIVE agent is evaluated by the live loop (every 20 s). The race
   # and ordering proofs keep theirs DRAFT -- admission and the dry-run need no
   # activation -- so the loop cannot spend a slot or fence a key under them.
   local id ack
   id=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
     -d "{\"name\":\"$PB12_TAG-$1\",\"scopes\":$2,\"max_proposals_per_day\":$3,
-         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"COLLECT_DIAGNOSTICS\"}]}" \
+         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"FAN_RESET\"}]}" \
     http://localhost:8090/api/operational-agents/ \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
   if [ "$4" = "draft" ]; then echo "$id"; return 0; fi
@@ -10060,12 +10063,12 @@ pb12_agent() {  # $1 name, $2 scopes JSON, $3 per-day, $4 "active"|"draft" -> an
     echo "PB-1/2 agent $1 did not activate" >&2; exit 1; }
   echo "$id"
 }
-pb12_open_incident() {  # (re)open this proof's psu incident on the site-A target, opened now
+pb12_open_incident() {  # (re)open this proof's thermal incident on the site-A target, opened now
   docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
     "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
          device_agent_id, subsystem, confidence, inferred, opened_at, first_seen_at, last_seen_at)
-     VALUES ('$PB12_INC', '$PB12_TENANT', '$SITE_A', 'device', 'open', 'pb12 psu',
-             '$PB12_TARGET', 'psu', 0.9, false, now(), now(), now())
+     VALUES ('$PB12_INC', '$PB12_TENANT', '$SITE_A', 'device', 'open', 'pb12 thermal',
+             '$PB12_TARGET', 'thermal', 0.9, false, now(), now(), now())
      ON CONFLICT (incident_id) DO UPDATE SET status = 'open', resolved_at = NULL" \
     > /dev/null < /dev/null
 }
@@ -10110,11 +10113,11 @@ print(json.dumps({
 step "PB-1/DR: the LAST admission slot, raced on the live database -- ten admitters, exactly ONE admitted, nine refused proposal_budget_exhausted"
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
 PB12_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'" < /dev/null)
-# A site-A device no other agent has COLLECT_DIAGNOSTICS work in flight on:
+# A site-A device no other agent has FAN_RESET work in flight on:
 # admission fences one physical operation across agents (A24.12).
 PB12_TARGET=$(b0r_cc "SELECT f.agent_id FROM cc_fleet_cache f WHERE f.site_id='$SITE_A'
                       AND NOT EXISTS (SELECT 1 FROM cc_agent_proposals p
-                        WHERE p.device_agent_id = f.agent_id AND p.action_type = 'COLLECT_DIAGNOSTICS'
+                        WHERE p.device_agent_id = f.agent_id AND p.action_type = 'FAN_RESET'
                           AND p.status IN ('awaiting_approval', 'approved', 'dispatched'))
                       ORDER BY f.agent_id LIMIT 1" < /dev/null)
 [ -n "$PB12_TARGET" ] || { echo "no free device at site A" >&2; exit 1; }
@@ -10137,7 +10140,7 @@ async def admit(i, engine):
         row, code, _ = await pa.admit_proposal(session, tenant_id=T, origin=pa.ORIGIN_INGRESS, payload={
             'tenant_id': T, 'agent_id': A, 'actor': f'op-agent:{A}@v1', 'agent_version': 1,
             'site_id': os.environ['PB12_SITE'], 'device_agent_id': f'{TAG}-dev-{i}',
-            'action_type': 'COLLECT_DIAGNOSTICS', 'params': {}, 'rationale': 'pb12 race',
+            'action_type': 'FAN_RESET', 'params': {}, 'rationale': 'pb12 race',
             'evidence': {}, 'disposition': 'requires_approval', 'disposition_reason': '',
             'blocking_conditions': [], 'authorization_basis': 'human_approval',
             'status': 'awaiting_approval', 'decided_by': '', 'decided_at': None,
@@ -10213,19 +10216,19 @@ import sys, json
 d = json.load(sys.stdin)
 assert d['would'], 'the site-A agent must propose something for the comparison to mean anything'
 print('  baseline: the site-A agent would propose', len(d['would']), 'and withholds', len(d['withheld']))"
-# The poison: 500 failures and 1,001 NEWER open psu incidents on a site-B
+# The poison: 500 failures and 1,001 NEWER open thermal incidents on a site-B
 # device -- the newest 1,000 the old evaluator read would all have been these.
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
   "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
         vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
    SELECT substr(md5('$PB12_TAG-o' || g), 1, 32), '$SITE_B', '$PB12_TAG-o-' || g,
-          'COLLECT_DIAGNOSTICS', '$PB12_B_DEV', 'Dell', 'R750', 'FAILURE', false,
+          'FAN_RESET', '$PB12_B_DEV', 'Dell', 'R750', 'FAILURE', false,
           'gate-pb12', now(), now()
    FROM generate_series(1, 500) g;
    INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
         device_agent_id, subsystem, confidence, inferred, opened_at, first_seen_at, last_seen_at)
    SELECT '$PB12_TAG-hid-' || lpad(g::text, 5, '0'), '$PB12_TENANT', '$SITE_B', 'device',
-          'open', 'pb12 hidden', '$PB12_B_DEV', 'psu', 0.9, false,
+          'open', 'pb12 hidden', '$PB12_B_DEV', 'thermal', 0.9, false,
           now() + g * interval '1 second', now(), now()
    FROM generate_series(1, 1001) g" > /dev/null < /dev/null
 PB12_AFTER=$(pb12_reads)
