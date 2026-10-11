@@ -9911,7 +9911,8 @@ status, directive, claimed, replay = sys.stdin.read().strip().split('|')
 # injected directive before anyone approved, so its outcome was waiting.
 assert status in ('dispatched', 'completed', 'failed'), status
 assert directive == os.environ['PB0_D1'], (directive, os.environ['PB0_D1'])
-assert claimed == 't' and replay == 'true', (claimed, replay)
+# A boolean concatenated into text renders 'true', not psql's bare 't'.
+assert claimed == 'true' and replay == 'true', (claimed, replay)
 print('  exactly ONE directive at the SM; CC dispatched it, claimed it, and audited idempotent_replay=true')
 "
 
