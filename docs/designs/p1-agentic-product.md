@@ -6790,6 +6790,7 @@ efficiency follow-up (D-PB13). Expiry and cancellation → product follow-up
 | Background | `dispatch_decided`: keyset pages of `approved` by `(created_at, id)`; per proposal: gates → claim (send / withhold / site-missing) → commit → SM → result → commit |
 | Synchronous | `_decide_agent_proposal`: `get_for_decision` (`FOR UPDATE`, `populate_existing`) → ledger → decide → gates → claim → commit → SM → result → commit |
 | Withhold | `withhold_unattended` releases the claim (`dispatch_claimed_at = NULL`) — the proposal is a fresh human decision again |
+| Failed call | `release_claim` clears the caller's OWN claim (conditional on the exact timestamp it took) after a transport error; the next pass re-sends under the same key; a crash leaves the claim to the lease |
 | SM key | `harkeniq.dispatch_idempotency.idempotency_key(proposal_id)` = `proposal:<id>`; `sm_directives.idempotency_key` unique (`ux_sm_directives_idempotency_key`) |
 | SM replay | lookup by key before the safety decision; same device + action → accepted, existing id, `reason = REPLAY_REASON`; mismatch → refused; unique-index loss → the same replay |
 | Audit | CC `agent_proposal.dispatched.detail.idempotent_replay`; SM `directive.replayed` |

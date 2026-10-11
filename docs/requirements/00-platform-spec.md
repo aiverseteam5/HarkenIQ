@@ -6805,8 +6805,12 @@ authorization_basis = <the basis the gates were asked of> AND
 exactly one caller wins. **Lease: 60 s**, and proposal dispatch gains a
 **20 s RPC deadline** (it had none — a hung Site Manager held a claim
 forever and an approver's request forever): a live claimer finishes or gives
-up well inside its lease, and a crashed or lost-ack claim is re-sent on the
-next 120 s pass. Timestamps are Central Command's clock; replica skew can
+up well inside its lease. A call that FAILS (transport error, deadline,
+lost acknowledgement) has ended, so the claimer releases its own claim —
+conditionally, never one another dispatcher has since taken — and the next
+pass re-sends at once under the same key; only a claimer that never comes
+back (a crash) leaves a claim for the lease to expire, after which the next
+pass re-sends. Timestamps are Central Command's clock; replica skew can
 only make a re-send early, which the Site Manager key absorbs. **Ownership.**
 Nothing transitions an `approved` proposal on the background path without
 first winning the claim: the send, the unattended withhold (which releases
