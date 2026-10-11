@@ -618,6 +618,15 @@ class DirectedDirective(Base):
     authorization_basis: Mapped[str] = mapped_column(String(32), default="")
     #: A1: the CC proposal this directive settles, when there is one.
     proposal_id: Mapped[str] = mapped_column(String(64), default="")
+    #: PB-0 (A30.42/A30.43): `proposal:<proposal_id>` for a proposal-driven
+    #: directive, unique, so one Central Command proposal can never become
+    #: two directives -- a repeat `DispatchAction` is answered with the
+    #: directive already here. NULL for everything else (campaign steps,
+    #: skill installs) and for every directive written before PB-0: those
+    #: are never rewritten, and duplicates the old code made stay visible.
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(16), default="pending")
     result_detail: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -626,4 +635,7 @@ class DirectedDirective(Base):
 
     __table_args__ = (
         Index("ix_sm_directives_device_status", "device_id", "status"),
+        Index(
+            "ux_sm_directives_idempotency_key", "idempotency_key", unique=True,
+        ),
     )

@@ -33,8 +33,10 @@ SERVICES = {
     # A30.29 adds CC 0027 (candidate generation provenance) and SM 0011
     # (per-site pattern store + candidate generation provenance).
     # A30.41 adds CC 0028: the outcome-history indexes, indexes only.
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0028"),
-    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0011"),
+    # PB-0 (A30.43) adds CC 0029 (the dispatch claim + the A30.42 proposal
+    # indexes) and SM 0012 (the directive idempotency key).
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0029"),
+    "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0012"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
     "console": (REPO / "services/console", "HARKEN_CONSOLE_DSN", "0004"),
@@ -1245,7 +1247,7 @@ class TestA3041OutcomeIndexes:
     def test_a_fresh_database_has_the_new_indexes_and_not_the_old(self, tmp_path):
         db = tmp_path / "cc.db"
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0028"
+        assert _version(db) == SERVICES["cc"][2]
         found = _indexes(db, "cc_outcome_history")
         assert self.NEW <= found
         assert self.OLD not in found
@@ -1279,7 +1281,7 @@ class TestA3041OutcomeIndexes:
         con.close()
 
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0028"
+        assert _version(db) == SERVICES["cc"][2]
         found = _indexes(db, "cc_outcome_history")
         assert self.NEW <= found and self.OLD not in found
         con = sqlite3.connect(db)
@@ -1305,5 +1307,150 @@ class TestA3041OutcomeIndexes:
         assert not (self.NEW & found)
         assert self.OLD in found
         _alembic("cc", db, "upgrade", "head")          # and back again
-        assert _version(db) == "0028"
+        assert _version(db) == SERVICES["cc"][2]
         assert self.NEW <= _indexes(db, "cc_outcome_history")
+
+
+class TestPB0DispatchIdempotency:
+    """PB-0 (A30.42/A30.43): CC 0029 adds the dispatch claim and the three
+    ratified proposal indexes; SM 0012 adds the directive idempotency key
+    and its unique index. Additive, nullable, no backfill: a fresh database
+    is born with them, an existing one gains them without a row moving or
+    a value being invented, a re-run is a no-op, and each downgrades to its
+    predecessor exactly. SM 0012 must land on a database that already holds
+    DUPLICATE directives for one proposal -- the old code could make them --
+    because historical rows stay NULL and NULLs never collide."""
+
+    CC_INDEXES = {
+        "ix_agent_proposals_tenant_status_created",
+        "ix_agent_proposals_tenant_agent_created",
+        "ix_agent_proposals_tenant_agent_basis_dispatched",
+    }
+    SM_INDEX = "ux_sm_directives_idempotency_key"
+
+    def test_a_fresh_cc_database_has_the_claim_and_the_indexes(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0029"
+        assert "dispatch_claimed_at" in _columns(db, "cc_agent_proposals")
+        assert self.CC_INDEXES <= _indexes(db, "cc_agent_proposals")
+
+    def test_cc_0029_lands_on_rows_and_invents_no_claim(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        for name in self.CC_INDEXES:
+            con.execute(f"drop index {name}")
+        con.execute("alter table cc_agent_proposals drop column dispatch_claimed_at")
+        con.executemany(
+            "insert into cc_agent_proposals (id, tenant_id, agent_id, actor, "
+            "agent_version, site_id, device_agent_id, action_type, rationale, "
+            "disposition, disposition_reason, authorization_basis, status, "
+            "decided_by, dedupe_key, directive_id, dispatch_reason, outcome, "
+            "created_at) values (?, 't1', 'a1', 'op-agent:a1@v1', 1, 's1', "
+            "'node-1', 'SEL_CLEAR', 'r', 'requires_approval', '', "
+            "'human_approval', ?, '', ?, '', '', '', '2026-09-01 00:00:00')",
+            [(f"p{n}", status, f"k{n}") for n, status in
+             enumerate(("approved", "dispatched", "completed", "denied"))],
+        )
+        con.execute("update alembic_version set version_num='0028'")
+        con.commit()
+        before = con.execute(
+            "select id, status, directive_id from cc_agent_proposals order by id"
+        ).fetchall()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0029"
+        assert self.CC_INDEXES <= _indexes(db, "cc_agent_proposals")
+        con = sqlite3.connect(db)
+        try:
+            after = con.execute(
+                "select id, status, directive_id from cc_agent_proposals order by id"
+            ).fetchall()
+            claims = con.execute(
+                "select count(*) from cc_agent_proposals "
+                "where dispatch_claimed_at is not null").fetchone()[0]
+        finally:
+            con.close()
+        assert after == before, "an additive migration moved a row"
+        assert claims == 0, "no historical proposal was ever claimed"
+
+    def test_cc_0029_is_idempotent_and_downgrades(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0028'")
+        con.commit()
+        con.close()
+        _alembic("cc", db, "upgrade", "head")          # all there: no-op
+        assert _version(db) == "0029"
+        _alembic("cc", db, "downgrade", "0028")
+        assert _version(db) == "0028"
+        assert "dispatch_claimed_at" not in _columns(db, "cc_agent_proposals")
+        assert not (self.CC_INDEXES & _indexes(db, "cc_agent_proposals"))
+        assert "ix_agent_proposals_tenant_status" in _indexes(db, "cc_agent_proposals")
+        _alembic("cc", db, "upgrade", "head")          # and back again
+        assert "dispatch_claimed_at" in _columns(db, "cc_agent_proposals")
+
+    def test_a_fresh_sm_database_has_the_key_and_it_is_unique(self, tmp_path):
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        assert _version(db) == "0012"
+        assert "idempotency_key" in _columns(db, "sm_directives")
+        assert self.SM_INDEX in _indexes(db, "sm_directives")
+
+    def test_sm_0012_lands_on_historical_duplicates(self, tmp_path):
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute(f"drop index {self.SM_INDEX}")
+        con.execute("alter table sm_directives drop column idempotency_key")
+        con.execute("PRAGMA foreign_keys=OFF")   # no device row needed
+        # Two directives for ONE proposal: what a lost ack used to make.
+        con.executemany(
+            "insert into sm_directives (id, device_id, kind, action_type, "
+            "skill_id, skill_version, tier, validation_state, issued_by, actor, "
+            "authorization_basis, proposal_id, status, result_detail, created_at) "
+            "values (?, 'dev1', 'action', 'SEL_CLEAR', '', '', '', '', 'op', "
+            "'op-agent:a1@v1', 'human_approval', 'prop-dup', 'completed', '', "
+            "'2026-09-01 00:00:00')",
+            [("d1",), ("d2",)],
+        )
+        con.execute("update alembic_version set version_num='0011'")
+        con.commit()
+        con.close()
+
+        _alembic("sm", db, "upgrade", "head")
+        assert _version(db) == "0012"
+        con = sqlite3.connect(db)
+        try:
+            rows = con.execute(
+                "select id, proposal_id, idempotency_key from sm_directives "
+                "where proposal_id = 'prop-dup' order by id").fetchall()
+            con.execute(
+                "update sm_directives set idempotency_key = 'proposal:x' where id = 'd1'")
+            with pytest.raises(sqlite3.IntegrityError):
+                con.execute(
+                    "update sm_directives set idempotency_key = 'proposal:x' "
+                    "where id = 'd2'")
+        finally:
+            con.close()
+        assert rows == [("d1", "prop-dup", None), ("d2", "prop-dup", None)], (
+            "historical directives are never rewritten")
+
+    def test_sm_0012_is_idempotent_and_downgrades(self, tmp_path):
+        db = tmp_path / "sm.db"
+        _alembic("sm", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0011'")
+        con.commit()
+        con.close()
+        _alembic("sm", db, "upgrade", "head")
+        assert _version(db) == "0012"
+        _alembic("sm", db, "downgrade", "0011")
+        assert _version(db) == "0011"
+        assert "idempotency_key" not in _columns(db, "sm_directives")
+        assert self.SM_INDEX not in _indexes(db, "sm_directives")
+        _alembic("sm", db, "upgrade", "head")
+        assert self.SM_INDEX in _indexes(db, "sm_directives")

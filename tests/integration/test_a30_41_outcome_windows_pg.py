@@ -351,7 +351,8 @@ async def test_0027_to_0028_on_a_database_holding_rows_and_an_invalid_index():
             after = (await conn.execute(text(
                 "select count(*), max(recorded_at) from cc_outcome_history where site_id = :s"),
                 {"s": stack.site_id})).one()
-        assert version == "0028"
+        # 0028 is applied; the head may be later (PB-0 added 0029).
+        assert version >= "0028"
         assert NEW_INDEXES <= set(valid) and all(valid[n] for n in NEW_INDEXES), valid
         assert OLD_INDEX not in valid
         assert tuple(after) == tuple(before)

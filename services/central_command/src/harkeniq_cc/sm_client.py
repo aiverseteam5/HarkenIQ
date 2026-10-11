@@ -485,6 +485,7 @@ class SMClient:
         authorization: str = "",
         decided_by: str = "",
         proposal_id: str = "",
+        timeout: Optional[float] = None,
     ) -> dict:
         """A1: hand one decided action to the site that owns the device.
 
@@ -492,6 +493,11 @@ class SMClient:
         does not make one and it authorizes nothing. The Site Manager
         queues it on the existing directive transport and the node runs
         its unchanged gate funnel, which can still refuse.
+
+        `timeout` (PB-0, A30.43) is the RPC deadline. Proposal dispatch
+        passes one shorter than its claim lease, so a hung Site Manager can
+        no longer hold a claim -- or an approver's request -- forever.
+        None keeps the old unbounded call for callers that pass nothing.
         """
         async with self._channel(sm_endpoint) as channel:
             stub = harkeniq_pb2_grpc.SiteManagerServiceStub(channel)
@@ -508,6 +514,7 @@ class SMClient:
                     proposal_id=proposal_id,
                 ),
                 metadata=_metadata(token),
+                timeout=timeout,
             )
             return {
                 "accepted": ack.accepted,

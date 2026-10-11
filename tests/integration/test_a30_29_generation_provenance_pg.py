@@ -229,7 +229,8 @@ class TestCentralCommandOnPostgres:
                     "select data_type from information_schema.columns where "
                     "table_name='cc_candidate_skills' and column_name='generation_visibility'"
                 ))).scalar_one()
-            assert version == "0027"
+            # 0027 is applied; the head may be later (0028, 0029 since).
+            assert version >= "0027"
             assert after == before and nulls == after, (before, after, nulls)
             assert typ == "jsonb"
             _alembic("cc", CC_DSN, "upgrade", "head")        # idempotent
@@ -316,7 +317,8 @@ class TestSiteManagerOnPostgres:
                     "join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey) "
                     "where i.indrelid = 'sm_site_fleet_patterns'::regclass and i.indisprimary"
                 ))).scalar_one()
-            assert version == "0011"
+            # 0011 is applied; the head may be later (PB-0 added 0012).
+            assert version >= "0011"
             assert legacy == "SEL_CLEAR fails at 65% across 3 sites (35/54)"
             assert per_site == 0, "the legacy row is not copied under any site"
             assert marker is None

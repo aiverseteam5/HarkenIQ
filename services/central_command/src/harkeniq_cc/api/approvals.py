@@ -560,7 +560,10 @@ async def _decide_agent_proposal(
     the agent's dedupe key stops it re-proposing the same work.
     """
     repo = AgentProposalRepo(session)
-    proposal = await repo.get(user.tenant_id, proposal_id)
+    # PB-0 (A30.43): read under a row lock, so two approvers finishing at
+    # once decide one after the other -- the second reads the status the
+    # first committed, as a sequential second decision always did.
+    proposal = await repo.get_for_decision(user.tenant_id, proposal_id)
     if proposal is None:
         raise HTTPException(status_code=404, detail="approval route not found")
     if proposal.status != "awaiting_approval":
@@ -630,80 +633,65 @@ async def _decide_agent_proposal(
                 )["proposal"],
             }
         site = await SiteRepo(session).get_by_id(proposal.site_id)
-        if site is None or site.tenant_id != user.tenant_id:
+        # PB-0 (A30.42 D-PB5): the decision and the dispatch claim are
+        # committed TOGETHER, and only then is the Site Manager called. The
+        # row lock taken at the read ends with this commit, so nothing is
+        # held across the network; the claim is what keeps the background
+        # pass -- on this replica or another -- from sending it as well.
+        claimed = await repo.claim_dispatch(proposal)
+        if claimed and (site is None or site.tenant_id != user.tenant_id):
             await repo.mark_failed(
                 proposal, "site is no longer registered to this tenant",
             )
             delivery["reason"] = "site not registered"
+        elif not claimed:
+            # Another dispatcher owns it. The decision stands and is
+            # recorded below; whoever holds the claim delivers it.
+            delivery["reason"] = "dispatch already in progress for this proposal"
         else:
-            try:
-                client = SMClient(state.config.sm_tls_ca)
-                result = await client.dispatch_action(
-                    site.sm_endpoint,
-                    site.sm_token or "",
-                    tenant_id=user.tenant_id,
-                    site_id=proposal.site_id,
-                    device_agent_id=proposal.device_agent_id,
-                    action_type=proposal.action_type,
-                    params_json=json.dumps(proposal.params or {}),
-                    actor=proposal.actor,
-                    # A human decided this one, so the node may treat an
-                    # authorization-shaped lease verdict as satisfied.
-                    authorization="human_approval",
-                    decided_by=decided_by,
-                    proposal_id=proposal.id,
-                )
-                if result.get("accepted"):
-                    await repo.mark_dispatched(
-                        proposal, result.get("directive_id", ""),
-                    )
-                    # A human approval dispatches HERE, synchronously, so
-                    # the background loop that normally writes this event
-                    # never sees the proposal. Without it the chain reads
-                    # created -> settled with the dispatch invisible, and
-                    # "the whole chain is reconstructable from the audit
-                    # chain" stops being true for every human-approved
-                    # agent action. Found by the compose gate.
-                    await AuditRepo(session).append(
-                        actor=proposal.actor,
-                        action="agent_proposal.dispatched",
-                        subject=proposal.id,
-                        tenant_id=user.tenant_id,
-                        site_id=proposal.site_id,
-                        detail={
-                            "directive_id": result.get("directive_id", ""),
-                            "authorization": "human_approval",
-                            "decided_by": decided_by,
-                            "action_type": proposal.action_type,
-                            "device_agent_id": proposal.device_agent_id,
-                        },
-                    )
-                    delivery = {
-                        "accepted": True,
-                        "delivered": True,
-                        "directive_id": result.get("directive_id", ""),
-                        "reason": "",
-                    }
-                else:
-                    # The site refused. The human's decision stands and
-                    # is recorded; the work did not happen and says why.
-                    await repo.mark_failed(
-                        proposal, result.get("reason", "refused by site"),
-                    )
-                    delivery = {
-                        "accepted": False,
-                        "delivered": False,
-                        "reason": result.get("reason", "refused by site"),
-                    }
-            except Exception as exc:  # noqa: BLE001
-                # Leave it approved: the background dispatch pass retries,
-                # so a site being briefly unreachable never silently
-                # discards a human's approval.
-                logger.warning(
-                    "Dispatch failed for proposal %s: %s", proposal.id, exc,
-                )
+            await session.commit()
+            from harkeniq_cc.agent_runtime import _send_claimed
+
+            audit = AuditRepo(session)
+            sent = await _send_claimed(
+                session, user.tenant_id, proposal, site=site,
+                client=SMClient(state.config.sm_tls_ca),
+                prop_repo=repo, audit=audit,
+                # A human decided this one, so the node may treat an
+                # authorization-shaped lease verdict as satisfied.
+                authorization="human_approval",
+                decided_by=decided_by,
+            )
+            if sent["accepted"]:
+                # `_send_claimed` writes `agent_proposal.dispatched` here
+                # too: a human approval dispatches synchronously, so the
+                # background loop never sees it, and without the event the
+                # chain would read created -> settled with the dispatch
+                # invisible (found by the compose gate).
                 delivery = {
-                    "accepted": False, "delivered": False, "reason": str(exc),
+                    "accepted": True,
+                    "delivered": True,
+                    "directive_id": sent.get("directive_id", ""),
+                    "reason": "",
+                }
+                if sent["replay"]:
+                    delivery["idempotent_replay"] = True
+            elif sent["transport_error"]:
+                # Left approved, claim released: the background pass
+                # re-sends it under the same Site Manager key, so a site
+                # being briefly unreachable never silently discards a
+                # human's approval -- and never doubles it either.
+                delivery = {
+                    "accepted": False, "delivered": False,
+                    "reason": sent.get("reason", ""),
+                }
+            else:
+                # The site refused. The human's decision stands and is
+                # recorded; the work did not happen and says why.
+                delivery = {
+                    "accepted": False,
+                    "delivered": False,
+                    "reason": sent.get("reason") or "refused by site",
                 }
 
     await AuditRepo(session).append(

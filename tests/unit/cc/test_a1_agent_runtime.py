@@ -475,14 +475,20 @@ class TestTheDispatchIsAlwaysAudited:
     action. Found by the compose gate."""
 
     def test_the_approval_path_writes_the_dispatch_event(self):
+        """PB-0: both paths now send through ONE function, `_send_claimed`,
+        so the event is written in one place -- and the synchronous path
+        must still reach it."""
         import inspect
 
+        from harkeniq_cc import agent_runtime
         from harkeniq_cc.api import approvals
 
-        source = inspect.getsource(approvals._decide_agent_proposal)
-        assert 'action="agent_proposal.dispatched"' in source, (
-            "the synchronous dispatch path does not audit the dispatch"
+        assert 'action="agent_proposal.dispatched"' in inspect.getsource(
+            agent_runtime._send_claimed
         )
+        assert "_send_claimed(" in inspect.getsource(
+            approvals._decide_agent_proposal
+        ), "the synchronous dispatch path does not audit the dispatch"
 
     def test_both_dispatch_paths_write_the_same_event(self):
         import inspect
@@ -490,7 +496,10 @@ class TestTheDispatchIsAlwaysAudited:
         from harkeniq_cc import agent_runtime
         from harkeniq_cc.api import approvals
 
-        loop = inspect.getsource(agent_runtime.dispatch_decided)
+        loop = inspect.getsource(agent_runtime._dispatch_one)
         sync = inspect.getsource(approvals._decide_agent_proposal)
         for source in (loop, sync):
-            assert 'action="agent_proposal.dispatched"' in source
+            assert "_send_claimed(" in source
+            assert "dispatch_action(" not in source, (
+                "a path sends without the shared writer"
+            )

@@ -655,8 +655,10 @@ def _calls_by_function(name: str) -> set[str]:
 
 class TestOneGate:
     def test_both_dispatch_paths_call_the_one_gate(self):
+        # PB-0 moved the background pass's per-proposal body into
+        # `_dispatch_one`; the gate is still asked by exactly two paths.
         assert _calls_by_function("revalidate_dispatch") == {
-            "agent_runtime.py:dispatch_decided",
+            "agent_runtime.py:_dispatch_one",
             "approvals.py:_decide_agent_proposal",
         }
 
@@ -677,9 +679,16 @@ class TestOneGate:
             "sm_client.py:dispatch_action",
         }
         gated = _calls_by_function("revalidate_dispatch")
-        assert senders - gated == {"campaign_runner.py:dispatch_wave"}, (
-            f"ungated CC -> SM dispatch: {sorted(senders - gated)}"
-        )
+        # PB-0: the one proposal sender is `_send_claimed`, and EVERY
+        # caller of it consumes the gate first.
+        assert senders - gated == {
+            "campaign_runner.py:dispatch_wave", "agent_runtime.py:_send_claimed",
+        }, f"ungated CC -> SM dispatch: {sorted(senders - gated)}"
+        assert _calls_by_function("_send_claimed") <= gated
+        assert _calls_by_function("_send_claimed") == {
+            "agent_runtime.py:_dispatch_one",
+            "approvals.py:_decide_agent_proposal",
+        }
 
     def test_the_two_divergent_gates_are_gone(self):
         from harkeniq_cc.api import approvals

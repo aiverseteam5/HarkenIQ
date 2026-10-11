@@ -18,6 +18,8 @@ import json
 import logging
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from harkeniq.proto import harkeniq_pb2
 from harkeniq_sm.db.repos import AuditRepo, DeviceRepo, DirectiveRepo
 from harkeniq_sm.firmware_orchestrator import UpdateResult
@@ -66,6 +68,68 @@ class DirectiveService:
             )
             await session.commit()
             return directive.id
+
+    async def enqueue_action_once(
+        self,
+        *,
+        idempotency_key: str,
+        device_id: str,
+        action_type: str,
+        params: Optional[dict] = None,
+        issued_by: str = "",
+        actor: str = "",
+        authorization_basis: str = "",
+        proposal_id: str = "",
+    ) -> tuple[str, bool]:
+        """Queue one proposal-driven action at most once. -> (id, replayed).
+
+        PB-0 (A30.42/A30.43): the unique index on `idempotency_key` is the
+        guarantee. A request that loses the race to a concurrent one with
+        the same key gets the winner's directive back with `replayed`
+        True -- never a second directive. The caller still checks that
+        the directive it is handed names the device and action it asked
+        for.
+        """
+        try:
+            async with self._sessionmaker() as session:
+                directive = await DirectiveRepo(session).enqueue(
+                    device_id=device_id, kind="action",
+                    action_type=action_type, params=params or {},
+                    issued_by=issued_by, actor=actor,
+                    authorization_basis=authorization_basis,
+                    proposal_id=proposal_id, idempotency_key=idempotency_key,
+                )
+                await AuditRepo(session).append(
+                    actor or issued_by or "sm", "directive.enqueue", directive.id,
+                    detail={"kind": "action", "action_type": action_type,
+                            "device_id": device_id, "actor": actor,
+                            "authorization": authorization_basis,
+                            "proposal_id": proposal_id,
+                            "idempotency_key": idempotency_key},
+                )
+                await session.commit()
+                return directive.id, False
+        except IntegrityError:
+            existing = await self.get_by_idempotency_key(idempotency_key)
+            if existing is None:
+                raise
+            return existing.id, True
+
+    async def get_by_idempotency_key(self, key: str):
+        """The directive already queued under `key`, detached, or None."""
+        async with self._sessionmaker() as session:
+            return await DirectiveRepo(session).get_by_idempotency_key(key)
+
+    async def record_replay(
+        self, directive_id: str, *, actor: str, proposal_id: str, key: str,
+    ) -> None:
+        """Audit that a repeat dispatch was answered with an existing directive."""
+        async with self._sessionmaker() as session:
+            await AuditRepo(session).append(
+                actor or "central-command", "directive.replayed", directive_id,
+                detail={"proposal_id": proposal_id, "idempotency_key": key},
+            )
+            await session.commit()
 
     async def enqueue_skill_install(
         self,

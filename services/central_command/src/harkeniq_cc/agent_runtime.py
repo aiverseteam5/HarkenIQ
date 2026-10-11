@@ -514,6 +514,16 @@ async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, 
     ))
 
 
+#: Approved proposals per dispatch page: a bound on one statement, never on
+#: what is dispatched -- every page is read (PB-0, A30.42 D-PB6).
+DISPATCH_PAGE = 500
+
+#: PB-0 (A30.43): proposal dispatch's RPC deadline. Shorter than the claim
+#: lease (`AgentProposalRepo.DISPATCH_CLAIM_LEASE`), so the dispatcher that
+#: owns a claim has always finished or given up before anyone may take it.
+DISPATCH_RPC_TIMEOUT_S = 20.0
+
+
 async def dispatch_decided(state, tenant_id: str) -> list[Any]:
     """Hand every decided proposal to the site that owns its device.
 
@@ -528,12 +538,24 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
     allowance and is withheld once that is gone; a human's decision does
     not, because the budget caps DELEGATED work, never what a person
     chose to do.
+
+    PB-0 (A30.42/A30.43): one proposal, at most one directive. Every
+    approved proposal is visited, in `(created_at, id)` keyset pages, so
+    a withheld one no longer starves newer ones. For each, the gates run
+    first; then the transition -- the send, the unattended withhold, the
+    site-missing failure -- happens only for the dispatcher that wins the
+    proposal's claim, and a send commits that claim BEFORE the Site
+    Manager call and its result after it. One commit per proposal: a
+    failure late in a pass can no longer roll back the record of a
+    directive the Site Manager already holds.
     """
     dispatched: list[Any] = []
     async with state.sessionmaker() as session:
         prop_repo = AgentProposalRepo(session)
-        pending = await prop_repo.list_by_status(tenant_id, [PROPOSAL_APPROVED])
-        if not pending:
+        page = await prop_repo.page_by_status(
+            tenant_id, [PROPOSAL_APPROVED], limit=DISPATCH_PAGE,
+        )
+        if not page:
             return []
         site_repo = SiteRepo(session)
         audit = AuditRepo(session)
@@ -544,129 +566,195 @@ async def dispatch_decided(state, tenant_id: str) -> list[Any]:
             session, tenant_id=tenant_id, actor_id="op-agent:dispatch",
             actor_species=ACTOR_AGENT, permissions=AGENT_PERMISSIONS,
         )
-        for proposal in pending:
-            # A22.12 / A30.17: current authority, on BOTH bases, BEFORE
-            # the basis is even consulted -- through the same gate the
-            # synchronous approval path calls. An approved proposal keeps
-            # its version and is never a guarantee of execution.
-            ok, why = await revalidate_dispatch(
-                session, tenant_id, proposal, assessments=assessments,
+        while page:
+            after = (page[-1].created_at, page[-1].id)
+            for proposal in page:
+                if await _dispatch_one(
+                    session, tenant_id, proposal, prop_repo=prop_repo,
+                    site_repo=site_repo, audit=audit, client=client,
+                    assessments=assessments,
+                ):
+                    dispatched.append(proposal)
+            page = await prop_repo.page_by_status(
+                tenant_id, [PROPOSAL_APPROVED], after=after, limit=DISPATCH_PAGE,
             )
-            if not ok:
-                # The DECISION is left exactly as it stands. `withhold_
-                # unattended` clears `decided_by`/`decided_at`, which is
-                # right when an autonomous grant is withdrawn and wrong
-                # here: a named human approved this, and a lifecycle
-                # refusal must not erase that person from the record.
-                # Only the dispatch is refused (A22.12).
-                first = proposal.dispatch_reason != why[:512]
-                proposal.dispatch_reason = why[:512]
-                if first:
-                    # One entry per distinct cause, not one per loop --
-                    # the reconciliation runs continuously and a paused
-                    # agent would otherwise flood the audit chain.
-                    await audit.append(
-                        actor=proposal.actor,
-                        action="agent_proposal.dispatch_withheld",
-                        subject=proposal.id,
-                        tenant_id=tenant_id,
-                        detail={
-                            "reason": why[:200],
-                            "action_type": proposal.action_type,
-                            "authorization_basis": proposal.authorization_basis,
-                        },
-                    )
-                continue
-            if proposal.authorization_basis == BASIS_AUTONOMOUS:
-                allowed, why = await _unattended_allowed(
-                    session, tenant_id, proposal,
-                )
-                if not allowed:
-                    # Withheld, not failed: the work is still valid and a
-                    # human may still approve it. Exhaustion withdraws the
-                    # unattended grant; it does not disable the agent.
-                    await prop_repo.withhold_unattended(proposal, why)
-                    await audit.append(
-                        actor=proposal.actor,
-                        action="agent_proposal.unattended_withheld",
-                        subject=proposal.id,
-                        tenant_id=tenant_id,
-                        detail={
-                            "reason": why,
-                            "action_type": proposal.action_type,
-                            "device_agent_id": proposal.device_agent_id,
-                            "now_requires": "human_approval",
-                        },
-                    )
-                    logger.info(
-                        "Withheld unattended proposal %s: %s", proposal.id, why,
-                    )
-                    continue
-            site = await site_repo.get_by_id(proposal.site_id)
-            if site is None or site.tenant_id != tenant_id:
-                await prop_repo.mark_failed(
-                    proposal, "site is no longer registered to this tenant",
-                )
-                continue
-            try:
-                result = await client.dispatch_action(
-                    site.sm_endpoint,
-                    site.sm_token or "",
-                    tenant_id=tenant_id,
-                    site_id=proposal.site_id,
-                    device_agent_id=proposal.device_agent_id,
-                    action_type=proposal.action_type,
-                    params_json=json.dumps(proposal.params or {}),
-                    actor=proposal.actor,
-                    authorization=proposal.authorization_basis,
-                    decided_by=proposal.decided_by,
-                    proposal_id=proposal.id,
-                )
-            except Exception as exc:  # noqa: BLE001 — a site being down
-                # is not a decision; leave the proposal approved so the
-                # next pass retries rather than losing a human's decision.
-                logger.warning(
-                    "Dispatch failed for proposal %s: %s", proposal.id, exc,
-                )
-                continue
-            if not result.get("accepted"):
-                reason = result.get("reason", "refused by the site manager")
-                await prop_repo.mark_failed(proposal, reason)
-                await audit.append(
-                    actor=proposal.actor,
-                    action="agent_proposal.refused",
-                    subject=proposal.id,
-                    tenant_id=tenant_id,
-                    detail={"reason": reason, "site_id": proposal.site_id},
-                )
-                logger.warning(
-                    "Site refused proposal %s: %s", proposal.id, reason,
-                )
-                continue
-            await prop_repo.mark_dispatched(
-                proposal, result.get("directive_id", ""),
-            )
-            dispatched.append(proposal)
+    return dispatched
+
+
+async def _dispatch_one(
+    session, tenant_id: str, proposal, *, prop_repo, site_repo, audit, client,
+    assessments,
+) -> bool:
+    """Gate, claim and send one approved proposal. True = dispatched.
+
+    Commits whatever it decided before it returns, and -- on the send --
+    commits the claim before the Site Manager call.
+    """
+    # A22.12 / A30.17: current authority, on BOTH bases, BEFORE the basis
+    # is even consulted -- through the same gate the synchronous approval
+    # path calls. An approved proposal keeps its version and is never a
+    # guarantee of execution.
+    ok, why = await revalidate_dispatch(
+        session, tenant_id, proposal, assessments=assessments,
+    )
+    if not ok:
+        # The DECISION is left exactly as it stands. `withhold_unattended`
+        # clears `decided_by`/`decided_at`, which is right when an
+        # autonomous grant is withdrawn and wrong here: a named human
+        # approved this, and a lifecycle refusal must not erase that person
+        # from the record. Only the dispatch is refused (A22.12). A reason
+        # and nothing else: no claim is taken for work that may not run.
+        if await prop_repo.note_dispatch_withheld(proposal, why):
+            # One entry per distinct cause, not one per loop -- the
+            # reconciliation runs continuously and a paused agent would
+            # otherwise flood the audit chain.
             await audit.append(
                 actor=proposal.actor,
-                action="agent_proposal.dispatched",
+                action="agent_proposal.dispatch_withheld",
                 subject=proposal.id,
                 tenant_id=tenant_id,
                 detail={
-                    "directive_id": result.get("directive_id", ""),
-                    "authorization": proposal.authorization_basis,
-                    "decided_by": proposal.decided_by,
+                    "reason": why[:200],
                     "action_type": proposal.action_type,
-                    "device_agent_id": proposal.device_agent_id,
+                    "authorization_basis": proposal.authorization_basis,
                 },
             )
-            logger.info(
-                "Dispatched proposal %s (%s) as directive %s",
-                proposal.id, proposal.authorization_basis,
-                result.get("directive_id", ""),
-            )
         await session.commit()
-    return dispatched
+        return False
+    if proposal.authorization_basis == BASIS_AUTONOMOUS:
+        allowed, why = await _unattended_allowed(session, tenant_id, proposal)
+        if not allowed:
+            # Withheld, not failed: the work is still valid and a human may
+            # still approve it. Exhaustion withdraws the unattended grant;
+            # it does not disable the agent. PB-0: only the claim's owner
+            # may move it, so a replica mid-send is never overwritten.
+            if not await prop_repo.claim_dispatch(proposal):
+                await session.commit()  # nothing was written; ends the read
+                return False
+            await prop_repo.withhold_unattended(proposal, why)
+            await audit.append(
+                actor=proposal.actor,
+                action="agent_proposal.unattended_withheld",
+                subject=proposal.id,
+                tenant_id=tenant_id,
+                detail={
+                    "reason": why,
+                    "action_type": proposal.action_type,
+                    "device_agent_id": proposal.device_agent_id,
+                    "now_requires": "human_approval",
+                },
+            )
+            await session.commit()
+            logger.info("Withheld unattended proposal %s: %s", proposal.id, why)
+            return False
+    site = await site_repo.get_by_id(proposal.site_id)
+    if not await prop_repo.claim_dispatch(proposal):
+        # Another dispatcher -- a replica's pass, an approver's request --
+        # owns this proposal right now, or it has already moved on. Commit,
+        # not rollback: nothing was written, and a rollback would expire
+        # every proposal still waiting in this page.
+        await session.commit()
+        return False
+    if site is None or site.tenant_id != tenant_id:
+        await prop_repo.mark_failed(
+            proposal, "site is no longer registered to this tenant",
+        )
+        await session.commit()
+        return False
+    # PB-0: the claim is durable BEFORE the network call, and no lock is
+    # held across it.
+    await session.commit()
+    sent = await _send_claimed(
+        session, tenant_id, proposal, site=site, client=client,
+        prop_repo=prop_repo, audit=audit,
+        authorization=proposal.authorization_basis,
+        decided_by=proposal.decided_by,
+    )
+    return bool(sent["accepted"])
+
+
+async def _send_claimed(
+    session, tenant_id: str, proposal, *, site, client, prop_repo, audit,
+    authorization: str, decided_by: str,
+) -> dict:
+    """Send a proposal whose claim this caller has COMMITTED. (PB-0.)
+
+    Shared by the background pass and the synchronous approval path, so
+    the two cannot record a delivery differently. Returns the Site
+    Manager's answer with `replay` set when it named a directive it
+    already held, and `transport_error` set when no answer came back --
+    then the proposal stays approved and this caller's claim is released,
+    so the next pass re-sends it at once under the same Site Manager key
+    (which answers with the directive it already holds if the lost call
+    was in fact accepted). Only a claimer that never comes back -- a crash
+    -- leaves a claim for the lease to expire. Commits whatever it
+    recorded.
+    """
+    from harkeniq.dispatch_idempotency import is_replay
+
+    try:
+        result = await client.dispatch_action(
+            site.sm_endpoint,
+            site.sm_token or "",
+            tenant_id=tenant_id,
+            site_id=proposal.site_id,
+            device_agent_id=proposal.device_agent_id,
+            action_type=proposal.action_type,
+            params_json=json.dumps(proposal.params or {}),
+            actor=proposal.actor,
+            authorization=authorization,
+            decided_by=decided_by,
+            proposal_id=proposal.id,
+            timeout=DISPATCH_RPC_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 — a site being down
+        # is not a decision; leave the proposal approved so the next pass
+        # retries rather than losing a human's decision.
+        logger.warning("Dispatch failed for proposal %s: %s", proposal.id, exc)
+        await prop_repo.release_claim(proposal)
+        await session.commit()
+        return {"accepted": False, "directive_id": "", "reason": str(exc),
+                "replay": False, "transport_error": True}
+    if not result.get("accepted"):
+        reason = result.get("reason", "refused by the site manager")
+        await prop_repo.mark_failed(proposal, reason)
+        await audit.append(
+            actor=proposal.actor,
+            action="agent_proposal.refused",
+            subject=proposal.id,
+            tenant_id=tenant_id,
+            detail={"reason": reason, "site_id": proposal.site_id},
+        )
+        await session.commit()
+        logger.warning("Site refused proposal %s: %s", proposal.id, reason)
+        return dict(result, replay=False, transport_error=False)
+    replay = is_replay(result)
+    directive_id = result.get("directive_id", "")
+    await prop_repo.mark_dispatched(proposal, directive_id)
+    await audit.append(
+        actor=proposal.actor,
+        action="agent_proposal.dispatched",
+        subject=proposal.id,
+        tenant_id=tenant_id,
+        site_id=proposal.site_id,
+        detail={
+            "directive_id": directive_id,
+            "authorization": authorization,
+            "decided_by": decided_by,
+            "action_type": proposal.action_type,
+            "device_agent_id": proposal.device_agent_id,
+            # PB-0: the Site Manager answered a re-send with the directive
+            # it already held -- the proof no second one was queued.
+            "idempotent_replay": replay,
+        },
+    )
+    await session.commit()
+    logger.info(
+        "Dispatched proposal %s (%s) as directive %s%s",
+        proposal.id, authorization, directive_id,
+        " (idempotent replay)" if replay else "",
+    )
+    return dict(result, replay=replay, transport_error=False)
 
 
 async def settle_outcomes(state, tenant_id: str) -> int:
