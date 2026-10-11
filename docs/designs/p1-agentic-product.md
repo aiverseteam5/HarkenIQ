@@ -6795,3 +6795,18 @@ efficiency follow-up (D-PB13). Expiry and cancellation → product follow-up
 | SM replay | lookup by key before the safety decision; same device + action → accepted, existing id, `reason = REPLAY_REASON`; mismatch → refused; unique-index loss → the same replay |
 | Audit | CC `agent_proposal.dispatched.detail.idempotent_replay`; SM `directive.replayed` |
 | Migrations | CC `0029`: `dispatch_claimed_at` + the three A30.42 indexes, CONCURRENTLY, guarded, INVALID rebuilt (the `0028` pattern); SM `0012`: `idempotency_key` + unique index, CONCURRENTLY; no backfill |
+
+## §34y — PB-1 budget semantics: the boundary (A30.44)
+
+| Concern | PB-1 |
+|---|---|
+| Admission count | `proposal_admission.admitted_today(session, tenant, agent)` → `AgentProposalRepo.count_admitted_since` — status ≠ `blocked`, `created_at` ≥ UTC midnight, all versions |
+| Admission check | `admit_proposal`: lock → count → refuse a charged row at `max_proposals_per_day` (`proposal_budget_exhausted`) → insert |
+| Soft cut | `evaluate()` / ingress re-derivation / dry-run / discovery read the same count; decrement only for charged rows |
+| Transient denial | `govern_proposal` refuses (`stop_switch_active` / `site_stop_switch_active`) when DENIED, not fenced, and a transient code is present — no row, no key |
+| Unattended count | `agent_lifecycle.unattended_used` → `AgentProposalRepo.count_unattended` — basis `autonomous_grant` AND (directive id + `dispatched_at` in window OR `approved` + claim held + no directive) |
+| Unattended lock | `_dispatch_one`: `cc.agent_execution.{tenant}.{agent}` → count → withhold or claim → commit → SM |
+| Deleted | `AgentPreflightRepo.count_executions`, `AgentProposalRepo.count_in_flight`, `AgentProposalRepo.count_since` (proposals) |
+| Gate rename | `DISPATCH_GATES`: `budget` → `agent_pause` |
+| `actions_used` | published `null` + `actions_used_reason: "not_tracked"`; Console renders "not tracked" |
+| Versions | `DISCOVERY_VERSION` `2`; `/runtime` budget `counts: "unattended_dispatches"` |
