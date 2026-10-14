@@ -777,6 +777,17 @@ def govern_proposal(
     ):
         blocking = blocking + [global_row()]
 
+    # PB-1 (A30.42 D-PB3, T1): a denial that exists ONLY because a stop is
+    # in force -- the tenant stop switch, or a halt at the target's own Site
+    # Manager -- writes no row. A `blocked` row fences its dedupe key for
+    # ever (`all_dedupe_keys` reads every key), so recording a transient
+    # stop made a condition unproposable after the switch lifted, and D16
+    # makes only a DENIAL final. The dry-run lists it; discovery reports
+    # both stops; the condition is proposed again once the stop lifts.
+    transient = transient_denial_code(disposition, class_row, blocking)
+    if transient:
+        return _refused(transient, TRANSIENT_DENIAL_REASONS[transient])
+
     if disposition == DENIED:
         status = PROPOSAL_BLOCKED
     elif disposition == AUTONOMOUS:
@@ -859,6 +870,44 @@ def govern_proposal(
     }
 
 
+#: PB-1 (A30.42 D-PB3): the blocking codes of a stop that LIFTS. Constant
+#: reasons naming no site -- a dry-run's `withheld` list is read by the
+#: agent and by humans whose reach may not include the stopped site.
+CODE_TENANT_STOP = "stop_switch_active"
+CODE_SITE_HALT = "site_stop_switch_active"
+TRANSIENT_DENIAL_REASONS: dict[str, str] = {
+    CODE_TENANT_STOP: (
+        "the tenant stop switch is active; nothing is proposed while it holds, "
+        "and this condition is proposed again once it lifts"
+    ),
+    CODE_SITE_HALT: (
+        "the Site Manager at this device's site is halted; nothing is "
+        "proposed there while it holds, and this condition is proposed again "
+        "once it lifts"
+    ),
+}
+
+
+def transient_denial_code(disposition: str, class_row: dict, blocking) -> str:
+    """The stop that is the whole reason for this denial, or "".
+
+    Today a class is DENIED for exactly three reasons: it is fenced (risk
+    `high` is never budget-grantable -- permanent, and recorded as a
+    `blocked` row, D16), the tenant stop switch, or a halt at the target
+    site. A fenced class is never transient whatever else holds; otherwise
+    a DENIED verdict carrying a stop's code is that stop's.
+    """
+    if disposition != DENIED or class_row.get("never_budget_grantable"):
+        return ""
+    codes = {
+        row.get("code") for row in (blocking or ()) if isinstance(row, dict)
+    }
+    for code in (CODE_TENANT_STOP, CODE_SITE_HALT):
+        if code in codes:
+            return code
+    return ""
+
+
 #: Scheme tag inside the candidate digest. Bumping it invalidates every
 #: outstanding reference at once, which is the only safe way to change
 #: what a reference means.
@@ -898,10 +947,10 @@ def candidate_ref(tenant_id: str, dedupe_key: str) -> str:
 def proposal_budget_left(agent, proposals_today: int) -> int:
     """How many more proposals this agent may make today. ONE rule.
 
-    The evaluator stops at zero, and so does the ingress re-derivation
-    that runs it; discovery reports the same number (A30.32), so a
-    runtime is told it is out of proposals by the arithmetic that will
-    actually stop it.
+    PB-1 (A30.42 D-PB2): `proposals_today` is `admitted_today` -- the count
+    `admit_proposal` enforces under the admission lock. The evaluator and
+    the ingress re-derivation cut their selection at zero; discovery
+    reports the same number (A30.32). Only admission refuses.
     """
     return max(
         0, int(getattr(agent, "max_proposals_per_day", 0) or 0) - int(proposals_today)
@@ -928,9 +977,16 @@ def evaluate(
     #: D11: the classes this agent's activation approved for unattended
     #: execution. Required; an agent that is not active approved none.
     unattended_approved,
-    attention_by_device: Optional[dict[str, dict]] = None,
+    #: PB-2 (A30.42 PB-F13): keyed by `(site_id, agent_id)` -- the device
+    #: at its site -- from `agent_runtime.decision_attention`.
+    attention_by_device: Optional[dict[tuple[str, str], dict]] = None,
     open_dedupe_keys: Iterable[str] = (),
     proposals_today: int = 0,
+    #: PB-2 (A30.42 D-PB9): the soft budget cut is the EVALUATOR's own
+    #: selection. The ingress re-derivation passes False: an external
+    #: runtime's candidate is not refused merely because it fell below the
+    #: evaluator's cut -- `admit_proposal` alone enforces the budget.
+    cut_at_budget: bool = True,
     #: A5 (A22.7): when a list is passed, every candidate governance
     #: WITHHELD is appended with the reason. The runtime passes None; the
     #: dry-run passes a list, which is how a preview says "and here is what
@@ -948,9 +1004,20 @@ def evaluate(
 ) -> list[dict[str, Any]]:
     """One evaluation pass for one agent. Pure: no I/O, no clock of its own.
 
-    Returns proposal payloads ready to persist. Ordering is deterministic
-    (attention rank, then device id) so two runs over the same state
-    produce the same proposals in the same order.
+    Returns proposal payloads ready to persist. Ordering is TOTAL (PB-2,
+    A30.42 D-PB8): devices by the composer's rank -- driver, band, -score,
+    agent id -- then agent id and site id; a device's conditions with
+    `unreachable` first, then incidents newest first by incident id (the
+    order `agent_runtime._incidents_by_device` returns); candidates in
+    catalogue order, (subsystem, action_type). Two runs over the same state
+    produce the same proposals in the same order. The alphabetical
+    preference among a condition's candidates is a product accident, kept
+    and documented; an explicit priority is a later catalogue decision.
+
+    When the soft budget is reached a dry-run (`withheld` given) keeps
+    going and lists every further governed candidate as withheld with
+    `proposal_budget_exhausted` and its `candidate_ref` -- bounded: no
+    rank, band or score (D-PB9).
     """
     now = now or datetime.now(timezone.utc)
     catalogue = catalogue or {}
@@ -968,15 +1035,35 @@ def evaluate(
 
     budget_left = proposal_budget_left(agent, proposals_today)
 
+    def _attention(dev) -> dict:
+        return attention_by_device.get(
+            (getattr(dev, "site_id", "") or "", dev.agent_id)
+        ) or {}
+
     def _rank(dev) -> tuple:
-        item = attention_by_device.get(dev.agent_id) or {}
-        return (item.get("rank", 10**6), dev.agent_id)
+        return (
+            _attention(dev).get("rank", 10**6),
+            dev.agent_id,
+            getattr(dev, "site_id", "") or "",
+        )
+
+    from harkeniq_cc.proposal_admission import (
+        CODE_PROPOSAL_BUDGET_EXHAUSTED,
+        REASON_PROPOSAL_BUDGET_EXHAUSTED,
+    )
 
     proposals: list[dict[str, Any]] = []
     for device in sorted(in_scope, key=_rank):
-        if budget_left <= 0:
+        cut = cut_at_budget and budget_left <= 0
+        if cut and withheld is None:
             break
-        incidents = incidents_by_device.get(device.agent_id, [])
+        # An incident names a device id; one recorded at ANOTHER site is not
+        # a condition of this device's row here (PB-F13). An entry with no
+        # site recorded is kept.
+        incidents = [
+            i for i in incidents_by_device.get(device.agent_id, [])
+            if not i.get("site_id") or i["site_id"] == device.site_id
+        ]
         conditions = _observed_conditions(device, incidents)
         if not conditions:
             continue
@@ -995,7 +1082,7 @@ def evaluate(
                     allowed_classes=allowed_classes,
                     assessments=assessments,
                     unattended_approved=unattended_approved,
-                    attention=attention_by_device.get(device.agent_id),
+                    attention=_attention(device) or None,
                     open_dedupe_keys=open_keys,
                     now=now,
                 )
@@ -1011,9 +1098,31 @@ def evaluate(
                             "reason": verdict["reason"],
                         })
                     continue
+                if cut:
+                    # D-PB9: governed, admissible, and past the evaluator's
+                    # own cut. Named, with the reference an external runtime
+                    # may still submit -- admission decides the budget.
+                    withheld.append({
+                        "device_agent_id": device.agent_id,
+                        "site_id": device.site_id,
+                        "action_type": candidate["action_type"],
+                        "subsystem": condition["subsystem"],
+                        "condition": condition["detail"],
+                        "code": CODE_PROPOSAL_BUDGET_EXHAUSTED,
+                        "reason": REASON_PROPOSAL_BUDGET_EXHAUSTED,
+                        "candidate_ref": candidate_ref(
+                            agent.tenant_id, verdict["dedupe_key"],
+                        ),
+                    })
+                    made_for_device = True
+                    break
                 proposals.append(verdict["proposal"])
                 open_keys.add(verdict["dedupe_key"])
-                budget_left -= 1
+                # PB-1 (D-PB2): the soft cut follows the budget's own rule
+                # -- a `blocked` row charges nothing. `admit_proposal` is
+                # the authority; this only decides what to put to it.
+                if verdict["proposal"]["status"] != PROPOSAL_BLOCKED:
+                    budget_left -= 1
                 made_for_device = True
                 break
 

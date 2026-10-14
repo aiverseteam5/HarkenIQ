@@ -13,6 +13,7 @@ from harkeniq_cc.api.deps import (
     require_permission,
 )
 from harkeniq_cc.approval_policy import MODE_AUTO_APPROVE
+from harkeniq_cc.autonomy import ACTIONS_USED_NOT_TRACKED
 from harkeniq_cc.actor import actor_of
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import (
@@ -188,7 +189,9 @@ def _budget_dict(b) -> dict:
         "level": b.level,
         "budget_limit": b.budget_limit,
         "budget_period": b.budget_period,
-        "actions_used": b.actions_used,
+        # PB-1 (A30.42 D-PB11): the column has no writer; see autonomy.py.
+        "actions_used": None,
+        "actions_used_reason": ACTIONS_USED_NOT_TRACKED,
         "learning_ramp_config": b.learning_ramp_config,
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,

@@ -9794,12 +9794,13 @@ from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert all(hasattr(R, n) for n in ('tally', 'device_stats', 'first_by_action_ids', 'legacy_candidates'))
 assert not hasattr(R, 'list_outcome_dicts')
-assert 'scope' not in inspect.signature(R.list_device_outcome_dicts).parameters
+# PB-2 (A30.42 D-PB7): the internal paths' oldest-50,000 read is gone too.
+assert not hasattr(R, 'list_device_outcome_dicts')
 assert not hasattr(IntelligenceEngine(), '_cursor')
 assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: exact tallies and statistics, keyed settlement, no cursor, the windowed read internal'
-      ' only; plane 14, contract 99, ceiling unchanged')" < /dev/null
+print('  shipped image: exact tallies and statistics, keyed settlement, no cursor, no windowed read'
+      ' left; plane 14, contract 99, ceiling unchanged')" < /dev/null
 echo "  the 502 synthetic proposals, the proof's device and every A30.41 outcome row removed; 0028 live, 4 indexes valid"
 
 # ---------------------------------------------------------------------------
@@ -10022,6 +10023,256 @@ print('  shipped image: claim + release, no oldest-500 read, deadline %ss inside
       ' plane 14, contract 99, ceiling unchanged' % (int(R.DISPATCH_RPC_TIMEOUT_S),
       int(P.DISPATCH_CLAIM_LEASE.total_seconds())))" < /dev/null
 echo "  PB-0 agent retired; CC 0029 (3 indexes valid) and SM 0012 (unique index valid) live; no key names two directives"
+
+# ---------------------------------------------------------------------------
+# PB-1 + PB-2 (A30.44/A30.45, implementing A30.42): budget semantics and
+# evaluator ordering, live. The proof owns its state: its own agents, its own
+# synthetic incident on a REAL site-A device (re-opened immediately before
+# each evaluation, because the poller resolves an open incident its Site
+# Manager does not report, and checked still open afterwards), its own
+# hidden-site poison at site B, and it retires and removes all of it.
+# Evaluation runs the SHIPPED evaluator in the Central Command container
+# against the live PostgreSQL; the stop switch flips through the real API.
+# The agents bind FAN_RESET (a thermal fault) -- a class no other gate agent
+# binds -- so no other still-active agent can propose for, or fence (A24.12),
+# the one physical operation this proof watches.
+# ---------------------------------------------------------------------------
+PB12_TAG="pb12-$(date +%s)"
+PB12_INC="$PB12_TAG-inc"
+pb12_agent() {  # $1 name, $2 scopes JSON, $3 per-day, $4 "active"|"draft" -> an agent bound to FAN_RESET
+  # Only an ACTIVE agent is evaluated by the live loop (every 20 s). The race
+  # and ordering proofs keep theirs DRAFT -- admission and the dry-run need no
+  # activation -- so the loop cannot spend a slot or fence a key under them.
+  local id ack
+  id=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$PB12_TAG-$1\",\"scopes\":$2,\"max_proposals_per_day\":$3,
+         \"capabilities\":[{\"kind\":\"action_class\",\"capability_ref\":\"FAN_RESET\"}]}" \
+    http://localhost:8090/api/operational-agents/ \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  if [ "$4" = "draft" ]; then echo "$id"; return 0; fi
+  ack=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$id/preflight" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['requires_acknowledgement'])")
+  if [ "$ack" = "True" ]; then
+    curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+      "http://localhost:8090/api/operational-agents/$id/acknowledge" > /dev/null
+  fi
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$id/activate" > /dev/null
+  [ "$(b0r_cc "SELECT status FROM cc_operational_agents WHERE id='$id'" < /dev/null)" = "active" ] || {
+    echo "PB-1/2 agent $1 did not activate" >&2; exit 1; }
+  echo "$id"
+}
+pb12_open_incident() {  # (re)open this proof's thermal incident on the site-A target, opened now
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+    "INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
+         device_agent_id, subsystem, confidence, inferred, opened_at, first_seen_at, last_seen_at)
+     VALUES ('$PB12_INC', '$PB12_TENANT', '$SITE_A', 'device', 'open', 'pb12 thermal',
+             '$PB12_TARGET', 'thermal', 0.9, false, now(), now(), now())
+     ON CONFLICT (incident_id) DO UPDATE SET status = 'open', resolved_at = NULL" \
+    > /dev/null < /dev/null
+}
+pb12_incident_open() {
+  [ "$(b0r_cc "SELECT status FROM cc_incidents WHERE incident_id='$PB12_INC'" < /dev/null)" = "open" ]
+}
+pb12_evaluate() {  # one pass of the SHIPPED evaluator over the live database; prints proposals created
+  docker compose exec -T -e PB12_TENANT="$PB12_TENANT" central-command python - <<'PB12PY'
+import asyncio, os, sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc import agent_runtime
+from harkeniq_cc.config import CCConfig
+from harkeniq_cc.db.base import make_engine, make_sessionmaker
+from harkeniq_cc.runtime import AppState
+async def main():
+    engine = make_engine(os.environ['HARKEN_CC_DSN'])
+    state = AppState(config=CCConfig(tenant_id=os.environ['PB12_TENANT'], insecure=True),
+                     engine=engine, sessionmaker=make_sessionmaker(engine))
+    created = await agent_runtime.evaluate_agents(state, os.environ['PB12_TENANT'])
+    await engine.dispose()
+    print(len(created))
+asyncio.run(main())
+PB12PY
+}
+pb12_mine() {  # $1 agent -> how many of its proposals name this proof's incident
+  b0r_cc "SELECT count(*) FROM cc_agent_proposals
+          WHERE agent_id='$1' AND dedupe_key LIKE '%$PB12_INC%'" < /dev/null
+}
+pb12_dry() {  # $1 agent -> its dry-run, normalised: would_propose and withheld, in order
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$1/dry-run" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(json.dumps({
+    'would': [(p['candidate_ref'], p['device_agent_id'], p['action_type'],
+               (p.get('evidence') or {}).get('attention')) for p in d['would_propose']],
+    'withheld': [(w['device_agent_id'], w['action_type'], w['code'], w['condition'],
+                  w.get('candidate_ref')) for w in d['withheld']],
+}, sort_keys=True))"
+}
+
+step "PB-1/DR: the LAST admission slot, raced on the live database -- ten admitters, exactly ONE admitted, nine refused proposal_budget_exhausted"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+PB12_TENANT=$(s1_cc "SELECT tenant_id FROM cc_sites WHERE id='$SITE_A'" < /dev/null)
+# A site-A device no other agent has FAN_RESET work in flight on:
+# admission fences one physical operation across agents (A24.12).
+PB12_TARGET=$(b0r_cc "SELECT f.agent_id FROM cc_fleet_cache f WHERE f.site_id='$SITE_A'
+                      AND NOT EXISTS (SELECT 1 FROM cc_agent_proposals p
+                        WHERE p.device_agent_id = f.agent_id AND p.action_type = 'FAN_RESET'
+                          AND p.status IN ('awaiting_approval', 'approved', 'dispatched'))
+                      ORDER BY f.agent_id LIMIT 1" < /dev/null)
+[ -n "$PB12_TARGET" ] || { echo "no free device at site A" >&2; exit 1; }
+PB12_RACE=$(pb12_agent race "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]" 1 draft)
+docker compose exec -T -e PB12_TENANT="$PB12_TENANT" -e PB12_AGENT="$PB12_RACE" \
+  -e PB12_TAG="$PB12_TAG" -e PB12_SITE="$SITE_A" central-command python - <<'PB12PY'
+import asyncio, os, sys
+sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc import proposal_admission as pa
+from harkeniq_cc.db.base import make_engine, make_sessionmaker
+T, A, TAG = os.environ['PB12_TENANT'], os.environ['PB12_AGENT'], os.environ['PB12_TAG']
+barrier = asyncio.Barrier(10)
+real_lock = pa.lock_proposal_admission
+async def at_once(session, tenant_id):
+    await barrier.wait()  # every admitter reaches the lock together
+    return await real_lock(session, tenant_id)
+pa.lock_proposal_admission = at_once
+async def admit(i, engine):
+    async with make_sessionmaker(engine)() as session:
+        row, code, _ = await pa.admit_proposal(session, tenant_id=T, origin=pa.ORIGIN_INGRESS, payload={
+            'tenant_id': T, 'agent_id': A, 'actor': f'op-agent:{A}@v1', 'agent_version': 1,
+            'site_id': os.environ['PB12_SITE'], 'device_agent_id': f'{TAG}-dev-{i}',
+            'action_type': 'FAN_RESET', 'params': {}, 'rationale': 'pb12 race',
+            'evidence': {}, 'disposition': 'requires_approval', 'disposition_reason': '',
+            'blocking_conditions': [], 'authorization_basis': 'human_approval',
+            'status': 'awaiting_approval', 'decided_by': '', 'decided_at': None,
+            'dedupe_key': f'{TAG}-race-{i}'})
+        await session.commit()
+        return code if row is None else 'admitted'
+async def main():
+    engines = [make_engine(os.environ['HARKEN_CC_DSN']) for _ in range(10)]
+    codes = await asyncio.gather(*(admit(i, e) for i, e in enumerate(engines)))
+    for e in engines:
+        await e.dispose()
+    assert sorted(codes) == ['admitted'] + [pa.CODE_PROPOSAL_BUDGET_EXHAUSTED] * 9, codes
+    print('  ten concurrent admitters on PostgreSQL: one admitted, nine refused', pa.CODE_PROPOSAL_BUDGET_EXHAUSTED)
+asyncio.run(main())
+PB12PY
+[ "$(b0r_cc "SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$PB12_RACE'" < /dev/null)" = "1" ] || {
+  echo "the last slot was spent more than once" >&2; exit 1; }
+echo "  exactly ONE row for an agent whose daily budget is one"
+
+step "PB-1/DS: a TRANSIENT stop writes no row and fences nothing -- the switch lifts and the SAME condition is proposed"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+PB12_STOP=$(pb12_agent stop "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]" 25 active)
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/policies/stop-switch > /dev/null
+for _ in 1 2 3 4 5; do
+  pb12_open_incident
+  pb12_evaluate > /dev/null
+  pb12_incident_open && break
+done
+pb12_incident_open || { echo "the poller kept resolving the proof's incident" >&2; exit 1; }
+[ "$(pb12_mine "$PB12_STOP")" = "0" ] || {
+  echo "a stopped tenant recorded a proposal (a transient denial must write no row)" >&2; exit 1; }
+[ "$(b0r_cc "SELECT count(*) FROM cc_agent_proposals WHERE agent_id='$PB12_STOP'
+             AND status='blocked'" < /dev/null)" = "0" ] || {
+  echo "the stop switch still writes blocked rows" >&2; exit 1; }
+echo "  stop switch active: the agent's condition is open and NOTHING was written -- no row, no key"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/policies/stop-switch/deactivate > /dev/null
+pb12_site_a_unhalted() {
+  [ "$(s1_cc "SELECT sm_stop_switch FROM cc_safety_state WHERE site_id='$SITE_A'" < /dev/null)" = "f" ]
+}
+wait_for "site A to report its Site Manager un-halted after the switch lifts" 180 pb12_site_a_unhalted
+pb12_proposed_again() {
+  pb12_open_incident
+  pb12_evaluate > /dev/null
+  [ "$(pb12_mine "$PB12_STOP")" = "1" ]
+}
+wait_for "the lifted condition to be proposed again" 120 pb12_proposed_again
+[ "$(b0r_cc "SELECT status FROM cc_agent_proposals WHERE agent_id='$PB12_STOP'
+             AND dedupe_key LIKE '%$PB12_INC%'" < /dev/null)" = "awaiting_approval" ] || {
+  echo "the re-proposed condition is not awaiting a human" >&2; exit 1; }
+echo "  switch lifted: the SAME condition proposed once, awaiting approval -- the stop fenced nothing"
+
+step "PB-2/DT: hidden-site poison leaves a site-A agent's ordering byte-identical; a control that reaches site B moves"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+PB12_A=$(pb12_agent hid-a "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]" 1 draft)
+PB12_CTL=$(pb12_agent hid-ctl "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"},{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_B\"}]" 1 draft)
+PB12_B_DEV=$(b0r_cc "SELECT agent_id FROM cc_fleet_cache WHERE site_id='$SITE_B'
+                     ORDER BY agent_id LIMIT 1" < /dev/null)
+[ -n "$PB12_B_DEV" ] || { echo "no device at site B" >&2; exit 1; }
+pb12_reads() {  # -> "<site-A agent dry-run>|<control dry-run>", re-opened incident bracketed
+  local a c
+  for _ in 1 2 3 4 5; do
+    pb12_open_incident
+    a=$(pb12_dry "$PB12_A"); c=$(pb12_dry "$PB12_CTL")
+    pb12_incident_open && { echo "$a|$c"; return 0; }
+  done
+  echo "the poller kept resolving the proof's incident" >&2; exit 1
+}
+PB12_BEFORE=$(pb12_reads)
+printf '%s' "${PB12_BEFORE%%|*}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['would'], 'the site-A agent must propose something for the comparison to mean anything'
+print('  baseline: the site-A agent would propose', len(d['would']), 'and withholds', len(d['withheld']))"
+# The poison: 500 failures and 1,001 NEWER open thermal incidents on a site-B
+# device -- the newest 1,000 the old evaluator read would all have been these.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "INSERT INTO cc_outcome_history (id, site_id, action_id, action_type, device_agent_id,
+        vendor, model, outcome, fault_resolved, actor, recorded_at, ingested_at)
+   SELECT substr(md5('$PB12_TAG-o' || g), 1, 32), '$SITE_B', '$PB12_TAG-o-' || g,
+          'FAN_RESET', '$PB12_B_DEV', 'Dell', 'R750', 'FAILURE', false,
+          'gate-pb12', now(), now()
+   FROM generate_series(1, 500) g;
+   INSERT INTO cc_incidents (incident_id, tenant_id, site_id, kind, status, title,
+        device_agent_id, subsystem, confidence, inferred, opened_at, first_seen_at, last_seen_at)
+   SELECT '$PB12_TAG-hid-' || lpad(g::text, 5, '0'), '$PB12_TENANT', '$SITE_B', 'device',
+          'open', 'pb12 hidden', '$PB12_B_DEV', 'thermal', 0.9, false,
+          now() + g * interval '1 second', now(), now()
+   FROM generate_series(1, 1001) g" > /dev/null < /dev/null
+PB12_AFTER=$(pb12_reads)
+[ "${PB12_AFTER%%|*}" = "${PB12_BEFORE%%|*}" ] || {
+  echo "hidden site-B data changed the site-A agent's decisions:" >&2
+  echo "before ${PB12_BEFORE%%|*}" >&2; echo "after  ${PB12_AFTER%%|*}" >&2; exit 1; }
+[ "${PB12_AFTER#*|}" != "${PB12_BEFORE#*|}" ] || {
+  echo "CONTROL failed: an agent that reaches site B did not see the poison" >&2; exit 1; }
+echo "  site-A agent: proposals, order, frozen attention and the cut byte-identical; the A+B control moved"
+
+step "PB-1/2/DU: this proof owns its state -- and the shipped image carries one admission authority and the own-reach evaluator"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+for PB12_AG in "$PB12_RACE" "$PB12_STOP" "$PB12_A" "$PB12_CTL"; do
+  curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8090/api/operational-agents/$PB12_AG/retire" > /dev/null
+  [ "$(b0r_cc "SELECT status FROM cc_operational_agents WHERE id='$PB12_AG'" < /dev/null)" = "retired" ] || {
+    echo "PB-1/2 agent $PB12_AG was not retired" >&2; exit 1; }
+done
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
+  "DELETE FROM cc_agent_proposals WHERE agent_id IN ('$PB12_RACE', '$PB12_STOP', '$PB12_A', '$PB12_CTL');
+   DELETE FROM cc_incidents WHERE incident_id = '$PB12_INC' OR incident_id LIKE '$PB12_TAG-hid-%';
+   DELETE FROM cc_outcome_history WHERE action_id LIKE '$PB12_TAG-o-%'" > /dev/null < /dev/null
+[ "$(s1_cc "SELECT (SELECT count(*) FROM cc_incidents WHERE incident_id LIKE '$PB12_TAG%')
+              + (SELECT count(*) FROM cc_outcome_history WHERE action_id LIKE '$PB12_TAG%')" < /dev/null)" = "0" ] || {
+  echo "the PB-1/2 rows were not removed" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import inspect, sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc import agent_runtime as R, proposal_admission as PA
+from harkeniq_cc.agent_activation import DISPATCH_GATES
+from harkeniq_cc.db.repos import AgentPreflightRepo, AgentProposalRepo, OutcomeHistoryRepo
+from harkeniq_cc.discovery import DISCOVERY_VERSION
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert 'admitted_today(' in inspect.getsource(PA.admit_proposal)
+assert hasattr(AgentProposalRepo, 'count_unattended') and not hasattr(AgentProposalRepo, 'count_since')
+assert not hasattr(AgentPreflightRepo, 'count_executions')
+assert not hasattr(OutcomeHistoryRepo, 'list_device_outcome_dicts')
+assert hasattr(R, 'decision_attention') and 'agent_pause' in DISPATCH_GATES and 'budget' not in DISPATCH_GATES
+assert DISCOVERY_VERSION == '2'
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+print('  shipped image: admission checks the budget, unattended counts dispatches, no 50k read,'
+      ' decision_attention, agent_pause; plane 14, contract 99, ceiling unchanged')" < /dev/null
+echo "  four agents retired; their proposals, the incident, the hidden poison removed"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

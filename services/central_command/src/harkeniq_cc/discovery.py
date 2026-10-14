@@ -93,7 +93,9 @@ from harkeniq_cc.operational_agent import (
 )
 
 #: Bump when a consumer would have to change to read the payload.
-DISCOVERY_VERSION = "1"
+#: PB-1 (A30.42 D-PB4): `2` -- `agent.execution_budget.used` now counts
+#: unattended dispatches only, where `1` counted every attributed execution.
+DISCOVERY_VERSION = "2"
 
 #: Every machine projection says so, in one word (receipts.VIEW_MACHINE).
 VIEW_MACHINE = "machine"

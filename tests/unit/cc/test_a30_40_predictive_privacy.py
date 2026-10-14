@@ -101,12 +101,16 @@ class TestTheTenantWideViewIsUnchanged:
         full = await P.build(P.Keep.everything("light"))
         assert await P.tenant_wide_payloads(full) == _golden()["tenant_wide_light"]
 
-    async def test_the_internal_decision_paths_read_main(self):
-        """The evaluator, the dry-run's reasoning and the ingress re-derivation
-        still decide over the whole tenant: byte-identical (D-P5; proposal-
-        budget ordering stays OPEN)."""
+    async def test_the_internal_decision_paths_rank_as_the_agents_own_machine_attention(self):
+        """PB-2 (A30.42 D-PB7) deliberately re-anchors this pin, intent kept:
+        A30.40 left the internal decision paths alone, and PB-2 owns them.
+        They now equal each agent's own machine Attention, on this estate's
+        poison too."""
         full = await P.build(P.Keep.everything("heavy"))
-        assert await E.internal_payloads(full) == _golden()["internal"]
+        pairs = await E.internal_matches_machine(full)
+        for name, (internal, machine) in pairs.items():
+            assert internal and internal == machine, name
+        assert await E.internal_payloads(full) != _golden()["internal"]
 
     def test_the_golden_carries_the_poison_it_proves_unchanged(self):
         """NON-VACUITY: the tenant reader DOES read the hidden totals."""

@@ -406,6 +406,9 @@ def _iso(value) -> Optional[str]:
 #: restated so this module stays free of intra-package imports.
 _SIGNAL_SCOPE_SITE = "site"
 
+#: PB-1 (A30.42 D-PB11): why a fleet budget's `actions_used` is null.
+ACTIONS_USED_NOT_TRACKED = "not_tracked"
+
 # S3-E1 (A30.37): the site-local blocking codes the R3/D8 rules emit.
 SITE_NOT_REPORTED = "site_safety_not_reported"
 SITE_STOP_SWITCH = "site_stop_switch_active"
@@ -929,7 +932,12 @@ def build_autonomy(
             "level_source": "budget_row" if fleet_budget else "unconfigured",
             "budget_limit": int(getattr(fleet_budget, "budget_limit", 0) or 0),
             "budget_period": getattr(fleet_budget, "budget_period", "") or "",
-            "actions_used": int(getattr(fleet_budget, "actions_used", 0) or 0),
+            # PB-1 (A30.42 D-PB11): nothing writes `actions_used`, so a
+            # number here was always 0 dressed as a measurement. Not
+            # tracked is the honest answer; deriving one would invent a
+            # tenant-wide execution count Central Command does not keep.
+            "actions_used": None,
+            "actions_used_reason": ACTIONS_USED_NOT_TRACKED,
             "device_scoped_budgets": [
                 {
                     "device_type": b.device_type,

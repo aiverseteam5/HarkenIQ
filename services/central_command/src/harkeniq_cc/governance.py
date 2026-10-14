@@ -1069,12 +1069,17 @@ async def load_attention(
     selection; this entry point is byte-identical to what it was.
 
     A30.40: nor does a PERSON's. A person's attention comes through
-    `load_human_attention`, from their own selection, because this entry
-    reads every outcome of the tenant -- the evaluator's shape, kept
-    byte-identical for the three internal decision paths (proposal-budget
-    ordering is not this slice's to change). A `LearningView` here would be
-    a principal's answer composed over rows that principal may not read, so
-    it is refused: `learning` must be ``None``.
+    `load_human_attention`, from their own selection. A `LearningView` here
+    would be a principal's answer, so it is refused: `learning` must be
+    ``None``.
+
+    PB-2 (A30.42 D-PB7): this entry no longer reads the tenant's oldest
+    50,000 outcome rows. It SELECTS, then composes, over the agent's own
+    `where_reach` -- B0b's owner rule in SQL, exact statistics, NO cohort
+    prior, a total device order -- so the evaluator ranks exactly as that
+    agent's own machine Attention ranks, and nothing outside its reach can
+    decide which in-reach device gets a scarce proposal slot. `scope` is
+    REQUIRED and must be that reach.
     """
     if learning is not None:
         raise TypeError(
@@ -1083,6 +1088,16 @@ async def load_attention(
             "load_human_attention(human_attention_selection(scope)) or "
             "load_machine_attention(machine_attention_selection(scope)) "
             "(spec A30.40, D-P5)"
+        )
+    # PB-2 (A30.42 D-PB7): the evaluator ranks over its OWN reach. There is
+    # no "whole tenant" internal answer any more -- a missing reach used to
+    # mean every outcome row of the tenant -- so anything but the agent's
+    # `where_reach` is refused rather than read as everything.
+    if not isinstance(scope, ReadReach):
+        raise TypeError(
+            "the internal decision paths rank over the agent's own reach: "
+            "load_attention(scope=where_reach(agent_scope)), not "
+            f"{type(scope).__name__} (spec A30.42, D-PB7)"
         )
     result, _devices, _held = await _compose_attention(
         session, tenant_id=tenant_id, learning=None, site_id=site_id,
@@ -1191,9 +1206,12 @@ async def _compose_attention(
     your current view" (D-P6). Everything else is a person's as it was --
     learning read through the existing windows (D-P8 is deferred).
 
-    With neither, the outcomes are the whole tenant's oldest 50,000 rows:
-    the evaluator's shape, byte-identical (proposal-budget ordering stays
-    OPEN, and Phase 3 owns this window -- A30.41).
+    With neither (the internal decision paths), PB-2 (A30.42 D-PB7): the
+    outcomes pass the same owner predicate under the agent's `where_reach`,
+    into exact statistics, with NO cohort prior and a total device order --
+    the machine's selection, without the incident and learning projections
+    a returned payload needs (the evaluator reads rank, band, driver and
+    score, and returns none of it).
 
     Nothing else differs: one composer, one scorer, one sort, one
     `_recommend`, and `band` and `limit` after ranking.
@@ -1219,14 +1237,15 @@ async def _compose_attention(
     devices = await FleetCacheRepo(session).list_all(tenant_id, scope=scope)
     if site_id:
         devices = [d for d in devices if d.site_id == site_id]
-    if machine is not None:
+    if human is None:
+        # A machine (A30.35, D2) and, since PB-2 (A30.42 D-PB8), the
+        # internal decision paths: a TOTAL input order, so an exact tie in
+        # the composer's stable sort never falls to the database's order.
         devices = sorted(devices, key=_machine_device_order)
-    # A30.41: a principal's outcome history is read EXACTLY -- the database's
-    # sufficient statistics over every row its reach reads, where it was the
-    # oldest 50,000 rows (so above that the newest, heaviest rows were the
-    # ones dropped). `outcomes` is the internal paths' rows; `stats` is a
-    # principal's statistics; exactly one of them is set.
-    outcomes = stats = None
+    # A30.41: outcome history is read EXACTLY -- the database's sufficient
+    # statistics over every row the reach reads, never a window. PB-2
+    # (A30.42 D-PB7) brought the internal decision paths onto it too: their
+    # oldest-50,000 read is gone.
     if machine is not None:
         # D2: only the rows this machine may read, selected in SQL before
         # any aggregate -- never the whole tenant, stripped afterwards. No
@@ -1244,11 +1263,17 @@ async def _compose_attention(
             tenant_id, scope=human.fleet, now=now,
         )
     else:
-        # The internal decision paths: UNCHANGED (A30.41). Their Attention
-        # rank decides which devices consume an agent's proposal budget, so
-        # this read -- the oldest 50,000 rows -- stays byte-identical until
-        # Phase 3 (proposal-budget ordering) owns it.
-        outcomes = await OutcomeHistoryRepo(session).list_device_outcome_dicts(tenant_id)
+        # PB-2 (A30.42 D-PB7, H1): the internal decision paths -- the
+        # evaluator, the dry-run's reasoning, the ingress re-derivation.
+        # Their rank decides which in-reach device gets a scarce proposal
+        # slot, so they SELECT exactly as the agent's own machine Attention
+        # does: the rows its reach reads, under B0b's owner rule, in SQL,
+        # before any aggregate, and NO cohort -- so a site the agent cannot
+        # reach, a moved device's history left at such a site, or the size
+        # of the tenant's history can no longer move its order.
+        stats = await OutcomeHistoryRepo(session).device_stats(
+            tenant_id, scope=scope, now=now, cohorts=False,
+        )
     warranty_map = await WarrantyRepo(session).get_map(
         [d.service_tag for d in devices], tenant_id=tenant_id,
     )
@@ -1304,24 +1329,21 @@ async def _compose_attention(
             if held else []
         )
 
-    # D2: a machine is never scored on a cohort the whole tenant built.
-    # A30.40 (D-P2, D-P9): a person IS scored on a cohort -- the same
-    # function, over the rows selected above, so for a scoped person it is
-    # the cohort of their current view and nothing more.
-    cohorts = cohort_failure_rates(
-        outcomes if stats is None else stats.cohort_tallies,
-    ) if machine is None else {}
-    by_device: dict[str, list[dict]] = {}
-    for oc in outcomes or ():
-        by_device.setdefault(oc["device_agent_id"], []).append(oc)
+    # D2: a machine is never scored on a cohort the whole tenant built, and
+    # neither is the evaluator (PB-2, A30.42 D-PB7: the cohort prior is
+    # NONE, matching machine Attention). A30.40 (D-P2, D-P9): a person IS
+    # scored on a cohort -- the same function, over the rows selected
+    # above, so for a scoped person it is the cohort of their current view.
+    cohorts = (
+        cohort_failure_rates(stats.cohort_tallies) if human is not None else {}
+    )
 
     risks = []
     for dev in devices:
         warranty = warranty_map.get(dev.service_tag)
         risk = score_device(
             agent_id=dev.agent_id,
-            outcomes=by_device.get(dev.agent_id, []),
-            history=None if stats is None else stats.devices.get(dev.agent_id),
+            history=stats.devices.get(dev.agent_id),
             cohort_failure_rate=cohorts.get((dev.vendor, dev.model)),
             health=dev.health,
             warranty_status=warranty_status(warranty.end_date) if warranty else "",

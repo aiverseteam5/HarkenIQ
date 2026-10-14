@@ -74,38 +74,53 @@ def budget_window_start(period: str, now: Optional[datetime] = None) -> datetime
 
 
 async def executions_used(session, tenant_id: str, agent) -> int:
-    """How much of this agent's execution budget is spent (A19.7).
+    """How much of this agent's EXECUTION budget is spent (A19.7, PB-1).
 
     ONE notion of consumption, so the preflight's report, the runtime
-    view and the dispatch gate can never quote different numbers at an
-    operator -- a budget that says "3 of 5" on one screen and refuses on
-    another is worse than no budget.
+    view, discovery and the dispatch gate can never quote different
+    numbers at an operator -- a budget that says "3 of 5" on one screen
+    and refuses on another is worse than no budget.
 
-    Two parts, and both are executions:
+    PB-1 (A30.42 D-PB4, A30.44) -- the budget is DELEGATED UNATTENDED
+    capacity, so it counts unattended dispatches and nothing else: the
+    `autonomous_grant` proposals the Site Manager accepted in the window,
+    plus those reserved by a dispatch claim and not yet answered
+    (`AgentProposalRepo.count_unattended`). A human's decision never
+    spends it and never waits on it. This AMENDS A19.7's "executions under
+    the attribution key": it used to count every attributed outcome, so
+    approving work by hand starved autonomy -- and it read outcome history
+    with no tenant predicate.
 
-      settled    outcome history under this agent's attribution key --
-                 the existing execution accounting, unchanged.
-      in flight  proposals already dispatched unattended and not yet
-                 settled. They are running; the allowance is spent.
+    Proposals are never counted here: that is the admission budget.
 
-    Proposals, by contrast, are never counted. Intent is not
-    consumption: a proposal that is never executed costs nothing.
-
-    Counted per AGENT, across its configuration versions. Attribution
-    still records the exact version that decided each outcome -- D3
-    requires that -- but the allowance belongs to the agent, or an
-    ordinary edit would refill a spent budget.
+    Counted per AGENT, across its configuration versions: the allowance
+    belongs to the agent, or an ordinary edit would refill a spent budget.
     """
     from harkeniq_cc.db.repos import AgentProposalRepo
 
-    since = budget_window_start(agent.budget_period)
-    settled = await AgentPreflightRepo(session).count_executions(
-        tenant_id, agent.id, since,
+    return await AgentProposalRepo(session).count_unattended(
+        tenant_id, agent.id, budget_window_start(agent.budget_period),
     )
-    in_flight = await AgentProposalRepo(session).count_in_flight(
-        tenant_id, agent.id, since,
+
+
+#: PB-1 (A30.42): the per-agent lock the unattended count is read under.
+_EXECUTION_LOCK = "cc.agent_execution.{tenant_id}.{agent_id}"
+
+
+async def lock_unattended_budget(session, tenant_id: str, agent_id: str) -> bool:
+    """Serialize this agent's unattended reservations until the next commit.
+
+    Taken BEFORE `executions_used` is read and held through the dispatch
+    claim's commit, which precedes the Site Manager call -- so two
+    replicas cannot both see the last unit free, and no lock is ever held
+    across the network. A no-op on sqlite (single writer); True when a
+    real lock was taken.
+    """
+    from harkeniq.audit.chain import pg_advisory_chain_lock
+
+    return await pg_advisory_chain_lock(
+        session, _EXECUTION_LOCK.format(tenant_id=tenant_id, agent_id=agent_id),
     )
-    return int(settled) + int(in_flight)
 
 
 def _as_utc(value) -> Optional[datetime]:
@@ -558,17 +573,16 @@ async def runtime_state(session, *, tenant_id: str, agent) -> dict:
     value -- inventing health is worse than admitting ignorance, because
     an operator acts on it.
     """
-    from harkeniq_cc.db.repos import AgentProposalRepo
+    from harkeniq_cc.proposal_admission import admitted_today
 
     repo = OperationalAgentRepo(session)
     pre_repo = AgentPreflightRepo(session)
     actor = attribution_key(agent.id, agent.version)
 
-    window_start = budget_window_start(agent.budget_period)
     executions = await executions_used(session, tenant_id, agent)
-    proposals = await AgentProposalRepo(session).count_since(
-        tenant_id, agent.id, window_start,
-    )
+    # PB-1 (A30.42 D-PB11): the PROPOSAL budget's own day, and its own
+    # count -- not the execution window, which can be a week or a month.
+    proposals = await admitted_today(session, tenant_id, agent.id)
 
     # A30.10: the machine-readable `/runtime` answer resolves through the
     # canonical reach. It used to combine raw rows with canonical sites,
@@ -649,6 +663,10 @@ async def runtime_state(session, *, tenant_id: str, agent) -> dict:
         "budget": {
             "period": agent.budget_period,
             "limit": limit,
+            # PB-1 (D-PB4): what the number counts, stated rather than
+            # implied -- it changed meaning, and a reader should not have
+            # to know which release they are talking to.
+            "counts": "unattended_dispatches",
             "executions_used": executions,
             "remaining": (max(0, limit - executions) if limit else None),
             "exhausted": bool(limit and executions >= limit),

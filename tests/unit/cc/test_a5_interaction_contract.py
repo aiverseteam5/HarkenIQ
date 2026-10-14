@@ -495,19 +495,51 @@ class TestD1AttentionIsScoped:
 
 class TestD3OneAttentionComposer:
     @pytest.mark.asyncio
-    async def test_http_and_in_process_rank_identically(self):
+    async def test_the_evaluator_ranks_as_its_own_machine_attention(self):
+        """PB-2 (A30.42 D-PB7) re-anchors this pin, intent kept.
+
+        It compared the evaluator's in-process rank with the tenant owner's
+        HTTP Attention -- while the evaluator read the whole tenant's oldest
+        50,000 outcomes and its cohort prior. The evaluator now selects its
+        OWN reach and is scored on no cohort, exactly as a machine is, so
+        the identity that must hold is with that agent's own machine
+        Attention over HTTP: one composer, one answer.
+        """
+        from harkeniq_cc.agent_runtime import decision_attention
+        from harkeniq_cc.scope import where_reach
+
         stack = await _stack()
-        await _seed(stack, sites=("DC-1", "DC-2"))
+        site_ids = await _seed(stack, sites=("DC-1", "DC-2"))
         async with stack.client() as c:
-            over_http = (await c.get("/api/attention/")).json()
+            agent_id = await _agent(c, site_ids[0], scopes=[
+                {"scope_type": "site", "scope_ref": s} for s in site_ids
+            ])
+        stack.as_agent(agent_id)
+        async with stack.client() as c:
+            res = await c.get("/api/attention/")
+        assert res.status_code == 200, res.text
+        over_http = [
+            (i["target"]["site_id"], i["target"]["device_agent_id"])
+            for i in sorted(res.json()["items"], key=lambda i: i["order"])
+        ]
         async with stack.sessionmaker() as session:
-            # A30.28: the in-process caller is the evaluator's shape -- an
-            # internal decision path that reads rank and never returns items.
-            in_process = await load_attention(
-                session, tenant_id=TENANT, learning=None,
+            scope = await load_agent_scope(
+                session, tenant_id=TENANT, agent_id=agent_id,
             )
-        assert [(i["agent_id"], i["rank"]) for i in over_http["items"]] == \
-               [(i["agent_id"], i["rank"]) for i in in_process["items"]]
+            in_process = await decision_attention(
+                session, TENANT, where_reach(scope),
+            )
+        ranked = [k for k, _ in sorted(in_process.items(), key=lambda kv: kv[1]["rank"])]
+        assert len(ranked) == 2
+        assert over_http == ranked
+
+    async def test_the_internal_path_refuses_a_missing_reach(self):
+        """PB-2: there is no whole-tenant internal answer to fall back to."""
+        stack = await _stack()
+        await _seed(stack)
+        async with stack.sessionmaker() as session:
+            with pytest.raises(TypeError, match="D-PB7"):
+                await load_attention(session, tenant_id=TENANT, learning=None)
 
     @pytest.mark.asyncio
     async def test_the_band_filter_does_not_renumber_rank(self):

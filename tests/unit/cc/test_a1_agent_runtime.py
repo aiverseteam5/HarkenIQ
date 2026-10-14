@@ -423,7 +423,15 @@ class TestTheGovernanceHolds:
         await client.aclose()
 
     @pytest.mark.asyncio
-    async def test_stop_switch_blocks_but_still_records_the_intent(self):
+    async def test_stop_switch_proposes_nothing_and_fences_nothing(self):
+        """PB-1 (A30.42 D-PB3, T1) inverts A1's pin, intent kept.
+
+        A1 recorded a stopped tenant's intent as a `blocked` row. That row
+        spent a daily slot and -- because `all_dedupe_keys` reads every key
+        -- fenced the condition for ever, so nothing was proposed after the
+        switch lifted. The intent is now the dry-run's withheld entry; the
+        runtime writes nothing, and proposes once the switch lifts.
+        """
         client, state = await _stack()
         site_id = await _seed(state)
         agent_id = await _make_agent(
@@ -434,13 +442,17 @@ class TestTheGovernanceHolds:
             "active": True, "reason": "maintenance window",
         })
         stats = await agent_runtime.run_once(state, TENANT)
-        assert stats["blocked"] == 1
+        assert stats["proposed"] == 0 and stats["blocked"] == 0
         assert FakeSM.calls == []
         proposals = (await client.get(
             f"/api/operational-agents/{agent_id}/proposals"
         )).json()["proposals"]
-        assert proposals[0]["status"] == "blocked"
-        assert "stop switch" in proposals[0]["disposition_reason"]
+        assert proposals == []
+
+        lifted = await client.post("/api/policies/stop-switch/deactivate")
+        assert lifted.status_code == 200, lifted.text
+        stats = await agent_runtime.run_once(state, TENANT)
+        assert stats["proposed"] == 1
         await client.aclose()
 
     @pytest.mark.asyncio

@@ -571,6 +571,35 @@ async def _record_executions(stack, site_id, actor: str, count: int):
         await session.commit()
 
 
+async def _record_unattended_dispatches(stack, site_id, actor: str,
+                                        agent_id: str, count: int):
+    """Unattended work the Site Manager ACCEPTED for this agent.
+
+    PB-1 (A30.42 D-PB4): what the execution budget counts. It used to
+    count outcome history (`_record_executions`), which included every
+    human-approved execution; it now counts `autonomous_grant` dispatches,
+    derived from the proposal rows themselves.
+    """
+    from datetime import datetime, timezone
+
+    from harkeniq_cc.db.models import CCAgentProposal
+
+    async with stack.sessionmaker() as session:
+        for i in range(count):
+            session.add(CCAgentProposal(
+                tenant_id=TENANT, agent_id=agent_id, actor=actor,
+                agent_version=1, site_id=site_id, device_agent_id="node-1",
+                action_type="SEL_CLEAR", params={}, rationale="done",
+                evidence={}, disposition="autonomous",
+                authorization_basis="autonomous_grant", status="completed",
+                outcome="SUCCESS", directive_id=f"dir-{actor}-{i}",
+                dispatched_at=datetime.now(timezone.utc),
+                decided_by="contract",
+                dedupe_key=f"{agent_id}:node-1:SEL_CLEAR:done-{actor}-{i}",
+            ))
+        await session.commit()
+
+
 async def _autonomous_proposal(stack, site_id, actor: str, agent_id: str,
                                basis="autonomous_grant", key="k1"):
     """An approved proposal, for an agent that is actually RUNNING.
@@ -694,7 +723,9 @@ class TestBudgetIsEnforcedAndConfigurable:
             agent_id = await _unattended_agent(c, site_id, execution_budget=2)
 
         actor = f"op-agent:{agent_id}@v1"
-        await _record_executions(stack, site_id, actor, 2)  # budget spent
+        # PB-1 (D-PB4): spent by unattended dispatches, the only thing the
+        # budget counts now.
+        await _record_unattended_dispatches(stack, site_id, actor, agent_id, 2)
         await _autonomous_proposal(stack, site_id, actor, agent_id)
 
         dispatched = await agent_runtime.dispatch_decided(stack.state, TENANT)
@@ -795,7 +826,9 @@ class TestBudgetIsEnforcedAndConfigurable:
         site_id = await _seed(stack, reporting=True)
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=2)
-            await _record_executions(stack, site_id, f"op-agent:{agent_id}@v1", 2)
+            await _record_unattended_dispatches(
+                stack, site_id, f"op-agent:{agent_id}@v1", agent_id, 2,
+            )
 
             runtime = (
                 await c.get(f"/api/operational-agents/{agent_id}/runtime")
@@ -887,7 +920,9 @@ class TestBudgetIsEnforcedAndConfigurable:
         async with stack.client() as c:
             agent_id = await _unattended_agent(c, site_id, execution_budget=10)
             actor = f"op-agent:{agent_id}@v1"
-            await _record_executions(stack, site_id, actor, 3)
+            await _record_unattended_dispatches(stack, site_id, actor, agent_id, 3)
+            # PB-1 (D-PB4): human-approved executions never count.
+            await _record_executions(stack, site_id, actor, 7)
             await _autonomous_proposal(stack, site_id, actor, agent_id)
             await agent_runtime.dispatch_decided(stack.state, TENANT)
 
@@ -898,7 +933,8 @@ class TestBudgetIsEnforcedAndConfigurable:
             runtime = (
                 await c.get(f"/api/operational-agents/{agent_id}/runtime")
             ).json()
-            # 3 settled + 1 in flight, reported identically by both.
+            # 3 earlier unattended dispatches + 1 just accepted, reported
+            # identically by both; the 7 recorded outcomes count for nothing.
             assert budget["used"] == 4
             assert runtime["budget"]["executions_used"] == 4
 

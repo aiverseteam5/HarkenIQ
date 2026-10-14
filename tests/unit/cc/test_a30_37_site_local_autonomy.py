@@ -512,9 +512,20 @@ def _catalogue():
 APPROVED = frozenset({"SEL_CLEAR", "BMC_RESET"})
 
 
+def _withheld(estate, **kw) -> list:
+    """What `_propose` would have made, when governance withholds it instead.
+
+    PB-1 (A30.42 D-PB3): a denial caused only by a stop that lifts writes
+    no row, so these pins read the withheld list rather than a status.
+    """
+    withheld: list = []
+    assert _propose(estate, withheld=withheld, _expect_none=True) is None
+    return [w["code"] for w in withheld]
+
+
 def _propose(estate, *, sid="A", agent=None, approved=APPROVED, action="SEL_CLEAR",
-             subsystem="log", components=()):
-    (proposal,) = evaluate(
+             subsystem="log", components=(), withheld=None, _expect_none=False):
+    made = evaluate(
         catalogue=_catalogue(), agent=agent or _agent(),
         scopes=[NS(scope_type="site", scope_ref=sid)],
         capabilities=[NS(kind="action_class", capability_ref=action)],
@@ -525,7 +536,12 @@ def _propose(estate, *, sid="A", agent=None, approved=APPROVED, action="SEL_CLEA
                             for c in components]},
         ]},
         assessments=estate, unattended_approved=approved, now=NOW,
+        withheld=withheld,
     )
+    if _expect_none:
+        assert made == []
+        return None
+    (proposal,) = made
     return proposal
 
 
@@ -569,9 +585,12 @@ class TestAdmission:
         assert p["status"] == PROPOSAL_AWAITING
         assert G.global_row() in p["blocking_conditions"]
 
-    def test_a_halted_target_is_blocked(self):
+    def test_a_halted_target_is_withheld_not_recorded(self):
+        """PB-1 (A30.42 D-PB3, T1) inverts this pin, intent kept: a halted
+        target still gets nothing -- it is withheld with the halt's code,
+        and no row fences the condition after the halt lifts."""
         estate = assessments([report("A", sm_stop_switch=True), report("B")], self.SITES)
-        assert _propose(estate)["status"] == PROPOSAL_BLOCKED
+        assert _withheld(estate) == ["site_stop_switch_active"]
 
     def test_D11_a_class_activation_did_not_approve_needs_a_human(self):
         estate = assessments([report("A"), report("B")], self.SITES)
@@ -595,7 +614,8 @@ class TestAdmission:
                           components=("Ethernet0",))
         assert fenced["status"] == PROPOSAL_BLOCKED
         stopped = assessments([suppressed], [site("A")], stop=True)
-        assert _propose(stopped)["status"] == PROPOSAL_BLOCKED
+        # PB-1 (D-PB3): still never approvable -- withheld, not recorded.
+        assert _withheld(stopped) == ["stop_switch_active"]
         # ...and it still narrows autonomy, as before.
         assert _propose(estate)["status"] == PROPOSAL_AWAITING
 
@@ -717,7 +737,8 @@ class TestTheShape:
 
         assert DISPATCH_GATES == (
             "agent_identity", "agent_active", "tenant_scope", "stop_switch",
-            "budget", "effective_scope", "capability_binding",
+            # PB-1 (A30.42 D-PB11): `budget` renamed for what it asks.
+            "agent_pause", "effective_scope", "capability_binding",
             "unattended_class", "site_local_autonomy", "global_safety",
         )
 
@@ -726,7 +747,7 @@ class TestTheShape:
 
         existing = dict.fromkeys((
             "agent_identity", "agent_active", "tenant_scope", "stop_switch",
-            "budget", "effective_scope", "capability_binding",
+            "agent_pause", "effective_scope", "capability_binding",
             "unattended_class", "site_local_autonomy",
         ), True)
         ok, why = dispatch_permitted(**existing)

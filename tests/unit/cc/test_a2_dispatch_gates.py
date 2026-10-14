@@ -65,7 +65,7 @@ class TestTheGateAlgebra:
         assert "stop_switch" in reason
 
     def test_none_means_this_gate_does_not_object(self):
-        assert dispatch_permitted(**_all_clear(budget=None))[0] is True
+        assert dispatch_permitted(**_all_clear(agent_pause=None))[0] is True
 
     def test_the_gates_are_central_command_only(self):
         """The lease, preconditions, blast radius and the node's allow
@@ -144,7 +144,7 @@ class TestTheRatifiedRefusals:
 
     def test_a_paused_agent_refuses(self):
         allowed, reason = dispatch_permitted(
-            **_all_clear(budget="the agent is paused: held by ops")
+            **_all_clear(agent_pause="the agent is paused: held by ops")
         )
         assert allowed is False
         assert "paused" in reason

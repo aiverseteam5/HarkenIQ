@@ -659,8 +659,16 @@ class TestBudgetAndRate:
 
         from harkeniq_cc.api import operational_agents
 
+        from harkeniq_cc import proposal_admission
+
+        # PB-1 (A30.42 D-PB2): the daily proposal limit is read from the
+        # proposal rows -- the cut by the re-derivation, the refusal by
+        # admission under the tenant lock -- never kept in process.
         src = inspect.getsource(operational_agents.submit_proposal)
-        assert "count_since(" in src
+        assert "admitted_today(" in src
+        assert "admitted_today(" in inspect.getsource(
+            proposal_admission.admit_proposal
+        )
 
     @pytest.mark.parametrize("status", ["draft", "paused", "retired"])
     async def test_an_agent_that_is_not_active_may_not_submit(self, status):

@@ -52,7 +52,8 @@ interface AutonomyBudget {
   level: number;
   budget_limit: number;
   period: string;
-  actions_used: number;
+  // PB-1 (A30.42 D-PB11): null -- the server does not track it.
+  actions_used: number | null;
   learning_ramp: boolean;
   ramp_start: string | null;
   ramp_increment: number | null;
@@ -703,7 +704,10 @@ export default function ApprovalPolicies() {
       {
         key: "actions_used",
         header: "Actions Used",
-        render: (r) => `${r.actions_used} / ${r.budget_limit}`,
+        render: (r) =>
+          r.actions_used == null
+            ? `not tracked / ${r.budget_limit}`
+            : `${r.actions_used} / ${r.budget_limit}`,
       },
     ],
     [],

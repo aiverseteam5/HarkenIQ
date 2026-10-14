@@ -93,7 +93,9 @@ interface Contract {
     level_source: string;
     budget_limit: number;
     budget_period: string;
-    actions_used: number;
+    // PB-1 (A30.42 D-PB11): nothing writes it, so the server says so.
+    actions_used: number | null;
+    actions_used_reason?: string;
     ladder: { level: number; name: string; grants: string[]; statement: string }[];
   };
   safety_state: {
@@ -447,7 +449,9 @@ export default function Autonomy() {
           value={
             contract == null || contract.posture.budget_limit === 0
               ? "none"
-              : `${contract.posture.actions_used}/${contract.posture.budget_limit}`
+              : contract.posture.actions_used == null
+                ? `not tracked / ${contract.posture.budget_limit}`
+                : `${contract.posture.actions_used}/${contract.posture.budget_limit}`
           }
           unit={contract?.posture.budget_period || undefined}
         />

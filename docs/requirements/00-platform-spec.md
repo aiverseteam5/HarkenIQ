@@ -6860,3 +6860,99 @@ once after the upgrade, because historical directives carry no key and are
 never rewritten — the duplicate the old code would have made anyway, now
 bounded to one per proposal straddling the upgrade. Campaign dispatch stays
 unkeyed (PB-F14). Migrations: CC `0029`, SM `0012`, both additive.
+
+**A30.44 — PB-1 budget semantics: implementation boundary (implements
+A30.42 D-PB2, D-PB3, D-PB4 and D-PB11; recorded before code, 2026-10-11;
+departs from nothing in A30.42 — it fills in what A30.42 left to PB-1's
+boundary). Delivery (decided: Vinod, 2026-10-11): PB-1 and PB-2 land
+together in ONE integrated pull request reviewed ONCE by Codex as the
+complete Proposal-Budget module (PB-0 + PB-1 + PB-2); this replaces
+A30.42's "each its own PR, each reviewed" for PB-1 and PB-2 only and
+changes no ratified semantics.** *Admission (D-PB2).* `admit_proposal` —
+the one path for the evaluator and the ingress — takes the tenant admission
+lock, then counts the agent's admitted rows that are not `blocked` and were
+created since the current UTC midnight (one count, `admitted_today`, across
+the agent's configuration versions), then refuses a row that would be
+charged when the count has reached `max_proposals_per_day`, code
+`proposal_budget_exhausted` (recorded on the submission as an attempt, not
+chained — A24.16), then inserts. A `blocked` row charges nothing and is
+admitted whatever the count; `blocked` is written only at creation, so a
+charge never changes after insert, and nothing releases one (D-PB14). The
+evaluator's selection and the ingress re-derivation keep a soft cut computed
+from the SAME count and decrement it only for a charged row; neither is the
+budget's authority. Discovery, `/runtime` and the dry-run report the same
+count; `/runtime`'s `proposals_in_window` becomes the proposal day.
+*Transient denial (D-PB3, T1).* `govern_proposal` refuses — no row — when
+its verdict is DENIED only because of the tenant stop switch or a Site
+Manager halt at the target's own site: the class is not fenced
+(`never_budget_grantable` false) and a blocking condition is
+`stop_switch_active` or `site_stop_switch_active`. The refusal code is that
+blocking code, with a constant reason that names no site; the dry-run lists
+it under `withheld`; discovery already reports both blockers; the dedupe key
+is not written, so the condition is proposed again once the switch lifts. A
+fenced class stays a permanent `blocked` row (D16). A1's
+`test_stop_switch_blocks_*` pins are inverted under new names, intent kept.
+*Unattended budget (D-PB4).* `execution_budget`/`budget_period` count ONLY
+`autonomous_grant` dispatches, derived from proposal rows: committed (a
+directive id, `dispatched_at` inside the window) plus reserved (`approved`,
+claim held, no directive). `_dispatch_one` takes the per-agent advisory
+lock `cc.agent_execution.{tenant}.{agent}` before that count and holds it
+through the claim's commit, which precedes the Site Manager call; a refusal
+before queueing marks the proposal failed with no directive and so releases;
+a transport error releases the claim; a node refusal keeps the charge.
+Human-approved work never touches the count or waits on it. The outcome-
+history count (`count_executions`, which had no tenant predicate) and the
+in-flight count are deleted with their last caller. Windows are unchanged
+(calendar day; rolling 7 / 30 days). Discovery's `execution_budget.used`
+changes meaning, so `discovery_version` becomes `2`; `/runtime`'s budget
+block gains `counts: "unattended_dispatches"`. The existing relationship is
+pinned: an autonomous proposal is never dispatched into a site that reports
+`budget_window_exhausted` (D-PB12). *Cleanups (D-PB11).* The dispatch gate
+`budget`, which checks pause, is renamed `agent_pause`.
+`cc_autonomy_budgets.actions_used` has no writer, so it is published as
+`null` beside `actions_used_reason: "not_tracked"` in the autonomy posture
+and on `/api/policies` budgets — the null option, because deriving it would
+invent a tenant-wide execution count Central Command does not keep — and the
+Console renders "not tracked". The column stays. *Unchanged:* permissions,
+ceiling, routes, authorization, approval ledger/policy/completion, every
+dispatch gate's question, PB-0's claim and Site Manager key, node finality,
+historical rows; no migration (CC `0029`, SM `0012`, Console `0004`).
+
+**A30.45 — PB-2 evaluator ordering: implementation boundary (implements
+A30.42 D-PB7, D-PB8 and D-PB9; recorded before code, 2026-10-11; departs
+from nothing in A30.42; delivered with PB-1 per A30.44).** *Selection
+(D-PB7, H1).* The internal decision paths — the evaluator, the dry-run's
+reasoning and the ingress re-derivation — read their Attention through ONE
+function, `agent_runtime.decision_attention`, which calls `load_attention`
+with the agent's `where_reach` (REQUIRED: a missing reach is refused, never
+read as the tenant). The composer's internal branch selects exactly as
+machine Attention does: outcomes through B0b's owner rule in SQL into exact
+statistics (`device_stats`, A30.41), NO cohort prior, a total device input
+order; the shared composer's sort is untouched. The oldest-50,000 read
+`list_device_outcome_dicts` is deleted with its last caller. The evaluator's
+incident input (`_incidents_by_device`) is read over the same reach with no
+row limit — PB-F6's tenant-wide newest-1,000 window is gone. Rank inputs that
+remain (pending approvals, warranty, health) are already reach-selected or
+per device; learned signals, fleet patterns and attention's own incident
+list feed reasons the evaluator does not read, and are unchanged. *Order
+(D-PB8).* Attention is keyed by `(site_id, agent_id)`; devices are worked by
+`(rank, agent_id, site_id)`; a device's incidents newest first then by
+incident id, `unreachable` first; an incident recorded at another site is
+not a condition of this device's row; candidates in catalogue order
+`(subsystem, action_type)` on every catalogue read (the re-read under the
+seed lock gains the `ORDER BY`). *Cut (D-PB9).* `evaluate(cut_at_budget=)`:
+the evaluator cuts at its soft budget; the ingress re-derivation passes
+False, so an external runtime's candidate is not refused for falling below
+the evaluator's cut — `admit_proposal` alone enforces the budget; the
+dry-run keeps governing past the cut and lists each further admissible
+candidate under `withheld` with code `proposal_budget_exhausted` and its
+`candidate_ref` — no rank, band or score. *Oracle.* An agent's admitted
+proposals, their order, dedupe keys, frozen `evidence.attention`, the
+dry-run order and the cut over the full estate equal those over an estate
+reduced to its own reach, for site-, org-unit-, device-, device_class- and
+mixed-scoped agents, with a tenant-wide control that differs; excluded by
+ratified design: S3-E2's creation record and the closed global gate.
+Internal goldens (A30.35, A30.40, A30.41) are deliberately re-anchored with
+intent kept; principal goldens stay byte-identical. *Unchanged:* every
+principal read, permissions, ceiling, routes, authorization, approval,
+dispatch, node finality; no migration.

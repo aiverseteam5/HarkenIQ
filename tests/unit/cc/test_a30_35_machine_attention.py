@@ -278,10 +278,9 @@ class TestFilterBeforeAggregate:
             after = await OutcomeHistoryRepo(session).device_stats(
                 full.tenant, scope=reach, now=now, cohorts=False,
             )
-            with pytest.raises(TypeError):
-                await OutcomeHistoryRepo(session).list_device_outcome_dicts(
-                    full.tenant, limit=5, scope=reach,
-                )
+            # PB-2 (A30.42 D-PB7): the windowed read a reach could never be
+            # handed is gone altogether.
+            assert not hasattr(OutcomeHistoryRepo, "list_device_outcome_dicts")
         assert set(after.devices) <= visible
         assert after == before
         assert after.cohort_tallies == ()       # no cohort for a machine
@@ -906,12 +905,26 @@ class TestHumanCompatibility:
         for name in ("h-site-a", "h-device-a1", "h-class-switch"):
             assert now[name] != golden["human"][name], name
 
-    async def test_the_internal_decision_paths_equal_main(self):
-        """The evaluator, the dry-run's reasoning and the ingress re-derivation
-        still decide over the whole tenant (the E1 residual): unchanged."""
+    async def test_the_internal_decision_paths_rank_as_the_agents_own_machine_attention(self):
+        """PB-2 (A30.42 D-PB7) deliberately re-anchors this pin, intent kept.
+
+        It pinned the internal decision paths byte-identical to main while
+        they decided over the whole tenant with a cohort prior (the E1
+        residual). PB-2 is the slice that owns them: they now select their
+        own reach and score no cohort, so what they must equal is the same
+        agent's machine Attention -- order, driver, band and basis.
+        """
         golden = json.loads(GOLDEN.read_text())
         full = await E.build()
-        assert await E.internal_payloads(full) == golden["internal"]
+        pairs = await E.internal_matches_machine(full)
+        for name, (internal, machine) in pairs.items():
+            assert internal and internal == machine, name
+        # Non-vacuity: main's recording WAS scored on the tenant cohort.
+        recorded = [i["confidence"]["basis"]
+                    for i in golden["internal"]["m-site-a"]["items"]]
+        assert "cohort_prior" in recorded
+        assert all(row[4] != "cohort_prior"
+                   for internal, _ in pairs.values() for row in internal)
 
     def test_the_golden_carries_the_residual_it_proves_unchanged(self):
         golden = json.loads(GOLDEN.read_text())

@@ -53,7 +53,11 @@ from harkeniq_cc.governance import (
 )
 from harkeniq_cc.autonomy import ACTOR_AGENT
 from harkeniq_cc.scope import where_reach
-from harkeniq_cc.proposal_admission import ORIGIN_EVALUATOR, admit_proposal
+from harkeniq_cc.proposal_admission import (
+    ORIGIN_EVALUATOR,
+    admit_proposal,
+    admitted_today,
+)
 from harkeniq_cc.operational_agent import (
     BASIS_AUTONOMOUS,
     EVALUATING_STATUSES,
@@ -75,10 +79,26 @@ logger = logging.getLogger("harkeniq.cc.agent_runtime")
 AGENT_PERMISSIONS = ("fleet.view", "incident.view")
 
 
-async def _incidents_by_device(session, tenant_id: str) -> dict[str, list[dict]]:
-    """Open incidents keyed by device, with whether a diagnosis exists."""
+async def _incidents_by_device(session, tenant_id: str, reach) -> dict[str, list[dict]]:
+    """Open incidents in the agent's OWN reach, keyed by device.
+
+    PB-2 (A30.42 PB-F6, D-PB8). This read was tenant-wide and cut at the
+    newest 1,000, so incident volume at sites the agent cannot reach pushed
+    in-reach conditions out of evaluation. It now reads every open incident
+    the agent's `where_reach` owns (B0b's owner rule) with NO row limit, and
+    orders each device's list totally -- newest first, then by incident id
+    -- because the evaluator works a device's conditions in this order.
+    `reach` is REQUIRED: there is no tenant-wide answer to fall back to.
+    """
+    from harkeniq_cc.scope import ReadReach
+
+    if not isinstance(reach, ReadReach):
+        raise TypeError(
+            "the evaluator's incidents are read over the agent's own reach "
+            f"(where_reach), not {type(reach).__name__} (spec A30.42, PB-F6)"
+        )
     rows = await IncidentRepo(session).list_incidents(
-        tenant_id, status="open", limit=1000,
+        tenant_id, status="open", limit=None, scope=reach,
     )
     out: dict[str, list[dict]] = {}
     for row in rows:
@@ -89,13 +109,43 @@ async def _incidents_by_device(session, tenant_id: str) -> dict[str, list[dict]]
             "subsystem": row.subsystem,
             "title": row.title,
             "site_id": row.site_id,
+            "opened_at": row.opened_at,
             "diagnosis": bool(row.explanation),
             "confidence": row.confidence,
             # A22.4: WHICH component. None means the Site Manager has not
             # reported -- unknown, never "none affected".
             "components": row.components,
         })
+    for incidents in out.values():
+        incidents.sort(key=lambda i: i["incident_id"] or "")
+        incidents.sort(key=_newest_first)
     return out
+
+
+def _newest_first(incident: dict) -> tuple:
+    """(opened_at desc, nulls last) -- the stable half of D-PB8's order."""
+    opened = incident.get("opened_at")
+    if opened is None:
+        return (1, 0.0)
+    if opened.tzinfo is None:
+        opened = opened.replace(tzinfo=timezone.utc)
+    return (0, -opened.timestamp())
+
+
+async def decision_attention(session, tenant_id: str, reach) -> dict:
+    """The evaluator's attention, keyed by `(site_id, agent_id)`. ONE read.
+
+    PB-2 (A30.42 D-PB7, PB-F13): the internal decision paths' Attention,
+    selected and composed over the agent's own reach, read for rank, band,
+    driver and score only. Keyed by the device AT its site: an id seen at
+    two sites must not share one answer.
+    """
+    return {
+        (item.get("site_id") or "", item["agent_id"]): item
+        for item in (await load_attention(
+            session, tenant_id=tenant_id, scope=reach, learning=None,
+        ))["items"]
+    }
 
 
 async def evaluate_agents(state, tenant_id: str) -> list[Any]:
@@ -116,7 +166,6 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             return []
 
         devices = await FleetCacheRepo(session).list_all(tenant_id)
-        incidents = await _incidents_by_device(session, tenant_id)
         # The `attention` read every agent is bound to. Ranking the
         # agent's own scope by the SAME answer the operator sees is the
         # point of binding it: the agent works the list a human would
@@ -142,10 +191,6 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
             for sub in {r.subsystem for r in catalogue_rows}
         }
 
-        midnight = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0,
-        )
-
         # S3-E1 (A30.37): the composer's inputs, read ONCE per pass. Every
         # agent below reads each target's SITE-LOCAL assessment and the
         # gate from them -- never the tenant-wide fold.
@@ -169,15 +214,12 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 session, tenant_id=tenant_id, agent_id=agent.id
             )
             agent_scope = reach.scope
-            attention = {
-                item["agent_id"]: item
-                # A30.28: an INTERNAL DECISION -- rank, band, driver and
-                # score are read off each item; the payload is not returned.
-                for item in (await load_attention(
-                    session, tenant_id=tenant_id, scope=where_reach(agent_scope),
-                    learning=None,
-                ))["items"]
-            }
+            # PB-2 (A30.42 D-PB7, PB-F6): SELECT from the agent's own reach,
+            # then compose. A30.28: an INTERNAL DECISION -- rank, band,
+            # driver and score are read off each item; nothing is returned.
+            own = where_reach(agent_scope)
+            attention = await decision_attention(session, tenant_id, own)
+            incidents = await _incidents_by_device(session, tenant_id, own)
             # S3-E1 (A30.37): an INTERNAL DECISION over each target's own
             # site and the gate. Nothing here is returned; what a proposal
             # RECORDS is narrowed wherever it is read.
@@ -203,8 +245,10 @@ async def evaluate_agents(state, tenant_id: str) -> list[Any]:
                 ),
                 attention_by_device=attention,
                 open_dedupe_keys=seen_keys,
-                proposals_today=await prop_repo.count_since(
-                    tenant_id, agent.id, midnight,
+                # PB-1 (D-PB2): the count admission enforces. A soft cut
+                # for this pass's own selection; `admit_proposal` refuses.
+                proposals_today=await admitted_today(
+                    session, tenant_id, agent.id,
                 ),
             )
             for payload in proposals:
@@ -456,7 +500,9 @@ async def revalidate_dispatch(
         # caps unattended work (D2) and is asked on the autonomous branch.
         # A paused agent is a different matter: pausing is an explicit
         # safety act, and it refuses on either basis.
-        budget=(
+        # PB-1 (D-PB11): named for what it asks. It was `budget`, and it has
+        # only ever checked pause.
+        agent_pause=(
             f"the agent is paused: {agent.paused_reason}"
             if agent.paused_reason else True
         ),
@@ -498,7 +544,7 @@ async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, 
     check -- not a second budget rule written here.
     """
     from harkeniq_cc.agent_activation import unattended_permitted
-    from harkeniq_cc.agent_lifecycle import executions_used
+    from harkeniq_cc.agent_lifecycle import executions_used, lock_unattended_budget
     from harkeniq_cc.operational_agent import parse_attribution
 
     parsed = parse_attribution(getattr(proposal, "actor", "") or "")
@@ -509,6 +555,11 @@ async def _unattended_allowed(session, tenant_id: str, proposal) -> tuple[bool, 
     agent = await OperationalAgentRepo(session).get(tenant_id, agent_id)
     if agent is None:
         return False, "the agent that made this proposal no longer exists"
+    # PB-1 (A30.42 D-PB4): lock, THEN count. The caller holds this lock
+    # through the claim's commit, so the reservation it takes is visible to
+    # the next counter before the Site Manager is called -- no replica sees
+    # the last unit free twice, and nothing is held across the network.
+    await lock_unattended_budget(session, tenant_id, agent.id)
     return unattended_permitted(agent, await executions_used(
         session, tenant_id, agent,
     ))
