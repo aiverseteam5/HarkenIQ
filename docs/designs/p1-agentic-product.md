@@ -6821,3 +6821,45 @@ efficiency follow-up (D-PB13). Expiry and cancellation → product follow-up
 | Order | devices `(rank, agent_id, site_id)`; composer sort untouched; total device input order; catalogue `(subsystem, action_type)` everywhere |
 | Cut | `evaluate(cut_at_budget=True)`; ingress `False`; dry-run lists cut candidates `proposal_budget_exhausted` + `candidate_ref` |
 | Callers | evaluator, dry-run, ingress → the same two loaders |
+
+## §35 — TX-1 / Amendment A31: the Resource Catalogue foundation
+
+The taxonomy program's first slice adds a vocabulary for the estate — what
+a thing *is* and how things *relate* — without letting that vocabulary
+decide anything. Site and Device stay the authoritative objects for
+authorization, execution, safety, dispatch and correlation. The catalogue
+sits beside them and mirrors them.
+
+### Why a mirror, keyed by the legacy link
+
+`cc_fleet_cache.id` is not an identity: the poller clears a site's rows and
+re-inserts them every cycle, so a fleet row id lives for one poll interval.
+The catalogue gives every site and device an id that survives renames,
+moves, retirement and revival. It is keyed by the canonical object — the
+Central Command site id, the Harken Node `agent_id` — and never by a name.
+
+### The one visibility rule
+
+A resource is visible exactly when its canonical legacy object is visible,
+computed by the predicates the canonical reads already use. Nothing stored in
+the catalogue — no edge, type or name — is an input.
+
+| Resource | Visible under `read_reach(scope, "fleet.view")` when | Same as |
+|---|---|---|
+| Site | `scope_sites` admits its id | `SiteRepo.list_all` (authoritative; no contextual sites) |
+| Live device | one of its fleet rows passes `scope_fleet_devices` | the fleet list |
+| Retired device | `scope_sites` admits its last site | A30.25 owner rule, R9 |
+| Unanchored | the reach is tenant-wide | a tenant-owned object (none exist in TX-1) |
+| Edge | both endpoints are visible | — |
+
+### Boundary
+
+| Concern | TX-1 |
+|---|---|
+| Tables | `cc_resources`, `cc_resource_relationships`, `cc_resource_external_ids` (CC `0030`, guarded, no backfill) |
+| Writer | the mirror loop only (boot + every `site_poll_interval_s`, advisory-locked, never deletes, no audit) |
+| Primary containment | `CONTAINS` + `is_primary`, at most one per child (partial unique index), physical kinds only, no cycles |
+| External ids | HarkenIQ-issued only: `harkeniq/site`, `harkeniq/harken_node`; a conflicting bind is refused |
+| Routes | `GET /api/resources/`, `/{id}`, `/{id}/relationships` — human-only, `fleet.view`, `READ_SCOPED` |
+| Rack | contract recorded; ingest deferred to TX-2 (no rack data reaches Central Command today) |
+| Unchanged | authorization, `device_class`, capability, execution, the Site Manager, proto, machine plane (14) |
