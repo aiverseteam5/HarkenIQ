@@ -7037,7 +7037,7 @@ problems = meter_census(app)
 assert problems == [], problems
 # 13/98 and 12 reads at B0c; A30.32 (A6-4B1) declared exactly one more
 # machine READ -- governed discovery -- and nothing else moved.
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 meters = [machine_meter(*r) for r in ROUTE_CONTRACT]
 assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (13, 1, 85), meters
@@ -7855,9 +7855,9 @@ from harkeniq_cc.incident_projection import CONTRACT_VERSION
 from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 assert CONTRACT_VERSION == '1'
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: machine incident contract v1; plane 14, contract 99, ceiling unchanged')"
+print('  shipped image: machine incident contract v1; plane 14, contract 102, ceiling unchanged')"
 echo "  both agents retired (the site agent's token now 401), the three planted incidents deleted"
 
 # ---------------------------------------------------------------------------
@@ -8125,9 +8125,9 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 assert (CONTRACT, CONTRACT_VERSION) == ('attention', '1')
 assert 'propose_action' not in NEXT_STEP_CODES and FRESHNESS_WINDOW.total_seconds() == 900
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: machine Attention contract v1, one freshness rule (15 min); plane 14, contract 99, ceiling unchanged')"
+print('  shipped image: machine Attention contract v1, one freshness rule (15 min); plane 14, contract 102, ceiling unchanged')"
 echo "  three agents retired (the tenant token now 401); the poison deleted from every table it was planted in"
 
 # ---------------------------------------------------------------------------
@@ -8957,10 +8957,10 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert PRODUCTION_MEMBERS == ()
 assert DISPATCH_GATES[-3:] == ('unattended_class', 'site_local_autonomy', 'global_safety'), DISPATCH_GATES
 assert ADMISSION_COMPOSED_OVER == 'target_site' and admission_reads_beyond(None) is False
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: empty registry; the three S3-E1 dispatch gates after the seven;'
-      ' admission reads the target site; plane 14, contract 99, ceiling unchanged')"
+      ' admission reads the target site; plane 14, contract 102, ceiling unchanged')"
 echo "  probe removed, both agents retired, the platform catalogue and ladder restored,"
 echo "  and site A's BMC_RESET budget recovered where the node's refusals withdrew it"
 
@@ -9287,9 +9287,9 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert governance.PROPOSAL_EVIDENCE_PERMISSION == 'fleet.view'
 assert P.CREATION_WITHHELD_KEYS == ('attention', 'outcome_evidence')
 assert P.MACHINE_WITHHELD_KEYS == ('attention', 'learned_signals', 'outcome_evidence')
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: the projection module and the one loader; plane 14, contract 99, ceiling unchanged')"
+print('  shipped image: the projection module and the one loader; plane 14, contract 102, ceiling unchanged')"
 echo "  catalogue restored, both S3-E2 agents retired, the synthetic proposal, its outcome rows and the three devices removed"
 
 # ===========================================================================
@@ -9593,10 +9593,10 @@ except TypeError:
     pass
 else:
     raise AssertionError('the internal entry accepted a reader')
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: the person selection, the bounded machine view, an internal entry that refuses a'
-      ' reader; plane 14, contract 99, ceiling unchanged')" < /dev/null
+      ' reader; plane 14, contract 102, ceiling unchanged')" < /dev/null
 echo "  the machine agent retired, the signal and pattern, the four devices and every outcome row removed"
 [ "$P40_MODE_BEFORE" = "strict" ] || a26_set_mode "$P40_MODE_BEFORE"
 [ "$(a26_mode)" = "$P40_MODE_BEFORE" ] || { echo "the enforcement posture was not restored" >&2; exit 1; }
@@ -9797,10 +9797,10 @@ assert not hasattr(R, 'list_outcome_dicts')
 # PB-2 (A30.42 D-PB7): the internal paths' oldest-50,000 read is gone too.
 assert not hasattr(R, 'list_device_outcome_dicts')
 assert not hasattr(IntelligenceEngine(), '_cursor')
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: exact tallies and statistics, keyed settlement, no cursor, no windowed read'
-      ' left; plane 14, contract 99, ceiling unchanged')" < /dev/null
+      ' left; plane 14, contract 102, ceiling unchanged')" < /dev/null
 echo "  the 502 synthetic proposals, the proof's device and every A30.41 outcome row removed; 0028 live, 4 indexes valid"
 
 # ---------------------------------------------------------------------------
@@ -9991,8 +9991,9 @@ curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/api/operational-agents/$PB0_AGENT/retire" > /dev/null
 [ "$(b0r_cc "SELECT status FROM cc_operational_agents WHERE id='$PB0_AGENT'" < /dev/null)" = "retired" ] || {
   echo "the PB-0 agent was not retired" >&2; exit 1; }
-[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0029" ] || {
-  echo "Central Command is not at migration 0029" >&2; exit 1; }
+# 0029 is applied; TX-1's 0030 is the head now, and its own step checks it.
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" \> "0028" ] || {
+  echo "Central Command is not at migration 0029 or later" >&2; exit 1; }
 [ "$(s1_sm "SELECT version_num FROM alembic_version" < /dev/null)" = "0012" ] || {
   echo "the Site Manager is not at migration 0012" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
@@ -10017,10 +10018,10 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert hasattr(P, 'claim_dispatch') and hasattr(P, 'release_claim')
 assert not hasattr(P, 'list_by_status')
 assert 0 < R.DISPATCH_RPC_TIMEOUT_S < P.DISPATCH_CLAIM_LEASE.total_seconds() < 120
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: claim + release, no oldest-500 read, deadline %ss inside a %ss lease;'
-      ' plane 14, contract 99, ceiling unchanged' % (int(R.DISPATCH_RPC_TIMEOUT_S),
+      ' plane 14, contract 102, ceiling unchanged' % (int(R.DISPATCH_RPC_TIMEOUT_S),
       int(P.DISPATCH_CLAIM_LEASE.total_seconds())))" < /dev/null
 echo "  PB-0 agent retired; CC 0029 (3 indexes valid) and SM 0012 (unique index valid) live; no key names two directives"
 
@@ -10268,11 +10269,164 @@ assert not hasattr(AgentPreflightRepo, 'count_executions')
 assert not hasattr(OutcomeHistoryRepo, 'list_device_outcome_dicts')
 assert hasattr(R, 'decision_attention') and 'agent_pause' in DISPATCH_GATES and 'budget' not in DISPATCH_GATES
 assert DISCOVERY_VERSION == '2'
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 99
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: admission checks the budget, unattended counts dispatches, no 50k read,'
-      ' decision_attention, agent_pause; plane 14, contract 99, ceiling unchanged')" < /dev/null
+      ' decision_attention, agent_pause; plane 14, contract 102, ceiling unchanged')" < /dev/null
 echo "  four agents retired; their proposals, the incident, the hidden poison removed"
+
+# ===========================================================================
+# TX-1 (A31), live: the Resource Catalogue. Its one writer is the mirror loop
+# in the SHIPPED Central Command, and nothing below seeds a resource. A
+# resource's visibility is DERIVED from the canonical Site and Fleet reads,
+# so every assertion compares the catalogue against THEM -- for the tenant
+# owner and for a person holding site A only. The non-vacuity: the two must
+# read different estates, and the owner's must be the larger.
+# ===========================================================================
+tx1_views() {  # $1 token -> JSON {fleet, fleet_sites, sites, devices, site_refs}
+  python3 - "$1" <<'PY'
+import json, subprocess, sys
+token = sys.argv[1]
+def get(path):
+    out = subprocess.run(["curl", "-sf", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path],
+                         capture_output=True, text=True).stdout
+    return json.loads(out)
+def pages(path, key):
+    rows, page = [], 1
+    while True:
+        sep = "&" if "?" in path else "?"
+        batch = get(f"{path}{sep}page_size=200&page={page}")[key]
+        rows += batch
+        if len(batch) < 200:
+            return rows
+        page += 1
+fleet_rows = pages("/api/fleet/", "devices")
+fleet = sorted({d["agent_id"] for d in fleet_rows})
+fleet_sites = {}
+for d in fleet_rows:
+    fleet_sites.setdefault(d["agent_id"], set()).add(d["site_id"])
+sites = sorted({s["id"] for s in get("/api/sites/?page_size=200")["sites"]
+                if not s.get("contextual")})
+res = pages("/api/resources/?lifecycle_state=active", "resources")
+print(json.dumps({
+    "fleet": fleet,
+    "fleet_sites": {k: sorted(v) for k, v in fleet_sites.items()},
+    "sites": sites,
+    "devices": sorted({r["legacy"]["ref"] for r in res
+                       if r["resource_kind"] == "physical_device"}),
+    "site_refs": sorted({r["legacy"]["ref"] for r in res
+                         if r["resource_type"] == "harkeniq:operational.site"}),
+}))
+PY
+}
+tx1_parity() {  # $1 token -> 0 when the catalogue equals the canonical reads
+  tx1_views "$1" | python3 -c "
+import json, sys
+v = json.load(sys.stdin)
+sys.exit(0 if v['fleet'] and v['devices'] == v['fleet'] and v['site_refs'] == v['sites'] else 1)"
+}
+tx1_owner_parity() { tx1_parity "$(tenant_token gate-owner@demo gate-owner)"; }
+tx1_a_parity() { tx1_parity "$(tenant_token gate-tx1-a@demo gate-tx1-a)"; }
+tx1_lookup() {  # $1 token, $2 namespace, $3 external id -> resource ids, one per line
+  curl -sf -H "Authorization: Bearer $1" \
+    "http://localhost:8090/api/resources/?source_system=harkeniq&namespace=$2&external_id=$3&lifecycle_state=any" \
+    | python3 -c "import sys,json; [print(r['id']) for r in json.load(sys.stdin)['resources']]"
+}
+tx1_code() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "http://localhost:8090$2"; }
+
+step "TX-1/DV: the SHIPPED mirror populates the catalogue -- the owner's resources are EXACTLY the fleet and the authoritative sites"
+wait_for "the catalogue to mirror the live fleet and sites" 180 tx1_owner_parity
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX1_OWNER=$(tx1_views "$TOKEN")
+echo "$TX1_OWNER" | python3 -c "
+import json, sys
+v = json.load(sys.stdin)
+print('  owner: %d devices at %d sites; catalogue devices == fleet, catalogue sites == authoritative sites'
+      % (len(v['fleet']), len(v['sites'])))"
+
+step "TX-1/DW: a person holding site A reads EXACTLY site A's estate -- another site's resource is absent, by id and by identifier"
+tenant_realm_user "gate-tx1-a@demo" "gate-tx1-a" operator
+TX1_A=$(tenant_token gate-tx1-a@demo gate-tx1-a)
+TX1_A_SUB=$(s1_sub "$TX1_A")
+TX1_GRANT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"principal_ref\":\"$TX1_A_SUB\",\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\",\"role\":\"operator\"}" \
+  http://localhost:8090/api/scope-grants/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+[ -n "$TX1_GRANT" ] || { echo "the site-A grant was refused" >&2; exit 1; }
+wait_for "site A's reader to read exactly site A in the catalogue" 60 tx1_a_parity
+TX1_A=$(tenant_token gate-tx1-a@demo gate-tx1-a)
+TX1_HIDDEN=$(python3 - "$SITE_A" "$TX1_OWNER" "$(tx1_views "$TX1_A")" <<'PY'
+import json, sys
+site_a, owner, a = sys.argv[1], json.loads(sys.argv[2]), json.loads(sys.argv[3])
+assert a["site_refs"] == [site_a], a["site_refs"]
+assert a["devices"] and a["devices"] == a["fleet"], a
+hidden = sorted(set(owner["devices"]) - set(a["devices"]))
+assert hidden, "the owner must read devices the site-A person cannot, or nothing was proven"
+# A device reported at exactly one site, so its placement is settled.
+pick = next(d for d in hidden if len(owner["fleet_sites"][d]) == 1)
+print(pick, owner["fleet_sites"][pick][0])
+sys.stderr.write("  site-A person: %d device(s), site A only; owner: %d devices -- %d hidden from site A\n"
+                 % (len(a["devices"]), len(owner["devices"]), len(hidden)))
+PY
+)
+TX1_HIDDEN_AGENT=${TX1_HIDDEN% *}; TX1_HIDDEN_SITE=${TX1_HIDDEN#* }
+TX1_RES=$(tx1_lookup "$TOKEN" harken_node "$TX1_HIDDEN_AGENT")
+TX1_SITE_RES=$(tx1_lookup "$TOKEN" site "$TX1_HIDDEN_SITE")
+[ -n "$TX1_RES" ] && [ -n "$TX1_SITE_RES" ] || { echo "the owner cannot look the hidden device or its site up" >&2; exit 1; }
+[ "$(tx1_code "$TOKEN" "/api/resources/$TX1_RES")" = "200" ] || { echo "the owner cannot read the device" >&2; exit 1; }
+curl -sf -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/resources/$TX1_RES" \
+  | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['primary_parent'] and d['primary_parent']['id'] == '$TX1_SITE_RES', d['primary_parent']
+assert d['legacy'] == {'kind': 'device', 'ref': '$TX1_HIDDEN_AGENT'}, d['legacy']
+assert {'source_system': 'harkeniq', 'namespace': 'harken_node',
+        'external_id': '$TX1_HIDDEN_AGENT'} in d['external_ids']"
+for TX1_PATH in "/api/resources/$TX1_RES" "/api/resources/$TX1_RES/relationships" \
+                "/api/resources/$TX1_SITE_RES"; do
+  [ "$(tx1_code "$TX1_A" "$TX1_PATH")" = "404" ] || {
+    echo "site A's reader reached $TX1_PATH" >&2; exit 1; }
+done
+[ -z "$(tx1_lookup "$TX1_A" harken_node "$TX1_HIDDEN_AGENT")" ] || {
+  echo "a hidden device's identifier resolved for site A's reader" >&2; exit 1; }
+TX1_M=$(b0c_token)
+for TX1_PATH in "/api/resources/" "/api/resources/$TX1_RES"; do
+  [ "$(tx1_code "$TX1_M" "$TX1_PATH")" = "403" ] || {
+    echo "a machine principal reached $TX1_PATH" >&2; exit 1; }
+done
+echo "  $TX1_HIDDEN_AGENT (placed in its site for the owner) reads as absent to site A, by id, by relationships and by identifier; a REAL machine token is refused (human-only)"
+
+step "TX-1/DX: this proof owns its state -- and the shipped image carries the catalogue, with CC 0030 live"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+      "http://localhost:8090/api/scope-grants/$TX1_GRANT")" = "200" ] || {
+  echo "the TX-1 site grant was not revoked" >&2; exit 1; }
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0030" ] || {
+  echo "Central Command is not at migration 0030" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM pg_tables WHERE tablename IN
+            ('cc_resources', 'cc_resource_relationships', 'cc_resource_external_ids')" < /dev/null)" = "3" ] || {
+  echo "the catalogue tables are missing" >&2; exit 1; }
+[ "$(s1_cc "SELECT i.indisvalid AND i.indisunique FROM pg_index i JOIN pg_class c
+            ON c.oid = i.indexrelid WHERE c.relname = 'uq_resource_primary_parent'" < /dev/null)" = "t" ] || {
+  echo "the primary-containment index is missing or invalid" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_resources WHERE legacy_kind IS NULL
+            OR legacy_kind NOT IN ('site', 'device') OR source <> 'legacy_mirror'" < /dev/null)" = "0" ] || {
+  echo "something other than the mirror wrote the catalogue" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM (SELECT to_resource_id FROM cc_resource_relationships
+            WHERE is_primary GROUP BY to_resource_id HAVING count(*) > 1) d" < /dev/null)" = "0" ] || {
+  echo "a resource has two primary parents" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.resource_catalogue import LEGACY_KINDS
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert not any(p.startswith('/api/resources') for _m, p in MACHINE_SURFACE)
+assert sum(1 for _m, p in ROUTE_CONTRACT if p.startswith('/api/resources')) == 3
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+assert LEGACY_KINDS == {'site', 'device'}
+print('  shipped image: three human-only catalogue reads; plane 14, contract 102, ceiling unchanged; rack is not a known legacy kind')" < /dev/null
+echo "  site grant revoked; CC 0030 live, three tables, primary-parent index valid; only the mirror wrote, one primary parent each"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
