@@ -6956,3 +6956,152 @@ Internal goldens (A30.35, A30.40, A30.41) are deliberately re-anchored with
 intent kept; principal goldens stay byte-identical. *Unchanged:* every
 principal read, permissions, ceiling, routes, authorization, approval,
 dispatch, node finality; no migration.
+
+### A31 — 2026-10-24 — TX-1: the Resource Catalogue foundation (decided: Vinod)
+
+The enterprise resource taxonomy was discovered and accepted (reviewed on
+`565154b`; accepted by Vinod). Its recommendation was an **additive resource
+catalogue with canonical legacy links**, beside the existing Site and Device
+models rather than in place of them. TX-1 is the first slice of that
+program. The implementation boundary was checked on `main` at
+`a239c66948ffdd71b7f95eeb4f941776c3a153a0` (Proposal-Budget closed, main
+verified) and recorded here before any code. TX-1 is **descriptive and
+contextual only**: it adds no authority, changes no decision, and could be
+deleted without any authorization, execution or safety answer moving.
+
+**A31.1 — The LOCKs this program stands on (from the accepted architecture,
+restated so they are enforceable here).**
+- `get_scope → resolve → read_reach → covers/permits` stays the **only**
+  authorization system. The catalogue adds no permission, no scope type, no
+  grant target and no resolver.
+- **Contextual ancestry ≠ authority.** A containment parent, a child, or any
+  typed relationship confers nothing — not upward, downward or sideways.
+- **Site** stays the operational execution, normal-safety and correlation
+  anchor. **Site Manager** is a runtime relationship to a site, never its
+  physical parent. **Harken Node** stays the final execution authority.
+  **Fault domains** stay risk overlays, not containment. An **Operational
+  Agent** is a governed actor, never a physical resource or parent.
+- **Taxonomy never determines capability.** Capabilities stay
+  executor-declared (A17); no capability reader consults the catalogue.
+- **Names are not identity.** Resources carry immutable opaque ids.
+
+**A31.2 — The model.** Three Central Command tables, tenant-owned.
+- `cc_resources`: immutable opaque `id`; `tenant_id`; `resource_kind` from a
+  closed vocabulary — `physical_container`, `physical_device`, `component`,
+  `logical_resource`; `resource_type`, namespaced and extensible
+  (`ns:domain.type`, e.g. `harkeniq:compute.server`); `display_name`
+  (mutable, never identity); `lifecycle_state` — `active` while the legacy
+  object exists, `retired` when it is gone; `source` (provenance);
+  `created_at`, `updated_at`, `retired_at`; and the **legacy link**
+  (`legacy_kind`, `legacy_ref`, `legacy_site_id`), written by the mirror
+  and by nothing else.
+- `cc_resource_relationships`: directional typed edges read as
+  "*from* TYPE *to*" — `CONTAINS`, `HOSTS`, `RUNS_ON`, `CONNECTED_TO`,
+  `MEMBER_OF`, `MANAGED_BY` — each with its `source`. **Primary
+  containment** is a `CONTAINS` edge flagged `is_primary`; a partial unique
+  index makes "at most one primary containment parent per resource" a
+  database guarantee. Primary containment is **physical**: its parent must
+  be a `physical_container` or `physical_device`, and its child a physical
+  kind or a `component`. Self-edges, cross-tenant edges and containment
+  cycles are refused. Secondary edges of any type are allowed and confer
+  nothing.
+- `cc_resource_external_ids`: `(source_system, namespace, external_id) →
+  resource_id`, unique per tenant. **No silent identity merge**: binding a
+  tuple that already names another resource is refused with a conflict and
+  the existing mapping is left alone.
+- The dimensions stay separate: `resource_kind`, `resource_type`,
+  `device_class`, role, vendor/model and capabilities. `resource_type` is
+  **never an authorization input**. `device_class` is **unchanged** — not
+  expanded, not moved, not read by the catalogue for any decision.
+- The `harkeniq:` type namespace is reserved for a built-in registry
+  holding exactly the types TX-1 writes. Tenant and vendor namespaces (open
+  decision 4) are not opened by TX-1. `component` and `logical_resource` are
+  vocabulary only in TX-1: nothing writes them and nothing depends on them.
+
+**A31.3 — The legacy mappings.** One durable resource per legacy object,
+keyed by the legacy link, never by a name.
+- **Site** → `physical_container`, `harkeniq:operational.site` — an
+  operational site, deliberately not "datacenter", so open decision 1 stays
+  open. Legacy ref: the Central Command site id. External id
+  `harkeniq / site / <site id>`. No primary parent: the org-unit tree stays a
+  separate **administrative** structure (E1.1), not resource topology.
+- **Device** → `physical_device`. Legacy ref: the Harken Node `agent_id` —
+  the identity grants, outcomes and campaigns already use. Not the
+  `cc_fleet_cache` row id, which the poller regenerates on every cycle
+  (`clear_site` then re-insert). External id
+  `harkeniq / harken_node / <agent_id>`. Its `resource_type` is a
+  descriptive default from the current class: `server` →
+  `harkeniq:compute.server`, `switch` → `harkeniq:network.switch`, anything
+  else → `harkeniq:device.unclassified` — a blank class is never inferred to
+  be a server (A30.25 R1). Primary parent: its site. While one `agent_id` is
+  transiently reported at two sites the existing parent edge is left alone.
+- **Rack — mapping recorded, ingest DEFERRED to TX-2 (decided: Vinod,
+  2026-10-24).** Central Command holds no rack truth: racks exist only at
+  the Site Manager (operator site-model import), and `FleetDevice` carries
+  none. Ingesting them needs an additive Site Manager → Central Command data
+  path, which is a boundary of its own. The contract TX-2 implements:
+  `physical_container`, `harkeniq:placement.rack`, legacy kind `rack`, ref =
+  the Site Manager rack id; Site `CONTAINS` Rack `CONTAINS` Device as primary
+  containment; site-owned visibility; operator-assigned racks only — the
+  `rack_suggestion` name heuristic never becomes a resource; a rack recorded
+  at a different site from its device is refused. Until then devices attach
+  directly to their site, which the architecture explicitly permits.
+
+**A31.4 — Visibility: derived from the canonical legacy object, and from
+nothing in the catalogue.** Reach is `read_reach(scope, "fleet.view")` — the
+permission the Sites and Fleet reads already require. A resource is visible
+when:
+- **Site** — `scope_sites` admits its site id: exactly `SiteRepo.list_all`,
+  the authoritative site read. The contextual site projection of A30.25 D2
+  is **not** extended to the catalogue (its call sites are pinned); a
+  device-scoped reader sees its devices and not their site resource.
+- **Live device** — at least one of its fleet rows is admitted by
+  `scope_fleet_devices`: exactly the fleet list, including a moved device
+  and one transiently at two sites.
+- **Retired device** — site-owned at its last site: the A30.25 owner rule,
+  under which a device that no longer resolves owns nothing (R9). A device
+  grant confers nothing over a device that is gone.
+- **Unanchored resource** — tenant-owned: tenant-wide `fleet.view` only.
+  None can exist in TX-1. An unknown legacy kind is visible to no scoped
+  reader.
+- Relationships never feed visibility. An edge is returned only when **both**
+  endpoints are visible. A hidden resource is indistinguishable from a
+  nonexistent one: 404 on read, nothing from an external-id lookup.
+
+**A31.5 — The mirror.** One writer: a Central Command loop that reconciles
+the catalogue from `cc_sites` and `cc_fleet_cache` at boot and then every
+`site_poll_interval_s`. Idempotent; serialized across replicas by a
+transaction-scoped advisory lock; it creates, updates, retires and revives,
+and **never deletes** — a retired resource keeps its id, its last placement
+and its legacy link, so a historical deep link still resolves. It writes no
+audit entry: the catalogue is a projection of state recorded at its source,
+not a governance action. Live-device visibility is computed from the fleet
+cache at read time, so mirror lag can delay a resource's existence but never
+widen or narrow who sees it.
+
+**A31.6 — Surface.** Three reads, human-only, `fleet.view`, `READ_SCOPED`:
+`GET /api/resources/`, `GET /api/resources/{resource_id}`,
+`GET /api/resources/{resource_id}/relationships`. None is on
+`MACHINE_SURFACE`, so a machine principal is refused (and charged, A30.31).
+`ROUTE_CONTRACT` 99 → 102; `MACHINE_SURFACE` stays 14.
+
+**A31.7 — Migration.** CC `0030` creates the three tables. Guarded and
+idempotent as every migration since 0010; no backfill — the mirror populates
+at runtime, so there is one writer and one implementation; downgrade drops
+them. No existing table, column or index changes. Heads: CC `0030`, SM
+`0012`, Console `0004`.
+
+**A31.8 — Unchanged.** Permissions (25), `ROLE_PERMISSIONS`,
+`MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE`, `resolve()`, `permits()`,
+`read_reach`, every scope predicate, every mutation gate, approval,
+autonomy, the global gate, dispatch, campaigns, capability, the
+`device_class` vocabulary `server | switch`, the Site Manager, the proto, the
+agent and the Console.
+
+**A31.9 — Not built (each needs its own boundary).** Rack ingest (TX-2);
+contextual container visibility; generic-resource, logical-resource or
+resource-set authority; any new scope target; `device_class` expansion;
+topology editing; external CMDB, ServiceNow, VMware or Kubernetes import;
+vendor service-tag identifiers and reconciliation (merge/split, source
+precedence); tenant or vendor type namespaces; relationship history; fault
+domains, Site Manager instances or Operational Agents as resources; PX.

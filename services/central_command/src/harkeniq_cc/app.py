@@ -25,6 +25,7 @@ from harkeniq_cc.api import campaigns as campaigns_api
 from harkeniq_cc.api import capabilities as capabilities_api
 from harkeniq_cc.api import incidents as incidents_api
 from harkeniq_cc.api import predictive as predictive_api
+from harkeniq_cc.api import resources as resources_api
 from harkeniq_cc.api import sites as sites_api
 from harkeniq_cc.api import warranty as warranty_api
 
@@ -93,6 +94,7 @@ def create_app(state) -> FastAPI:
     app.include_router(org_units_api.router)
     app.include_router(scope_grants_api.router)
     app.include_router(scope_grants_api.settings_router)
+    app.include_router(resources_api.router)
 
     # QA-010: a hardcoded ok reported healthy while the database had no
     # schema. Real probe via the R4-0 HealthChecker (same pattern as SM).

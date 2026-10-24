@@ -78,6 +78,7 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     from harkeniq_cc.fleet_poller import fleet_poll_loop
     from harkeniq_cc.intelligence import intelligence_loop
     from harkeniq_cc.marketplace_sync import marketplace_sync_loop
+    from harkeniq_cc.resource_mirror import resource_mirror_loop
     from harkeniq_cc.usage_reporter import usage_report_loop
     from harkeniq_cc.warranty.refresh import warranty_refresh_loop
 
@@ -139,6 +140,11 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
     async def campaign_task() -> None:
         await campaign_loop(state)
 
+    async def resource_catalogue_task() -> None:
+        # TX-1 (A31.5): the catalogue's one writer. Descriptive only --
+        # nothing it writes is an input to any decision.
+        await resource_mirror_loop(state)
+
     async def identity_summary_task() -> None:
         # A20.9: aggregate counts to the platform plane. Counts only --
         # A12.1 is not amended, so no per-agent detail leaves the tenant.
@@ -187,6 +193,9 @@ async def run(config: CCConfig, state: Optional[AppState] = None) -> None:
             tg.create_task(warranty_task(), name="warranty")
             tg.create_task(marketplace_task(), name="marketplace_sync")
             tg.create_task(campaign_task(), name="campaigns")
+            tg.create_task(
+                resource_catalogue_task(), name="resource_catalogue"
+            )
             tg.create_task(
                 identity_summary_task(), name="identity_summary"
             )

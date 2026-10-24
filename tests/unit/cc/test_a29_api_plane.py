@@ -165,8 +165,11 @@ class TestDefaultDeny:
         # A29.1 measured 46 of 98. A30.32 (A6-4B1) added exactly one route,
         # at `fleet.view`, and DECLARED it -- governed discovery -- so the
         # permission arithmetic and the declared plane each grew by one and
-        # the removed set (TestTheCensusIsFrozen) did not move.
-        assert len(by_permission) == 47, (
+        # the removed set (TestTheCensusIsFrozen) did not move. TX-1 (A31.6)
+        # added three `fleet.view` reads born HUMAN-only and declared none:
+        # the arithmetic grew by three and the plane did not move -- A29.3's
+        # default deny, working.
+        assert len(by_permission) == 50, (
             f"the recorded baseline moved: {len(by_permission)}"
         )
         assert len(declared) == 14, (
@@ -427,13 +430,19 @@ class TestTheCensusIsFrozen:
     async def test_the_removed_set_is_exactly_what_was_ratified(self):
         removed = _ceiling_routes() - set(MACHINE_SURFACE)
         families = sorted({p.split("/")[2] for _m, p in removed})
+        # A29.13's 33 routes in 15 families, plus TX-1's (A31.6) three
+        # `resources` reads, which were born human-only rather than removed:
+        # every route a machine's permission would reach and the plane
+        # refuses is stated here, so the next one is acknowledged, not
+        # approximated.
         assert families == [
             "agents", "autonomy", "campaigns", "capabilities", "firmware",
             "fleet", "learning", "operational-agents", "outcomes",
-            "policies", "predictive", "scope-grants", "sites",
+            "policies", "predictive", "resources", "scope-grants", "sites",
             "tenant-settings", "warranty",
         ], families
-        assert len(removed) == 33, (
+        assert sum(1 for _m, p in removed if p.startswith("/api/resources/")) == 3
+        assert len(removed) == 36, (
             f"{len(removed)} routes left the machine plane; A29.13 requires "
             "the census to be frozen and stated"
         )

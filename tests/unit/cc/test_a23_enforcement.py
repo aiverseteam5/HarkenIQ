@@ -76,6 +76,11 @@ class A23Estate:
         self.proposals: dict[str, str] = {}
         self.grants: dict[str, str] = {}
         self.grant_principals: dict[str, str] = {}
+        # TX-1 (A31): the Resource Catalogue's opaque ids for each site's
+        # site and device, so the catalogue reads are swept against REAL
+        # out-of-scope resources rather than passing on an empty catalogue.
+        self.site_resources: dict[str, str] = {}
+        self.device_resources: dict[str, str] = {}
 
     @property
     def units(self):
@@ -107,6 +112,8 @@ class A23Estate:
             self.agents["site-3"],
             self.proposals["site-3"],
             self.grants["site-3"],
+            self.site_resources["site-3"],
+            self.device_resources["site-3"],
         ]
 
 
@@ -225,8 +232,26 @@ async def _a23_stack():
     # while testing nothing.
     await _legacy(sessionmaker)
     estate = await _seed_a23(app, sessionmaker, base)
+    await _mirror_catalogue(sessionmaker, estate)
     await _strict(sessionmaker)
     return app, sessionmaker, estate
+
+
+async def _mirror_catalogue(sessionmaker, estate) -> None:
+    """Populate the Resource Catalogue through its one writer (TX-1)."""
+    from harkeniq_cc.db.repos import ResourceRepo
+    from harkeniq_cc.resource_catalogue import LEGACY_DEVICE, LEGACY_SITE
+    from harkeniq_cc.resource_mirror import reconcile
+
+    async with sessionmaker() as session:
+        await reconcile(session, TENANT)
+        await session.commit()
+        repo = ResourceRepo(session)
+        for key in ("site-1", "site-2", "site-3"):
+            site = await repo.get_by_legacy(TENANT, LEGACY_SITE, estate.sites[key])
+            device = await repo.get_by_legacy(TENANT, LEGACY_DEVICE, estate.devices[key])
+            estate.site_resources[key] = site.id
+            estate.device_resources[key] = device.id
 
 
 #: persona -> (role, scope_type, ref key). Cluster A1 holds site-1 and
@@ -268,6 +293,7 @@ def _path_for(path: str, estate: A23Estate, key: str) -> str:
         .replace("{action_id}", f"act-{key}")
         .replace("{grant_id}", estate.grants[key])
         .replace("{unit_id}", estate.units["a1" if key == "site-1" else "b1"])
+        .replace("{resource_id}", estate.device_resources[key])
         .replace("{policy_id}", "unknown-policy")
         .replace("{group_id}", "unknown-group")
         .replace("{budget_id}", "unknown-budget")

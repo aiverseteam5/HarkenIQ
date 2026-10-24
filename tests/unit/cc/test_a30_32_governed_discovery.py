@@ -276,8 +276,9 @@ class TestThePlane:
         assert JOB_AUTONOMY in MACHINE_READ_METER_LABELS
 
     def test_the_counts_moved_by_exactly_one_route(self):
-        """Verified, not forced (A30.32 D1)."""
-        assert len(ROUTE_CONTRACT) == 99
+        """Verified, not forced (A30.32 D1). TX-1 (A31.6) later added three
+        HUMAN-only catalogue reads (99 -> 102); the machine plane did not move."""
+        assert len(ROUTE_CONTRACT) == 102
         assert len(MACHINE_SURFACE) == 14
         assert len(MACHINE_ONLY_ROUTES) == 4
         assert len(MACHINE_JOBS) == 5
