@@ -271,6 +271,13 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/fleet/{device_id}"):          ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/sites/"):                     ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/sites/{site_id}"):            ("fleet.view", READ_SCOPED, False),
+    # TX-1 (A31.6): the Resource Catalogue. fleet.view because visibility
+    # is DERIVED from the Sites and Fleet reads, which require it; human-
+    # only, because none of the three is on MACHINE_SURFACE.
+    ("GET", "/api/resources/"):                 ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/resources/{resource_id}"):    ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/resources/{resource_id}/relationships"):
+        ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/incidents/"):                 ("incident.view", READ_SCOPED, False),
     ("GET", "/api/incidents/{incident_id}"):    ("incident.view", READ_SCOPED, False),
     ("GET", "/api/outcomes/metrics"):           ("fleet.view", READ_SCOPED, False),

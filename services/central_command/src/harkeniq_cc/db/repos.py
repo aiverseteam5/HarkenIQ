@@ -31,6 +31,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from harkeniq_cc.scope import ReadReach
+from harkeniq_cc.resource_catalogue import (
+    LEGACY_DEVICE,
+    LEGACY_KINDS,
+    LEGACY_SITE,
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_RETIRED,
+    MAX_CONTAINMENT_DEPTH,
+    REL_CONTAINS,
+    SOURCE_LEGACY_MIRROR,
+    CatalogueError,
+    IdentityConflict,
+    validate_primary_containment,
+    validate_relationship_type,
+    validate_type,
+)
 from harkeniq_cc.db.models import (
     CCAgentIdentity,
     CCAgentPreflight,
@@ -68,6 +83,9 @@ from harkeniq_cc.db.models import (
     CCLearningCycle,
     CCOperationalAgent,
     CCOutcomeHistory,
+    CCResource,
+    CCResourceExternalId,
+    CCResourceRelationship,
     CCSafetyState,
     CCSite,
     CCSkillDelivery,
@@ -264,6 +282,68 @@ def scope_device_owned(site_column, device_column, scope) -> Any:
     if not clauses:
         return sa_false()
     return or_(*clauses)
+
+
+def scope_resources(scope, resource=None) -> Any:
+    """The `cc_resources` rows a reach may read (TX-1, spec A31.4).
+
+    DERIVED, never stored: a resource is visible exactly when its
+    CANONICAL legacy object is, asked through the predicates the canonical
+    reads already use -- so the catalogue cannot see further than Sites
+    and Fleet, and cannot see less. Nothing in the catalogue is an input:
+    no relationship, no type, no name, no external identifier. By legacy
+    kind:
+
+    * ``site`` -- `scope_sites` over its own id: exactly `SiteRepo.list_all`,
+      the AUTHORITATIVE site read. The contextual projection of A30.25 D2
+      is not extended here.
+    * ``device`` -- LIVE (a fleet row in this tenant carries its
+      `agent_id`): visible when one of those rows passes
+      `scope_fleet_devices`, i.e. exactly the fleet list -- a moved device
+      and one transiently reported at two sites included. RETIRED (no
+      fleet row): site-owned at its last site, the A30.25 owner rule under
+      which a device that no longer resolves owns nothing (R9).
+    * no legacy link -- tenant-owned: no scoped reader sees one. TX-1
+      writes none.
+    * any other legacy kind -- no scoped reader sees it. Fail closed.
+
+    `resource` is the entity being filtered -- an alias, for the far end of
+    a relationship. The fleet and site tables are the subqueries' own and
+    correlation is explicit, so a caller that has joined either table
+    cannot change what the subquery means.
+    """
+    if resource is None:
+        resource = CCResource
+    reach = require_read_reach(scope)
+    if reach is None or reach.tenant_wide:
+        return None
+    site_rule = scope_sites(resource.legacy_site_id, reach)
+
+    def _fleet_row(*conditions):
+        # The site join is an explicit JOIN ... ON, not a WHERE term: an
+        # empty reach makes `scope_fleet_devices` false(), which collapses
+        # the whole WHERE -- and a join held there would collapse with it.
+        return (
+            select(CCFleetCache.id)
+            .join(CCSite, CCSite.id == CCFleetCache.site_id)
+            .where(
+                CCFleetCache.agent_id == resource.legacy_ref,
+                CCSite.tenant_id == resource.tenant_id,
+                *conditions,
+            )
+            .correlate(resource)
+            .exists()
+        )
+
+    live = _fleet_row()
+    admitted = _fleet_row(scope_fleet_devices(reach))
+    return or_(
+        and_(resource.legacy_kind == LEGACY_SITE, site_rule),
+        and_(
+            resource.legacy_kind == LEGACY_DEVICE,
+            or_(admitted, and_(~live, site_rule)),
+        ),
+    )
 
 
 def _where(stmt, condition):
@@ -841,6 +921,552 @@ class FleetCacheRepo:
         for row in rows:
             await self.session.delete(row)
         await self.session.flush()
+
+
+class ResourceRepo:
+    """The Resource Catalogue (TX-1, spec A31). Describes; never authorizes.
+
+    Two kinds of read, deliberately apart. The `*_visible` reads take a
+    permission-aware `ReadReach` (or None for an internal caller) and every
+    one of them filters through `scope_resources`, so a hidden resource is
+    indistinguishable from one that does not exist. The unscoped reads
+    (`get`, `get_by_legacy`, `list_mirrored`, ...) exist for the mirror and
+    must never back a principal's request.
+
+    The write primitives enforce A31.2 on every caller: closed kinds, the
+    built-in type registry, physical-only primary containment with no
+    cycle, no self or cross-tenant edge, and no silent identity merge.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    # -- scoped reads ---------------------------------------------------
+
+    async def list_visible(
+        self,
+        tenant_id: str,
+        *,
+        scope,
+        resource_kind: Optional[str] = None,
+        resource_type: Optional[str] = None,
+        lifecycle_state: Optional[str] = LIFECYCLE_ACTIVE,
+        external: Optional[tuple[str, str, str]] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[Sequence[CCResource], int]:
+        """A page of the resources `scope` may read, and their count.
+
+        `lifecycle_state=None` means any. `external` is an exact
+        `(source_system, namespace, external_id)` lookup -- conjoined with
+        visibility, so a hidden resource's identifier resolves to nothing.
+        The total is filtered by the SAME condition as the page.
+        """
+        conditions = [CCResource.tenant_id == tenant_id]
+        if resource_kind:
+            conditions.append(CCResource.resource_kind == resource_kind)
+        if resource_type:
+            conditions.append(CCResource.resource_type == resource_type)
+        if lifecycle_state:
+            conditions.append(CCResource.lifecycle_state == lifecycle_state)
+        if external is not None:
+            source_system, namespace, external_id = external
+            conditions.append(
+                exists()
+                .where(
+                    CCResourceExternalId.resource_id == CCResource.id,
+                    CCResourceExternalId.tenant_id == tenant_id,
+                    CCResourceExternalId.source_system == source_system,
+                    CCResourceExternalId.namespace == namespace,
+                    CCResourceExternalId.external_id == external_id,
+                )
+                .correlate(CCResource)
+            )
+        visible = scope_resources(scope)
+        stmt = _where(select(CCResource).where(*conditions), visible)
+        count_stmt = _where(
+            select(func.count(CCResource.id)).where(*conditions), visible
+        )
+        total = (await self.session.execute(count_stmt)).scalar() or 0
+        stmt = (
+            stmt.order_by(
+                CCResource.resource_kind, CCResource.display_name, CCResource.id
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return (await self.session.execute(stmt)).scalars().all(), total
+
+    async def get_visible(
+        self, tenant_id: str, resource_id: str, *, scope
+    ) -> Optional[CCResource]:
+        stmt = _where(
+            select(CCResource).where(
+                CCResource.tenant_id == tenant_id, CCResource.id == resource_id
+            ),
+            scope_resources(scope),
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def primary_parent_visible(
+        self, tenant_id: str, resource_id: str, *, scope
+    ) -> Optional[CCResource]:
+        """The primary containment parent, or None -- None also when the
+        parent exists and the reader cannot see it: the two answers are
+        deliberately the same."""
+        parent = aliased(CCResource)
+        rel = CCResourceRelationship
+        stmt = _where(
+            select(parent)
+            .join(rel, rel.from_resource_id == parent.id)
+            .where(
+                rel.tenant_id == tenant_id,
+                parent.tenant_id == tenant_id,
+                rel.to_resource_id == resource_id,
+                rel.relationship_type == REL_CONTAINS,
+                rel.is_primary.is_(True),
+            ),
+            scope_resources(scope, parent),
+        )
+        return (await self.session.execute(stmt)).scalars().first()
+
+    async def relationships_visible(
+        self,
+        tenant_id: str,
+        resource_id: str,
+        *,
+        scope,
+        relationship_type: Optional[str] = None,
+        direction: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[tuple[CCResourceRelationship, CCResource, str]], int]:
+        """The edges touching `resource_id` whose OTHER end `scope` may read.
+
+        Returns ``(edge, other, direction)``, direction ``outgoing`` when
+        `resource_id` is the edge's subject ("<this> TYPE <other>") and
+        ``incoming`` otherwise. The caller must already have established
+        that `resource_id` itself is visible. An edge to a resource the
+        reader cannot see is not returned and not counted.
+        """
+        rel = CCResourceRelationship
+        other = aliased(CCResource)
+        outgoing = and_(
+            rel.from_resource_id == resource_id, other.id == rel.to_resource_id
+        )
+        incoming = and_(
+            rel.to_resource_id == resource_id, other.id == rel.from_resource_id
+        )
+        if direction == "outgoing":
+            on = outgoing
+        elif direction == "incoming":
+            on = incoming
+        else:
+            on = or_(outgoing, incoming)
+        conditions = [rel.tenant_id == tenant_id, other.tenant_id == tenant_id]
+        if relationship_type:
+            conditions.append(rel.relationship_type == relationship_type)
+        visible = scope_resources(scope, other)
+        heading = case(
+            (rel.from_resource_id == resource_id, literal("outgoing")),
+            else_=literal("incoming"),
+        )
+        stmt = _where(
+            select(rel, other, heading)
+            .select_from(rel)
+            .join(other, on)
+            .where(*conditions),
+            visible,
+        )
+        count_stmt = _where(
+            select(func.count(rel.id))
+            .select_from(rel)
+            .join(other, on)
+            .where(*conditions),
+            visible,
+        )
+        total = (await self.session.execute(count_stmt)).scalar() or 0
+        stmt = (
+            stmt.order_by(
+                rel.relationship_type, heading, other.display_name, rel.id
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [(edge, far, way) for edge, far, way in rows], total
+
+    async def external_ids(
+        self, tenant_id: str, resource_id: str
+    ) -> Sequence[CCResourceExternalId]:
+        """The identifiers bound to ONE resource. The caller must already
+        have established that the resource is visible."""
+        return (
+            await self.session.execute(
+                select(CCResourceExternalId)
+                .where(
+                    CCResourceExternalId.tenant_id == tenant_id,
+                    CCResourceExternalId.resource_id == resource_id,
+                )
+                .order_by(
+                    CCResourceExternalId.source_system,
+                    CCResourceExternalId.namespace,
+                    CCResourceExternalId.external_id,
+                )
+            )
+        ).scalars().all()
+
+    # -- unscoped reads, for the mirror only -----------------------------
+
+    async def get(self, tenant_id: str, resource_id: str) -> Optional[CCResource]:
+        return (
+            await self.session.execute(
+                select(CCResource).where(
+                    CCResource.tenant_id == tenant_id, CCResource.id == resource_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_legacy(
+        self, tenant_id: str, legacy_kind: str, legacy_ref: str
+    ) -> Optional[CCResource]:
+        return (
+            await self.session.execute(
+                select(CCResource).where(
+                    CCResource.tenant_id == tenant_id,
+                    CCResource.legacy_kind == legacy_kind,
+                    CCResource.legacy_ref == legacy_ref,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_mirrored(
+        self, tenant_id: str, legacy_kind: str
+    ) -> Sequence[CCResource]:
+        return (
+            await self.session.execute(
+                select(CCResource)
+                .where(
+                    CCResource.tenant_id == tenant_id,
+                    CCResource.legacy_kind == legacy_kind,
+                )
+                .order_by(CCResource.id)
+            )
+        ).scalars().all()
+
+    async def primary_parent_edge(
+        self, child_id: str
+    ) -> Optional[CCResourceRelationship]:
+        rel = CCResourceRelationship
+        return (
+            await self.session.execute(
+                select(rel).where(
+                    rel.to_resource_id == child_id,
+                    rel.relationship_type == REL_CONTAINS,
+                    rel.is_primary.is_(True),
+                )
+            )
+        ).scalars().first()
+
+    async def primary_parent_edges(
+        self, tenant_id: str, child_ids: Iterable[str]
+    ) -> dict[str, CCResourceRelationship]:
+        """child id -> its primary containment edge, for many children."""
+        ids = sorted(set(child_ids))
+        if not ids:
+            return {}
+        rel = CCResourceRelationship
+        rows = (
+            await self.session.execute(
+                select(rel).where(
+                    rel.tenant_id == tenant_id,
+                    rel.to_resource_id.in_(ids),
+                    rel.relationship_type == REL_CONTAINS,
+                    rel.is_primary.is_(True),
+                )
+            )
+        ).scalars().all()
+        return {edge.to_resource_id: edge for edge in rows}
+
+    async def bound_external_ids(
+        self, tenant_id: str, source_system: str, namespace: str
+    ) -> dict[str, str]:
+        """external id -> resource id, for one namespace."""
+        rows = (
+            await self.session.execute(
+                select(
+                    CCResourceExternalId.external_id,
+                    CCResourceExternalId.resource_id,
+                ).where(
+                    CCResourceExternalId.tenant_id == tenant_id,
+                    CCResourceExternalId.source_system == source_system,
+                    CCResourceExternalId.namespace == namespace,
+                )
+            )
+        ).all()
+        return {external_id: resource_id for external_id, resource_id in rows}
+
+    # -- write primitives -------------------------------------------------
+
+    async def create_mirrored(
+        self,
+        tenant_id: str,
+        *,
+        legacy_kind: str,
+        legacy_ref: str,
+        legacy_site_id: Optional[str],
+        resource_kind: str,
+        resource_type: str,
+        display_name: str,
+    ) -> CCResource:
+        """A resource standing for one canonical object (A31.3).
+
+        The legacy link is what visibility is derived from, so it is only
+        ever written here, and only the mirror calls this (a structural
+        test pins the call site).
+        """
+        validate_type(resource_type, resource_kind)
+        if legacy_kind not in LEGACY_KINDS:
+            raise CatalogueError(f"unknown legacy kind {legacy_kind!r}")
+        if not legacy_ref:
+            raise CatalogueError("a legacy link names the object it mirrors")
+        row = CCResource(
+            tenant_id=tenant_id,
+            resource_kind=resource_kind,
+            resource_type=resource_type,
+            display_name=display_name[:255],
+            lifecycle_state=LIFECYCLE_ACTIVE,
+            source=SOURCE_LEGACY_MIRROR,
+            legacy_kind=legacy_kind,
+            legacy_ref=legacy_ref,
+            legacy_site_id=legacy_site_id,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def refresh_mirrored(
+        self,
+        resource: CCResource,
+        *,
+        display_name: str,
+        resource_type: str,
+        legacy_site_id: Optional[str],
+    ) -> bool:
+        """Bring a mirrored resource's description up to date. True when
+        anything changed -- an unchanged resource is not written at all."""
+        validate_type(resource_type, resource.resource_kind)
+        changed = False
+        for name, value in (
+            ("display_name", display_name[:255]),
+            ("resource_type", resource_type),
+            ("legacy_site_id", legacy_site_id),
+        ):
+            if getattr(resource, name) != value:
+                setattr(resource, name, value)
+                changed = True
+        if changed:
+            await self.session.flush()
+        return changed
+
+    async def retire(self, resource: CCResource) -> None:
+        """A tombstone: the id, last placement and legacy link all stay."""
+        resource.lifecycle_state = LIFECYCLE_RETIRED
+        resource.retired_at = utcnow()
+        await self.session.flush()
+
+    async def revive(self, resource: CCResource) -> None:
+        resource.lifecycle_state = LIFECYCLE_ACTIVE
+        resource.retired_at = None
+        await self.session.flush()
+
+    async def _edge(
+        self, from_id: str, to_id: str, relationship_type: str
+    ) -> Optional[CCResourceRelationship]:
+        rel = CCResourceRelationship
+        return (
+            await self.session.execute(
+                select(rel).where(
+                    rel.from_resource_id == from_id,
+                    rel.to_resource_id == to_id,
+                    rel.relationship_type == relationship_type,
+                )
+            )
+        ).scalars().first()
+
+    async def _ends(
+        self, tenant_id: str, from_id: str, to_id: str
+    ) -> tuple[CCResource, CCResource]:
+        if from_id == to_id:
+            raise CatalogueError("a resource cannot relate to itself")
+        first = await self.get(tenant_id, from_id)
+        second = await self.get(tenant_id, to_id)
+        if first is None or second is None:
+            # Also how a cross-tenant edge is refused: the other tenant's
+            # resource is not a resource OF THIS tenant.
+            raise CatalogueError("both ends must be resources of this tenant")
+        return first, second
+
+    async def set_primary_parent(
+        self, tenant_id: str, child_id: str, parent_id: str, *, source: str
+    ) -> CCResourceRelationship:
+        """Make `parent_id` the ONE primary containment parent of `child_id`.
+
+        Physical containment only, no cycle, and a parent set by another
+        source is never replaced: a later writer that disagrees has a
+        precedence question to answer first (open decision 11), not a row
+        to overwrite. The partial unique index backs "at most one" against
+        any race.
+        """
+        parent, child = await self._ends(tenant_id, parent_id, child_id)
+        validate_primary_containment(parent.resource_kind, child.resource_kind)
+        cursor: Optional[str] = parent.id
+        depth = 0
+        while cursor is not None:
+            if cursor == child.id:
+                raise CatalogueError(
+                    "refusing a containment cycle: the child already contains "
+                    "the proposed parent"
+                )
+            depth += 1
+            if depth > MAX_CONTAINMENT_DEPTH:
+                raise CatalogueError("refusing a containment chain this deep")
+            above = await self.primary_parent_edge(cursor)
+            cursor = above.from_resource_id if above is not None else None
+
+        existing = await self.primary_parent_edge(child.id)
+        if existing is not None and existing.from_resource_id == parent.id:
+            return existing
+        if existing is not None and existing.source != source:
+            raise CatalogueError(
+                f"the primary parent was set by {existing.source!r}; "
+                f"{source!r} may not replace it"
+            )
+        if await self._edge(parent.id, child.id, REL_CONTAINS) is not None:
+            raise CatalogueError(
+                "a secondary CONTAINS edge already joins these two resources"
+            )
+        if existing is not None:
+            existing.from_resource_id = parent.id
+            await self.session.flush()
+            return existing
+        edge = CCResourceRelationship(
+            tenant_id=tenant_id,
+            from_resource_id=parent.id,
+            to_resource_id=child.id,
+            relationship_type=REL_CONTAINS,
+            is_primary=True,
+            source=source,
+        )
+        self.session.add(edge)
+        await self.session.flush()
+        return edge
+
+    async def add_relationship(
+        self,
+        tenant_id: str,
+        from_id: str,
+        to_id: str,
+        relationship_type: str,
+        *,
+        source: str,
+    ) -> CCResourceRelationship:
+        """A SECONDARY typed edge. Idempotent; never primary; confers nothing.
+
+        No production writer in TX-1 (the mirror writes primary containment
+        only); this is the primitive the first topology or import slice
+        will call, and the rules it enforces are tested now.
+        """
+        validate_relationship_type(relationship_type)
+        await self._ends(tenant_id, from_id, to_id)
+        existing = await self._edge(from_id, to_id, relationship_type)
+        if existing is not None:
+            return existing
+        edge = CCResourceRelationship(
+            tenant_id=tenant_id,
+            from_resource_id=from_id,
+            to_resource_id=to_id,
+            relationship_type=relationship_type,
+            is_primary=False,
+            source=source,
+        )
+        self.session.add(edge)
+        await self.session.flush()
+        return edge
+
+    async def _external(
+        self, tenant_id: str, source_system: str, namespace: str, external_id: str
+    ) -> Optional[CCResourceExternalId]:
+        return (
+            await self.session.execute(
+                select(CCResourceExternalId).where(
+                    CCResourceExternalId.tenant_id == tenant_id,
+                    CCResourceExternalId.source_system == source_system,
+                    CCResourceExternalId.namespace == namespace,
+                    CCResourceExternalId.external_id == external_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def bind_external_id(
+        self,
+        tenant_id: str,
+        resource_id: str,
+        *,
+        source_system: str,
+        namespace: str,
+        external_id: str,
+        source: str,
+    ) -> CCResourceExternalId:
+        """Bind one identifier to one resource -- or refuse (A31.2).
+
+        Idempotent for the resource it already names. An identifier that
+        names a DIFFERENT resource raises `IdentityConflict` and the
+        existing mapping is left exactly as it was: no silent merge, and no
+        reassignment either.
+        """
+        if not (source_system and namespace and external_id):
+            raise CatalogueError(
+                "an external identifier names its system, namespace and value"
+            )
+        if await self.get(tenant_id, resource_id) is None:
+            raise CatalogueError("no such resource in this tenant")
+
+        def _conflict(owner: str) -> IdentityConflict:
+            return IdentityConflict(
+                f"{source_system}/{namespace}/{external_id} already names "
+                f"resource {owner}; refusing to merge or reassign it"
+            )
+
+        existing = await self._external(
+            tenant_id, source_system, namespace, external_id
+        )
+        if existing is not None:
+            if existing.resource_id == resource_id:
+                return existing
+            raise _conflict(existing.resource_id)
+        row = CCResourceExternalId(
+            tenant_id=tenant_id,
+            resource_id=resource_id,
+            source_system=source_system,
+            namespace=namespace,
+            external_id=external_id,
+            source=source,
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            # Another writer bound it first. The savepoint rolled back; the
+            # outer transaction is untouched, and the same rule applies.
+            existing = await self._external(
+                tenant_id, source_system, namespace, external_id
+            )
+            if existing is not None and existing.resource_id == resource_id:
+                return existing
+            raise _conflict(existing.resource_id if existing else "unknown")
+        return row
 
 
 class ApprovalRouteRepo:

@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -1872,5 +1873,146 @@ class CCCapabilityCatalogue(Base):
         UniqueConstraint(
             "tenant_id", "subsystem", "action_type",
             name="uq_cc_capability_catalogue_entry",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# TX-1 (spec A31): the Resource Catalogue. A DESCRIPTION of the estate,
+# beside Site and Device and never in place of them. Nothing here is an
+# authorization, execution, safety, dispatch or correlation input; the one
+# writer is `harkeniq_cc.resource_mirror`.
+# ---------------------------------------------------------------------------
+
+
+class CCResource(Base):
+    """One thing in the estate, described -- never authorized (A31.2).
+
+    `id` is the identity: opaque, immutable, never reused, and never a
+    name. `display_name` is mutable and means nothing to any decision.
+
+    The legacy link (`legacy_kind`, `legacy_ref`, `legacy_site_id`) names
+    the canonical object a mirrored resource stands for -- a Central
+    Command site by its id, a device by its Harken Node `agent_id` -- and
+    is the ONLY input to visibility (A31.4, `repos.scope_resources`). It
+    is written by the mirror and by nothing else. `legacy_site_id` is the
+    site a device was last resolved at: it matters only once the device is
+    gone, when the A30.25 owner rule makes the tombstone site-owned. It is
+    deliberately not a foreign key, because a retired site must keep it.
+
+    A resource is never deleted. When its legacy object disappears it is
+    `retired` and keeps its id, last placement and link, so a historical
+    deep link still resolves.
+    """
+
+    __tablename__ = "cc_resources"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32))
+    resource_type: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str] = mapped_column(String(255), default="")
+    lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
+    #: Provenance: who asserted this record. TX-1 writes `legacy_mirror`.
+    source: Mapped[str] = mapped_column(String(64))
+    legacy_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    legacy_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legacy_site_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        # One resource per canonical object. NULLs are distinct in a unique
+        # constraint on both engines, so unanchored resources are unbounded.
+        UniqueConstraint(
+            "tenant_id", "legacy_kind", "legacy_ref",
+            name="uq_resource_legacy_link",
+        ),
+        Index("ix_resources_tenant_kind", "tenant_id", "resource_kind"),
+    )
+
+
+class CCResourceRelationship(Base):
+    """A typed, directional edge: "<from> TYPE <to>" (A31.2).
+
+    Primary containment is a CONTAINS edge with `is_primary`; the partial
+    unique index makes "at most one primary containment parent" a database
+    guarantee rather than a convention. No edge, primary or otherwise,
+    confers anything: visibility never reads this table, and an edge is
+    only ever SHOWN when both of its endpoints are already visible.
+    """
+
+    __tablename__ = "cc_resource_relationships"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    from_resource_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_resources.id"), index=True
+    )
+    to_resource_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_resources.id"), index=True
+    )
+    relationship_type: Mapped[str] = mapped_column(String(32))
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "from_resource_id", "to_resource_id", "relationship_type",
+            name="uq_resource_relationship",
+        ),
+        Index(
+            "uq_resource_primary_parent", "to_resource_id", unique=True,
+            postgresql_where=text("is_primary"),
+            sqlite_where=text("is_primary"),
+        ),
+    )
+
+
+class CCResourceExternalId(Base):
+    """`(source_system, namespace, external_id) -> resource_id` (A31.2).
+
+    One identifier names one resource per tenant. Binding a tuple that
+    already names a different resource is refused -- never silently
+    merged -- and the existing mapping is left exactly as it was. TX-1
+    binds only identifiers HarkenIQ issues itself.
+    """
+
+    __tablename__ = "cc_resource_external_ids"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    resource_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_resources.id"), index=True
+    )
+    source_system: Mapped[str] = mapped_column(String(64))
+    namespace: Mapped[str] = mapped_column(String(128))
+    external_id: Mapped[str] = mapped_column(String(512))
+    #: Provenance of the BINDING (who said this identifier names this
+    #: resource), distinct from `source_system` (who issued the identifier).
+    source: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "source_system", "namespace", "external_id",
+            name="uq_resource_external_id",
         ),
     )
