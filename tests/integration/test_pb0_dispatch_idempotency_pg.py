@@ -705,7 +705,8 @@ async def test_cc_0028_to_0029_with_rows_and_an_invalid_index():
                 "SELECT data_type FROM information_schema.columns WHERE "
                 "table_name = 'cc_agent_proposals' AND column_name = "
                 "'dispatch_claimed_at'"))).scalar()
-        assert version == "0029"
+        # At least 0029: the upgrade RAN (TX-1's 0030 now follows it).
+        assert version >= "0029", version
         assert after == before and claims == 0
         assert typ == "timestamp with time zone"
         _alembic("central_command", CC_DSN, "upgrade", "head")        # idempotent

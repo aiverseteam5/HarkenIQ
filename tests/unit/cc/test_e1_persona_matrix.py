@@ -216,6 +216,7 @@ def _substitute(path: str, estate: Estate) -> str:
         .replace("{member_id}", "unknown-member")
         .replace("{grant_id}", "unknown-grant")
         .replace("{transition}", "activate")
+        .replace("{resource_id}", "unknown-resource")
     )
 
 
