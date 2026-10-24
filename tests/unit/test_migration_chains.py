@@ -35,7 +35,9 @@ SERVICES = {
     # A30.41 adds CC 0028: the outcome-history indexes, indexes only.
     # PB-0 (A30.43) adds CC 0029 (the dispatch claim + the A30.42 proposal
     # indexes) and SM 0012 (the directive idempotency key).
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0029"),
+    # TX-1 (A31) adds CC 0030: the Resource Catalogue's three tables --
+    # tables only, nothing existing touched, no backfill.
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0030"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0012"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -1331,7 +1333,7 @@ class TestPB0DispatchIdempotency:
     def test_a_fresh_cc_database_has_the_claim_and_the_indexes(self, tmp_path):
         db = tmp_path / "cc.db"
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0029"
+        assert _version(db) == SERVICES["cc"][2]
         assert "dispatch_claimed_at" in _columns(db, "cc_agent_proposals")
         assert self.CC_INDEXES <= _indexes(db, "cc_agent_proposals")
 
@@ -1361,7 +1363,7 @@ class TestPB0DispatchIdempotency:
         con.close()
 
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0029"
+        assert _version(db) == SERVICES["cc"][2]
         assert self.CC_INDEXES <= _indexes(db, "cc_agent_proposals")
         con = sqlite3.connect(db)
         try:
@@ -1384,7 +1386,7 @@ class TestPB0DispatchIdempotency:
         con.commit()
         con.close()
         _alembic("cc", db, "upgrade", "head")          # all there: no-op
-        assert _version(db) == "0029"
+        assert _version(db) == SERVICES["cc"][2]
         _alembic("cc", db, "downgrade", "0028")
         assert _version(db) == "0028"
         assert "dispatch_claimed_at" not in _columns(db, "cc_agent_proposals")
@@ -1454,3 +1456,90 @@ class TestPB0DispatchIdempotency:
         assert self.SM_INDEX not in _indexes(db, "sm_directives")
         _alembic("sm", db, "upgrade", "head")
         assert self.SM_INDEX in _indexes(db, "sm_directives")
+
+
+class TestTX1ResourceCatalogue:
+    """TX-1 (A31): CC 0030 adds the Resource Catalogue's three tables and
+    nothing else. A fresh database is born with them; an existing one gains
+    them without a row moving and WITHOUT a single resource -- the mirror
+    populates the catalogue at runtime, so the migration is not a second
+    writer; a re-run is a no-op; a downgrade drops exactly the three."""
+
+    TABLES = {"cc_resources", "cc_resource_relationships", "cc_resource_external_ids"}
+
+    def _primary_index_sql(self, db) -> str:
+        con = sqlite3.connect(db)
+        try:
+            row = con.execute(
+                "select sql from sqlite_master where type='index' "
+                "and name='uq_resource_primary_parent'").fetchone()
+        finally:
+            con.close()
+        return row[0] if row else ""
+
+    def test_a_fresh_cc_database_has_the_catalogue(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0030"
+        assert self.TABLES <= _tables(db)
+        sql = self._primary_index_sql(db)
+        assert "UNIQUE" in sql and "WHERE is_primary" in sql, sql
+        assert {"legacy_kind", "legacy_ref", "legacy_site_id", "retired_at"} <= _columns(
+            db, "cc_resources")
+
+    def test_cc_0030_lands_on_rows_and_creates_no_resource(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        for table in ("cc_resource_external_ids", "cc_resource_relationships",
+                      "cc_resources"):
+            con.execute(f"drop table {table}")
+        con.execute(
+            "insert into cc_sites (id, tenant_id, site_name, sm_endpoint, "
+            "license_fingerprint, status, registered_at, last_seen_at) values "
+            "('s1', 't1', 'site-one', 'sm:1', '', 'active', "
+            "'2026-10-01 00:00:00', '2026-10-01 00:00:00')")
+        con.execute(
+            "insert into cc_fleet_cache (id, site_id, agent_id, agent_name, vendor, "
+            "model, device_class, observation, health, service_tag, snapshot_at) "
+            "values ('f1', 's1', 'node-1', 'node-1', 'Dell', 'R750', 'server', "
+            "'observed', 'ok', '', '2026-10-01 00:00:00')")
+        con.execute("update alembic_version set version_num='0029'")
+        con.commit()
+        before = (
+            con.execute("select * from cc_sites order by id").fetchall(),
+            con.execute("select * from cc_fleet_cache order by id").fetchall(),
+        )
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0030"
+        assert self.TABLES <= _tables(db)
+        con = sqlite3.connect(db)
+        try:
+            after = (
+                con.execute("select * from cc_sites order by id").fetchall(),
+                con.execute("select * from cc_fleet_cache order by id").fetchall(),
+            )
+            resources = con.execute("select count(*) from cc_resources").fetchone()[0]
+        finally:
+            con.close()
+        assert after == before, "an additive migration moved a row"
+        assert resources == 0, "the migration must not backfill: the mirror does"
+
+    def test_cc_0030_is_idempotent_and_downgrades(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        con.execute("update alembic_version set version_num='0029'")
+        con.commit()
+        con.close()
+        _alembic("cc", db, "upgrade", "head")          # all there: no-op
+        assert _version(db) == "0030"
+        before = _tables(db)
+        _alembic("cc", db, "downgrade", "0029")
+        assert _version(db) == "0029"
+        assert before - _tables(db) == self.TABLES, "the downgrade drops exactly the three"
+        assert "dispatch_claimed_at" in _columns(db, "cc_agent_proposals")
+        _alembic("cc", db, "upgrade", "head")          # and back again
+        assert self.TABLES <= _tables(db)

@@ -7040,8 +7040,9 @@ assert problems == [], problems
 assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 meters = [machine_meter(*r) for r in ROUTE_CONTRACT]
-assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (13, 1, 85), meters
-print('  shipped image: meter_census clean; 13 read-metered, 1 attempt-metered, 85 human; MACHINE_SURFACE 14; ceiling unchanged')
+# 85 human at B0c; TX-1 (A31.6) added three HUMAN-only catalogue reads.
+assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (13, 1, 88), meters
+print('  shipped image: meter_census clean; 13 read-metered, 1 attempt-metered, 88 human; MACHINE_SURFACE 14; ceiling unchanged')
 "
 echo "  19 removed routes still refuse a real machine token"
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
