@@ -10197,6 +10197,34 @@ wait_for "the lifted condition to be proposed again" 120 pb12_proposed_again
 echo "  switch lifted: the SAME condition proposed once, awaiting approval -- the stop fenced nothing"
 
 step "PB-2/DT: hidden-site poison leaves a site-A agent's ordering byte-identical; a control that reaches site B moves"
+# Two reads of LIVE state, so site A must be still before the baseline. The
+# proofs just before this one leave work in flight there: PB-0's directives on
+# a site-A node settle seconds later, and the poller then ingests their
+# outcomes -- which moves that device's OWN in-reach history; inside this
+# window that once read as a leak, and was a race. So wait until no action
+# directive is open at site A for a node that can still answer it (a device no
+# node ever registered for can never settle, nor produce an outcome) and the
+# Site Manager has handed up every site-A outcome; then for one more COMPLETE
+# poll of site A. Polls run in sequence and stamp `last_seen_at` in the commit
+# that ingests them, so a stamp that moves after the drain means it all arrived.
+pb12_site_a_drained() {
+  [ "$(s1_sm "SELECT
+      (SELECT count(*) FROM sm_directives d JOIN devices v ON v.id = d.device_id
+         JOIN sites s ON s.id = v.site_id
+       WHERE s.cc_site_id = '$SITE_A' AND d.kind = 'action'
+         AND d.status IN ('pending', 'delivered')
+         AND EXISTS (SELECT 1 FROM agent_identities i WHERE i.agent_id = v.agent_id))
+    + (SELECT count(*) FROM sm_action_outcomes o JOIN devices v ON v.id = o.device_id
+         JOIN sites s ON s.id = v.site_id
+       WHERE s.cc_site_id = '$SITE_A' AND NOT o.reported_to_cc)" < /dev/null)" = "0" ]
+}
+pb12_site_a_poll() { s1_cc "SELECT last_seen_at FROM cc_sites WHERE id='$SITE_A'" < /dev/null; }
+pb12_site_a_polled_since() { [ "$(pb12_site_a_poll)" != "$1" ]; }
+pb12_site_a_rows() { s1_cc "SELECT count(*) FROM cc_outcome_history WHERE site_id='$SITE_A'" < /dev/null; }
+wait_for "site A's open directives to settle and their outcomes to leave the Site Manager" 180 pb12_site_a_drained
+PB12_POLL=$(pb12_site_a_poll)
+wait_for "Central Command to complete a poll of site A after it drained" 120 pb12_site_a_polled_since "$PB12_POLL"
+echo "  site A still: no open directive a node can answer; every outcome handed up and ingested"
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
 PB12_A=$(pb12_agent hid-a "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"}]" 1 draft)
 PB12_CTL=$(pb12_agent hid-ctl "[{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_A\"},{\"scope_type\":\"site\",\"scope_ref\":\"$SITE_B\"}]" 1 draft)
@@ -10212,6 +10240,7 @@ pb12_reads() {  # -> "<site-A agent dry-run>|<control dry-run>", re-opened incid
   done
   echo "the poller kept resolving the proof's incident" >&2; exit 1
 }
+PB12_A_ROWS=$(pb12_site_a_rows)
 PB12_BEFORE=$(pb12_reads)
 printf '%s' "${PB12_BEFORE%%|*}" | python3 -c "
 import sys, json
@@ -10235,7 +10264,12 @@ docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
    FROM generate_series(1, 1001) g" > /dev/null < /dev/null
 PB12_AFTER=$(pb12_reads)
 [ "${PB12_AFTER%%|*}" = "${PB12_BEFORE%%|*}" ] || {
-  echo "hidden site-B data changed the site-A agent's decisions:" >&2
+  if [ "$(pb12_site_a_rows)" = "$PB12_A_ROWS" ]; then
+    echo "hidden site-B data changed the site-A agent's decisions:" >&2
+  else
+    echo "INCONCLUSIVE: site A's own outcome history moved during the comparison" \
+         "($PB12_A_ROWS -> $(pb12_site_a_rows) rows) -- a leak cannot be told from a race:" >&2
+  fi
   echo "before ${PB12_BEFORE%%|*}" >&2; echo "after  ${PB12_AFTER%%|*}" >&2; exit 1; }
 [ "${PB12_AFTER#*|}" != "${PB12_BEFORE#*|}" ] || {
   echo "CONTROL failed: an agent that reaches site B did not see the poison" >&2; exit 1; }
