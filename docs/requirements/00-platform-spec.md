@@ -7166,10 +7166,11 @@ history beyond the last state) stays unbuilt.
   Command site id, the Harken Node `agent_id`, the Site Manager rack id. A
   rename changes `display_name` and nothing else; two racks of one name at
   two sites are two resources.
-- **Physical parents only** (A31.2, unchanged). A primary parent is a
+- **Physical parents only** (A31.2, extended by A32.12 to every
+  `CONTAINS` edge, secondary ones included). A container is a
   `physical_container` or a `physical_device`, so a Site Manager or an
   Operational Agent — however a later slice represents them — is never
-  anything's physical parent.
+  anything's physical parent, by any edge.
 
 **A32.4 — The rack mapping (A31.3's contract, implemented).**
 `physical_container`, `harkeniq:placement.rack`, legacy kind `rack`, ref =
@@ -7292,3 +7293,25 @@ beyond the last state; external CMDB, ServiceNow, VMware or Kubernetes import
 and reconciliation; tenant or vendor type namespaces; topology editing or any
 mutation route; any new scope target or authority over a resource, a
 container or a resource set; `device_class` expansion; PX.
+
+**A32.12 — Found while implementing (recorded).**
+- *A secondary `CONTAINS` edge escaped two rules.* TX-1's cycle walk
+  followed primary edges only, so a secondary `CONTAINS` could close a loop
+  it never saw; and the physical-parent rule was checked for primary
+  containment only, so a logical resource could "contain" a device through
+  a secondary edge. Both rules now apply to every active `CONTAINS` edge.
+  No production writer of a secondary edge exists, so no stored data was
+  ever affected.
+- *A generated proof was vacuous for one property.* In a naturally mirrored
+  estate every container a reader can see has only children that reader can
+  also see (a rack is site-owned), so the parity sweep could not tell a
+  topology walk that filters each node from one that does not. The sweep
+  now also runs over a deliberately forged estate — hidden children under
+  visible parents, a hidden ancestor below visible ones, a tenant-owned
+  region over two sites — and seventeen mutants of the slice's rules are
+  each killed by a named test.
+- *A pre-existing stale proof, not fixed here.* The A6 admission-concurrency
+  PostgreSQL proofs (`tests/integration/test_a6_admission_concurrency.py`,
+  two tests) fail on `main` itself: since PB-1 (A30.44) `admit_proposal`
+  refuses with `agent_missing`, and those proofs create no agent row. They
+  are DSN-gated and not run in CI. Recorded for a test-only follow-up.
