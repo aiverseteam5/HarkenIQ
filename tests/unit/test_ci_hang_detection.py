@@ -26,6 +26,12 @@ import yaml
 _LONGEST_DELIBERATE_WAIT_S = 30
 _RUNNER_CEILING_S = 6 * 60 * 60
 
+# The `test` job's slowest green run so far: 29.2 min (3.11 at 42cb52a). Runner
+# speed alone moves it ~2x -- one tree measured 15.5 and 27.2 min, every file
+# slower in proportion, none stalled -- and a 30-minute cap cancelled a healthy
+# 3.12 run at eb41cb1 with no log kept. Re-measure when the suite grows.
+_SLOWEST_GREEN_TEST_JOB_MIN = 29.2
+
 _WORKFLOWS = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -96,3 +102,18 @@ class TestEveryCIJobHasACeiling:
                     f"{workflow.name} job '{name}' caps at {cap}min, at or above "
                     "the runner ceiling it is meant to pre-empt"
                 )
+
+    def test_the_suite_job_cap_clears_its_slowest_green_run(self):
+        """A net that closes on a healthy run is the silence it exists to end.
+
+        GitHub keeps no log for a job it cancels, so a cap inside the suite's
+        own runtime turns a slow runner into an unexplained 'cancelled' --
+        which is what a 30-minute cap did to a healthy 3.12 run at eb41cb1.
+        """
+        jobs = yaml.safe_load((_WORKFLOWS / "test.yml").read_text())["jobs"]
+        cap = jobs["test"]["timeout-minutes"]
+        assert cap >= 1.5 * _SLOWEST_GREEN_TEST_JOB_MIN, (
+            f"test.yml job 'test' caps at {cap}min against a slowest green run "
+            f"of {_SLOWEST_GREEN_TEST_JOB_MIN}min: a slow runner cancels a "
+            "healthy suite, and the cancelled job keeps no log"
+        )
