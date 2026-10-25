@@ -81,6 +81,9 @@ class A23Estate:
         # out-of-scope resources rather than passing on an empty catalogue.
         self.site_resources: dict[str, str] = {}
         self.device_resources: dict[str, str] = {}
+        # TX-2 (A32): a rack at every site holding that site's device, so the
+        # topology reads are swept over real containers too.
+        self.rack_resources: dict[str, str] = {}
 
     @property
     def units(self):
@@ -114,6 +117,8 @@ class A23Estate:
             self.grants["site-3"],
             self.site_resources["site-3"],
             self.device_resources["site-3"],
+            self.rack_resources["site-3"],
+            "rk-site-3",                    # the Site Manager's rack id
         ]
 
 
@@ -238,20 +243,31 @@ async def _a23_stack():
 
 
 async def _mirror_catalogue(sessionmaker, estate) -> None:
-    """Populate the Resource Catalogue through its one writer (TX-1)."""
-    from harkeniq_cc.db.repos import ResourceRepo
-    from harkeniq_cc.resource_catalogue import LEGACY_DEVICE, LEGACY_SITE
+    """Populate the Resource Catalogue through its one writer (TX-1), with
+    each site's Site Manager reporting one rack that holds its device
+    (TX-2) -- written through the poller's own repository."""
+    from harkeniq_cc.db.repos import ResourceRepo, SiteTopologyRepo
+    from harkeniq_cc.resource_catalogue import LEGACY_DEVICE, LEGACY_RACK, LEGACY_SITE
     from harkeniq_cc.resource_mirror import reconcile
 
+    keys = ("site-1", "site-2", "site-3")
     async with sessionmaker() as session:
+        for key in keys:
+            await SiteTopologyRepo(session).upsert(TENANT, estate.sites[key], {
+                "reported": True,
+                "racks": [{"rack_id": f"rk-{key}", "name": f"Rack {key}",
+                           "device_agent_ids": [estate.devices[key]]}],
+            })
         await reconcile(session, TENANT)
         await session.commit()
         repo = ResourceRepo(session)
-        for key in ("site-1", "site-2", "site-3"):
+        for key in keys:
             site = await repo.get_by_legacy(TENANT, LEGACY_SITE, estate.sites[key])
             device = await repo.get_by_legacy(TENANT, LEGACY_DEVICE, estate.devices[key])
+            rack = await repo.get_by_legacy(TENANT, LEGACY_RACK, f"rk-{key}")
             estate.site_resources[key] = site.id
             estate.device_resources[key] = device.id
+            estate.rack_resources[key] = rack.id
 
 
 #: persona -> (role, scope_type, ref key). Cluster A1 holds site-1 and
@@ -281,6 +297,9 @@ async def _persona(app, sessionmaker, estate, role, scope_type, ref_key, name):
 
 def _path_for(path: str, estate: A23Estate, key: str) -> str:
     """Substitute every path parameter with the object at `key`'s site."""
+    if path.endswith(("/children", "/topology")):
+        # TX-2: walk down from the site's own resource, not from a leaf.
+        path = path.replace("{resource_id}", estate.site_resources[key])
     if path.startswith("/api/operational-agents"):
         path = path.replace("{agent_id}", estate.agents[key])
     else:

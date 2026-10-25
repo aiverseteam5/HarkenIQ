@@ -37,7 +37,9 @@ SERVICES = {
     # indexes) and SM 0012 (the directive idempotency key).
     # TX-1 (A31) adds CC 0030: the Resource Catalogue's three tables --
     # tables only, nothing existing touched, no backfill.
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0030"),
+    # TX-2 (A32) adds CC 0031: relationship lifecycle, the active-primary
+    # index, the tenant-identity keys and cc_site_topology -- no backfill.
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0031"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0012"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -1467,12 +1469,12 @@ class TestTX1ResourceCatalogue:
 
     TABLES = {"cc_resources", "cc_resource_relationships", "cc_resource_external_ids"}
 
-    def _primary_index_sql(self, db) -> str:
+    def _primary_index_sql(self, db, name="uq_resource_primary_parent") -> str:
         con = sqlite3.connect(db)
         try:
             row = con.execute(
                 "select sql from sqlite_master where type='index' "
-                "and name='uq_resource_primary_parent'").fetchone()
+                "and name=?", (name,)).fetchone()
         finally:
             con.close()
         return row[0] if row else ""
@@ -1480,9 +1482,11 @@ class TestTX1ResourceCatalogue:
     def test_a_fresh_cc_database_has_the_catalogue(self, tmp_path):
         db = tmp_path / "cc.db"
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0030"
+        assert _version(db) >= "0030"            # TX-2's 0031 follows it
         assert self.TABLES <= _tables(db)
-        sql = self._primary_index_sql(db)
+        # "One primary parent" is still a database guarantee; TX-2 (A32.3)
+        # narrowed the index to ACTIVE edges under a new name.
+        sql = self._primary_index_sql(db, "uq_resource_active_primary_parent")
         assert "UNIQUE" in sql and "WHERE is_primary" in sql, sql
         assert {"legacy_kind", "legacy_ref", "legacy_site_id", "retired_at"} <= _columns(
             db, "cc_resources")
@@ -1513,7 +1517,7 @@ class TestTX1ResourceCatalogue:
         con.close()
 
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0030"
+        assert _version(db) >= "0030"            # TX-2's 0031 follows it
         assert self.TABLES <= _tables(db)
         con = sqlite3.connect(db)
         try:
@@ -1535,7 +1539,8 @@ class TestTX1ResourceCatalogue:
         con.commit()
         con.close()
         _alembic("cc", db, "upgrade", "head")          # all there: no-op
-        assert _version(db) == "0030"
+        assert _version(db) >= "0030"
+        _alembic("cc", db, "downgrade", "0030")        # TX-2's own, first
         before = _tables(db)
         _alembic("cc", db, "downgrade", "0029")
         assert _version(db) == "0029"
@@ -1543,3 +1548,128 @@ class TestTX1ResourceCatalogue:
         assert "dispatch_claimed_at" in _columns(db, "cc_agent_proposals")
         _alembic("cc", db, "upgrade", "head")          # and back again
         assert self.TABLES <= _tables(db)
+
+
+class TestTX2ResourceTopology:
+    """TX-2 (A32): CC 0031 gives relationships a lifecycle, narrows "one
+    primary parent" to ACTIVE edges, and adds cc_site_topology. A fresh
+    database is born with all of it; an existing one gains it with every
+    edge `active` -- which is what every existing edge was -- and WITHOUT a
+    topology row or a resource; a re-run is a no-op; the downgrade deletes
+    only retired edges (TX-1's index would count them) and restores TX-1."""
+
+    REL = "cc_resource_relationships"
+    ACTIVE_INDEX = "uq_resource_active_primary_parent"
+    OLD_INDEX = "uq_resource_primary_parent"
+
+    def _index_sql(self, db, name) -> str:
+        con = sqlite3.connect(db)
+        try:
+            row = con.execute(
+                "select sql from sqlite_master where type='index' and name=?",
+                (name,)).fetchone()
+        finally:
+            con.close()
+        return row[0] if row else ""
+
+    @staticmethod
+    def _seed_edges(con, *, retired: bool) -> None:
+        """A site holding a device, and -- when `retired` -- the device's
+        former placement under a second site, as TX-2 records a move."""
+        for rid, kind, rtype in (
+            ("site-a", "physical_container", "harkeniq:operational.site"),
+            ("site-b", "physical_container", "harkeniq:operational.site"),
+            ("node-1", "physical_device", "harkeniq:compute.server"),
+        ):
+            con.execute(
+                "insert into cc_resources (id, tenant_id, resource_kind, "
+                "resource_type, display_name, lifecycle_state, source, "
+                "created_at, updated_at) values (?, 't1', ?, ?, ?, 'active', "
+                "'legacy_mirror', '2026-10-01 00:00:00', '2026-10-01 00:00:00')",
+                (rid, kind, rtype, rid))
+        rows = [("e-now", "site-a")] + ([("e-was", "site-b")] if retired else [])
+        for eid, parent in rows:
+            columns = ("id, tenant_id, from_resource_id, to_resource_id, "
+                       "relationship_type, is_primary, source, created_at, updated_at")
+            values = (f"'{eid}', 't1', '{parent}', 'node-1', 'CONTAINS', 1, "
+                      "'legacy_mirror', '2026-10-01 00:00:00', '2026-10-01 00:00:00'")
+            if retired:
+                state = "retired" if eid == "e-was" else "active"
+                columns += ", lifecycle_state"
+                values += f", '{state}'"
+            con.execute(f"insert into cc_resource_relationships ({columns}) values ({values})")
+
+    def test_a_fresh_cc_database_has_the_topology_layer(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0031"
+        assert {"lifecycle_state", "retired_at"} <= _columns(db, self.REL)
+        sql = self._index_sql(db, self.ACTIVE_INDEX)
+        assert "UNIQUE" in sql and "is_primary AND lifecycle_state = 'active'" in sql, sql
+        assert self.OLD_INDEX not in _indexes(db, self.REL)
+        assert "cc_site_topology" in _tables(db)
+        assert {"site_id", "tenant_id", "reported", "racks", "updated_at"} == _columns(
+            db, "cc_site_topology")
+
+    def test_cc_0031_lands_on_edges_and_invents_nothing(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        _alembic("cc", db, "downgrade", "0030")       # the TX-1 shape, for real
+        assert "lifecycle_state" not in _columns(db, self.REL)
+        assert self.OLD_INDEX in _indexes(db, self.REL)
+        con = sqlite3.connect(db)
+        self._seed_edges(con, retired=False)
+        con.commit()
+        before = con.execute("select id, from_resource_id, to_resource_id, "
+                             "is_primary from cc_resource_relationships").fetchall()
+        con.close()
+
+        _alembic("cc", db, "upgrade", "head")
+        assert _version(db) == "0031"
+        con = sqlite3.connect(db)
+        try:
+            after = con.execute("select id, from_resource_id, to_resource_id, "
+                                "is_primary from cc_resource_relationships").fetchall()
+            states = con.execute("select lifecycle_state, retired_at "
+                                 "from cc_resource_relationships").fetchall()
+            topology = con.execute("select count(*) from cc_site_topology").fetchone()[0]
+            resources = con.execute("select count(*) from cc_resources").fetchone()[0]
+        finally:
+            con.close()
+        assert after == before, "an additive migration moved an edge"
+        assert states == [("active", None)], "every existing edge was a current one"
+        assert topology == 0 and resources == 3, "the migration must not backfill"
+        assert self.ACTIVE_INDEX in _indexes(db, self.REL)
+        assert self.OLD_INDEX not in _indexes(db, self.REL)
+
+    def test_cc_0031_is_idempotent_and_its_downgrade_drops_only_retired_edges(self, tmp_path):
+        db = tmp_path / "cc.db"
+        _alembic("cc", db, "upgrade", "head")
+        con = sqlite3.connect(db)
+        self._seed_edges(con, retired=True)
+        con.execute("update alembic_version set version_num='0030'")
+        con.commit()
+        con.close()
+        _alembic("cc", db, "upgrade", "head")          # all there: no-op
+        assert _version(db) == "0031"
+
+        _alembic("cc", db, "downgrade", "0030")
+        assert _version(db) == "0030"
+        con = sqlite3.connect(db)
+        try:
+            edges = con.execute("select id from cc_resource_relationships").fetchall()
+        finally:
+            con.close()
+        # The former placement goes -- TX-1's index would count it as a
+        # second primary parent -- and the current one stays.
+        assert edges == [("e-now",)]
+        assert "lifecycle_state" not in _columns(db, self.REL)
+        assert "retired_at" not in _columns(db, self.REL)
+        assert self.OLD_INDEX in _indexes(db, self.REL)
+        assert self.ACTIVE_INDEX not in _indexes(db, self.REL)
+        assert "cc_site_topology" not in _tables(db)
+        assert {"cc_resources", "cc_resource_relationships",
+                "cc_resource_external_ids"} <= _tables(db), "TX-1's tables stay"
+        _alembic("cc", db, "upgrade", "head")          # and back again
+        assert _version(db) == "0031"
+        assert "cc_site_topology" in _tables(db)

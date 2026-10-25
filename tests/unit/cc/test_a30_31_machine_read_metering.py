@@ -243,9 +243,10 @@ class TestTheMeterIsDeclared:
                   if JOB_METER[j] == METER_ATTEMPT]
         assert writes == [SUBMIT]
         human = [r for r in ROUTE_CONTRACT if not machine_meter(*r)]
-        # 85 at B0c; TX-1 (A31.6) added three HUMAN-only catalogue reads.
-        assert len(human) == 88, len(human)
-        assert sum(1 for _m, p in human if p.startswith("/api/resources/")) == 3
+        # 85 at B0c; TX-1 (A31.6) and TX-2 (A32.8) each added three
+        # HUMAN-only catalogue reads.
+        assert len(human) == 91, len(human)
+        assert sum(1 for _m, p in human if p.startswith("/api/resources/")) == 6
 
     def test_the_three_F3_routes_are_read_metered(self):
         """Outside the Operational Agent router, where the old guard was blind."""
@@ -1040,10 +1041,11 @@ class TestThePlaneDidNotMove:
     def test_the_surface(self):
         # 13 / 3 / 98 at B0c; A30.32 (A6-4B1) added exactly one machine-only
         # read -- governed discovery -- and nothing else. TX-1 (A31.6) added
-        # three HUMAN-only catalogue reads, none on the plane.
+        # three HUMAN-only catalogue reads, none on the plane, and TX-2
+        # (A32.8) three more topology reads, the same way.
         assert len(MACHINE_SURFACE) == 14
         assert len(MACHINE_ONLY_ROUTES) == 4
-        assert len(ROUTE_CONTRACT) == 102
+        assert len(ROUTE_CONTRACT) == 105
         assert SUBMIT in MACHINE_ONLY_ROUTES
 
     async def test_off_plane_routes_still_refuse(self):
