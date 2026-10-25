@@ -3,8 +3,11 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Successful runs take 6-8 min; this is a stall cap, not a budget.
-    timeout-minutes: 30
+    # A stall cap, not a budget: pytest-timeout names a hung test long before
+    # this fires. Green runs take 12-29 min by runner (the same code ran 15.5
+    # and 27.2), so 30 cancelled a healthy run, which keeps no log. Floor in
+    # tests/unit/test_ci_hang_detection.py.
+    timeout-minutes: 45
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
