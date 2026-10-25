@@ -278,6 +278,15 @@ ROUTE_CONTRACT: dict[tuple[str, str], tuple[str, str, bool]] = {
     ("GET", "/api/resources/{resource_id}"):    ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/resources/{resource_id}/relationships"):
         ("fleet.view", READ_SCOPED, False),
+    # TX-2 (A32.8): the topology reads. Same permission and treatment, for
+    # the same reason -- every resource a walk returns is filtered by the
+    # same derived visibility -- and human-only, absent from the plane.
+    ("GET", "/api/resources/{resource_id}/parents"):
+        ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/resources/{resource_id}/children"):
+        ("fleet.view", READ_SCOPED, False),
+    ("GET", "/api/resources/{resource_id}/topology"):
+        ("fleet.view", READ_SCOPED, False),
     ("GET", "/api/incidents/"):                 ("incident.view", READ_SCOPED, False),
     ("GET", "/api/incidents/{incident_id}"):    ("incident.view", READ_SCOPED, False),
     ("GET", "/api/outcomes/metrics"):           ("fleet.view", READ_SCOPED, False),

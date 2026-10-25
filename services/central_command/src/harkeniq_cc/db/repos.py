@@ -34,10 +34,14 @@ from harkeniq_cc.scope import ReadReach
 from harkeniq_cc.resource_catalogue import (
     LEGACY_DEVICE,
     LEGACY_KINDS,
+    LEGACY_RACK,
     LEGACY_SITE,
     LIFECYCLE_ACTIVE,
     LIFECYCLE_RETIRED,
     MAX_CONTAINMENT_DEPTH,
+    MAX_CONTAINMENT_WALK,
+    MAX_TOPOLOGY_DEPTH,
+    MAX_TOPOLOGY_NODES,
     REL_CONTAINS,
     SOURCE_LEGACY_MIRROR,
     CatalogueError,
@@ -88,6 +92,7 @@ from harkeniq_cc.db.models import (
     CCResourceRelationship,
     CCSafetyState,
     CCSite,
+    CCSiteTopology,
     CCSkillDelivery,
     CCStopSwitch,
     CCUsageSnapshot,
@@ -303,8 +308,12 @@ def scope_resources(scope, resource=None) -> Any:
       and one transiently reported at two sites included. RETIRED (no
       fleet row): site-owned at its last site, the A30.25 owner rule under
       which a device that no longer resolves owns nothing (R9).
-    * no legacy link -- tenant-owned: no scoped reader sees one. TX-1
-      writes none.
+    * ``rack`` -- SITE-OWNED (TX-2, A32.5), live or retired: `scope_sites`
+      over the site it was reported at -- the same answer its site's own
+      resource gets. A device- or class-scoped reader sees no rack, exactly
+      as it sees no site.
+    * no legacy link -- tenant-owned: no scoped reader sees one. No writer
+      produces one yet (A32.6).
     * any other legacy kind -- no scoped reader sees it. Fail closed.
 
     `resource` is the entity being filtered -- an alias, for the far end of
@@ -339,6 +348,7 @@ def scope_resources(scope, resource=None) -> Any:
     admitted = _fleet_row(scope_fleet_devices(reach))
     return or_(
         and_(resource.legacy_kind == LEGACY_SITE, site_rule),
+        and_(resource.legacy_kind == LEGACY_RACK, site_rule),
         and_(
             resource.legacy_kind == LEGACY_DEVICE,
             or_(admitted, and_(~live, site_rule)),
@@ -924,18 +934,26 @@ class FleetCacheRepo:
 
 
 class ResourceRepo:
-    """The Resource Catalogue (TX-1, spec A31). Describes; never authorizes.
+    """The Resource Catalogue (TX-1 spec A31, TX-2 spec A32). Describes;
+    never authorizes.
 
     Two kinds of read, deliberately apart. The `*_visible` reads take a
     permission-aware `ReadReach` (or None for an internal caller) and every
-    one of them filters through `scope_resources`, so a hidden resource is
-    indistinguishable from one that does not exist. The unscoped reads
-    (`get`, `get_by_legacy`, `list_mirrored`, ...) exist for the mirror and
-    must never back a principal's request.
+    one of them filters EVERY resource it returns through
+    `scope_resources`, so a hidden resource is indistinguishable from one
+    that does not exist -- a traversal included: it stops at, or skips, a
+    resource its reader cannot read, and never shows what lies beyond one.
+    The unscoped reads (`get`, `get_by_legacy`, `list_mirrored`, ...) exist
+    for the mirror and must never back a principal's request.
 
-    The write primitives enforce A31.2 on every caller: closed kinds, the
-    built-in type registry, physical-only primary containment with no
-    cycle, no self or cross-tenant edge, and no silent identity merge.
+    The write primitives enforce A31.2 and A32.3 on every caller: closed
+    kinds, the built-in type registry, physical-only primary containment,
+    no containment cycle over any active CONTAINS edge, edges only between
+    live resources of one tenant, one active primary parent, and no silent
+    identity merge. An edge is retired and revived, never rewritten or
+    deleted (A32.2). Every write runs inside the mirror's per-tenant
+    advisory lock -- the mirror is the one writer -- so a check and the
+    write it guards cannot interleave with another.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -1011,24 +1029,180 @@ class ResourceRepo:
     async def primary_parent_visible(
         self, tenant_id: str, resource_id: str, *, scope
     ) -> Optional[CCResource]:
-        """The primary containment parent, or None -- None also when the
-        parent exists and the reader cannot see it: the two answers are
+        """The ACTIVE primary containment parent, or None -- None also when
+        the parent exists and the reader cannot see it: the two answers are
         deliberately the same."""
+        found = await self._primary_parent_with_edge(
+            tenant_id, resource_id, scope=scope
+        )
+        return found[1] if found is not None else None
+
+    async def _primary_parent_with_edge(
+        self, tenant_id: str, resource_id: str, *, scope
+    ) -> Optional[tuple[CCResourceRelationship, CCResource]]:
         parent = aliased(CCResource)
         rel = CCResourceRelationship
         stmt = _where(
-            select(parent)
-            .join(rel, rel.from_resource_id == parent.id)
+            select(rel, parent)
+            .join(parent, rel.from_resource_id == parent.id)
             .where(
                 rel.tenant_id == tenant_id,
                 parent.tenant_id == tenant_id,
                 rel.to_resource_id == resource_id,
                 rel.relationship_type == REL_CONTAINS,
                 rel.is_primary.is_(True),
+                rel.lifecycle_state == LIFECYCLE_ACTIVE,
             ),
             scope_resources(scope, parent),
         )
-        return (await self.session.execute(stmt)).scalars().first()
+        row = (await self.session.execute(stmt)).first()
+        return (row[0], row[1]) if row is not None else None
+
+    async def ancestors_visible(
+        self, tenant_id: str, resource_id: str, *, scope
+    ) -> list[tuple[CCResourceRelationship, CCResource]]:
+        """The ACTIVE primary-containment ancestors, nearest first (A32.8).
+
+        The chain stops at the first ancestor the reader cannot see, and
+        nothing above it is returned -- so a chain cut by a hidden ancestor
+        reads exactly as a chain that ends at a root, and reveals nothing
+        about what lies beyond. The caller must already have established
+        that `resource_id` itself is visible. Bounded by
+        MAX_CONTAINMENT_DEPTH, and by a cycle guard that would only ever
+        fire on corrupted data: the write side refuses a cycle.
+        """
+        out: list[tuple[CCResourceRelationship, CCResource]] = []
+        seen = {resource_id}
+        cursor = resource_id
+        while len(out) < MAX_CONTAINMENT_DEPTH:
+            found = await self._primary_parent_with_edge(
+                tenant_id, cursor, scope=scope
+            )
+            if found is None or found[1].id in seen:
+                break
+            out.append(found)
+            seen.add(found[1].id)
+            cursor = found[1].id
+        return out
+
+    def _children_stmt(
+        self,
+        tenant_id: str,
+        parent_ids: Sequence[str],
+        *,
+        scope,
+        lifecycle_state: Optional[str],
+    ):
+        """Active primary-containment edges out of `parent_ids` whose child
+        the reader may see, with the child. The ONE definition every
+        downward read shares."""
+        rel = CCResourceRelationship
+        child = aliased(CCResource)
+        conditions = [
+            rel.tenant_id == tenant_id,
+            child.tenant_id == tenant_id,
+            rel.from_resource_id.in_(list(parent_ids)),
+            rel.relationship_type == REL_CONTAINS,
+            rel.is_primary.is_(True),
+            rel.lifecycle_state == LIFECYCLE_ACTIVE,
+        ]
+        if lifecycle_state:
+            conditions.append(child.lifecycle_state == lifecycle_state)
+        visible = scope_resources(scope, child)
+        stmt = _where(
+            select(rel, child)
+            .select_from(rel)
+            .join(child, child.id == rel.to_resource_id)
+            .where(*conditions),
+            visible,
+        )
+        count_stmt = _where(
+            select(func.count(rel.id))
+            .select_from(rel)
+            .join(child, child.id == rel.to_resource_id)
+            .where(*conditions),
+            visible,
+        )
+        order = (child.resource_kind, child.display_name, child.id)
+        return stmt, count_stmt, order
+
+    async def children_visible(
+        self,
+        tenant_id: str,
+        resource_id: str,
+        *,
+        scope,
+        lifecycle_state: Optional[str] = LIFECYCLE_ACTIVE,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[tuple[CCResourceRelationship, CCResource]], int]:
+        """The resources `resource_id` primarily contains that the reader
+        may see, paginated, and their count (A32.8).
+
+        A hidden child is not returned and not counted. `lifecycle_state`
+        filters the CHILD (None = any); the edge is always the active one.
+        The caller must already have established that `resource_id` is
+        visible."""
+        stmt, count_stmt, order = self._children_stmt(
+            tenant_id, [resource_id], scope=scope, lifecycle_state=lifecycle_state,
+        )
+        total = (await self.session.execute(count_stmt)).scalar() or 0
+        rows = (
+            await self.session.execute(
+                stmt.order_by(*order)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+        return [(edge, child) for edge, child in rows], total
+
+    async def subtree_visible(
+        self,
+        tenant_id: str,
+        resource_id: str,
+        *,
+        scope,
+        depth: int,
+        lifecycle_state: Optional[str] = LIFECYCLE_ACTIVE,
+        max_nodes: int = MAX_TOPOLOGY_NODES,
+    ) -> tuple[list[tuple[CCResourceRelationship, CCResource, int]], bool]:
+        """The visible primary-containment subtree under `resource_id`,
+        breadth first, to `depth` levels and `max_nodes` nodes (A32.8).
+
+        A hidden resource is not returned, and the walk never descends
+        through one -- what lies under it is not shown either. Returns
+        ``(edge, node, level)`` and whether the walk was cut at
+        `max_nodes`; the cut counts VISIBLE nodes only, so it tells the
+        reader nothing they could not find by listing children. The caller
+        must already have established that `resource_id` is visible.
+        """
+        depth = max(1, min(depth, MAX_TOPOLOGY_DEPTH))
+        out: list[tuple[CCResourceRelationship, CCResource, int]] = []
+        seen = {resource_id}
+        frontier = [resource_id]
+        for level in range(1, depth + 1):
+            if not frontier:
+                break
+            room = max_nodes - len(out)
+            stmt, _count, order = self._children_stmt(
+                tenant_id, frontier, scope=scope, lifecycle_state=lifecycle_state,
+            )
+            rel = CCResourceRelationship
+            rows = (
+                await self.session.execute(
+                    stmt.order_by(rel.from_resource_id, *order).limit(room + 1)
+                )
+            ).all()
+            frontier = []
+            for edge, node in rows:
+                if node.id in seen:          # only corrupted data cycles
+                    continue
+                if len(out) >= max_nodes:
+                    return out, True
+                seen.add(node.id)
+                out.append((edge, node, level))
+                frontier.append(node.id)
+        return out, False
 
     async def relationships_visible(
         self,
@@ -1038,6 +1212,7 @@ class ResourceRepo:
         scope,
         relationship_type: Optional[str] = None,
         direction: Optional[str] = None,
+        lifecycle_state: Optional[str] = LIFECYCLE_ACTIVE,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[tuple[CCResourceRelationship, CCResource, str]], int]:
@@ -1048,6 +1223,8 @@ class ResourceRepo:
         ``incoming`` otherwise. The caller must already have established
         that `resource_id` itself is visible. An edge to a resource the
         reader cannot see is not returned and not counted.
+        `lifecycle_state` filters the EDGE (A32.2): the current edges by
+        default, former ones with ``retired``, both with None.
         """
         rel = CCResourceRelationship
         other = aliased(CCResource)
@@ -1066,6 +1243,8 @@ class ResourceRepo:
         conditions = [rel.tenant_id == tenant_id, other.tenant_id == tenant_id]
         if relationship_type:
             conditions.append(rel.relationship_type == relationship_type)
+        if lifecycle_state:
+            conditions.append(rel.lifecycle_state == lifecycle_state)
         visible = scope_resources(scope, other)
         heading = case(
             (rel.from_resource_id == resource_id, literal("outgoing")),
@@ -1157,6 +1336,7 @@ class ResourceRepo:
     async def primary_parent_edge(
         self, child_id: str
     ) -> Optional[CCResourceRelationship]:
+        """The ACTIVE primary containment edge into `child_id`, if any."""
         rel = CCResourceRelationship
         return (
             await self.session.execute(
@@ -1164,6 +1344,7 @@ class ResourceRepo:
                     rel.to_resource_id == child_id,
                     rel.relationship_type == REL_CONTAINS,
                     rel.is_primary.is_(True),
+                    rel.lifecycle_state == LIFECYCLE_ACTIVE,
                 )
             )
         ).scalars().first()
@@ -1171,7 +1352,7 @@ class ResourceRepo:
     async def primary_parent_edges(
         self, tenant_id: str, child_ids: Iterable[str]
     ) -> dict[str, CCResourceRelationship]:
-        """child id -> its primary containment edge, for many children."""
+        """child id -> its ACTIVE primary containment edge, for many."""
         ids = sorted(set(child_ids))
         if not ids:
             return {}
@@ -1183,6 +1364,7 @@ class ResourceRepo:
                     rel.to_resource_id.in_(ids),
                     rel.relationship_type == REL_CONTAINS,
                     rel.is_primary.is_(True),
+                    rel.lifecycle_state == LIFECYCLE_ACTIVE,
                 )
             )
         ).scalars().all()
@@ -1303,27 +1485,39 @@ class ResourceRepo:
         second = await self.get(tenant_id, to_id)
         if first is None or second is None:
             # Also how a cross-tenant edge is refused: the other tenant's
-            # resource is not a resource OF THIS tenant.
+            # resource is not a resource OF THIS tenant. The composite
+            # (resource, tenant) foreign keys refuse it again at the
+            # database (A32.3).
             raise CatalogueError("both ends must be resources of this tenant")
+        for end in (first, second):
+            if end.lifecycle_state != LIFECYCLE_ACTIVE:
+                # A tombstone keeps the edges it had; nothing new is said
+                # about a resource that is gone (A32.2).
+                raise CatalogueError(
+                    f"resource {end.id} is {end.lifecycle_state}: an edge is "
+                    "asserted only between live resources"
+                )
         return first, second
 
-    async def set_primary_parent(
-        self, tenant_id: str, child_id: str, parent_id: str, *, source: str
-    ) -> CCResourceRelationship:
-        """Make `parent_id` the ONE primary containment parent of `child_id`.
+    async def _refuse_containment_cycle(
+        self, tenant_id: str, parent_id: str, child_id: str
+    ) -> None:
+        """Refuse `parent CONTAINS child` if the child already contains the
+        parent, through ANY active CONTAINS edge, primary or secondary
+        (A32.3).
 
-        Physical containment only, no cycle, and a parent set by another
-        source is never replaced: a later writer that disagrees has a
-        precedence question to answer first (open decision 11), not a row
-        to overwrite. The partial unique index backs "at most one" against
-        any race.
+        Walks UP from the proposed parent, breadth first: a resource's
+        containers are few, its contents may be thousands. A walk deeper
+        than MAX_CONTAINMENT_DEPTH or wider than MAX_CONTAINMENT_WALK is
+        refused -- fail closed -- because the answer to "is there a cycle"
+        is then unknown, and unknown is not "no".
         """
-        parent, child = await self._ends(tenant_id, parent_id, child_id)
-        validate_primary_containment(parent.resource_kind, child.resource_kind)
-        cursor: Optional[str] = parent.id
+        rel = CCResourceRelationship
+        seen = {parent_id}
+        frontier = [parent_id]
         depth = 0
-        while cursor is not None:
-            if cursor == child.id:
+        while frontier:
+            if child_id in frontier:
                 raise CatalogueError(
                     "refusing a containment cycle: the child already contains "
                     "the proposed parent"
@@ -1331,9 +1525,52 @@ class ResourceRepo:
             depth += 1
             if depth > MAX_CONTAINMENT_DEPTH:
                 raise CatalogueError("refusing a containment chain this deep")
-            above = await self.primary_parent_edge(cursor)
-            cursor = above.from_resource_id if above is not None else None
+            above = (
+                await self.session.execute(
+                    select(rel.from_resource_id).where(
+                        rel.tenant_id == tenant_id,
+                        rel.to_resource_id.in_(frontier),
+                        rel.relationship_type == REL_CONTAINS,
+                        rel.lifecycle_state == LIFECYCLE_ACTIVE,
+                    )
+                )
+            ).scalars().all()
+            frontier = sorted(set(above) - seen)
+            seen.update(frontier)
+            if len(seen) > MAX_CONTAINMENT_WALK:
+                raise CatalogueError(
+                    "refusing a containment walk this wide: a cycle cannot be "
+                    "ruled out"
+                )
 
+    @staticmethod
+    def _retire_edge(edge: CCResourceRelationship) -> None:
+        edge.lifecycle_state = LIFECYCLE_RETIRED
+        edge.retired_at = utcnow()
+
+    @staticmethod
+    def _revive_edge(edge: CCResourceRelationship, *, is_primary: bool) -> None:
+        edge.lifecycle_state = LIFECYCLE_ACTIVE
+        edge.retired_at = None
+        edge.is_primary = is_primary
+
+    async def set_primary_parent(
+        self, tenant_id: str, child_id: str, parent_id: str, *, source: str
+    ) -> CCResourceRelationship:
+        """Make `parent_id` the ONE active primary containment parent of
+        `child_id`.
+
+        Physical containment only, no cycle, both ends live, and a parent
+        set by another source is never replaced: a later writer that
+        disagrees has a precedence question to answer first (open decision
+        11), not a row to overwrite. A re-placement RETIRES the old primary
+        edge and creates -- or revives -- the new one (A32.2), so the former
+        placement survives as history; the old edge is retired and flushed
+        before the new one is activated, and the partial unique index backs
+        "one active primary parent" against any race.
+        """
+        parent, child = await self._ends(tenant_id, parent_id, child_id)
+        validate_primary_containment(parent.resource_kind, child.resource_kind)
         existing = await self.primary_parent_edge(child.id)
         if existing is not None and existing.from_resource_id == parent.id:
             return existing
@@ -1342,14 +1579,24 @@ class ResourceRepo:
                 f"the primary parent was set by {existing.source!r}; "
                 f"{source!r} may not replace it"
             )
-        if await self._edge(parent.id, child.id, REL_CONTAINS) is not None:
+        prior = await self._edge(parent.id, child.id, REL_CONTAINS)
+        if prior is not None and prior.lifecycle_state == LIFECYCLE_ACTIVE:
             raise CatalogueError(
                 "a secondary CONTAINS edge already joins these two resources"
             )
+        if prior is not None and prior.source != source:
+            raise CatalogueError(
+                f"a former CONTAINS edge between these resources belongs to "
+                f"{prior.source!r}; {source!r} may not take it over"
+            )
+        await self._refuse_containment_cycle(tenant_id, parent.id, child.id)
         if existing is not None:
-            existing.from_resource_id = parent.id
+            self._retire_edge(existing)
             await self.session.flush()
-            return existing
+        if prior is not None:
+            self._revive_edge(prior, is_primary=True)
+            await self.session.flush()
+            return prior
         edge = CCResourceRelationship(
             tenant_id=tenant_id,
             from_resource_id=parent.id,
@@ -1357,6 +1604,7 @@ class ResourceRepo:
             relationship_type=REL_CONTAINS,
             is_primary=True,
             source=source,
+            lifecycle_state=LIFECYCLE_ACTIVE,
         )
         self.session.add(edge)
         await self.session.flush()
@@ -1373,14 +1621,34 @@ class ResourceRepo:
     ) -> CCResourceRelationship:
         """A SECONDARY typed edge. Idempotent; never primary; confers nothing.
 
-        No production writer in TX-1 (the mirror writes primary containment
-        only); this is the primitive the first topology or import slice
-        will call, and the rules it enforces are tested now.
+        No production writer yet (the mirror writes primary containment
+        only); this is the primitive the first topology or import slice will
+        call, and the rules it enforces are tested now. A `CONTAINS` edge is
+        containment whether or not it is primary, so it is held to the same
+        physical-parent rule -- a Site Manager or an Operational Agent
+        cannot contain anything by a secondary edge either -- and checked
+        for a cycle; a former edge of the same source is revived rather
+        than duplicated.
         """
         validate_relationship_type(relationship_type)
-        await self._ends(tenant_id, from_id, to_id)
+        container, contained = await self._ends(tenant_id, from_id, to_id)
+        if relationship_type == REL_CONTAINS:
+            validate_primary_containment(
+                container.resource_kind, contained.resource_kind
+            )
         existing = await self._edge(from_id, to_id, relationship_type)
+        if existing is not None and existing.lifecycle_state == LIFECYCLE_ACTIVE:
+            return existing
+        if existing is not None and existing.source != source:
+            raise CatalogueError(
+                f"a former {relationship_type} edge between these resources "
+                f"belongs to {existing.source!r}; {source!r} may not take it over"
+            )
+        if relationship_type == REL_CONTAINS:
+            await self._refuse_containment_cycle(tenant_id, from_id, to_id)
         if existing is not None:
+            self._revive_edge(existing, is_primary=False)
+            await self.session.flush()
             return existing
         edge = CCResourceRelationship(
             tenant_id=tenant_id,
@@ -1389,6 +1657,7 @@ class ResourceRepo:
             relationship_type=relationship_type,
             is_primary=False,
             source=source,
+            lifecycle_state=LIFECYCLE_ACTIVE,
         )
         self.session.add(edge)
         await self.session.flush()
@@ -3198,6 +3467,89 @@ class SafetyStateRepo:
                 select(CCSafetyState)
                 .where(CCSafetyState.tenant_id == tenant_id)
                 .order_by(CCSafetyState.site_id)
+            )
+        ).scalars().all()
+
+
+#: Bounds on what a Site Manager's rack report may carry into Central
+#: Command (TX-2, A32.4). Its ids are 32 hex characters; these only stop a
+#: malformed or hostile report from writing an unbounded row.
+_TOPOLOGY_MAX_RACKS = 10_000
+_TOPOLOGY_MAX_MEMBERS = 10_000
+_TOPOLOGY_MAX_REF = 255
+
+
+def clean_topology_racks(racks) -> list[dict]:
+    """A rack report reduced to what the catalogue can use, or nothing.
+
+    Keeps a rack only when it names itself (a non-empty string id); keeps
+    its name as a string, its members as non-empty strings, de-duplicated
+    and sorted; sorts racks by (name, id). Everything else is dropped --
+    never repaired, never guessed. Two entries naming one rack id are both
+    KEPT: that is an ambiguity the mirror must see to hold, not one this
+    function may resolve by choosing.
+    """
+    out: list[dict] = []
+    if not isinstance(racks, list):
+        return out
+    for entry in racks[:_TOPOLOGY_MAX_RACKS]:
+        if not isinstance(entry, dict):
+            continue
+        rack_id = entry.get("rack_id")
+        if not isinstance(rack_id, str) or not rack_id or len(rack_id) > _TOPOLOGY_MAX_REF:
+            continue
+        name = entry.get("name")
+        members = entry.get("device_agent_ids")
+        out.append({
+            "rack_id": rack_id,
+            "name": name[:_TOPOLOGY_MAX_REF] if isinstance(name, str) else "",
+            "device_agent_ids": sorted({
+                m for m in (members if isinstance(members, list) else [])
+                [:_TOPOLOGY_MAX_MEMBERS]
+                if isinstance(m, str) and m and len(m) <= _TOPOLOGY_MAX_REF
+            }),
+        })
+    return sorted(out, key=lambda rack: (rack["name"], rack["rack_id"]))
+
+
+class SiteTopologyRepo:
+    """A site's racks, as its Site Manager reports them (TX-2, A32.4).
+
+    Replace-on-poll, like `SafetyStateRepo`, and for the same reason: a
+    report is a CURRENT reading. A poll that carried no report writes
+    `reported=False` -- UNKNOWN -- rather than leaving yesterday's racks to
+    look like today's. Written by the fleet poller; read by the Resource
+    Catalogue's mirror and by nothing else.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(
+        self, tenant_id: str, site_id: str, topology: dict,
+    ) -> CCSiteTopology:
+        reported = bool((topology or {}).get("reported"))
+        racks = clean_topology_racks((topology or {}).get("racks")) if reported else []
+        row = await self.session.get(CCSiteTopology, site_id)
+        if row is None:
+            row = CCSiteTopology(site_id=site_id)
+            self.session.add(row)
+        # Written only when the report moved, so an unchanged estate is not
+        # rewritten every poll.
+        for name, value in (
+            ("tenant_id", tenant_id), ("reported", reported), ("racks", racks),
+        ):
+            if getattr(row, name) != value:
+                setattr(row, name, value)
+        await self.session.flush()
+        return row
+
+    async def list_for_tenant(self, tenant_id: str) -> Sequence[CCSiteTopology]:
+        return (
+            await self.session.execute(
+                select(CCSiteTopology)
+                .where(CCSiteTopology.tenant_id == tenant_id)
+                .order_by(CCSiteTopology.site_id)
             )
         ).scalars().all()
 

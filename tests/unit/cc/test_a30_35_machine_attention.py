@@ -1090,8 +1090,9 @@ class TestNothingMoved:
     def test_the_plane_and_the_contract_are_the_same_size(self):
         assert len(MACHINE_SURFACE) == 14
         assert sum(1 for m, _p in MACHINE_SURFACE if m == "GET") == 13
-        # TX-1 (A31.6): +3 HUMAN-only catalogue reads; the plane is unchanged.
-        assert len(ROUTE_CONTRACT) == 102
+        # TX-1 (A31.6) and TX-2 (A32.8): +3 HUMAN-only catalogue reads each;
+        # the plane is unchanged.
+        assert len(ROUTE_CONTRACT) == 105
 
     def test_the_permissions_and_the_ceiling_are_unchanged(self):
         from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
@@ -1104,10 +1105,11 @@ class TestNothingMoved:
     def test_no_migration(self):
         root = pathlib.Path(__file__).resolve().parents[3] / "services"
         # A30.41 added CC 0028 (indexes only), PB-0 CC 0029 + SM 0012 (the
-        # dispatch claim and the directive key) and TX-1 CC 0030 (the
-        # resource catalogue tables); this slice added none.
+        # dispatch claim and the directive key), TX-1 CC 0030 (the
+        # resource catalogue tables) and TX-2 CC 0031 (relationship
+        # lifecycle and the site topology); this slice added none.
         heads = {
-            "central_command/src/harkeniq_cc": "0030",
+            "central_command/src/harkeniq_cc": "0031",
             "site_manager/src/harkeniq_sm": "0012",
             "console/src/harkeniq_console": "0004",
         }

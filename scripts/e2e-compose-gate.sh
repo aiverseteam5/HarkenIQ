@@ -7037,12 +7037,13 @@ problems = meter_census(app)
 assert problems == [], problems
 # 13/98 and 12 reads at B0c; A30.32 (A6-4B1) declared exactly one more
 # machine READ -- governed discovery -- and nothing else moved.
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105, (len(MACHINE_SURFACE), len(ROUTE_CONTRACT))
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 meters = [machine_meter(*r) for r in ROUTE_CONTRACT]
-# 85 human at B0c; TX-1 (A31.6) added three HUMAN-only catalogue reads.
-assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (13, 1, 88), meters
-print('  shipped image: meter_census clean; 13 read-metered, 1 attempt-metered, 88 human; MACHINE_SURFACE 14; ceiling unchanged')
+# 85 human at B0c; TX-1 (A31.6) and TX-2 (A32.8) each added three
+# HUMAN-only catalogue reads.
+assert (meters.count('read'), meters.count('attempt'), meters.count('')) == (13, 1, 91), meters
+print('  shipped image: meter_census clean; 13 read-metered, 1 attempt-metered, 91 human; MACHINE_SURFACE 14; ceiling unchanged')
 "
 echo "  19 removed routes still refuse a real machine token"
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_cc -tAc \
@@ -7856,9 +7857,9 @@ from harkeniq_cc.incident_projection import CONTRACT_VERSION
 from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 assert CONTRACT_VERSION == '1'
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: machine incident contract v1; plane 14, contract 102, ceiling unchanged')"
+print('  shipped image: machine incident contract v1; plane 14, contract 105, ceiling unchanged')"
 echo "  both agents retired (the site agent's token now 401), the three planted incidents deleted"
 
 # ---------------------------------------------------------------------------
@@ -8126,9 +8127,9 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 assert (CONTRACT, CONTRACT_VERSION) == ('attention', '1')
 assert 'propose_action' not in NEXT_STEP_CODES and FRESHNESS_WINDOW.total_seconds() == 900
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: machine Attention contract v1, one freshness rule (15 min); plane 14, contract 102, ceiling unchanged')"
+print('  shipped image: machine Attention contract v1, one freshness rule (15 min); plane 14, contract 105, ceiling unchanged')"
 echo "  three agents retired (the tenant token now 401); the poison deleted from every table it was planted in"
 
 # ---------------------------------------------------------------------------
@@ -8958,10 +8959,10 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert PRODUCTION_MEMBERS == ()
 assert DISPATCH_GATES[-3:] == ('unattended_class', 'site_local_autonomy', 'global_safety'), DISPATCH_GATES
 assert ADMISSION_COMPOSED_OVER == 'target_site' and admission_reads_beyond(None) is False
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: empty registry; the three S3-E1 dispatch gates after the seven;'
-      ' admission reads the target site; plane 14, contract 102, ceiling unchanged')"
+      ' admission reads the target site; plane 14, contract 105, ceiling unchanged')"
 echo "  probe removed, both agents retired, the platform catalogue and ladder restored,"
 echo "  and site A's BMC_RESET budget recovered where the node's refusals withdrew it"
 
@@ -9288,9 +9289,9 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert governance.PROPOSAL_EVIDENCE_PERMISSION == 'fleet.view'
 assert P.CREATION_WITHHELD_KEYS == ('attention', 'outcome_evidence')
 assert P.MACHINE_WITHHELD_KEYS == ('attention', 'learned_signals', 'outcome_evidence')
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-print('  shipped image: the projection module and the one loader; plane 14, contract 102, ceiling unchanged')"
+print('  shipped image: the projection module and the one loader; plane 14, contract 105, ceiling unchanged')"
 echo "  catalogue restored, both S3-E2 agents retired, the synthetic proposal, its outcome rows and the three devices removed"
 
 # ===========================================================================
@@ -9594,10 +9595,10 @@ except TypeError:
     pass
 else:
     raise AssertionError('the internal entry accepted a reader')
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: the person selection, the bounded machine view, an internal entry that refuses a'
-      ' reader; plane 14, contract 102, ceiling unchanged')" < /dev/null
+      ' reader; plane 14, contract 105, ceiling unchanged')" < /dev/null
 echo "  the machine agent retired, the signal and pattern, the four devices and every outcome row removed"
 [ "$P40_MODE_BEFORE" = "strict" ] || a26_set_mode "$P40_MODE_BEFORE"
 [ "$(a26_mode)" = "$P40_MODE_BEFORE" ] || { echo "the enforcement posture was not restored" >&2; exit 1; }
@@ -9798,10 +9799,10 @@ assert not hasattr(R, 'list_outcome_dicts')
 # PB-2 (A30.42 D-PB7): the internal paths' oldest-50,000 read is gone too.
 assert not hasattr(R, 'list_device_outcome_dicts')
 assert not hasattr(IntelligenceEngine(), '_cursor')
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: exact tallies and statistics, keyed settlement, no cursor, no windowed read'
-      ' left; plane 14, contract 102, ceiling unchanged')" < /dev/null
+      ' left; plane 14, contract 105, ceiling unchanged')" < /dev/null
 echo "  the 502 synthetic proposals, the proof's device and every A30.41 outcome row removed; 0028 live, 4 indexes valid"
 
 # ---------------------------------------------------------------------------
@@ -10019,10 +10020,10 @@ from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
 assert hasattr(P, 'claim_dispatch') and hasattr(P, 'release_claim')
 assert not hasattr(P, 'list_by_status')
 assert 0 < R.DISPATCH_RPC_TIMEOUT_S < P.DISPATCH_CLAIM_LEASE.total_seconds() < 120
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: claim + release, no oldest-500 read, deadline %ss inside a %ss lease;'
-      ' plane 14, contract 102, ceiling unchanged' % (int(R.DISPATCH_RPC_TIMEOUT_S),
+      ' plane 14, contract 105, ceiling unchanged' % (int(R.DISPATCH_RPC_TIMEOUT_S),
       int(P.DISPATCH_CLAIM_LEASE.total_seconds())))" < /dev/null
 echo "  PB-0 agent retired; CC 0029 (3 indexes valid) and SM 0012 (unique index valid) live; no key names two directives"
 
@@ -10304,10 +10305,10 @@ assert not hasattr(AgentPreflightRepo, 'count_executions')
 assert not hasattr(OutcomeHistoryRepo, 'list_device_outcome_dicts')
 assert hasattr(R, 'decision_attention') and 'agent_pause' in DISPATCH_GATES and 'budget' not in DISPATCH_GATES
 assert DISCOVERY_VERSION == '2'
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
 print('  shipped image: admission checks the budget, unattended counts dispatches, no 50k read,'
-      ' decision_attention, agent_pause; plane 14, contract 102, ceiling unchanged')" < /dev/null
+      ' decision_attention, agent_pause; plane 14, contract 105, ceiling unchanged')" < /dev/null
 echo "  four agents retired; their proposals, the incident, the hidden poison removed"
 
 # ===========================================================================
@@ -10436,32 +10437,319 @@ step "TX-1/DX: this proof owns its state -- and the shipped image carries the ca
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
       "http://localhost:8090/api/scope-grants/$TX1_GRANT")" = "200" ] || {
   echo "the TX-1 site grant was not revoked" >&2; exit 1; }
-[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0030" ] || {
-  echo "Central Command is not at migration 0030" >&2; exit 1; }
+# 0030 is applied; TX-2's 0031 is the head now, and its own step checks it.
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" \> "0029" ] || {
+  echo "Central Command is not at migration 0030 or later" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM pg_tables WHERE tablename IN
             ('cc_resources', 'cc_resource_relationships', 'cc_resource_external_ids')" < /dev/null)" = "3" ] || {
   echo "the catalogue tables are missing" >&2; exit 1; }
+# TX-2 (A32.3) narrowed the guarantee to ACTIVE edges, under a new name.
 [ "$(s1_cc "SELECT i.indisvalid AND i.indisunique FROM pg_index i JOIN pg_class c
-            ON c.oid = i.indexrelid WHERE c.relname = 'uq_resource_primary_parent'" < /dev/null)" = "t" ] || {
+            ON c.oid = i.indexrelid WHERE c.relname = 'uq_resource_active_primary_parent'" < /dev/null)" = "t" ] || {
   echo "the primary-containment index is missing or invalid" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM cc_resources WHERE legacy_kind IS NULL
-            OR legacy_kind NOT IN ('site', 'device') OR source <> 'legacy_mirror'" < /dev/null)" = "0" ] || {
+            OR legacy_kind NOT IN ('site', 'device', 'rack') OR source <> 'legacy_mirror'" < /dev/null)" = "0" ] || {
   echo "something other than the mirror wrote the catalogue" >&2; exit 1; }
+# One ACTIVE primary parent each: since TX-2 a former placement is kept, retired.
 [ "$(s1_cc "SELECT count(*) FROM (SELECT to_resource_id FROM cc_resource_relationships
-            WHERE is_primary GROUP BY to_resource_id HAVING count(*) > 1) d" < /dev/null)" = "0" ] || {
+            WHERE is_primary AND lifecycle_state = 'active'
+            GROUP BY to_resource_id HAVING count(*) > 1) d" < /dev/null)" = "0" ] || {
   echo "a resource has two primary parents" >&2; exit 1; }
 docker compose exec -T central-command python -c "
 import sys; sys.path.insert(0, '/app/services/central_command/src')
 from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
 from harkeniq_cc.resource_catalogue import LEGACY_KINDS
 from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
-assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 102
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
 assert not any(p.startswith('/api/resources') for _m, p in MACHINE_SURFACE)
-assert sum(1 for _m, p in ROUTE_CONTRACT if p.startswith('/api/resources')) == 3
+# TX-1's three reads, and TX-2's (A32.8) three topology reads.
+assert sum(1 for _m, p in ROUTE_CONTRACT if p.startswith('/api/resources')) == 6
 assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
-assert LEGACY_KINDS == {'site', 'device'}
-print('  shipped image: three human-only catalogue reads; plane 14, contract 102, ceiling unchanged; rack is not a known legacy kind')" < /dev/null
-echo "  site grant revoked; CC 0030 live, three tables, primary-parent index valid; only the mirror wrote, one primary parent each"
+# rack was TX-1's recorded contract; TX-2 (A32.4) writes it.
+assert LEGACY_KINDS == {'site', 'device', 'rack'}
+print('  shipped image: six human-only catalogue reads; plane 14, contract 105, ceiling unchanged; rack is TX-2s and nothing else joined it')" < /dev/null
+echo "  site grant revoked; CC 0030+ live, three tables, primary-parent index valid; only the mirror wrote, one active primary parent each"
+
+# ===========================================================================
+# TX-2 (A32), live: the Site Manager's racks reach the catalogue through the
+# SHIPPED path -- the operator's site-model import AT THE SITE MANAGER, the
+# fleet snapshot's topology block, the poller, the mirror -- and the three
+# topology reads walk them. Nothing below writes a resource or an edge at
+# Central Command: every rack and device is seeded at the Site Manager and
+# removed there again, so this proof owns its state. Visibility is compared
+# for the owner, a person holding site A and a person holding one device.
+# ===========================================================================
+tx2_get() {  # $1 token, $2 path -> body (exit 1 on HTTP error)
+  curl -sf -H "Authorization: Bearer $1" "http://localhost:8090$2"
+}
+tx2_res() {  # $1 token, $2 namespace, $3 external id -> resource id (any lifecycle)
+  tx1_lookup "$1" "$2" "$3" | head -1
+}
+tx2_parent() {  # $1 token, $2 resource id -> its visible primary parent id
+  tx2_get "$1" "/api/resources/$2" \
+    | python3 -c "import sys,json; p=json.load(sys.stdin)['primary_parent']; print(p['id'] if p else '')"
+}
+tx2_placed() {  # the owner reads a1 inside r1: the whole chain arrived
+  local t r1 a1
+  t=$(tenant_token gate-owner@demo gate-owner)
+  r1=$(tx2_res "$t" rack "$TX2_R1"); a1=$(tx2_res "$t" harken_node gate-tx2-a1)
+  [ -n "$r1" ] && [ -n "$a1" ] && [ "$(tx2_parent "$t" "$a1")" = "$r1" ] \
+    && [ -n "$(tx2_res "$t" rack "$TX2_RB")" ]
+}
+tx2_import() {  # $1 YAML -> the Site Manager's own operator import
+  curl -sf -X PUT -H "Authorization: Bearer dev-token-sm" \
+    --data-binary "$1" "http://localhost:8080/api/site/yaml?actor=gate-tx2" > /dev/null
+}
+
+step "TX-2/DY: the operator's site model reaches the catalogue -- Site CONTAINS Rack CONTAINS Device, through the SHIPPED path"
+# The site the Site Manager's own import addresses (its configured site).
+TX2_SITE=$(s1_sm "SELECT cc_site_id FROM sites WHERE name = 'site-1'" < /dev/null)
+[ -n "$TX2_SITE" ] && [ "$TX2_SITE" != "$SITE_B" ] || {
+  echo "the Site Manager's site-1 is not bound distinctly from site B" >&2; exit 1; }
+# Three synthetic devices at site-1, owned by this proof. a3's NAME hints a
+# rack (rack_suggestion), which must never become one.
+for TX2_DEV in a1 a2 a3; do
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                          service_tag, device_class, rack_suggestion,
+                          first_seen_at, last_seen_at)
+     SELECT 'gatedevtx2${TX2_DEV}00000000000000000000', s.id, 'gate-tx2-${TX2_DEV}',
+            'tx2-${TX2_DEV}', 'Dell', 'R750', 'GATETX2${TX2_DEV}', 'server',
+            CASE WHEN '${TX2_DEV}' = 'a3' THEN 'rack-77' END, now(), now()
+     FROM sites s WHERE s.name = 'site-1'
+     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+done
+# Site B's rack, at the SAME Site Manager: the one a site-A reader must not see.
+TX2_RB=gaterktx2b0000000000000000000000
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "INSERT INTO racks (id, site_id, name)
+   SELECT '$TX2_RB', s.id, 'gate-tx2-rb' FROM sites s WHERE s.cc_site_id = '$SITE_B'
+   ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+tx2_import "racks:
+  - name: gate-tx2-r1
+    row: R9
+  - name: gate-tx2-r2
+devices:
+  - agent_id: gate-tx2-a1
+    rack: gate-tx2-r1
+  - agent_id: gate-tx2-a2
+    rack: gate-tx2-r1
+"
+TX2_R1=$(s1_sm "SELECT r.id FROM racks r JOIN sites s ON s.id = r.site_id
+                WHERE s.name = 'site-1' AND r.name = 'gate-tx2-r1'" < /dev/null)
+TX2_R2=$(s1_sm "SELECT r.id FROM racks r JOIN sites s ON s.id = r.site_id
+                WHERE s.name = 'site-1' AND r.name = 'gate-tx2-r2'" < /dev/null)
+[ -n "$TX2_R1" ] && [ -n "$TX2_R2" ] || { echo "the site-model import made no racks" >&2; exit 1; }
+wait_for "the racks and their placement to reach the catalogue" 240 tx2_placed
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+python3 - "$TOKEN" "$TX2_SITE" "$SITE_B" "$TX2_R1" "$TX2_R2" "$TX2_RB" <<'PY'
+import json, subprocess, sys
+token, site_a, site_b, r1, r2, rb = sys.argv[1:]
+def get(path):
+    out = subprocess.run(["curl", "-sf", "-H", f"Authorization: Bearer {token}",
+                          "http://localhost:8090" + path], capture_output=True, text=True)
+    assert out.returncode == 0, (path, out.returncode)
+    return json.loads(out.stdout)
+def one(namespace, ref):
+    rows = get(f"/api/resources/?source_system=harkeniq&namespace={namespace}"
+               f"&external_id={ref}&lifecycle_state=any")["resources"]
+    assert len(rows) == 1, (namespace, ref, rows)
+    return get(f"/api/resources/{rows[0]['id']}")
+sa, sb = one("site", site_a), one("site", site_b)
+R1, R2, RB = one("rack", r1), one("rack", r2), one("rack", rb)
+A1, A2, A3 = (one("harken_node", f"gate-tx2-{d}") for d in ("a1", "a2", "a3"))
+for rack, name, ref in ((R1, "gate-tx2-r1", r1), (R2, "gate-tx2-r2", r2), (RB, "gate-tx2-rb", rb)):
+    assert rack["resource_type"] == "harkeniq:placement.rack", rack
+    assert rack["resource_kind"] == "physical_container" and rack["display_name"] == name
+    assert rack["legacy"] == {"kind": "rack", "ref": ref}, rack["legacy"]
+assert R1["primary_parent"]["id"] == R2["primary_parent"]["id"] == sa["id"]
+assert RB["primary_parent"]["id"] == sb["id"]
+assert A1["primary_parent"]["id"] == A2["primary_parent"]["id"] == R1["id"]
+# Unplaced -- its NAME hinted a rack, and a suggestion is never a rack.
+assert A3["primary_parent"]["id"] == sa["id"]
+assert not [r for r in get("/api/resources/?kind=physical_container&page_size=200"
+                           "&lifecycle_state=any")["resources"] if "rack-77" in json.dumps(r)]
+# The row label is a label, not an identity: not carried, not a resource.
+assert "R9" not in json.dumps(R1)
+chain = get(f"/api/resources/{A1['id']}/parents")["parents"]
+assert [p["resource"]["id"] for p in chain[:2]] == [R1["id"], sa["id"]], chain
+kids = {c["resource"]["id"] for c in get(f"/api/resources/{R1['id']}/children")["children"]}
+assert kids == {A1["id"], A2["id"]}, kids
+under = {c["resource"]["id"] for c in
+         get(f"/api/resources/{sa['id']}/children?page_size=200")["children"]}
+assert {R1["id"], R2["id"], A3["id"]} <= under and not {A1["id"], A2["id"]} & under
+tree = get(f"/api/resources/{sa['id']}/topology?depth=2")
+nodes = {n["id"]: n for n in tree["nodes"]}
+assert {R1["id"], R2["id"], A1["id"], A2["id"], A3["id"]} <= set(nodes)
+assert nodes[A1["id"]]["parent_id"] == nodes[A2["id"]]["parent_id"] == R1["id"]
+print("  owner: site A > %s (a1, a2) and %s; a3 under the site (its rack SUGGESTION ignored);"
+      " site B > %s; breadcrumb, children and subtree agree" % (
+          R1["display_name"], R2["display_name"], RB["display_name"]))
+PY
+
+step "TX-2/DZ: a person holding site A reads site A's racks only; a person holding one device reads no container -- and no sibling"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+tenant_realm_user "gate-tx2-a@demo" "gate-tx2-a" operator
+tenant_realm_user "gate-tx2-d@demo" "gate-tx2-d" viewer
+TX2_A=$(tenant_token gate-tx2-a@demo gate-tx2-a)
+TX2_D=$(tenant_token gate-tx2-d@demo gate-tx2-d)
+TX2_GRANTS=""
+for TX2_SPEC in "$(s1_sub "$TX2_A")|site|$TX2_SITE|operator" \
+                "$(s1_sub "$TX2_D")|device|gate-tx2-a1|viewer"; do
+  IFS='|' read -r TX2_SUB TX2_TYPE TX2_REF TX2_ROLE <<< "$TX2_SPEC"
+  TX2_GRANT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$TX2_SUB\",\"scope_type\":\"$TX2_TYPE\",\"scope_ref\":\"$TX2_REF\",\"role\":\"$TX2_ROLE\"}" \
+    http://localhost:8090/api/scope-grants/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  [ -n "$TX2_GRANT" ] || { echo "the $TX2_TYPE grant was refused" >&2; exit 1; }
+  TX2_GRANTS="$TX2_GRANTS $TX2_GRANT"
+done
+wait_for "site A's reader to read exactly site A in the catalogue" 60 tx1_parity "$TX2_A"
+# Fresh tokens for the reads below: a wait above may outlast one.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX2_A=$(tenant_token gate-tx2-a@demo gate-tx2-a)
+TX2_D=$(tenant_token gate-tx2-d@demo gate-tx2-d)
+TX2_M=$(b0c_token)
+python3 - "$TX2_A" "$TX2_D" "$TOKEN" "$TX2_M" "$TX2_R1" "$TX2_RB" <<'PY'
+import json, subprocess, sys
+person, device, owner, machine, r1, rb = sys.argv[1:]
+def call(token, path):
+    out = subprocess.run(["curl", "-s", "-w", "\n%{http_code}", "-H",
+                          f"Authorization: Bearer {token}", "http://localhost:8090" + path],
+                         capture_output=True, text=True).stdout
+    body, _, code = out.rpartition("\n")
+    return int(code), (json.loads(body) if body.strip().startswith(("{", "[")) else body)
+def ok(token, path):
+    code, body = call(token, path)
+    assert code == 200, (path, code, body)
+    return body
+def rid(token, namespace, ref):
+    rows = ok(token, f"/api/resources/?source_system=harkeniq&namespace={namespace}"
+                     f"&external_id={ref}&lifecycle_state=any")["resources"]
+    return rows[0]["id"] if rows else None
+R1, RB = rid(owner, "rack", r1), rid(owner, "rack", rb)
+A1, A2 = rid(owner, "harken_node", "gate-tx2-a1"), rid(owner, "harken_node", "gate-tx2-a2")
+racks = {r["id"] for r in ok(person, "/api/resources/?kind=physical_container&page_size=200"
+                                    "&lifecycle_state=any")["resources"]
+         if r["resource_type"] == "harkeniq:placement.rack"}
+assert R1 in racks and RB not in racks, racks
+assert rid(person, "rack", rb) is None, "a hidden rack's identifier resolved"
+for tail in ("", "/parents", "/children", "/topology"):
+    assert call(person, f"/api/resources/{RB}{tail}")[0] == 404, tail
+chain = ok(person, f"/api/resources/{A1}/parents")["parents"]
+assert chain and chain[0]["resource"]["id"] == R1, chain
+# One device: that device, no container, no breadcrumb, no sibling.
+seen = {r["id"] for r in ok(device, "/api/resources/?page_size=200&lifecycle_state=any")["resources"]}
+assert seen == {A1}, seen
+assert ok(device, f"/api/resources/{A1}/parents")["parents"] == []
+assert ok(device, f"/api/resources/{A1}")["primary_parent"] is None
+for target in (R1, A2):
+    for tail in ("", "/children", "/topology"):
+        assert call(device, f"/api/resources/{target}{tail}")[0] == 404, (target, tail)
+fleet = {d["agent_id"] for d in ok(device, "/api/fleet/?page_size=200")["devices"]}
+assert fleet == {"gate-tx2-a1"}, fleet
+for tail in ("parents", "children", "topology"):
+    assert call(machine, f"/api/resources/{A1}/{tail}")[0] == 403, tail
+print("  site-A person: racks of site A only, site B's rack absent by id and by identifier;"
+      " device person: its device, no container, no breadcrumb, its rack-mate absent;"
+      " a REAL machine token refused on all three topology reads")
+PY
+
+step "TX-2/EA: the Site Manager stays the authority -- a rename keeps the id, a move keeps the former placement, a removed rack is a tombstone"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX2_R1_RES=$(tx2_res "$TOKEN" rack "$TX2_R1")
+TX2_R2_RES=$(tx2_res "$TOKEN" rack "$TX2_R2")
+TX2_A1_RES=$(tx2_res "$TOKEN" harken_node gate-tx2-a1)
+TX2_A2_RES=$(tx2_res "$TOKEN" harken_node gate-tx2-a2)
+TX2_SA_RES=$(tx2_res "$TOKEN" site "$TX2_SITE")
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE racks SET name = 'gate-tx2-r2-renamed' WHERE id = '$TX2_R2'" > /dev/null < /dev/null
+tx2_renamed() {
+  tx2_get "$(tenant_token gate-owner@demo gate-owner)" "/api/resources/$TX2_R2_RES" \
+    | grep -q '"display_name": *"gate-tx2-r2-renamed"'
+}
+wait_for "the rename to reach the catalogue under the same id" 240 tx2_renamed
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+[ "$(tx2_res "$TOKEN" rack "$TX2_R2")" = "$TX2_R2_RES" ] || { echo "a rename changed the id" >&2; exit 1; }
+tx2_import "devices:
+  - agent_id: gate-tx2-a2
+    rack: gate-tx2-r2-renamed
+"
+tx2_moved() { [ "$(tx2_parent "$(tenant_token gate-owner@demo gate-owner)" "$TX2_A2_RES")" = "$TX2_R2_RES" ]; }
+wait_for "a2 to move into the renamed rack" 240 tx2_moved
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+tx2_get "$TOKEN" "/api/resources/$TX2_A2_RES/relationships?lifecycle_state=retired" \
+  | python3 -c "
+import json, sys
+rels = json.load(sys.stdin)['relationships']
+# CONTAINS, not equals: a2 may also have a retired edge from its site, if a
+# poll placed it there before the import put it in rack-1.
+assert ('$TX2_R1_RES', 'CONTAINS', 'retired') in [
+    (r['resource']['id'], r['relationship_type'], r['lifecycle_state']) for r in rels], rels
+assert all(r['lifecycle_state'] == 'retired' for r in rels), rels"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE devices SET rack_id = NULL WHERE rack_id = '$TX2_R1';
+   DELETE FROM racks WHERE id = '$TX2_R1'" > /dev/null < /dev/null
+tx2_tombstoned() {
+  local t; t=$(tenant_token gate-owner@demo gate-owner)
+  tx2_get "$t" "/api/resources/$TX2_R1_RES" | grep -q '"lifecycle_state": *"retired"' \
+    && [ "$(tx2_parent "$t" "$TX2_A1_RES")" = "$TX2_SA_RES" ]
+}
+wait_for "the removed rack to retire and a1 to return to its site" 240 tx2_tombstoned
+echo "  rename: same id, new name; move: a2 in the renamed rack, its rack-1 edge kept RETIRED;"
+echo "  removal: rack-1 a tombstone its deep link still resolves, a1 back under site A"
+
+step "TX-2/EB: this proof owns its state -- and the shipped image carries the topology layer, with CC 0031 live"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+for TX2_GRANT in $TX2_GRANTS; do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+        "http://localhost:8090/api/scope-grants/$TX2_GRANT")" = "200" ] || {
+    echo "a TX-2 grant was not revoked" >&2; exit 1; }
+done
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE devices SET rack_id = NULL WHERE rack_id IN ('$TX2_R2', '$TX2_RB');
+   DELETE FROM racks WHERE id IN ('$TX2_R2', '$TX2_RB');
+   DELETE FROM devices WHERE agent_id IN ('gate-tx2-a1', 'gate-tx2-a2', 'gate-tx2-a3')" \
+  > /dev/null < /dev/null
+tx2_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_resources WHERE lifecycle_state = 'active'
+              AND ((legacy_kind = 'rack' AND legacy_ref IN ('$TX2_R1', '$TX2_R2', '$TX2_RB'))
+                OR (legacy_kind = 'device' AND legacy_ref LIKE 'gate-tx2-%'))" < /dev/null)" = "0" ]
+}
+wait_for "every rack and device this proof seeded to be a tombstone" 240 tx2_gone
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0031" ] || {
+  echo "Central Command is not at migration 0031" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM pg_tables WHERE tablename = 'cc_site_topology'" < /dev/null)" = "1" ] || {
+  echo "cc_site_topology is missing" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM pg_constraint WHERE conrelid = 'cc_resource_relationships'::regclass
+            AND contype = 'f' AND convalidated AND conname IN
+            ('fk_resource_relationship_from_tenant', 'fk_resource_relationship_to_tenant')" < /dev/null)" = "2" ] || {
+  echo "the tenant-identity keys are missing or unvalidated" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_resource_relationships e JOIN cc_resources f
+            ON f.id = e.from_resource_id JOIN cc_resources t ON t.id = e.to_resource_id
+            WHERE f.tenant_id <> e.tenant_id OR t.tenant_id <> e.tenant_id" < /dev/null)" = "0" ] || {
+  echo "an edge joins two tenants" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_resource_relationships WHERE lifecycle_state = 'retired'" < /dev/null)" != "0" ] || {
+  echo "no former placement was kept -- the move above proved nothing" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.resource_catalogue import BUILTIN_TYPES, LEGACY_KINDS, TYPE_RACK
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
+for tail in ('parents', 'children', 'topology'):
+    route = ('GET', '/api/resources/{resource_id}/' + tail)
+    assert ROUTE_CONTRACT[route] == ('fleet.view', 'read_scoped', False) and route not in MACHINE_SURFACE
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+assert LEGACY_KINDS == {'site', 'device', 'rack'} and TYPE_RACK in BUILTIN_TYPES
+for reserved in ('harkeniq:geography.region', 'harkeniq:facility.campus',
+                 'harkeniq:facility.datacenter', 'harkeniq:facility.building',
+                 'harkeniq:facility.room', 'harkeniq:facility.hall', 'harkeniq:placement.zone',
+                 'harkeniq:placement.row', 'harkeniq:enclosure.chassis'):
+    assert reserved not in BUILTIN_TYPES, reserved
+print('  shipped image: three human-only topology reads; plane 14, contract 105, ceiling unchanged;'
+      ' rack registered, no reserved container type registered')" < /dev/null
+echo "  grants revoked; racks and devices removed at the Site Manager and tombstoned here;"
+echo "  CC 0031 live: cc_site_topology, both tenant keys validated, no cross-tenant edge, former placements kept"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true

@@ -1,7 +1,7 @@
-"""The Resource Catalogue vocabulary (TX-1, spec A31).
+"""The Resource Catalogue vocabulary (TX-1 spec A31, TX-2 spec A32).
 
 Pure: no session, no request. The repository enforces these rules on
-every write; the mirror is the only writer in TX-1.
+every write; the mirror is the only writer.
 
 What the catalogue is
 ---------------------
@@ -70,6 +70,11 @@ LIFECYCLE_STATES = frozenset({LIFECYCLE_ACTIVE, LIFECYCLE_RETIRED})
 # vm RUNS_ON host, host HOSTS vm, port CONNECTED_TO port, device MEMBER_OF
 # group, site MANAGED_BY site manager. A relationship describes; it never
 # authorizes, in any direction (A31.1).
+#
+# An edge carries the resource lifecycle vocabulary too (TX-2, A32.2): it is
+# `active` while its source asserts it and `retired` once that source stops
+# -- a former placement, kept rather than rewritten or deleted. One row per
+# (from, to, type) for life: asserted again, the same row revives.
 # ---------------------------------------------------------------------------
 
 REL_CONTAINS = "CONTAINS"
@@ -84,32 +89,51 @@ RELATIONSHIP_TYPES = frozenset({
     REL_CONNECTED_TO, REL_MEMBER_OF, REL_MANAGED_BY,
 })
 
-#: How far up a primary-containment chain a cycle check walks before it
-#: refuses. A real estate is a handful of levels deep; a chain longer than
-#: this is a defect, and refusing is the fail-closed answer to it.
+#: How far up a containment chain a cycle check walks before it refuses. A
+#: real estate is a handful of levels deep; a chain longer than this is a
+#: defect, and refusing is the fail-closed answer to it.
 MAX_CONTAINMENT_DEPTH = 32
+#: How many ancestors one cycle check may visit (TX-2, A32.3). The walk
+#: follows every ACTIVE `CONTAINS` edge, secondary ones included, so it is a
+#: breadth-first search rather than one chain; a search this wide is a
+#: defect too, and is refused rather than allowed to run unbounded.
+MAX_CONTAINMENT_WALK = 1024
+
+#: The topology reads' bounds (TX-2, A32.8). A subtree is cut at this
+#: depth and this many VISIBLE nodes; `truncated` reports the cut and counts
+#: nothing the reader could not already see.
+MAX_TOPOLOGY_DEPTH = 8
+MAX_TOPOLOGY_NODES = 500
 
 # ---------------------------------------------------------------------------
 # The legacy link: which canonical object a resource mirrors. Written by
 # the mirror and by nothing else, and the ONLY input to visibility.
 #
-# `rack` is A31.3's contract for TX-2 and is deliberately absent: nothing
-# writes it, so nothing may treat it as known. A resource carrying a legacy
-# kind outside this set is visible to no scoped reader.
+# `rack` is A31.3's contract, implemented by TX-2 (A32.4): a Site Manager
+# rack, by its opaque id. A resource carrying a legacy kind outside this set
+# is visible to no scoped reader.
 # ---------------------------------------------------------------------------
 
 LEGACY_SITE = "site"
 LEGACY_DEVICE = "device"
-LEGACY_KINDS = frozenset({LEGACY_SITE, LEGACY_DEVICE})
+LEGACY_RACK = "rack"
+LEGACY_KINDS = frozenset({LEGACY_SITE, LEGACY_DEVICE, LEGACY_RACK})
 
 #: Provenance of every row the mirror writes.
 SOURCE_LEGACY_MIRROR = "legacy_mirror"
 
 # ---------------------------------------------------------------------------
 # Types. `namespace:domain.type`. The `harkeniq` namespace is reserved for
-# the built-in registry, which holds EXACTLY the types TX-1 writes. Tenant
-# and vendor namespaces (open decision 4) are not opened by TX-1, so a type
+# the built-in registry, which holds EXACTLY the types the mirror writes.
+# Tenant and vendor namespaces (open decision 4) are not opened, so a type
 # outside the registry is refused rather than accepted on its say-so.
+#
+# The other contextual containers -- region, campus, datacenter, building,
+# room, hall, zone, row, chassis -- are allowed by the model (any physical
+# container may contain), and their type names are RESERVED in A32.6, but
+# none is registered here: nothing in the platform is an authoritative
+# source for one, and a registry entry with no writer is a declaration the
+# platform cannot keep. The slice that adds a writer registers its types.
 # ---------------------------------------------------------------------------
 
 HARKENIQ_NAMESPACE = "harkeniq"
@@ -122,10 +146,13 @@ TYPE_SWITCH = "harkeniq:network.switch"
 #: What a mirrored device is when its class says nothing usable. Never
 #: "server": a blank class is not evidence of anything (A30.25 R1).
 TYPE_UNCLASSIFIED_DEVICE = "harkeniq:device.unclassified"
+#: A Site Manager rack, operator-assigned (TX-2, A32.4).
+TYPE_RACK = "harkeniq:placement.rack"
 
 #: type -> the one kind it may describe.
 BUILTIN_TYPES: dict[str, str] = {
     TYPE_SITE: KIND_PHYSICAL_CONTAINER,
+    TYPE_RACK: KIND_PHYSICAL_CONTAINER,
     TYPE_SERVER: KIND_PHYSICAL_DEVICE,
     TYPE_SWITCH: KIND_PHYSICAL_DEVICE,
     TYPE_UNCLASSIFIED_DEVICE: KIND_PHYSICAL_DEVICE,
@@ -145,15 +172,17 @@ _TYPE_RE = re.compile(
 MAX_TYPE_LENGTH = 128
 
 # ---------------------------------------------------------------------------
-# External identifiers HarkenIQ issues itself. The only ones TX-1 binds:
-# their uniqueness is guaranteed by HarkenIQ, so binding them can never
-# merge two things. Vendor identifiers (service tags) need reconciliation
-# rules and are not bound (A31.9).
+# External identifiers HarkenIQ issues itself. The only ones bound: their
+# uniqueness is guaranteed by HarkenIQ, so binding them can never merge two
+# things. Vendor identifiers (service tags) need reconciliation rules and
+# are not bound (A31.9).
 # ---------------------------------------------------------------------------
 
 EXTERNAL_SOURCE_HARKENIQ = "harkeniq"
 NAMESPACE_SITE = "site"
 NAMESPACE_HARKEN_NODE = "harken_node"
+#: The Site Manager's rack id (TX-2, A32.4).
+NAMESPACE_RACK = "rack"
 
 
 class CatalogueError(ValueError):

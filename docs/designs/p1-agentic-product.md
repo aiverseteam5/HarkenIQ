@@ -6863,3 +6863,56 @@ the catalogue — no edge, type or name — is an input.
 | Routes | `GET /api/resources/`, `/{id}`, `/{id}/relationships` — human-only, `fleet.view`, `READ_SCOPED` |
 | Rack | contract recorded; ingest deferred to TX-2 (no rack data reaches Central Command today) |
 | Unchanged | authorization, `device_class`, capability, execution, the Site Manager, proto, machine plane (14) |
+
+## §36 — TX-2 / Amendment A32: resource relationships, topology and the rack mapping
+
+TX-1 gave the estate a vocabulary; TX-2 gives it shape. The catalogue can
+now say *where* a device is — in which rack, in which site — and keep a
+former placement as history instead of overwriting it. It still decides
+nothing: Site, Device and the Site Manager's racks stay authoritative, and
+every answer about who may see what is still derived from the canonical
+Sites and Fleet reads.
+
+### Why racks needed a data path
+
+Racks exist only at the Site Manager, set by the operator's site-model
+import. Before TX-2 nothing about them crossed to Central Command, so the
+mirror had nothing to reconcile from. TX-2 adds a `topology` block to the
+fleet snapshot the poller already pulls, stored one row per site beside the
+fleet cache rather than in it — so rack data sits physically apart from every
+authorization input, and its one reader is the mirror. A Site Manager that
+predates TX-2 reports `reported = false`, which means *unknown*: the mirror
+holds what it has rather than retiring every rack (A17.4's "unknown is not
+zero").
+
+### The placement rule
+
+| Resource | Primary parent | Held when |
+|---|---|---|
+| Site | none (the org tree is administrative) | — |
+| Rack | its site | its site's report is unknown, or its id is reported at two sites |
+| Device | its rack, when its own site's report places it in a rack of that site; else its site | it is reported at two sites, or its site's report is unknown and it already sits in a rack there |
+
+A re-placement retires the old edge and creates or revives the new one, so
+"where was this device last month" survives as a retired edge.
+
+### Visibility, unchanged in kind
+
+| Resource | Visible under `read_reach(scope, "fleet.view")` when |
+|---|---|
+| Rack (live or retired) | `scope_sites` admits its site — the site resource's own rule |
+| Everything else | exactly as §35 |
+| Parents / children / subtree | every node individually; a chain stops at the first hidden ancestor |
+
+### Boundary
+
+| Concern | TX-2 |
+|---|---|
+| Tables | `cc_resource_relationships` + `lifecycle_state`, `retired_at`; `cc_site_topology` (CC `0031`, guarded, no backfill) |
+| Integrity | one ACTIVE primary parent (partial unique index); no cycle over active `CONTAINS`; composite tenant FKs (PostgreSQL); edges only between live resources |
+| Writer | still only the mirror (advisory-locked, never deletes, no audit) |
+| Data path | proto `FleetSnapshot.topology` (additive) → `SMClient` → poller → `cc_site_topology` → mirror |
+| Routes | `GET /api/resources/{id}/parents`, `/children`, `/topology` — human-only, `fleet.view`, `READ_SCOPED`; `/relationships` gains `lifecycle_state` |
+| Contextual containers | allowed by the model; types reserved, none registered or written (no source exists); unanchored = tenant-owned |
+| Not mirrored | rows (a label is not an identity); Site Manager, Operational Agent and Harken Node as resources |
+| Unchanged | authorization, `device_class`, capability, execution, correlation, machine plane (14) |

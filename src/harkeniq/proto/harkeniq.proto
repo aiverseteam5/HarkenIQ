@@ -406,6 +406,22 @@ message FleetSafetyState {
   repeated SiteBudgetRemaining site_budgets = 6;
 }
 
+// TX-2 (A32.4): one operator-assigned rack, as the Site Manager records it.
+// Descriptive only -- no Central Command decision reads it.
+message FleetRack {
+  string rack_id = 1;                    // the SM's opaque rack id: identity
+  string name = 2;                       // mutable, never identity
+  repeated string device_agent_ids = 3;  // this site's devices placed here
+}
+
+// TX-2 (A32.4): the site's physical placement, for the Resource Catalogue.
+// A Site Manager predating TX-2 leaves `reported` false, which Central
+// Command reads as UNKNOWN -- never as "this site has no racks".
+message FleetTopology {
+  bool reported = 1;
+  repeated FleetRack racks = 2;
+}
+
 message FleetSnapshot {
   repeated FleetDevice devices = 1;
   repeated FleetIncident incidents = 2;
@@ -420,6 +436,7 @@ message FleetSnapshot {
   // mistake this for "the site has no devices" and clear its cache.
   bool site_resolved = 8;
   string site_reason = 9;              // empty when resolved
+  FleetTopology topology = 10;         // TX-2: racks, for the catalogue
 }
 
 message ApprovalRouteRequest {

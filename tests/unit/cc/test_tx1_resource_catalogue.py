@@ -62,6 +62,7 @@ from harkeniq_cc.resource_catalogue import (
     KIND_PHYSICAL_DEVICE,
     LEGACY_DEVICE,
     LEGACY_KINDS,
+    LEGACY_RACK,
     LEGACY_SITE,
     LIFECYCLE_ACTIVE,
     LIFECYCLE_RETIRED,
@@ -74,6 +75,7 @@ from harkeniq_cc.resource_catalogue import (
     RELATIONSHIP_TYPES,
     RESOURCE_KINDS,
     SOURCE_LEGACY_MIRROR,
+    TYPE_RACK,
     TYPE_SERVER,
     TYPE_SITE,
     TYPE_SWITCH,
@@ -323,8 +325,10 @@ class TestVocabulary:
             assert resource_type.startswith("harkeniq:")
             assert validate_type(resource_type, kind) == resource_type
         # Exactly what the mirror writes -- nothing declared without a writer.
+        # TX-2 (A32.4) added the rack, which the mirror now writes; the
+        # other contextual containers are reserved in A32.6, not registered.
         assert set(BUILTIN_TYPES) == {
-            TYPE_SITE, TYPE_SERVER, TYPE_SWITCH, TYPE_UNCLASSIFIED_DEVICE,
+            TYPE_SITE, TYPE_RACK, TYPE_SERVER, TYPE_SWITCH, TYPE_UNCLASSIFIED_DEVICE,
         }
 
     def test_a_type_outside_the_registry_is_refused(self):
@@ -355,11 +359,12 @@ class TestVocabulary:
         with pytest.raises(CatalogueError):
             validate_primary_containment(KIND_PHYSICAL_CONTAINER, KIND_LOGICAL_RESOURCE)
 
-    def test_rack_is_a_recorded_contract_not_a_known_legacy_kind(self):
-        """A31.3: rack ingest is TX-2's. Nothing writes it, so nothing may
-        treat it as known."""
-        assert LEGACY_KINDS == {LEGACY_SITE, LEGACY_DEVICE}
-        assert not any("rack" in t for t in BUILTIN_TYPES)
+    def test_rack_was_tx2s_contract_and_nothing_else_arrived_with_it(self):
+        """A31.3 recorded the rack contract for TX-2; TX-2 (A32.4) writes it,
+        so rack is now a known legacy kind with exactly one registered type
+        -- and no other legacy kind or container type came with it."""
+        assert LEGACY_KINDS == {LEGACY_SITE, LEGACY_DEVICE, LEGACY_RACK}
+        assert [t for t in BUILTIN_TYPES if "rack" in t] == [TYPE_RACK]
 
 
 # ---------------------------------------------------------------------------
@@ -394,8 +399,9 @@ class TestPrimitives:
         async with sessionmaker() as session:
             repo = ResourceRepo(session)
             with pytest.raises(CatalogueError):
+                # An unknown legacy kind (rack became a known one in TX-2).
                 await repo.create_mirrored(
-                    TENANT, legacy_kind="rack", legacy_ref="r1", legacy_site_id=None,
+                    TENANT, legacy_kind="chassis", legacy_ref="r1", legacy_site_id=None,
                     resource_kind=KIND_PHYSICAL_CONTAINER, resource_type=TYPE_SITE,
                     display_name="r",
                 )
@@ -432,9 +438,15 @@ class TestPrimitives:
             again = await repo.set_primary_parent(TENANT, dev.id, a.id, source="s")
             assert again.id == first.id
             moved = await repo.set_primary_parent(TENANT, dev.id, b.id, source="s")
-            assert moved.id == first.id and moved.from_resource_id == b.id
+            # TX-2 (A32.2): re-placing RETIRES the old edge and creates the
+            # new one -- the former placement is kept, never rewritten.
+            assert moved.id != first.id and moved.from_resource_id == b.id
             edges = (await session.execute(select(CCResourceRelationship))).scalars().all()
-            assert len(edges) == 1 and edges[0].is_primary
+            active = [e for e in edges if e.lifecycle_state == LIFECYCLE_ACTIVE]
+            assert [e.id for e in active] == [moved.id] and active[0].is_primary
+            retired = [e for e in edges if e.lifecycle_state == LIFECYCLE_RETIRED]
+            assert [(e.id, e.from_resource_id) for e in retired] == [(first.id, a.id)]
+            assert retired[0].retired_at is not None
 
     async def test_a_second_primary_parent_is_refused_by_the_database(self):
         sessionmaker, estate = await _bare()
@@ -805,12 +817,19 @@ class TestCanonicalParity:
                     continue
                 body = rel.json()
                 shown = {e["id"] for e in body["relationships"]}
-                expected = {
-                    e.id for e in edges
+                touching = {
+                    e.id: e.lifecycle_state for e in edges
                     if row.id in (e.from_resource_id, e.to_resource_id)
                     and ({e.from_resource_id, e.to_resource_id} - {row.id}) <= visible
                 }
+                # TX-2 (A32.2): the CURRENT edges by default; a former
+                # placement (node-moved's) only when asked for.
+                expected = {i for i, state in touching.items()
+                            if state == LIFECYCLE_ACTIVE}
                 assert shown == expected and body["total"] == len(expected)
+                every = (await client.get(f"{RESOURCES}{row.id}/relationships",
+                                          params={"lifecycle_state": "any"})).json()
+                assert {e["id"] for e in every["relationships"]} == set(touching)
                 for edge in body["relationships"]:
                     assert edge["resource"]["id"] in visible
                 parent = res.json()["primary_parent"]
@@ -1039,8 +1058,9 @@ class TestInvariants:
         app, sessionmaker, estate = await _tx1_stack()
         async with sessionmaker() as session:
             loose = await _insert(session, KIND_LOGICAL_RESOURCE, "x:logical.thing")
+            # An unknown legacy kind (rack is a known, site-owned one now).
             odd = await _insert(session, KIND_PHYSICAL_CONTAINER, TYPE_SITE,
-                                legacy=("rack", "r-1", estate.sites["site-1"]))
+                                legacy=("chassis", "c-1", estate.sites["site-1"]))
             await session.commit()
         async with await _as(app, sessionmaker, estate, "owner") as client:
             assert (await client.get(f"{RESOURCES}{loose.id}")).status_code == 200
@@ -1099,6 +1119,7 @@ CATALOGUE_FILES = {
     "resource_catalogue.py", "resource_mirror.py", "api/resources.py",
     "db/models.py", "db/repos.py", "runtime.py", "app.py",
     "db/migrations/versions/0030_resource_catalogue.py",
+    "db/migrations/versions/0031_resource_topology.py",
 }
 CATALOGUE_NAMES = (
     "CCResource", "cc_resource", "resource_catalogue", "resource_mirror",
@@ -1164,16 +1185,21 @@ class TestStructure:
                     callers.append(path.relative_to(CC_SRC).as_posix())
         assert set(callers) == {"resource_mirror.py"}, callers
 
-    def test_the_surface_moved_by_exactly_three_human_reads(self):
+    def test_the_surface_moved_by_exactly_the_catalogues_human_reads(self):
+        """TX-1's three, and TX-2's (A32.8) three topology reads -- all
+        human-only, fleet.view, READ_SCOPED; the plane did not move."""
         declared = {k: v for k, v in ROUTE_CONTRACT.items() if k[1].startswith(RESOURCES)}
+        read = ("fleet.view", READ_SCOPED, False)
         assert declared == {
-            ("GET", "/api/resources/"): ("fleet.view", READ_SCOPED, False),
-            ("GET", "/api/resources/{resource_id}"): ("fleet.view", READ_SCOPED, False),
-            ("GET", "/api/resources/{resource_id}/relationships"):
-                ("fleet.view", READ_SCOPED, False),
+            ("GET", "/api/resources/"): read,
+            ("GET", "/api/resources/{resource_id}"): read,
+            ("GET", "/api/resources/{resource_id}/relationships"): read,
+            ("GET", "/api/resources/{resource_id}/parents"): read,
+            ("GET", "/api/resources/{resource_id}/children"): read,
+            ("GET", "/api/resources/{resource_id}/topology"): read,
         }
         assert not any(k[1].startswith(RESOURCES) for k in MACHINE_SURFACE)
-        assert len(ROUTE_CONTRACT) == 102 and len(MACHINE_SURFACE) == 14
+        assert len(ROUTE_CONTRACT) == 105 and len(MACHINE_SURFACE) == 14
 
     def test_the_permissions_and_the_ceiling_are_unchanged(self):
         from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING

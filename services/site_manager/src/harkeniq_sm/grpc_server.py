@@ -39,6 +39,7 @@ from harkeniq_sm.db.repos import (
     AuditRepo,
     DeviceRepo,
     IncidentRepo,
+    RackRepo,
     SiteRepo,
     StatusRepo,
     TelemetryRepo,
@@ -1264,6 +1265,9 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             # which is the honest answer. An unobserved safety state must
             # never round down to "safe".
             safety = await self._safety_state(session, site.id)
+            # TX-2 (A32.4): the site's racks, for the Resource Catalogue.
+            # Last, so a failure here can never cost the safety report.
+            topology = await self._topology(session, site.id, devices)
 
         return harkeniq_pb2.FleetSnapshot(
             devices=fleet_devices,
@@ -1275,7 +1279,48 @@ class SiteManagerServiceServicer(harkeniq_pb2_grpc.SiteManagerServiceServicer):
             safety=safety,
             site_resolved=True,
             site_reason="",
+            topology=topology,
         )
+
+    async def _topology(
+        self, session, site_id: str, devices
+    ) -> "harkeniq_pb2.FleetTopology":
+        """Compose FleetTopology for ONE site (TX-2, A32.4).
+
+        The site's operator-assigned racks and, for each, this site's own
+        devices the operator placed in it. E0.2 holds here as everywhere in
+        the snapshot: a device whose `rack_id` names a rack of ANOTHER site
+        is reported as placed nowhere, rather than leaking that rack's id
+        into this site's report. `rack_suggestion` is a name heuristic and
+        never a rack.
+
+        A failure degrades to `reported=False`, which Central Command reads
+        as UNKNOWN -- the honest answer -- and never to an empty report,
+        which would retire every rack this site has.
+        """
+        try:
+            racks = sorted(
+                await RackRepo(session).list_for_site(site_id),
+                key=lambda rack: (rack.name or "", rack.id),
+            )
+            members: dict[str, list[str]] = {rack.id: [] for rack in racks}
+            for device in devices:
+                if device.rack_id in members and device.agent_id:
+                    members[device.rack_id].append(device.agent_id)
+            return harkeniq_pb2.FleetTopology(
+                reported=True,
+                racks=[
+                    harkeniq_pb2.FleetRack(
+                        rack_id=rack.id,
+                        name=rack.name or "",
+                        device_agent_ids=sorted(members[rack.id]),
+                    )
+                    for rack in racks
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail the snapshot
+            logger.warning("Topology unavailable for site %s: %s", site_id, exc)
+            return harkeniq_pb2.FleetTopology(reported=False)
 
     async def _safety_state(
         self, session, site_id: str

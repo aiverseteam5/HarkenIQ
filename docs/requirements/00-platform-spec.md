@@ -7105,3 +7105,213 @@ topology editing; external CMDB, ServiceNow, VMware or Kubernetes import;
 vendor service-tag identifiers and reconciliation (merge/split, source
 precedence); tenant or vendor type namespaces; relationship history; fault
 domains, Site Manager instances or Operational Agents as resources; PX.
+
+### A32 — 2026-10-25 — TX-2: resource relationships, topology and the rack mapping (decided: Vinod)
+
+TX-1 (A31) mirrored Sites and Devices into a descriptive Resource Catalogue.
+TX-2 builds the topology layer on it: a lifecycle for relationships, the
+rack mapping A31.3 recorded and deferred, and three topology reads. The
+boundary was checked on `main` at
+`bb9446e89ae62d2b28580e559347dace33226699` (TX-1 ledger closed, the
+CI-hygiene follow-up merged, main verified) and recorded here before any
+code. Like TX-1 it is **descriptive and contextual only**: it adds no
+authority, changes no decision, and could be deleted without any
+authorization, execution, safety, dispatch or correlation answer moving.
+A31.1's LOCKs stand exactly as written.
+
+**A32.1 — Open decisions this slice answers (architecture review §O).**
+- *(1)* A **Site** stays the operational execution, normal-safety and
+  correlation anchor. It may be a datacenter, an edge location, a building,
+  an operational facility or any customer-defined execution boundary; it is
+  not necessarily a datacenter.
+- *(2)* Containers above or around a Site — region, campus, datacenter,
+  building and the rest — are **purely contextual**: no authority, no safety
+  boundary, no dispatch behaviour, no correlation scope.
+- *(5)* Each resource has **at most one active primary containment parent**;
+  secondary relationships of every type stay allowed and confer nothing.
+The rest of §O stays open.
+
+**A32.2 — Relationship lifecycle.** `cc_resource_relationships` gains
+`lifecycle_state` (`active` | `retired`, the resource vocabulary) and
+`retired_at`. An edge is read "*from* TYPE *to*" (`from_resource_id` is the
+source, `to_resource_id` the target) and is identified by (from, to, type)
+for its whole life: when its source stops asserting it, it is retired, never
+deleted; asserted again, the same row is revived. A re-placement retires the
+old primary edge and creates or revives the new one — TX-1's in-place
+rewrite is replaced — so a former placement survives as a retired edge. An
+edge is asserted only between two **live** resources of **one tenant**. An
+endpoint's retirement leaves its edges as they were, because a tombstone
+keeps its last placement (A31.5). A log of every change (relationship
+history beyond the last state) stays unbuilt.
+
+**A32.3 — Topology integrity.**
+- **One active primary parent** is a database guarantee: the partial unique
+  index becomes `WHERE is_primary AND lifecycle_state = 'active'`
+  (`uq_resource_active_primary_parent`, replacing
+  `uq_resource_primary_parent`).
+- **No containment cycle.** Before any `CONTAINS` edge is written, primary or
+  secondary, an upward walk over every ACTIVE `CONTAINS` edge from the
+  proposed parent refuses it if the walk reaches the child. A self-edge is
+  refused. A walk deeper than 32 levels or wider than a fixed bound is
+  refused — fail closed. The mirror is the one writer and runs under the
+  tenant's advisory lock, so the check and the write cannot interleave.
+- **No cross-tenant edge.** The repository refuses an edge whose ends are not
+  both the tenant's (TX-1), and composite foreign keys
+  `(from_resource_id, tenant_id)` and `(to_resource_id, tenant_id)` →
+  `cc_resources (id, tenant_id)` make one impossible on PostgreSQL. Every
+  read conjoins the tenant on the edge and on both ends.
+- **No dangling edge.** Both ends are foreign keys, and resources are never
+  deleted.
+- **No name identity.** Every legacy link is an opaque id — the Central
+  Command site id, the Harken Node `agent_id`, the Site Manager rack id. A
+  rename changes `display_name` and nothing else; two racks of one name at
+  two sites are two resources.
+- **Physical parents only** (A31.2, extended by A32.12 to every
+  `CONTAINS` edge, secondary ones included). A container is a
+  `physical_container` or a `physical_device`, so a Site Manager or an
+  Operational Agent — however a later slice represents them — is never
+  anything's physical parent, by any edge.
+
+**A32.4 — The rack mapping (A31.3's contract, implemented).**
+`physical_container`, `harkeniq:placement.rack`, legacy kind `rack`, ref =
+the Site Manager rack id, external id `harkeniq / rack / <rack id>`. Site
+`CONTAINS` Rack `CONTAINS` Device as primary containment. Operator-assigned
+only: `devices.rack_id` as the site-model import set it — the
+`rack_suggestion` name heuristic never becomes a resource. A placement that
+names a rack of another site, or a device claimed by two racks, is refused,
+and the device stays under its site. The Site Manager stays the rack's
+authority.
+- *The data path (additive).* Proto: `FleetSnapshot.topology = 10`, a
+  `FleetTopology { reported, racks }` of
+  `FleetRack { rack_id, name, device_agent_ids }`. The Site Manager fills it
+  under E0.2 — the resolved site's own racks and its own devices, nothing
+  else. `SMClient` decodes it (QA-042: a field decoded nowhere carries
+  nothing). The poller stores it as `cc_site_topology`, one row per site,
+  replaced on every successful poll. A Site Manager that predates TX-2
+  leaves `reported` false, which is stored and read as **UNKNOWN** — never as
+  "this site has no racks" (A17.4, S5): the mirror then neither creates nor
+  retires that site's racks, and holds a device's existing rack placement at
+  that site.
+- *Reconcile.* A rack reported at exactly one site is created or refreshed
+  there and placed under it. A rack absent from its site's current report is
+  retired; a rack whose site is gone is retired; an unknown report holds. A
+  rack id reported at two sites at once is held — A31.3's "transiently at two
+  sites" rule, applied to racks. A device's primary parent is its rack when
+  its own site's report places it in a rack of that site, and its site
+  otherwise; a device reported at two sites still holds its placement.
+- *Not carried.* `row_label`. A row at the Site Manager is a free-text label
+  on a rack, not an object with an identity; a resource keyed on it would
+  change id whenever the label changed. Rows are not mirrored.
+
+**A32.5 — Visibility: A31.4 extended, never widened.** A rack is
+**site-owned**: visible exactly when `scope_sites` admits its site id — the
+answer its site's own resource gets, and `SiteRepo.list_all`'s — live or
+retired alike. Nothing else changes: relationships never feed visibility; an
+unanchored resource stays tenant-owned; an unknown legacy kind is visible to
+no scoped reader; a device- or class-scoped reader sees its devices and no
+container (A31.4's site rule, now also for racks). A traversal shows only
+what its reader can read: a parents chain stops at the first hidden ancestor
+and is indistinguishable from a chain that ends at a root; children and
+subtrees omit hidden resources and never descend through one.
+
+**A32.6 — Contextual containers.** The model admits optional physical
+containers above, around and below a Site: the kind rule permits them, and
+the integrity and visibility rules are proven over them with test fixtures.
+The types **reserved** for them are `harkeniq:geography.region`,
+`harkeniq:facility.campus`, `harkeniq:facility.datacenter`,
+`harkeniq:facility.building`, `harkeniq:facility.room`,
+`harkeniq:facility.hall`, `harkeniq:placement.zone`,
+`harkeniq:placement.row` and `harkeniq:enclosure.chassis` (reserving a
+chassis container type leaves open decision 7 open: a chassis may also be a
+device, related through typed edges). **None is registered or written by
+TX-2.** Nothing in the platform is an authoritative source for any of them —
+a container above a Site cannot come from a per-site Site Manager, and BMC
+location text is vendor-reported free text, not an identity — and a registry
+entry with no writer is a declaration the platform cannot keep (A31.2: the
+registry holds exactly the types it writes). Each is registered by the slice
+that adds its writer, together with that writer's trust rules. Until then an
+unanchored container is tenant-owned — tenant-wide `fleet.view` only — the
+fail-closed bound. A descendant-derived breadcrumb (a scoped reader seeing a
+container as *context* because something inside it is visible to them) is
+not built: it would make a relationship a visibility input, and its safety
+depends on the trust of whichever source wrote the edge, so it belongs to
+that slice. A contextual container, present or future, never confers reach,
+never bounds safety and never routes dispatch.
+
+**A32.7 — Runtime and actor relationships.** No Site Manager, Operational
+Agent or Harken Node resource is created. The Harken Node *is* the device
+resource's identity (`harkeniq / harken_node / <agent_id>`). A Site Manager
+has no durable instance identity at Central Command — `cc_sites.sm_endpoint`
+is a locator, and a resource keyed on it would be name identity — so open
+decision 13 stays open and `MANAGED_BY` keeps its vocabulary with no
+writer. An Operational Agent stays a governed actor (A31.1). None can ever
+be a physical parent.
+
+**A32.8 — Surface.** Three reads, human-only, `fleet.view`, `READ_SCOPED`,
+each 404 for a resource the caller cannot read:
+- `GET /api/resources/{resource_id}/parents` — the active
+  primary-containment ancestors, nearest first, stopping at the first hidden
+  one;
+- `GET /api/resources/{resource_id}/children` — the visible active
+  primary-containment children, paginated, filterable by lifecycle;
+- `GET /api/resources/{resource_id}/topology` — the visible active
+  primary-containment subtree to a bounded depth (at most 8) and size (at
+  most 500 nodes; `truncated` counts visible nodes only).
+`GET /api/resources/{resource_id}/relationships` gains `lifecycle_state`
+(`active` by default, `retired`, `any`) and reports each edge's state. No
+mutation route. None is on `MACHINE_SURFACE`, so a machine principal is
+refused (and charged, A30.31). `ROUTE_CONTRACT` 102 → 105; `MACHINE_SURFACE`
+stays 14.
+
+**A32.9 — Migration.** CC `0031`: the two edge columns (`lifecycle_state`
+NOT NULL, default `active`); the active-primary index swap; on PostgreSQL
+the unique `(id, tenant_id)` on `cc_resources` and the two composite foreign
+keys; `cc_site_topology`. Guarded and idempotent as every migration since
+0010; NO backfill — every existing edge is active, which is what it was.
+The downgrade deletes retired edges before restoring TX-1's index, which
+admits one primary edge per child. The proto change is additive. The Site
+Manager and the Console gain no migration. Heads: CC `0031`, SM `0012`,
+Console `0004`.
+
+**A32.10 — Unchanged.** Everything A31.8 lists: permissions (25),
+`ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE`,
+`resolve()`, `permits()`, `read_reach`, every scope predicate, every
+mutation gate, approval, autonomy, the global gate, dispatch, campaigns,
+capability, correlation, the `device_class` vocabulary `server | switch`,
+the agent and the Console. The Site Manager changes only by reporting its
+racks in the snapshot: its rack truth, fault domains, correlation and
+site-token API are untouched. No execution, safety, dispatch, correlation
+or capability reader consults the catalogue or `cc_site_topology`; the
+mirror is the one reader of the latter.
+
+**A32.11 — Not built (each needs its own boundary).** Writers and
+registration for the reserved container types; a descendant-derived
+contextual breadcrumb; rows; Site Manager instances, Operational Agents,
+fault domains or components as resources; writers for `MANAGED_BY`,
+`MEMBER_OF`, `HOSTS`, `RUNS_ON` or `CONNECTED_TO`; relationship history
+beyond the last state; external CMDB, ServiceNow, VMware or Kubernetes import
+and reconciliation; tenant or vendor type namespaces; topology editing or any
+mutation route; any new scope target or authority over a resource, a
+container or a resource set; `device_class` expansion; PX.
+
+**A32.12 — Found while implementing (recorded).**
+- *A secondary `CONTAINS` edge escaped two rules.* TX-1's cycle walk
+  followed primary edges only, so a secondary `CONTAINS` could close a loop
+  it never saw; and the physical-parent rule was checked for primary
+  containment only, so a logical resource could "contain" a device through
+  a secondary edge. Both rules now apply to every active `CONTAINS` edge.
+  No production writer of a secondary edge exists, so no stored data was
+  ever affected.
+- *A generated proof was vacuous for one property.* In a naturally mirrored
+  estate every container a reader can see has only children that reader can
+  also see (a rack is site-owned), so the parity sweep could not tell a
+  topology walk that filters each node from one that does not. The sweep
+  now also runs over a deliberately forged estate — hidden children under
+  visible parents, a hidden ancestor below visible ones, a tenant-owned
+  region over two sites — and seventeen mutants of the slice's rules are
+  each killed by a named test.
+- *A pre-existing stale proof, not fixed here.* The A6 admission-concurrency
+  PostgreSQL proofs (`tests/integration/test_a6_admission_concurrency.py`,
+  two tests) fail on `main` itself: since PB-1 (A30.44) `admit_proposal`
+  refuses with `agent_missing`, and those proofs create no agent row. They
+  are DSN-gated and not run in CI. Recorded for a test-only follow-up.

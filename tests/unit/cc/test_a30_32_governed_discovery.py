@@ -277,8 +277,9 @@ class TestThePlane:
 
     def test_the_counts_moved_by_exactly_one_route(self):
         """Verified, not forced (A30.32 D1). TX-1 (A31.6) later added three
-        HUMAN-only catalogue reads (99 -> 102); the machine plane did not move."""
-        assert len(ROUTE_CONTRACT) == 102
+        HUMAN-only catalogue reads (99 -> 102) and TX-2 (A32.8) three topology
+        reads (102 -> 105); the machine plane did not move."""
+        assert len(ROUTE_CONTRACT) == 105
         assert len(MACHINE_SURFACE) == 14
         assert len(MACHINE_ONLY_ROUTES) == 4
         assert len(MACHINE_JOBS) == 5

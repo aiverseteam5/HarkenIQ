@@ -250,11 +250,13 @@ async def test_the_partial_unique_index_holds_on_postgres():
                 relationship_type=REL_CONTAINS, is_primary=True, source="pg"))
             with pytest.raises(IntegrityError):
                 await session.commit()
+        # TX-2 (A32.3) narrowed the guarantee to ACTIVE edges, under a new
+        # name; "one primary parent" is still the database's to keep.
         async with engine.connect() as conn:
             definition = (await conn.execute(sa.text(
                 "SELECT indexdef FROM pg_indexes WHERE indexname = "
-                "'uq_resource_primary_parent'"))).scalar_one()
-        assert "UNIQUE" in definition and "WHERE is_primary" in definition, definition
+                "'uq_resource_active_primary_parent'"))).scalar_one()
+        assert "UNIQUE" in definition and "WHERE (is_primary" in definition, definition
     finally:
         await _cleanup(maker, tenant)
         await engine.dispose()
@@ -321,7 +323,7 @@ async def test_cc_0029_to_0030_with_rows_backfills_nothing():
             valid = (await conn.execute(sa.text(
                 "SELECT i.indisvalid AND i.indisunique FROM pg_index i "
                 "JOIN pg_class c ON c.oid = i.indexrelid "
-                "WHERE c.relname = 'uq_resource_primary_parent'"))).scalar_one()
+                "WHERE c.relname = 'uq_resource_active_primary_parent'"))).scalar_one()
             resources = (await conn.execute(sa.text(
                 "SELECT count(*) FROM cc_resources"))).scalar_one()
             after = (await conn.execute(sa.text(

@@ -127,6 +127,18 @@ async def fleet_poll_loop(state) -> None:
                             snapshot.get("safety") or {"reported": False},
                         )
 
+                        # TX-2 (A32.4): the site's racks, for the Resource
+                        # Catalogue -- a description its mirror reads, and
+                        # nothing else does. Written on every poll INCLUDING
+                        # an older Site Manager's, whose missing report is
+                        # stored as UNKNOWN rather than as yesterday's racks.
+                        from harkeniq_cc.db.repos import SiteTopologyRepo
+
+                        await SiteTopologyRepo(session).upsert(
+                            state.config.tenant_id, site.id,
+                            snapshot.get("topology") or {"reported": False},
+                        )
+
                         await SiteRepo(session).update_last_seen(site)
                         await session.commit()
 

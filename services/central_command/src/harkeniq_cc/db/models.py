@@ -15,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -870,6 +871,38 @@ class CCSafetyState(Base):
     )
 
     __table_args__ = (Index("ix_cc_safety_tenant", "tenant_id"),)
+
+
+class CCSiteTopology(Base):
+    """A site's operator-assigned racks, as its Site Manager reports them
+    (TX-2, spec A32.4).
+
+    The Site Manager is the rack authority; this is its report, one row per
+    site, replaced on every successful poll -- the shape of
+    `cc_safety_state`, and deliberately apart from `cc_fleet_cache`, so rack
+    data never sits beside an authorization input. A DESCRIPTION, read by
+    exactly one thing: the Resource Catalogue's mirror. No authorization,
+    execution, safety, dispatch, correlation or capability path reads it
+    (a structural test pins the readers).
+
+    `reported=False` is a Site Manager that predates TX-2 -- or could not
+    assemble the report -- and means UNKNOWN: the mirror then neither
+    creates nor retires this site's racks. It is never "this site has no
+    racks".
+    """
+
+    __tablename__ = "cc_site_topology"
+
+    site_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    reported: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: [{rack_id, name, device_agent_ids: [agent_id, ...]}], sorted.
+    racks: Mapped[list | None] = mapped_column(JSONVariant, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (Index("ix_cc_site_topology_tenant", "tenant_id"),)
 
 
 # ---------------------------------------------------------------------------
@@ -1938,6 +1971,11 @@ class CCResource(Base):
             name="uq_resource_legacy_link",
         ),
         Index("ix_resources_tenant_kind", "tenant_id", "resource_kind"),
+        # TX-2 (A32.3): redundant with the primary key as a uniqueness
+        # rule, and there for one reason -- it is what a relationship's
+        # composite (resource, tenant) foreign keys reference, which is
+        # how a cross-tenant edge becomes impossible rather than refused.
+        UniqueConstraint("id", "tenant_id", name="uq_resource_tenant_identity"),
     )
 
 
@@ -1945,10 +1983,18 @@ class CCResourceRelationship(Base):
     """A typed, directional edge: "<from> TYPE <to>" (A31.2).
 
     Primary containment is a CONTAINS edge with `is_primary`; the partial
-    unique index makes "at most one primary containment parent" a database
-    guarantee rather than a convention. No edge, primary or otherwise,
-    confers anything: visibility never reads this table, and an edge is
-    only ever SHOWN when both of its endpoints are already visible.
+    unique index makes "at most one ACTIVE primary containment parent" a
+    database guarantee rather than a convention. No edge, primary or
+    otherwise, confers anything: visibility never reads this table, and an
+    edge is only ever SHOWN when both of its endpoints are already visible.
+
+    TX-2 (A32.2): an edge has a lifecycle. It is `active` while its source
+    asserts it and `retired` once that source stops -- a former placement
+    is kept, never rewritten and never deleted -- and (from, to, type) is
+    its identity for life, so an edge asserted again is the same row,
+    revived. Both ends carry the edge's own tenant through composite
+    foreign keys, so an edge between two tenants cannot be written at all
+    on PostgreSQL (A32.3).
     """
 
     __tablename__ = "cc_resource_relationships"
@@ -1964,6 +2010,13 @@ class CCResourceRelationship(Base):
     relationship_type: Mapped[str] = mapped_column(String(32))
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(64))
+    #: TX-2 (A32.2): `active` | `retired` -- the resource vocabulary.
+    lifecycle_state: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active"
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
@@ -1976,10 +2029,22 @@ class CCResourceRelationship(Base):
             "from_resource_id", "to_resource_id", "relationship_type",
             name="uq_resource_relationship",
         ),
+        # At most one ACTIVE primary containment parent per resource. A
+        # retired former placement is history and does not count (A32.3).
         Index(
-            "uq_resource_primary_parent", "to_resource_id", unique=True,
-            postgresql_where=text("is_primary"),
-            sqlite_where=text("is_primary"),
+            "uq_resource_active_primary_parent", "to_resource_id", unique=True,
+            postgresql_where=text("is_primary AND lifecycle_state = 'active'"),
+            sqlite_where=text("is_primary AND lifecycle_state = 'active'"),
+        ),
+        ForeignKeyConstraint(
+            ["from_resource_id", "tenant_id"],
+            ["cc_resources.id", "cc_resources.tenant_id"],
+            name="fk_resource_relationship_from_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["to_resource_id", "tenant_id"],
+            ["cc_resources.id", "cc_resources.tenant_id"],
+            name="fk_resource_relationship_to_tenant",
         ),
     )
 
