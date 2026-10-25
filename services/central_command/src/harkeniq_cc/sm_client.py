@@ -298,6 +298,23 @@ class SMClient:
                     sb.action_type: sb.remaining for sb in snap.safety.site_budgets
                 },
             }
+            # TX-2 (A32.4): the site's racks, for the Resource Catalogue. An
+            # SM that predates the field leaves `reported` false, which CC
+            # stores and the mirror reads as UNKNOWN -- never as "this site
+            # has no racks", which would retire every rack it has. A rack
+            # without an id is dropped: CC cannot mirror what it cannot name.
+            topology = {
+                "reported": bool(snap.topology.reported),
+                "racks": [
+                    {
+                        "rack_id": rack.rack_id,
+                        "name": rack.name,
+                        "device_agent_ids": [a for a in rack.device_agent_ids if a],
+                    }
+                    for rack in snap.topology.racks
+                    if rack.rack_id
+                ],
+            }
             return {
                 "devices": devices,
                 "incidents": incidents,
@@ -314,6 +331,7 @@ class SMClient:
                 # site's fleet and close all of its incidents.
                 "site_resolved": snap.site_resolved,
                 "site_reason": snap.site_reason,
+                "topology": topology,
             }
 
     async def route_approval(

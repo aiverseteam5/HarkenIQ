@@ -1,11 +1,15 @@
-"""Resource Catalogue API: three reads (TX-1, spec A31.6).
+"""Resource Catalogue API: six reads (TX-1 spec A31.6, TX-2 spec A32.8).
 
 Human-only (absent from `MACHINE_SURFACE`), `fleet.view`, `READ_SCOPED`.
-Every read filters through `repos.scope_resources`, which derives a
-resource's visibility from its CANONICAL legacy object -- the Sites and
-Fleet predicates -- and from nothing in the catalogue. A hidden resource
-reads exactly as a nonexistent one: 404, or absent from a list and from
-its count. Nothing here grants, implies or describes authority.
+Every read filters EVERY resource it returns through
+`repos.scope_resources`, which derives a resource's visibility from its
+CANONICAL legacy object -- the Sites and Fleet predicates -- and from
+nothing in the catalogue. A hidden resource reads exactly as a nonexistent
+one: 404, or absent from a list and from its count. The topology reads
+(parents, children, a subtree) walk containment edges, and the walk is a
+description too: it stops at, or skips, what its reader cannot read, and
+never shows what lies beyond. Nothing here grants, implies or describes
+authority.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import ResourceRepo
+from harkeniq_cc.resource_catalogue import MAX_TOPOLOGY_DEPTH, MAX_TOPOLOGY_NODES
 from harkeniq_cc.scope import read_reach
 
 router = APIRouter(prefix="/api/resources", tags=["resources"])
@@ -27,6 +32,11 @@ router = APIRouter(prefix="/api/resources", tags=["resources"])
 ResourceKindFilter = Literal[
     "component", "logical_resource", "physical_container", "physical_device",
 ]
+LifecycleFilter = Literal["active", "retired", "any"]
+
+
+def _lifecycle(value: str) -> Optional[str]:
+    return None if value == "any" else value
 
 
 def _iso(value) -> Optional[str]:
@@ -44,13 +54,26 @@ def _summary(row) -> dict:
     }
 
 
+def _edge_summary(edge) -> dict:
+    """What a relationship says. A description, never a grant."""
+    return {
+        "id": edge.id,
+        "relationship_type": edge.relationship_type,
+        "is_primary": bool(edge.is_primary),
+        "source": edge.source,
+        "lifecycle_state": edge.lifecycle_state,
+    }
+
+
 def _resource_dict(row) -> dict:
     out = _summary(row)
     out.update({
         "source": row.source,
         # The canonical object this resource mirrors -- an id the reader
-        # can already see through Sites or Fleet. `legacy_site_id` is an
-        # internal anchor for tombstone visibility and is not published.
+        # can already see through Sites or Fleet, or (TX-2) the Site
+        # Manager's own id for a rack at a site the reader can see.
+        # `legacy_site_id` is an internal anchor for site-owned visibility
+        # and is not published.
         "legacy": (
             {"kind": row.legacy_kind, "ref": row.legacy_ref}
             if row.legacy_kind else None
@@ -158,14 +181,17 @@ async def list_relationships(
     page_size: int = Query(50, ge=1, le=200),
     relationship_type: Optional[str] = Query(None, max_length=32),
     direction: Optional[Literal["outgoing", "incoming"]] = None,
+    lifecycle_state: LifecycleFilter = "active",
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
 ) -> dict:
     """The typed edges touching one resource whose other end the caller may
     also read. `outgoing`: "<this> TYPE <other>"; `incoming`: the reverse.
-    A relationship is a description: it neither shows a hidden resource
-    nor confers anything over a visible one."""
+    `lifecycle_state` filters the edges (A32.2): the current ones by
+    default, former placements with `retired`. A relationship is a
+    description: it neither shows a hidden resource nor confers anything
+    over a visible one."""
     reach = read_reach(scope, "fleet.view")
     repo = ResourceRepo(session)
     row = await repo.get_visible(user.tenant_id, resource_id, scope=reach)
@@ -177,6 +203,7 @@ async def list_relationships(
         scope=reach,
         relationship_type=relationship_type,
         direction=direction,
+        lifecycle_state=_lifecycle(lifecycle_state),
         page=page,
         page_size=page_size,
     )
@@ -184,11 +211,8 @@ async def list_relationships(
         "resource_id": row.id,
         "relationships": [
             {
-                "id": edge.id,
-                "relationship_type": edge.relationship_type,
+                **_edge_summary(edge),
                 "direction": way,
-                "is_primary": bool(edge.is_primary),
-                "source": edge.source,
                 "resource": _summary(other),
             }
             for edge, other, way in edges
@@ -196,4 +220,128 @@ async def list_relationships(
         "page": page,
         "page_size": page_size,
         "total": total,
+    }
+
+
+@router.get(
+    "/{resource_id}/parents",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def list_parents(
+    resource_id: str,
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """The resource's primary-containment ancestors the caller may read,
+    nearest first -- a breadcrumb (A32.8). The chain stops at the first
+    ancestor the caller cannot read, and then reads exactly as a chain that
+    ends at a root: nothing beyond a hidden ancestor is shown or implied."""
+    reach = read_reach(scope, "fleet.view")
+    repo = ResourceRepo(session)
+    row = await repo.get_visible(user.tenant_id, resource_id, scope=reach)
+    if row is None:
+        raise HTTPException(status_code=404, detail="resource not found")
+    chain = await repo.ancestors_visible(user.tenant_id, row.id, scope=reach)
+    return {
+        "resource_id": row.id,
+        "parents": [
+            {
+                "depth": depth,
+                "relationship": _edge_summary(edge),
+                "resource": _summary(parent),
+            }
+            for depth, (edge, parent) in enumerate(chain, start=1)
+        ],
+    }
+
+
+@router.get(
+    "/{resource_id}/children",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def list_children(
+    resource_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    lifecycle_state: LifecycleFilter = "active",
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """What the resource primarily contains that the caller may read,
+    paginated (A32.8). A hidden child is not listed and not counted.
+    `lifecycle_state` filters the CHILD: a tombstone still placed here is
+    `retired`."""
+    reach = read_reach(scope, "fleet.view")
+    repo = ResourceRepo(session)
+    row = await repo.get_visible(user.tenant_id, resource_id, scope=reach)
+    if row is None:
+        raise HTTPException(status_code=404, detail="resource not found")
+    children, total = await repo.children_visible(
+        user.tenant_id,
+        row.id,
+        scope=reach,
+        lifecycle_state=_lifecycle(lifecycle_state),
+        page=page,
+        page_size=page_size,
+    )
+    return {
+        "resource_id": row.id,
+        "children": [
+            {"relationship": _edge_summary(edge), "resource": _summary(child)}
+            for edge, child in children
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
+
+
+@router.get(
+    "/{resource_id}/topology",
+    dependencies=[Depends(require_permission("fleet.view"))],
+)
+async def get_topology(
+    resource_id: str,
+    depth: int = Query(2, ge=1, le=MAX_TOPOLOGY_DEPTH),
+    lifecycle_state: LifecycleFilter = "active",
+    user: UserContext = Depends(require_permission("fleet.view")),
+    session: AsyncSession = Depends(get_session),
+    scope=Depends(get_scope),
+) -> dict:
+    """The primary-containment subtree under a resource that the caller
+    may read, breadth first, to `depth` levels (A32.8). A hidden resource is
+    not shown, and neither is anything under it. `truncated` is true when
+    more than `limit` visible resources would have been returned -- it
+    counts nothing the caller could not list for themselves."""
+    reach = read_reach(scope, "fleet.view")
+    repo = ResourceRepo(session)
+    row = await repo.get_visible(user.tenant_id, resource_id, scope=reach)
+    if row is None:
+        raise HTTPException(status_code=404, detail="resource not found")
+    nodes, truncated = await repo.subtree_visible(
+        user.tenant_id,
+        row.id,
+        scope=reach,
+        depth=depth,
+        lifecycle_state=_lifecycle(lifecycle_state),
+        max_nodes=MAX_TOPOLOGY_NODES,
+    )
+    return {
+        "root": _summary(row),
+        "depth": depth,
+        "nodes": [
+            {
+                **_summary(node),
+                "level": level,
+                # Always the root or a node above in this list: the walk
+                # only ever descends through what the caller may read.
+                "parent_id": edge.from_resource_id,
+                "relationship": _edge_summary(edge),
+            }
+            for edge, node, level in nodes
+        ],
+        "limit": MAX_TOPOLOGY_NODES,
+        "truncated": truncated,
     }
