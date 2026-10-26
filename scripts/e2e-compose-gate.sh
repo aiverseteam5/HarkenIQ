@@ -10417,8 +10417,9 @@ import json, sys
 d = json.load(sys.stdin)
 assert d['primary_parent'] and d['primary_parent']['id'] == '$TX1_SITE_RES', d['primary_parent']
 assert d['legacy'] == {'kind': 'device', 'ref': '$TX1_HIDDEN_AGENT'}, d['legacy']
-assert {'source_system': 'harkeniq', 'namespace': 'harken_node',
-        'external_id': '$TX1_HIDDEN_AGENT'} in d['external_ids']"
+# TX-3 (A33.10): an identifier entry also carries when it was observed.
+assert [e for e in d['external_ids'] if (e['source_system'], e['namespace'], e['external_id'])
+        == ('harkeniq', 'harken_node', '$TX1_HIDDEN_AGENT')], d['external_ids']"
 for TX1_PATH in "/api/resources/$TX1_RES" "/api/resources/$TX1_RES/relationships" \
                 "/api/resources/$TX1_SITE_RES"; do
   [ "$(tx1_code "$TX1_A" "$TX1_PATH")" = "404" ] || {
@@ -10716,8 +10717,9 @@ tx2_gone() {
                 OR (legacy_kind = 'device' AND legacy_ref LIKE 'gate-tx2-%'))" < /dev/null)" = "0" ]
 }
 wait_for "every rack and device this proof seeded to be a tombstone" 240 tx2_gone
-[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0031" ] || {
-  echo "Central Command is not at migration 0031" >&2; exit 1; }
+# 0031 is applied; TX-3's 0032 is the head now, and its own step checks it.
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" \> "0030" ] || {
+  echo "Central Command is not at migration 0031 or later" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM pg_tables WHERE tablename = 'cc_site_topology'" < /dev/null)" = "1" ] || {
   echo "cc_site_topology is missing" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM pg_constraint WHERE conrelid = 'cc_resource_relationships'::regclass
@@ -10750,6 +10752,273 @@ print('  shipped image: three human-only topology reads; plane 14, contract 105,
       ' rack registered, no reserved container type registered')" < /dev/null
 echo "  grants revoked; racks and devices removed at the Site Manager and tombstoned here;"
 echo "  CC 0031 live: cc_site_topology, both tenant keys validated, no cross-tenant edge, former placements kept"
+
+# ===========================================================================
+# TX-3 (A33), live: what a resource IS, what it is CALLED, and where each fact
+# CAME FROM. Nothing below writes a resource, an alias or an identifier at
+# Central Command: four synthetic nodes are seeded, renamed and removed AT THE
+# SITE MANAGER, and the SHIPPED mirror records what follows. Two at site A and
+# one at site B report ONE serial (in two spellings): three Harken Node
+# identities that may be one box -- three resources, never merged, each
+# naming the others as candidates to a reader who can see them. The demo's
+# own server nodes all read one simulated BMC; the serial they share is held
+# to the same rule, for the owner.
+# ===========================================================================
+TX3_SITE=$(s1_sm "SELECT cc_site_id FROM sites WHERE name = 'site-1'" < /dev/null)
+[ -n "$TX3_SITE" ] && [ "$TX3_SITE" != "$SITE_B" ] || {
+  echo "the Site Manager's site-1 is not bound distinctly from site B" >&2; exit 1; }
+tx3_seed() {  # $1 key, $2 agent id, $3 agent name, $4 serial, $5 which SM site
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                          service_tag, device_class, first_seen_at, last_seen_at)
+     SELECT 'gatedevtx3${1}00000000000000000000', s.id, '$2', '$3', 'Dell', 'R750',
+            '$4', 'server', now(), now()
+     FROM sites s WHERE $5
+     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+}
+tx3_lookup() {  # $1 token, $2 alias type, $3 value, $4 lifecycle -> resource ids
+  curl -sf -G -H "Authorization: Bearer $1" "http://localhost:8090/api/resources/" \
+    --data-urlencode "alias_type=$2" --data-urlencode "alias=$3" \
+    --data-urlencode "lifecycle_state=${4:-active}" --data-urlencode "page_size=200" \
+    | python3 -c "import sys,json; [print(r['id']) for r in json.load(sys.stdin)['resources']]"
+}
+tx3_seeded() {  # the owner finds the three nodes sharing one serial, and z1
+  local t; t=$(tenant_token gate-owner@demo gate-owner)
+  [ "$(tx3_lookup "$t" service_tag gatetx3shared | wc -l)" = "3" ] \
+    && [ -n "$(tx2_res "$t" harken_node gate-tx3-z1)" ]
+}
+
+step "TX-3/EC: three Harken Nodes reporting ONE serial are three resources -- never merged -- each naming the others only to a reader who can see them"
+tx3_seed a1 gate-tx3-a1 tx3-a1 GATETX3SHARED "s.name = 'site-1'"
+tx3_seed a2 gate-tx3-a2 tx3-a2 " gatetx3shared " "s.name = 'site-1'"
+tx3_seed b1 gate-tx3-b1 tx3-b1 GATETX3SHARED "s.cc_site_id = '$SITE_B'"
+tx3_seed z1 gate-tx3-z1 tx3-z1 GATETX3Z1 "s.name = 'site-1'"
+wait_for "the seeded nodes and their serials to reach the catalogue" 240 tx3_seeded
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+tenant_realm_user "gate-tx3-a@demo" "gate-tx3-a" operator
+tenant_realm_user "gate-tx3-d@demo" "gate-tx3-d" viewer
+TX3_A=$(tenant_token gate-tx3-a@demo gate-tx3-a)
+TX3_D=$(tenant_token gate-tx3-d@demo gate-tx3-d)
+TX3_GRANTS=""
+for TX3_SPEC in "$(s1_sub "$TX3_A")|site|$TX3_SITE|operator" \
+                "$(s1_sub "$TX3_D")|device|gate-tx3-a1|viewer"; do
+  IFS='|' read -r TX3_SUB TX3_TYPE TX3_REF TX3_ROLE <<< "$TX3_SPEC"
+  TX3_GRANT=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"principal_ref\":\"$TX3_SUB\",\"scope_type\":\"$TX3_TYPE\",\"scope_ref\":\"$TX3_REF\",\"role\":\"$TX3_ROLE\"}" \
+    http://localhost:8090/api/scope-grants/ | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  [ -n "$TX3_GRANT" ] || { echo "the $TX3_TYPE grant was refused" >&2; exit 1; }
+  TX3_GRANTS="$TX3_GRANTS $TX3_GRANT"
+done
+wait_for "site A's reader to read exactly site A in the catalogue" 60 tx1_parity "$TX3_A"
+# Fresh tokens for the reads below: a wait above may outlast one.
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX3_A=$(tenant_token gate-tx3-a@demo gate-tx3-a)
+TX3_D=$(tenant_token gate-tx3-d@demo gate-tx3-d)
+TX3_M=$(b0c_token)
+python3 - "$TOKEN" "$TX3_A" "$TX3_D" "$TX3_M" <<'PY'
+import json, subprocess, sys
+owner, person, device, machine = sys.argv[1:]
+def call(token, path, **params):
+    args = ["curl", "-s", "-G", "-w", "\n%{http_code}", "-H", f"Authorization: Bearer {token}"]
+    for key, value in params.items():
+        args += ["--data-urlencode", f"{key}={value}"]
+    out = subprocess.run(args + ["http://localhost:8090" + path],
+                         capture_output=True, text=True).stdout
+    body, _, code = out.rpartition("\n")
+    return int(code), (json.loads(body) if body.strip().startswith(("{", "[")) else body)
+def ok(token, path, **params):
+    code, body = call(token, path, **params)
+    assert code == 200, (path, params, code, body)
+    return body
+def by_alias(token, value, alias_type="service_tag", lifecycle="active"):
+    rows = ok(token, "/api/resources/", alias_type=alias_type, alias=value,
+              lifecycle_state=lifecycle, page_size=200)["resources"]
+    return {r["legacy"]["ref"]: r["id"] for r in rows}
+def candidates(token, rid):
+    block = ok(token, f"/api/resources/{rid}")["identity_candidates"]
+    assert block["truncated"] is False, block
+    return {c["resource"]["id"] for c in block["candidates"]}
+# The owner: three resources, one per Harken Node -- never merged.
+shared = by_alias(owner, "GateTX3Shared")
+assert set(shared) == {"gate-tx3-a1", "gate-tx3-a2", "gate-tx3-b1"}, shared
+assert len(set(shared.values())) == 3
+for agent, rid in shared.items():
+    detail = ok(owner, f"/api/resources/{rid}")
+    assert [(e["namespace"], e["external_id"]) for e in detail["external_ids"]] == [
+        ("harken_node", agent)], detail["external_ids"]
+    assert candidates(owner, rid) == set(shared.values()) - {rid}, agent
+# Site A's person: site A's two, each naming only the other.
+seen = by_alias(person, "gatetx3shared")
+assert set(seen) == {"gate-tx3-a1", "gate-tx3-a2"}, seen
+assert candidates(person, seen["gate-tx3-a1"]) == {seen["gate-tx3-a2"]}
+assert call(person, f"/api/resources/{shared['gate-tx3-b1']}")[0] == 404
+# One device: that device, and no candidate -- its peers are hidden.
+mine = by_alias(device, "gatetx3shared")
+assert set(mine) == {"gate-tx3-a1"}, mine
+assert candidates(device, mine["gate-tx3-a1"]) == set()
+# A REAL machine token: refused, alias lookup included (human-only).
+assert call(machine, "/api/resources/", alias_type="service_tag", alias="gatetx3shared")[0] == 403
+# The demo's own server nodes: whichever serial the live fleet shares most.
+groups = {}
+for d in ok(owner, "/api/fleet/", page_size=200)["devices"]:
+    tag = " ".join((d.get("service_tag") or "").split()).casefold()
+    if tag and not d["agent_id"].startswith("gate-tx3-"):
+        groups.setdefault(tag, set()).add(d["agent_id"])
+demo = sorted(((len(a), t) for t, a in groups.items() if len(a) > 1), reverse=True)
+if demo:
+    tag = demo[0][1]
+    found = by_alias(owner, tag)
+    assert set(found) == groups[tag], (tag, found, groups[tag])
+    first = sorted(found.values())[0]
+    if len(found) <= 21:
+        assert candidates(owner, first) == set(found.values()) - {first}
+    print("  demo: %d Harken Nodes report serial %r -- %d resources, each the others' candidate"
+          % (len(found), tag, len(found)))
+else:
+    print("  demo: no serial is shared by two live nodes -- nothing to merge, nothing merged")
+print("  seeded: 3 nodes, 1 serial in 2 spellings, 3 resources; owner: each names the other two;"
+      " site-A person: site A's two only; device person: none; a REAL machine token refused")
+PY
+
+step "TX-3/ED: a renamed node keeps its id and its former name; a removed one is a tombstone its id, identifier and aliases still find"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX3_Z1=$(tx2_res "$TOKEN" harken_node gate-tx3-z1)
+[ -n "$TX3_Z1" ] || { echo "z1 is not in the catalogue" >&2; exit 1; }
+tx2_get "$TOKEN" "/api/resources/$TX3_Z1" | python3 -c "
+import json, sys
+from datetime import datetime
+d = json.load(sys.stdin)
+p = d['provenance']
+assert (p['source_system'], p['source_namespace']) == ('harkeniq', 'fleet_snapshot'), p
+assert datetime.fromisoformat(p['first_observed_at']) <= datetime.fromisoformat(p['last_observed_at'])
+(b,) = d['external_ids']
+assert b['first_observed_at'] and b['last_observed_at'], b
+(a,) = d['aliases']
+assert (a['alias_type'], a['value'], a['lifecycle_state']) == ('service_tag', 'GATETX3Z1', 'active'), a
+assert a['provenance']['source_namespace'] == 'fleet_snapshot', a"
+tx2_get "$TOKEN" "/api/resources/$TX3_Z1/relationships" | python3 -c "
+import json, sys
+rels = json.load(sys.stdin)['relationships']
+assert rels and all(r['provenance']['source_system'] == 'harkeniq'
+                    and r['provenance']['last_observed_at'] for r in rels), rels"
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE devices SET agent_name = 'tx3-z1-renamed' WHERE agent_id = 'gate-tx3-z1'" \
+  > /dev/null < /dev/null
+tx3_renamed() {
+  tx2_get "$(tenant_token gate-owner@demo gate-owner)" "/api/resources/$TX3_Z1" \
+    | grep -q '"display_name": *"tx3-z1-renamed"'
+}
+wait_for "the rename to reach the catalogue under the same id" 240 tx3_renamed
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM devices WHERE agent_id = 'gate-tx3-z1'" > /dev/null < /dev/null
+tx3_tombstoned() {
+  tx2_get "$(tenant_token gate-owner@demo gate-owner)" "/api/resources/$TX3_Z1" \
+    | grep -q '"lifecycle_state": *"retired"'
+}
+wait_for "the removed node to become a tombstone" 240 tx3_tombstoned
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX3_A=$(tenant_token gate-tx3-a@demo gate-tx3-a)
+python3 - "$TOKEN" "$TX3_A" "$TX3_Z1" <<'PY'
+import json, subprocess, sys
+from datetime import datetime
+owner, person, rid = sys.argv[1:]
+def get(token, path, **params):
+    args = ["curl", "-sf", "-G", "-H", f"Authorization: Bearer {token}"]
+    for key, value in params.items():
+        args += ["--data-urlencode", f"{key}={value}"]
+    out = subprocess.run(args + ["http://localhost:8090" + path], capture_output=True, text=True)
+    assert out.returncode == 0, (path, params, out.returncode)
+    return json.loads(out.stdout)
+def ids(token, **params):
+    return {r["id"] for r in get(token, "/api/resources/", page_size=200, **params)["resources"]}
+# z1 was at site A: its tombstone is site-owned there (A30.25 R9), so the
+# site-A person finds it exactly as the owner does.
+for token in (owner, person):
+    d = get(token, f"/api/resources/{rid}")
+    assert d["lifecycle_state"] == "retired" and d["display_name"] == "tx3-z1-renamed", d
+    assert (datetime.fromisoformat(d["provenance"]["last_observed_at"])
+            <= datetime.fromisoformat(d["retired_at"])), d["provenance"]
+    assert {(a["alias_type"], a["value"], a["lifecycle_state"]) for a in d["aliases"]} == {
+        ("service_tag", "GATETX3Z1", "active"), ("historical_name", "tx3-z1", "active")}, d["aliases"]
+    assert ids(token, source_system="harkeniq", namespace="harken_node",
+               external_id="gate-tx3-z1", lifecycle_state="any") == {rid}
+    assert ids(token, alias_type="service_tag", alias="gatetx3z1", lifecycle_state="any") == {rid}
+    assert ids(token, alias_type="historical_name", alias="TX3-Z1", lifecycle_state="any") == {rid}
+    assert ids(token, alias_type="service_tag", alias="gatetx3z1") == set()   # active only
+print("  rename: same id, the former name kept as an alias; removal: a tombstone found by id,"
+      " by identifier, by its serial and by its former name -- for the owner and site A's person")
+PY
+
+step "TX-3/EE: this proof owns its state -- and the shipped image carries TX-3, with CC 0032 live"
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+for TX3_GRANT in $TX3_GRANTS; do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+        "http://localhost:8090/api/scope-grants/$TX3_GRANT")" = "200" ] || {
+    echo "a TX-3 grant was not revoked" >&2; exit 1; }
+done
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "DELETE FROM devices WHERE agent_id IN ('gate-tx3-a1', 'gate-tx3-a2', 'gate-tx3-b1')" \
+  > /dev/null < /dev/null
+tx3_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_resources WHERE lifecycle_state = 'active'
+              AND legacy_kind = 'device' AND legacy_ref LIKE 'gate-tx3-%'" < /dev/null)" = "0" ]
+}
+wait_for "every node this proof seeded to be a tombstone" 240 tx3_gone
+[ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0032" ] || {
+  echo "Central Command is not at migration 0032" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND convalidated AND conname IN
+            ('fk_resource_external_id_tenant', 'fk_resource_alias_tenant')" < /dev/null)" = "2" ] || {
+  echo "the binding and alias tenant keys are missing or unvalidated" >&2; exit 1; }
+[ "$(s1_cc "SELECT (SELECT count(*) FROM cc_resource_external_ids x JOIN cc_resources r
+              ON r.id = x.resource_id WHERE r.tenant_id <> x.tenant_id)
+            + (SELECT count(*) FROM cc_resource_aliases x JOIN cc_resources r
+              ON r.id = x.resource_id WHERE r.tenant_id <> x.tenant_id)" < /dev/null)" = "0" ] || {
+  echo "a binding or an alias crosses tenants" >&2; exit 1; }
+# One identifier per resource, every one HarkenIQ's own -- no serial became one.
+[ "$(s1_cc "SELECT count(*) FROM cc_resources r WHERE (SELECT count(*) FROM
+            cc_resource_external_ids b WHERE b.resource_id = r.id) <> 1" < /dev/null)" = "0" ] || {
+  echo "a resource holds no identifier, or more than one" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_resource_external_ids WHERE source_system <> 'harkeniq'
+            OR namespace NOT IN ('site', 'harken_node', 'rack') OR last_observed_at IS NULL" < /dev/null)" = "0" ] || {
+  echo "an identifier the mirror never issues, or one never observed" >&2; exit 1; }
+# Every fact names where it came from, and was observed no later than last.
+[ "$(s1_cc "SELECT (SELECT count(*) FROM cc_resources WHERE source_system IS DISTINCT FROM 'harkeniq'
+              OR source_namespace NOT IN ('site_registry', 'fleet_snapshot', 'site_topology')
+              OR source_namespace IS NULL OR first_observed_at > last_observed_at
+              OR last_observed_at IS NULL)
+            + (SELECT count(*) FROM cc_resource_relationships WHERE source_system IS DISTINCT FROM 'harkeniq'
+              OR source_namespace NOT IN ('fleet_snapshot', 'site_topology')
+              OR source_namespace IS NULL OR first_observed_at > last_observed_at
+              OR last_observed_at IS NULL)
+            + (SELECT count(*) FROM cc_resource_aliases WHERE source_system <> 'harkeniq'
+              OR source_namespace NOT IN ('site_registry', 'fleet_snapshot', 'site_topology')
+              OR alias_type NOT IN ('service_tag', 'historical_name'))" < /dev/null)" = "0" ] || {
+  echo "a catalogue fact without its provenance, or an alias the mirror never writes" >&2; exit 1; }
+[ "$(s1_cc "SELECT count(*) FROM cc_resource_aliases WHERE alias_type = 'historical_name'" < /dev/null)" != "0" ] || {
+  echo "no former name was kept -- the rename above proved nothing" >&2; exit 1; }
+docker compose exec -T central-command python -c "
+import sys; sys.path.insert(0, '/app/services/central_command/src')
+from harkeniq_cc.machine_identity import MACHINE_PRINCIPAL_CEILING
+from harkeniq_cc.resource_catalogue import (ALIAS_TYPES, BUILTIN_TYPES, IDENTITY_EVIDENCE_ALIAS_TYPES,
+    RESERVED_TYPES, CatalogueError, validate_type)
+from harkeniq_cc.route_contract import MACHINE_SURFACE, ROUTE_CONTRACT
+assert len(MACHINE_SURFACE) == 14 and len(ROUTE_CONTRACT) == 105
+assert sum(1 for _m, p in ROUTE_CONTRACT if p.startswith('/api/resources')) == 6
+assert set(MACHINE_PRINCIPAL_CEILING) == {'fleet.view', 'incident.view', 'proposal.submit'}
+assert IDENTITY_EVIDENCE_ALIAS_TYPES == {'service_tag', 'asset_tag'} < ALIAS_TYPES
+assert len(BUILTIN_TYPES) == 5 and len(RESERVED_TYPES) == 13
+assert not set(BUILTIN_TYPES) & set(RESERVED_TYPES)
+for name, kind in RESERVED_TYPES.items():
+    try:
+        validate_type(name, kind)
+    except CatalogueError:
+        continue
+    raise AssertionError(name + ' is writable')
+print('  shipped image: no route added (plane 14, contract 105, six catalogue reads), ceiling unchanged;'
+      ' 5 types registered, 13 reserved and refused; names are never identity evidence')" < /dev/null
+echo "  grants revoked; the seeded nodes removed at the Site Manager and tombstoned here;"
+echo "  CC 0032 live: both tenant keys validated, nothing crosses tenants, one HarkenIQ identifier per"
+echo "  resource, every fact's provenance recorded, a former name kept"
 
 step "Audit chain verifies"
 curl -sf -H "Authorization: Bearer dev-token-sm" http://localhost:8080/api/audit/verify | grep -q true
