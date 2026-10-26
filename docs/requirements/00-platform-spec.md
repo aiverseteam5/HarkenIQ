@@ -7381,8 +7381,9 @@ a resource is known by, kept apart from its identity.
   read it (a Dell service tag; an HPE or IPMI serial number; a SONiC switch's
   base MAC address), which is one more reason it is an alias and not an
   identity. `historical_name` — a resource's former display name, recorded
-  when the mirror renames a site, rack or device (a device shown by its own
-  agent id because it has no name has no former name to record).
+  when the mirror renames a site, rack or device. Every replaced display name
+  is kept, a device shown by its own agent id included: guessing which names
+  "count" is how a real one would be lost (A33.14).
   `hostname`, `fqdn`, `asset_tag` and `operator_label` are vocabulary only:
   no source of them reaches Central Command.
 - A tombstone keeps its aliases as last asserted, as it keeps its edges
@@ -7407,7 +7408,9 @@ A31.2), `source_system` and `source_namespace` (where the fact came from),
   `last_observed_at`. A row written before TX-3 carries NULL — not recorded —
   until the mirror's next pass records it: its first observation is the
   earlier of its creation (the mirror creates a row on first sight) and its
-  current canonical observation.
+  current canonical observation. A pass records what it asserts, so a
+  tombstone from before TX-3 — asserted by nobody since — keeps its
+  provenance unrecorded rather than invented.
 - *No source priority and no confidence.* Every fact has exactly one source
   today, and `lifecycle_state` is its status. Nothing reads provenance to
   decide anything: it is a description of where a description came from, not
@@ -7529,3 +7532,28 @@ namespace; registering any reserved type; writers for `hostname`, `fqdn`,
 `asset_tag` and `operator_label`; storing or notifying candidates; any
 authority from an identifier, an alias or a type; a retention or purge
 policy; and everything A32.11 lists.
+
+**A33.14 — Found while implementing (recorded).**
+- *The `service_tag` field means different things.* Reading the protocol
+  readers showed the node's `service_tag` is a Dell service tag over
+  Redfish, a serial number over HPE Redfish and IPMI, and the switch's base
+  MAC address over SONiC gNMI. It is recorded as the node reported it, under
+  the field's own name, and is one more reason a serial is an alias and
+  never an identifier (A33.3).
+- *A heuristic that lost real names.* The first cut skipped a former name
+  equal to the resource's own legacy id, to avoid recording "a device shown
+  by its agent id" as a name. The test estate — whose agents are named after
+  their own ids — showed it also dropped REAL names that happen to equal the
+  id. It was replaced by the simpler rule: every replaced display name is
+  kept (A33.3).
+- *A proof that could not see an off-by-one.* Candidates are listed to a
+  bound and `truncated` counts visible ones only; the first test had more
+  visible candidates than the bound, so it could not tell `>` from `>=`. It
+  now also holds a reader at EXACTLY the bound beside four hidden peers.
+  Twenty-two mutants of the slice's rules are each killed by a named test.
+- *Pins moved, intent kept.* The CC head `0031 → 0032` (migration chains,
+  the two B2 heads); TX-2's chain tests and its live step to "at least
+  `0031`"; TX-1's live identifier check to a subset, because an identifier
+  entry now also carries its observation; TX-1's catalogue-file allow-list
+  gains `0032`; the PostgreSQL proofs delete or drop aliases before
+  resources, because an alias names one.
