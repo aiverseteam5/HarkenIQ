@@ -7551,6 +7551,18 @@ policy; and everything A32.11 lists.
   visible candidates than the bound, so it could not tell `>` from `>=`. It
   now also holds a reader at EXACTLY the bound beside four hidden peers.
   Twenty-two mutants of the slice's rules are each killed by a named test.
+- *A claim the live gate corrected.* The checkpoint and design §37 said the
+  four demo server nodes share the simulator's `DEMO001`. They do only in the
+  demo's `multi-site` profile; the compose gate runs the default profile, with
+  one server node. The gate seeds its own nodes sharing one serial, and a
+  branch that looked for a shared demo serial — which could never fire in CI —
+  was removed rather than left as a proof of nothing.
+- *The gate's 30-minute budget.* TX-3's three live steps first cost about
+  three minutes and took the gate to 29m35s and 30m19s on the two runs of one
+  head — the second over the compose-gate job's 30-minute limit. The steps now
+  seed during TX-2's waits and fold four propagations into three. The limit
+  itself — the gate already ran 27m45s before TX-3 — is CI hygiene for a
+  change of its own (recorded, not changed here).
 - *Pins moved, intent kept.* The CC head `0031 → 0032` (migration chains,
   the two B2 heads); TX-2's chain tests and its live step to "at least
   `0031`"; TX-1's live identifier check to a subset, because an identifier

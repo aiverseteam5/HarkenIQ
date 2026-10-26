@@ -6942,9 +6942,11 @@ A vendor serial is an alias, not an identifier: the node's `service_tag`
 field is a Dell service tag, an HPE or IPMI serial or a SONiC base MAC
 depending on the protocol, and a placeholder on white-box hardware. Two
 resources sharing one is a **candidate** — "may be the same physical
-resource" — shown to a reader who can see both, and never acted on. The four
-demo server nodes all point at one simulated BMC and report `DEMO001`: the
-catalogue keeps four resources and lists each as the others' candidate.
+resource" — shown to a reader who can see both, and never acted on. In the
+demo's `multi-site` profile the four server nodes all point at one simulated
+BMC and report `DEMO001`: the catalogue keeps four resources and lists each as
+the others' candidate. The compose gate runs the default profile, with one
+server node, so it seeds its own nodes sharing one serial.
 
 ### Provenance, bounded
 
