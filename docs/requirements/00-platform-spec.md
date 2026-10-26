@@ -7315,3 +7315,217 @@ container or a resource set; `device_class` expansion; PX.
   two tests) fail on `main` itself: since PB-1 (A30.44) `admit_proposal`
   refuses with `agent_missing`, and those proofs create no agent row. They
   are DSN-gated and not run in CI. Recorded for a test-only follow-up.
+
+### A33 — 2026-10-26 — TX-3: external identity, provenance, resource typing and tombstones (decided: Vinod)
+
+TX-1 (A31) mirrored Sites and Devices into a descriptive Resource Catalogue;
+TX-2 (A32) gave it topology. TX-3 finishes the catalogue's foundation so that
+HarkenIQ can recognise the same resource across systems it does not integrate
+yet — ServiceNow, OpenManage, VMware, Kubernetes/OpenShift, storage
+platforms, network discovery, cloud providers — **none of which is
+integrated by this slice**. The boundary was checked on `main` at
+`710e357d5ec9987e11964b65b726090b9b5d8926` (TX-2 ledger closed, main
+verified) and recorded here before any code. Like TX-1 and TX-2 it is
+**descriptive and contextual only**: it adds no authority, changes no
+decision, and could be deleted without any authorization, execution, safety,
+dispatch or correlation answer moving. A31.1's LOCKs stand exactly as
+written.
+
+**A33.1 — Open decisions this slice answers (architecture review §O).**
+- *(4)* Type governance: the `harkeniq:` namespace is the built-in registry,
+  in three statuses — **registered** (written by a HarkenIQ writer),
+  **reserved** (named, its kind fixed, no writer) and unknown (refused). A
+  tenant or vendor namespace opens only with the integration slice that
+  writes it, which brings that namespace's governance; TX-3 opens none.
+- *(10)* Reconciliation: no resource is merged automatically on any
+  evidence. A candidate is a hint; a merge is an explicit decision. The first
+  implementation is minimal (A33.7).
+- *(11)* Source precedence: none is introduced; it is deferred (A33.8).
+- *(12)* Tombstones and retention: nothing is deleted, and tombstones are
+  retained indefinitely (A33.6).
+The rest of §O stays open.
+
+**A33.2 — External identity.** `cc_resource_external_ids` (A31.2) stays the
+one identity map, `(source_system, namespace, external_id) → resource_id`.
+- **Unique per tenant, for life.** A binding is never deleted and never
+  moved. Binding the same tuple to the same resource again is idempotent;
+  binding a tuple that already names another resource is refused with a
+  conflict and the existing mapping is left alone (A31.2).
+- **One identifier per resource.** A resource's identifier is the one it was
+  created from. Attaching a second identifier to a resource is a
+  reconciliation decision (A33.7), which is not built, so it is refused with
+  a conflict.
+- **Tenant-safe.** A composite foreign key `(resource_id, tenant_id)` →
+  `cc_resources (id, tenant_id)` (`fk_resource_external_id_tenant`) makes a
+  binding from one tenant to another tenant's resource impossible on
+  PostgreSQL, the A32.3 pattern.
+- **Stable.** A display-name change never changes a resource's id or its
+  identifier. A vendor identifier — a service tag, a serial number — is NOT
+  bound as an identifier: it is an alias (A33.3).
+
+**A33.3 — Aliases.** A new table, `cc_resource_aliases`: the names and labels
+a resource is known by, kept apart from its identity.
+- `alias_type` from a closed vocabulary — `hostname`, `fqdn`, `service_tag`,
+  `asset_tag`, `operator_label`, `historical_name`; `value` as reported and
+  `normalized_value` (whitespace collapsed, case folded) for matching; the
+  provenance of A33.4; and the lifecycle — `active` while its source asserts
+  it, `retired` once it stops, revived if asserted again, never deleted. One
+  row per (resource, type, normalized value, source) for life.
+- **Not unique across resources**: a hostname repeats, and two nodes can
+  report one serial. An alias is never an identity, never resolves a
+  resource uniquely, is never a visibility or authorization input, and is
+  never a merge key.
+- *Writers (the mirror).* `service_tag` — the Harken Node's reported
+  `service_tag` field, verbatim, active while reported and retired when the
+  node reports a different one. Its meaning depends on the protocol that
+  read it (a Dell service tag; an HPE or IPMI serial number; a SONiC switch's
+  base MAC address), which is one more reason it is an alias and not an
+  identity. `historical_name` — a resource's former display name, recorded
+  when the mirror renames a site, rack or device (a device shown by its own
+  agent id because it has no name has no former name to record).
+  `hostname`, `fqdn`, `asset_tag` and `operator_label` are vocabulary only:
+  no source of them reaches Central Command.
+- A tombstone keeps its aliases as last asserted, as it keeps its edges
+  (A32.2).
+
+**A33.4 — Provenance, bounded.** Every catalogue fact — resource,
+relationship, identifier binding, alias — records `source` (its writer,
+A31.2), `source_system` and `source_namespace` (where the fact came from),
+`first_observed_at` and `last_observed_at`.
+- *Origin.* The mirror's facts come from `harkeniq` and one of its three
+  feeds: `site_registry` (Central Command's sites), `fleet_snapshot` (each
+  site's devices) and `site_topology` (each site's racks, A32.4). An
+  identifier binding's origin is named by the identifier itself.
+- *Observation.* `last_observed_at` is the canonical object's own
+  observation, never the mirror's clock: a site's last successful poll; a
+  device's fleet-row refresh; a rack, and the containment its site's report
+  states, its site's last successful poll. A site that stops reporting
+  therefore stops advancing its facts. The mirror advances the stamp at most
+  once an hour per fact, so a pass over an unchanged estate still writes
+  nothing within the hour; it never moves backwards, and it freezes when the
+  fact retires. `first_observed_at` is set once and is never later than
+  `last_observed_at`. A row written before TX-3 carries NULL — not recorded —
+  until the mirror's next pass records it: its first observation is the
+  earlier of its creation (the mirror creates a row on first sight) and its
+  current canonical observation.
+- *No source priority and no confidence.* Every fact has exactly one source
+  today, and `lifecycle_state` is its status. Nothing reads provenance to
+  decide anything: it is a description of where a description came from, not
+  a trust engine.
+
+**A33.5 — Resource type.** The type registry moves from prose into code, in
+the three statuses of A33.1.
+- *Registered* — the five types the mirror writes, unchanged:
+  `harkeniq:operational.site`, `harkeniq:placement.rack`,
+  `harkeniq:compute.server`, `harkeniq:network.switch`,
+  `harkeniq:device.unclassified`.
+- *Reserved* — named, each with its fixed kind, and refused on write until
+  the slice that adds its writer registers it with that writer's trust
+  rules: A32.6's nine contextual containers, and
+  `harkeniq:compute.rack_server`, `harkeniq:compute.gpu_server`,
+  `harkeniq:network.ethernet_switch` and `harkeniq:storage.block_array`.
+- *Unknown* — refused, in any namespace.
+- No type is inferred: the mirror's class default (A31.3) is unchanged, and
+  no type is derived from a vendor, a model, an inventory or a name. The
+  dimensions stay separate (A31.2) — kind, type, `device_class`, role,
+  vendor/model, capabilities. `resource_type` is never read for authority,
+  visibility, capability or `device_class`, and `device_class` is unchanged.
+
+**A33.6 — Tombstones and lifecycle.** Nothing in the catalogue is ever
+deleted, in any of its four tables (pinned structurally; only a migration
+downgrade deletes). A resource whose source stops asserting it is retired,
+and keeps its id, its legacy link, its identifiers, its aliases as last
+asserted, its last placement (A32.2) and its frozen `last_observed_at`. It
+stays addressable: by resource id (a deep link); by identifier
+(`lifecycle_state=any`); by alias — a former name, a former service tag
+(`lifecycle_state=any`); and through the Harken Node agent ids that
+incidents, outcomes, approvals and campaigns carry
+(`harkeniq / harken_node / <agent_id>`). Its visibility is unchanged — a
+retired device is site-owned at its last site (A30.25 R9) — and it confers
+nothing. The same identifier reappearing revives the same resource. Because
+removing a source's assertion never deletes anything, a resource referenced
+by an incident, an outcome, a topology edge, an audit entry or a deep link
+can never silently disappear. Retention is indefinite; there is no purge
+path, and a purge policy would be an amendment of its own.
+
+**A33.7 — Reconciliation, minimal.** No resource is ever merged
+automatically — not on a matching name, IP, hostname, vendor/model or
+service tag.
+- *Conflict.* An identifier that already names another resource is refused
+  and reported (A31.2): the mirror counts and logs it on every pass, and
+  nothing resolves it.
+- *Second identity.* Refused (A33.2).
+- *Candidate.* Other resources the READER can see that share an ACTIVE
+  `service_tag` or `asset_tag` alias with a resource "may be the same
+  physical resource". Candidates are derived at read time from the aliases,
+  never stored and never acted on; the resource detail lists them with the
+  alias they share, ordered by id, at most 20, with `truncated` counting
+  visible resources only. A hidden counterpart is never shown or counted.
+  Names — `hostname`, `fqdn`, `operator_label`, `historical_name` — never make
+  a candidate.
+- *Evidence is preserved.* The aliases and their observation history are
+  never deleted, so a later decision has its evidence.
+- *Merge and split — recorded, not built.* A merge would be an explicit,
+  audited decision by a named principal that tombstones the absorbed
+  resource with a pointer to the survivor, so every identifier and deep link
+  of the absorbed resource still resolves — identifiers never move. A split
+  would create a new resource with its own identifiers. Either needs its own
+  boundary: a mutation route, a permission question and an audit shape.
+
+**A33.8 — Source precedence.** None is introduced. Every fact has one source
+today, and facts are stored per source and never overwritten by another: an
+edge or a primary parent set by one source is never taken over by another
+(TX-1, A32.2); aliases are unique per source; and a resource's descriptive
+fields are written only by the source that created it — the mirror refuses
+to describe a resource another source created. When a second source exists,
+its conflicting facts sit beside the first's, each with its provenance.
+Field-level precedence is deferred to the first integration slice that
+brings a second source.
+
+**A33.9 — Visibility: unchanged.** `repos.scope_resources` still reads only
+the legacy link and the canonical Sites and Fleet predicates. Aliases,
+identifiers, types, provenance, tombstone state and candidates are never
+inputs. An alias is shown only on a resource its reader can already see, and
+a candidate only when the other resource is visible too; an alias lookup is
+conjoined with visibility exactly as the identifier lookup is; a hidden
+resource stays indistinguishable from one that does not exist.
+
+**A33.10 — Surface.** No new route.
+`GET /api/resources/{resource_id}` gains `provenance`, `aliases` and
+`identity_candidates`; its `external_ids` entries gain `first_observed_at`
+and `last_observed_at`; every relationship summary gains its provenance.
+`GET /api/resources/` gains an alias lookup — `alias_type` and `alias`
+together, an exact match on the normalized value, any alias lifecycle; one
+alias may name many resources — and each item's provenance. No mutation
+route, and no write API for any integration. Human-only, `fleet.view`,
+`READ_SCOPED`; `ROUTE_CONTRACT` stays 105 and `MACHINE_SURFACE` 14.
+
+**A33.11 — Migration.** CC `0032`: `source_system`, `source_namespace`,
+`first_observed_at` and `last_observed_at`, nullable, on `cc_resources` and
+`cc_resource_relationships`; `first_observed_at` and `last_observed_at` on
+`cc_resource_external_ids`; the `cc_resource_aliases` table; and, on
+PostgreSQL, the composite foreign keys `fk_resource_external_id_tenant` and
+`fk_resource_alias_tenant` — a row that already crosses tenants refuses the
+migration loudly and is never deleted to make the key fit. Guarded and
+idempotent; NO backfill — the mirror records provenance at runtime, so there
+is one writer; the downgrade drops exactly what it added. No proto change.
+Heads: CC `0032`, SM `0012`, Console `0004`.
+
+**A33.12 — Unchanged.** Everything A32.10 lists: permissions (25),
+`ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE`,
+`resolve()`, `permits()`, `read_reach`, every scope predicate, every mutation
+gate, approval, autonomy, the global gate, dispatch, campaigns, capability,
+correlation, the `device_class` vocabulary `server | switch`, the Site
+Manager, the proto, the agent and the Console. Site stays the operational
+anchor, Device the execution target, the Site Manager a runtime relationship
+and the Harken Node the final execution authority. No execution, safety,
+dispatch, correlation or capability reader consults the catalogue.
+
+**A33.13 — Not built (each needs its own boundary).** Every integration —
+ServiceNow, OpenManage, VMware, Kubernetes/OpenShift, storage, network
+discovery, cloud — and any write API for one; reconciliation decisions, merge
+and split; field-level source precedence; opening a tenant or vendor type
+namespace; registering any reserved type; writers for `hostname`, `fqdn`,
+`asset_tag` and `operator_label`; storing or notifying candidates; any
+authority from an identifier, an alias or a type; a retention or purge
+policy; and everything A32.11 lists.

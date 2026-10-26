@@ -6916,3 +6916,67 @@ A re-placement retires the old edge and creates or revives the new one, so
 | Contextual containers | allowed by the model; types reserved, none registered or written (no source exists); unanchored = tenant-owned |
 | Not mirrored | rows (a label is not an identity); Site Manager, Operational Agent and Harken Node as resources |
 | Unchanged | authorization, `device_class`, capability, execution, correlation, machine plane (14) |
+
+## §37 — TX-3 / Amendment A33: external identity, provenance, resource typing and tombstones
+
+TX-1 named things and TX-2 placed them. TX-3 makes the catalogue ready to
+meet other systems — a CMDB, OpenManage, a hypervisor, a cluster, a storage
+array — without integrating any of them yet. The hard part of that meeting
+is identity: a resource arrives under a new name from a new source, and the
+catalogue must neither lose it (a second resource for the same box) nor
+silently fold it into the wrong one. TX-3's answer is to keep three things
+apart that are easy to blur: what a resource **is** (its id and its one
+identifier), what it is **called** (aliases, any number, never unique), and
+where each fact **came from** (provenance).
+
+### Identity, names and evidence
+
+| Concept | Where it lives | Unique? | Can it resolve a resource? | Can it merge two? |
+|---|---|---|---|---|
+| Resource id | `cc_resources.id` | yes, forever | yes (a deep link) | — |
+| Identifier | `cc_resource_external_ids` | per tenant, for life; one per resource | yes (lookup) | no — a conflict is refused |
+| Alias | `cc_resource_aliases` | no | it finds candidates, never one answer | no |
+| Display name | `cc_resources.display_name` | no | no | no |
+
+A vendor serial is an alias, not an identifier: the node's `service_tag`
+field is a Dell service tag, an HPE or IPMI serial or a SONiC base MAC
+depending on the protocol, and a placeholder on white-box hardware. Two
+resources sharing one is a **candidate** — "may be the same physical
+resource" — shown to a reader who can see both, and never acted on. The four
+demo server nodes all point at one simulated BMC and report `DEMO001`: the
+catalogue keeps four resources and lists each as the others' candidate.
+
+### Provenance, bounded
+
+| Fact | Origin (`source_system` / `source_namespace`) | `last_observed_at` comes from |
+|---|---|---|
+| Site | `harkeniq` / `site_registry` | the site's last successful poll |
+| Device, its site edge, its `service_tag` alias | `harkeniq` / `fleet_snapshot` | its fleet row's refresh |
+| Rack, its edges | `harkeniq` / `site_topology` | its site's last successful poll |
+| Historical name | its resource's feed | the observation in which it was replaced |
+| Identifier binding | named by the identifier | its resource's observation |
+
+Refreshed at most hourly, never from the mirror's own clock, frozen at
+retirement. There is no priority and no confidence: one source per fact.
+
+### Tombstones
+
+Nothing is deleted. A retired resource keeps its id, identifier, aliases,
+last placement and last observation, and resolves by id, by identifier, by
+alias, and through the agent ids incidents and outcomes carry. Merge and
+split are future explicit decisions; when they come, an absorbed resource
+becomes a tombstone pointing at its survivor and its identifiers stay where
+they are.
+
+### Boundary
+
+| Concern | TX-3 |
+|---|---|
+| Tables | `cc_resource_aliases`; provenance columns on the three TX-1 tables (CC `0032`, guarded, no backfill) |
+| Integrity | one identifier per resource; composite tenant FKs for bindings and aliases (PostgreSQL); aliases never unique across resources |
+| Writer | still only the mirror (advisory-locked, never deletes, no audit) |
+| Types | registered (5, unchanged) / reserved (13, refused) / unknown (refused); no tenant or vendor namespace opened |
+| Reconciliation | conflicts refused and reported; candidates derived at read time from shared serial-like aliases; no merge |
+| Precedence | none — one source per fact, no source overwrites another |
+| Routes | none added: resource detail gains provenance, aliases and candidates; the list gains an alias lookup |
+| Unchanged | authorization, `device_class`, capability, execution, correlation, machine plane (14) |
