@@ -40,7 +40,11 @@ jobs:
   # let releases ship green while the platform could not start.
   compose-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A stall cap, not a budget: the gate's own wait_for deadlines (8 min at
+    # most) name a stuck wait long before this fires. Green runs take 27-29.6
+    # min since TX-3, so 30 cancelled a healthy run at ec31a17, and a cancel
+    # skips "Logs on failure". Floor in tests/unit/test_ci_hang_detection.py.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/e2e-compose-gate.sh
