@@ -121,6 +121,8 @@ async def _estate(maker, tenant: str) -> dict:
 async def _cleanup(maker, tenant: str) -> None:
     async with maker() as session:
         for stmt in (
+            # TX-3 (A33.3): aliases name a resource, so they go first.
+            "DELETE FROM cc_resource_aliases WHERE tenant_id = :t",
             "DELETE FROM cc_resource_external_ids WHERE tenant_id = :t",
             "DELETE FROM cc_resource_relationships WHERE tenant_id = :t",
             "DELETE FROM cc_resources WHERE tenant_id = :t",

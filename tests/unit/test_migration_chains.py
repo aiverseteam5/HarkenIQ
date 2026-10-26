@@ -39,7 +39,9 @@ SERVICES = {
     # tables only, nothing existing touched, no backfill.
     # TX-2 (A32) adds CC 0031: relationship lifecycle, the active-primary
     # index, the tenant-identity keys and cc_site_topology -- no backfill.
-    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0031"),
+    # TX-3 (A33) adds CC 0032: provenance columns, cc_resource_aliases and
+    # the binding/alias tenant keys -- no backfill.
+    "cc": (REPO / "services/central_command", "HARKEN_CC_DSN", "0032"),
     "sm": (REPO / "services/site_manager", "HARKEN_SM_DSN", "0012"),
     # E1.4: the Console chain was never covered here, so its migrations
     # were only ever exercised by the live stack.
@@ -1602,7 +1604,7 @@ class TestTX2ResourceTopology:
     def test_a_fresh_cc_database_has_the_topology_layer(self, tmp_path):
         db = tmp_path / "cc.db"
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0031"
+        assert _version(db) >= "0031"            # TX-3's 0032 follows it
         assert {"lifecycle_state", "retired_at"} <= _columns(db, self.REL)
         sql = self._index_sql(db, self.ACTIVE_INDEX)
         assert "UNIQUE" in sql and "is_primary AND lifecycle_state = 'active'" in sql, sql
@@ -1625,7 +1627,7 @@ class TestTX2ResourceTopology:
         con.close()
 
         _alembic("cc", db, "upgrade", "head")
-        assert _version(db) == "0031"
+        assert _version(db) >= "0031"            # TX-3's 0032 follows it
         con = sqlite3.connect(db)
         try:
             after = con.execute("select id, from_resource_id, to_resource_id, "
@@ -1651,7 +1653,7 @@ class TestTX2ResourceTopology:
         con.commit()
         con.close()
         _alembic("cc", db, "upgrade", "head")          # all there: no-op
-        assert _version(db) == "0031"
+        assert _version(db) >= "0031"            # TX-3's 0032 follows it
 
         _alembic("cc", db, "downgrade", "0030")
         assert _version(db) == "0030"
@@ -1671,5 +1673,5 @@ class TestTX2ResourceTopology:
         assert {"cc_resources", "cc_resource_relationships",
                 "cc_resource_external_ids"} <= _tables(db), "TX-1's tables stay"
         _alembic("cc", db, "upgrade", "head")          # and back again
-        assert _version(db) == "0031"
+        assert _version(db) >= "0031"            # TX-3's 0032 follows it
         assert "cc_site_topology" in _tables(db)

@@ -1120,6 +1120,8 @@ CATALOGUE_FILES = {
     "db/models.py", "db/repos.py", "runtime.py", "app.py",
     "db/migrations/versions/0030_resource_catalogue.py",
     "db/migrations/versions/0031_resource_topology.py",
+    # TX-3 (A33.11): the identity, provenance and alias migration.
+    "db/migrations/versions/0032_resource_identity.py",
 }
 CATALOGUE_NAMES = (
     "CCResource", "cc_resource", "resource_catalogue", "resource_mirror",
