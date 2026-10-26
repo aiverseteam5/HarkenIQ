@@ -1,4 +1,5 @@
-"""Resource Catalogue API: six reads (TX-1 spec A31.6, TX-2 spec A32.8).
+"""Resource Catalogue API: six reads (TX-1 spec A31.6, TX-2 spec A32.8,
+TX-3 spec A33.10).
 
 Human-only (absent from `MACHINE_SURFACE`), `fleet.view`, `READ_SCOPED`.
 Every read filters EVERY resource it returns through
@@ -10,6 +11,11 @@ one: 404, or absent from a list and from its count. The topology reads
 description too: it stops at, or skips, what its reader cannot read, and
 never shows what lies beyond. Nothing here grants, implies or describes
 authority.
+
+TX-3 adds no route. A resource now shows where its description came from
+(provenance), the names and labels it is known by (aliases -- never
+identity), and the other visible resources that MAY be the same physical
+thing (identity candidates -- never a match, never acted on).
 """
 
 from __future__ import annotations
@@ -22,7 +28,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harkeniq_cc.api.deps import get_scope, get_session, require_permission
 from harkeniq_cc.auth import UserContext
 from harkeniq_cc.db.repos import ResourceRepo
-from harkeniq_cc.resource_catalogue import MAX_TOPOLOGY_DEPTH, MAX_TOPOLOGY_NODES
+from harkeniq_cc.resource_catalogue import (
+    IDENTITY_EVIDENCE_ALIAS_TYPES,
+    MAX_ALIAS_LENGTH,
+    MAX_IDENTITY_CANDIDATES,
+    MAX_TOPOLOGY_DEPTH,
+    MAX_TOPOLOGY_NODES,
+)
 from harkeniq_cc.scope import read_reach
 
 router = APIRouter(prefix="/api/resources", tags=["resources"])
@@ -33,6 +45,12 @@ ResourceKindFilter = Literal[
     "component", "logical_resource", "physical_container", "physical_device",
 ]
 LifecycleFilter = Literal["active", "retired", "any"]
+#: The closed `alias_type` vocabulary (A33.3), held equal to
+#: `resource_catalogue.ALIAS_TYPES` by a test.
+AliasTypeFilter = Literal[
+    "asset_tag", "fqdn", "historical_name", "hostname", "operator_label",
+    "service_tag",
+]
 
 
 def _lifecycle(value: str) -> Optional[str]:
@@ -54,6 +72,23 @@ def _summary(row) -> dict:
     }
 
 
+def _observed(row) -> dict:
+    """When the fact's source observed it (A33.4) -- null: not recorded."""
+    return {
+        "first_observed_at": _iso(row.first_observed_at),
+        "last_observed_at": _iso(row.last_observed_at),
+    }
+
+
+def _provenance(row) -> dict:
+    """Where a description came from. Never a reason to trust or act."""
+    return {
+        "source_system": row.source_system,
+        "source_namespace": row.source_namespace,
+        **_observed(row),
+    }
+
+
 def _edge_summary(edge) -> dict:
     """What a relationship says. A description, never a grant."""
     return {
@@ -62,6 +97,18 @@ def _edge_summary(edge) -> dict:
         "is_primary": bool(edge.is_primary),
         "source": edge.source,
         "lifecycle_state": edge.lifecycle_state,
+        "provenance": _provenance(edge),
+    }
+
+
+def _alias_dict(alias) -> dict:
+    """A name or label the resource is known by. Never its identity."""
+    return {
+        "alias_type": alias.alias_type,
+        "value": alias.value,
+        "lifecycle_state": alias.lifecycle_state,
+        "retired_at": _iso(alias.retired_at),
+        "provenance": _provenance(alias),
     }
 
 
@@ -69,6 +116,7 @@ def _resource_dict(row) -> dict:
     out = _summary(row)
     out.update({
         "source": row.source,
+        "provenance": _provenance(row),
         # The canonical object this resource mirrors -- an id the reader
         # can already see through Sites or Fleet, or (TX-2) the Site
         # Manager's own id for a rack at a site the reader can see.
@@ -98,6 +146,8 @@ async def list_resources(
     source_system: Optional[str] = Query(None, min_length=1, max_length=64),
     namespace: Optional[str] = Query(None, min_length=1, max_length=128),
     external_id: Optional[str] = Query(None, min_length=1, max_length=512),
+    alias_type: Optional[AliasTypeFilter] = None,
+    alias: Optional[str] = Query(None, min_length=1, max_length=MAX_ALIAS_LENGTH),
     user: UserContext = Depends(require_permission("fleet.view")),
     session: AsyncSession = Depends(get_session),
     scope=Depends(get_scope),
@@ -106,6 +156,9 @@ async def list_resources(
 
     `source_system` + `namespace` + `external_id` together look a resource
     up by an identifier; a hidden resource's identifier finds nothing.
+    `alias_type` + `alias` together find the resources known by that name
+    or label, current or former (A33.3) -- possibly many, because an alias
+    is never an identity; a hidden resource's alias finds nothing.
     """
     lookup = (source_system, namespace, external_id)
     if any(lookup) and not all(lookup):
@@ -113,6 +166,11 @@ async def list_resources(
             status_code=422,
             detail="an external-id lookup names source_system, namespace "
                    "and external_id together",
+        )
+    if (alias_type is None) != (alias is None):
+        raise HTTPException(
+            status_code=422,
+            detail="an alias lookup names alias_type and alias together",
         )
     reach = read_reach(scope, "fleet.view")
     rows, total = await ResourceRepo(session).list_visible(
@@ -122,6 +180,7 @@ async def list_resources(
         resource_type=resource_type,
         lifecycle_state=None if lifecycle_state == "any" else lifecycle_state,
         external=lookup if all(lookup) else None,
+        alias=(alias_type, alias) if alias_type is not None else None,
         page=page,
         page_size=page_size,
     )
@@ -149,7 +208,14 @@ async def get_resource(
 ) -> dict:
     """One resource, any lifecycle state -- a retired one is a tombstone a
     historical link still resolves to. Its primary parent appears only
-    when the caller may read the parent too; otherwise it reads as none."""
+    when the caller may read the parent too; otherwise it reads as none.
+
+    TX-3 (A33): its identifier with when it was observed; its aliases,
+    current and former; and its identity candidates -- the OTHER resources
+    the caller may read that share a serial-like alias with it, and so may
+    be the same physical resource. A candidate is a hint for a person:
+    nothing merges, and one the caller cannot read is neither shown nor
+    counted."""
     reach = read_reach(scope, "fleet.view")
     repo = ResourceRepo(session)
     row = await repo.get_visible(user.tenant_id, resource_id, scope=reach)
@@ -165,9 +231,29 @@ async def get_resource(
             "source_system": e.source_system,
             "namespace": e.namespace,
             "external_id": e.external_id,
+            **_observed(e),
         }
         for e in await repo.external_ids(user.tenant_id, row.id)
     ]
+    detail["aliases"] = [
+        _alias_dict(a) for a in await repo.aliases(user.tenant_id, row.id)
+    ]
+    candidates, truncated = await repo.identity_candidates_visible(
+        user.tenant_id, row.id, scope=reach, limit=MAX_IDENTITY_CANDIDATES,
+    )
+    detail["identity_candidates"] = {
+        "basis": sorted(IDENTITY_EVIDENCE_ALIAS_TYPES),
+        "candidates": [
+            {
+                "resource": _summary(other),
+                "shared": [
+                    {"alias_type": a.alias_type, "value": a.value} for a in shared
+                ],
+            }
+            for other, shared in candidates
+        ],
+        "truncated": truncated,
+    }
     return detail
 
 

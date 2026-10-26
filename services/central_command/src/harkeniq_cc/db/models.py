@@ -1936,6 +1936,11 @@ class CCResource(Base):
     A resource is never deleted. When its legacy object disappears it is
     `retired` and keeps its id, last placement and link, so a historical
     deep link still resolves.
+
+    TX-3 (A33.4): bounded provenance -- where the description came from
+    (`source_system`, `source_namespace`) and when its source observed it.
+    All four are NULL on a row written before TX-3 until the mirror's next
+    pass records them; nothing reads them to decide anything.
     """
 
     __tablename__ = "cc_resources"
@@ -1952,6 +1957,14 @@ class CCResource(Base):
     legacy_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     legacy_site_id: Mapped[str | None] = mapped_column(
         String(32), nullable=True, index=True
+    )
+    source_system: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_namespace: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
@@ -2017,6 +2030,15 @@ class CCResourceRelationship(Base):
     retired_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: TX-3 (A33.4): the resource's provenance vocabulary, for the edge.
+    source_system: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_namespace: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
@@ -2056,6 +2078,11 @@ class CCResourceExternalId(Base):
     already names a different resource is refused -- never silently
     merged -- and the existing mapping is left exactly as it was. TX-1
     binds only identifiers HarkenIQ issues itself.
+
+    TX-3 (A33.2): a binding is for life -- never deleted, never moved -- and
+    a resource holds ONE identifier: attaching a second is a reconciliation
+    decision, which is not built. The composite (resource, tenant) key keeps
+    a binding inside its own tenant on PostgreSQL, as A32.3 keeps an edge.
     """
 
     __tablename__ = "cc_resource_external_ids"
@@ -2071,6 +2098,13 @@ class CCResourceExternalId(Base):
     #: Provenance of the BINDING (who said this identifier names this
     #: resource), distinct from `source_system` (who issued the identifier).
     source: Mapped[str] = mapped_column(String(64))
+    #: TX-3 (A33.4): when the identifier's source observed it.
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
@@ -2079,5 +2113,75 @@ class CCResourceExternalId(Base):
         UniqueConstraint(
             "tenant_id", "source_system", "namespace", "external_id",
             name="uq_resource_external_id",
+        ),
+        ForeignKeyConstraint(
+            ["resource_id", "tenant_id"],
+            ["cc_resources.id", "cc_resources.tenant_id"],
+            name="fk_resource_external_id_tenant",
+        ),
+    )
+
+
+class CCResourceAlias(Base):
+    """A name or label a resource is known by -- never what it IS (A33.3).
+
+    Not unique across resources: a hostname repeats, and two nodes can
+    report one serial. An alias never resolves a resource uniquely, never
+    feeds visibility or authorization, and never merges anything; two
+    resources sharing a serial-like alias are at most a reconciliation
+    CANDIDATE, derived at read time (A33.7). One row per (resource, type,
+    normalized value, source) for life: retired when its source stops
+    asserting it, revived if asserted again, never deleted -- and a
+    tombstone keeps its aliases as last asserted, as it keeps its edges.
+    """
+
+    __tablename__ = "cc_resource_aliases"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    resource_id: Mapped[str] = mapped_column(
+        ForeignKey("cc_resources.id"), index=True
+    )
+    alias_type: Mapped[str] = mapped_column(String(32))
+    #: As reported -- what is shown.
+    value: Mapped[str] = mapped_column(String(255))
+    #: Whitespace collapsed, case folded -- what is compared.
+    normalized_value: Mapped[str] = mapped_column(String(255))
+    source_system: Mapped[str] = mapped_column(String(64))
+    source_namespace: Mapped[str] = mapped_column(String(128))
+    #: The writer, as on every catalogue row.
+    source: Mapped[str] = mapped_column(String(64))
+    lifecycle_state: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active"
+    )
+    first_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "resource_id", "alias_type", "normalized_value",
+            "source_system", "source_namespace",
+            name="uq_resource_alias",
+        ),
+        Index(
+            "ix_resource_alias_lookup", "tenant_id", "alias_type", "normalized_value",
+        ),
+        ForeignKeyConstraint(
+            ["resource_id", "tenant_id"],
+            ["cc_resources.id", "cc_resources.tenant_id"],
+            name="fk_resource_alias_tenant",
         ),
     )
