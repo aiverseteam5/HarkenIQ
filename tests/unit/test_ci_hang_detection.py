@@ -32,6 +32,13 @@ _RUNNER_CEILING_S = 6 * 60 * 60
 # 3.12 run at eb41cb1 with no log kept. Re-measure when the suite grows.
 _SLOWEST_GREEN_TEST_JOB_MIN = 29.2
 
+# The compose gate's slowest green run so far: 29.6 min (the pull_request run
+# at ec31a17, TX-3), while the push run of that SHA hit the 30-minute cap at
+# 30m19s. The gate grows with the steps each slice adds (~22-24 min before
+# TX-2, 27-29.6 since TX-3), and the same code ranged 27.1-29.2 by runner.
+# Re-measure when the gate grows.
+_SLOWEST_GREEN_COMPOSE_GATE_MIN = 29.6
+
 _WORKFLOWS = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -116,4 +123,19 @@ class TestEveryCIJobHasACeiling:
             f"test.yml job 'test' caps at {cap}min against a slowest green run "
             f"of {_SLOWEST_GREEN_TEST_JOB_MIN}min: a slow runner cancels a "
             "healthy suite, and the cancelled job keeps no log"
+        )
+
+    def test_the_compose_gate_cap_clears_its_slowest_green_run(self):
+        """The same net on the gate, where a cancel also skips its logs.
+
+        `Logs on failure` runs only on `failure()`, and a job cancelled at its
+        cap has not failed -- so a cap inside the gate's runtime loses the
+        stack's logs with the verdict, which is what 30 minutes did at ec31a17.
+        """
+        jobs = yaml.safe_load((_WORKFLOWS / "test.yml").read_text())["jobs"]
+        cap = jobs["compose-gate"]["timeout-minutes"]
+        assert cap >= 1.5 * _SLOWEST_GREEN_COMPOSE_GATE_MIN, (
+            f"test.yml job 'compose-gate' caps at {cap}min against a slowest "
+            f"green run of {_SLOWEST_GREEN_COMPOSE_GATE_MIN}min: a slow runner "
+            "cancels a healthy gate, and the cancel skips its compose logs"
         )
