@@ -7639,7 +7639,7 @@ Three items A28's one-line description gave PX1A move to **PX1B**, because they 
 | Object | URL | Opens |
 |---|---|---|
 | Incident | `/t/{tenant}/incidents/{incidentId}` | Incidents, with its detail drawer |
-| Device | `/t/{tenant}/fleet/{agentId}` | Fleet, with its device drawer. The stable key is the Harken Node `agent_id`; it is resolved to the current row through the existing scoped fleet read. |
+| Device | `/t/{tenant}/fleet/{agentId}` | Fleet, with its device drawer. The stable key is the Harken Node `agent_id`; it is resolved to the current row through the existing scoped fleet read. `?at={siteId}` is added only while one node is reported at two sites at once (A34.12). |
 | Site | `/t/{tenant}/fleet?site_id={siteId}` | Fleet, filtered to the site. No site page exists yet. |
 | Operational Agent | `/t/{tenant}/operational-agents/{agentId}` | Operational Agents, with its drawer |
 | Campaign | `/t/{tenant}/campaigns/{campaignId}` | Campaigns, with its drawer |
@@ -7675,7 +7675,7 @@ Three items A28's one-line description gave PX1A move to **PX1B**, because they 
 **A34.7 — Canonical terminology.**
 - `terminology.ts` holds HarkenIQ, Central Command, Site Manager, Harken Node, Operational Agent and External Agent Runtime (A28.7).
 - An AST lint over user-facing labels — headings, titles, labels, column headers, placeholders, accessible names, empty-state titles and navigation — refuses a bare "Agent".
-- Ambiguous labels are corrected. Running prose inside the Operational Agent page is left to PX6, which recomposes that page (recorded).
+- Ambiguous labels are corrected, and so is running text: the lint reads every user-facing string position, so the Operational Agent page's prose was corrected with its labels rather than left for PX6 (A34.12).
 - No route is renamed: URLs move once, with redirects, in PX2 (A28.7).
 
 **A34.8 — State contracts and the accessibility baseline.**
@@ -7711,3 +7711,20 @@ Three items A28's one-line description gave PX1A move to **PX1B**, because they 
 - **A slice of its own, with a Console backend boundary:** the Resource Catalogue page and its proxy prefix.
 - **PX5A / PX5B:** a Governed Operation identity.
 - **PX8:** WCAG audit evidence.
+
+**A34.12 — Found while implementing (recorded).**
+- **The drawer was an `<aside role="dialog">`.** axe's first run on the new overlay test refused it (`aria-allowed-role`): `aside` may not take the dialog role, so every drawer told assistive technology two contradictory things about what it was. It is a `div` now.
+- **One Escape closed two overlays.** The Users page's "Disable User" opens a confirmation over the open user drawer, and both listened for Escape on the whole document. They stack now, and a test pins that one Escape closes only the top one.
+- **A device's site hint is not the list's site filter.** The first cut put the disambiguating site in `?site_id=`, which also narrows the list behind the drawer. It is `?at=` now, added only when the node appears twice on the page. A row the poll replaced between the two reads is read once more rather than reported gone. A node reported at two sites is shown as two choices, never one chosen silently.
+- **The Approvals page's two Site filters can never be set.** Their option lists are empty, so they stay in component state and are not put in the URL. Populating them is product behaviour, recorded and not changed.
+- **A validation refusal reached the screen as `[object Object]`.** FastAPI sends a list for a 422. `ApiError` now carries the server's own messages (P4).
+- **Dialogs that ask for input.** Releases, Support and the unrouted API Keys page put a field inside `ConfirmDialog`. Focus starts in the first field there, and on Cancel everywhere else.
+- **Stale page text.** The Harken Nodes page said Operational Agents and External Agent Runtimes "arrive in later releases". Both shipped (A0, A6-1). Corrected.
+- **Dead code.** `usePoll` had no caller, and was retired for `useDataState`.
+- **Pins moved, intent kept.** A27.14's lane labels (`node`, `agent`, `agent activation`) and its provenance label (`External agent runtime`) became the canonical terms. They are still exactly three lanes, and still never a provenance.
+- **Not migrated (PX3A).** The eight page-local modals built inline (Users 3, Approval Policies 3, Tenants 1, Licenses 1) keep their own markup. The Approvals tabs are buttons with `aria-pressed`, not an ARIA tablist, because the full tab pattern needs arrow-key behaviour.
+- **Proof:**
+  - **Tests:** Console Vitest goes from 6 files / 84 tests to 18 files / 264.
+  - **Mutation run:** each of fourteen guarantees, broken on purpose, is caught by a named test. One mutant was equivalent in tests (it matters only under React StrictMode's double effect run), and a stronger variant of it is caught.
+  - **axe:** clean on the shared primitives, on the Incidents page with a drawer open, and on the shell with the landmark rule on.
+  - **Production build:** the bundle grows from 891.5 to 916.1 kB minified (241.2 → 249.7 kB gzip), with no test code in it.

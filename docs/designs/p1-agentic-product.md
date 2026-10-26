@@ -7076,7 +7076,7 @@ that owns it.
 | Backend | unchanged: no file under `services/`, `src/`, `proto/`, `deploy/`, `scripts/` |
 | API contracts | unchanged: no route, no proxy prefix, no response shape, no permission |
 | Console routes | additive optional object segments; every existing URL resolves |
-| Object URLs | Incident, Device (by `agent_id`), Site (fleet filter), Operational Agent, Campaign, Approval item; Resource reserved |
+| Object URLs | Incident, Device (by `agent_id`; `?at=` only while a node is at two sites), Site (fleet filter), Operational Agent, Campaign, Approval item (lane + id); Resource reserved |
 | View-model | `src/viewModel/`: five moved modules, plus vocabulary, data state and operational context |
 | Context | provider and pure model; first consumer is the existing tenant header, in plain text |
 | Terminology | canonical module and a label lint; ambiguous labels fixed |
