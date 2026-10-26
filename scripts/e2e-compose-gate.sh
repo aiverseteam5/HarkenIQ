@@ -10502,6 +10502,25 @@ tx2_import() {  # $1 YAML -> the Site Manager's own operator import
     --data-binary "$1" "http://localhost:8080/api/site/yaml?actor=gate-tx2" > /dev/null
 }
 
+# TX-3 (A33) seeds its four nodes HERE, at the Site Manager, so their first
+# poll overlaps TX-2's waits below; TX-3/EC verifies them after TX-2.
+TX3_SITE=$(s1_sm "SELECT cc_site_id FROM sites WHERE name = 'site-1'" < /dev/null)
+[ -n "$TX3_SITE" ] && [ "$TX3_SITE" != "$SITE_B" ] || {
+  echo "the Site Manager's site-1 is not bound distinctly from site B" >&2; exit 1; }
+tx3_seed() {  # $1 key, $2 agent id, $3 agent name, $4 serial, $5 which SM site
+  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
+                          service_tag, device_class, first_seen_at, last_seen_at)
+     SELECT 'gatedevtx3${1}00000000000000000000', s.id, '$2', '$3', 'Dell', 'R750',
+            '$4', 'server', now(), now()
+     FROM sites s WHERE $5
+     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
+}
+tx3_seed a1 gate-tx3-a1 tx3-a1 GATETX3SHARED "s.name = 'site-1'"
+tx3_seed a2 gate-tx3-a2 tx3-a2 " gatetx3shared " "s.name = 'site-1'"
+tx3_seed b1 gate-tx3-b1 tx3-b1 GATETX3SHARED "s.cc_site_id = '$SITE_B'"
+tx3_seed z1 gate-tx3-z1 tx3-z1 GATETX3Z1 "s.name = 'site-1'"
+
 step "TX-2/DY: the operator's site model reaches the catalogue -- Site CONTAINS Rack CONTAINS Device, through the SHIPPED path"
 # The site the Site Manager's own import addresses (its configured site).
 TX2_SITE=$(s1_sm "SELECT cc_site_id FROM sites WHERE name = 'site-1'" < /dev/null)
@@ -10760,22 +10779,10 @@ echo "  CC 0031 live: cc_site_topology, both tenant keys validated, no cross-ten
 # SITE MANAGER, and the SHIPPED mirror records what follows. Two at site A and
 # one at site B report ONE serial (in two spellings): three Harken Node
 # identities that may be one box -- three resources, never merged, each
-# naming the others as candidates to a reader who can see them. The demo's
-# own server nodes all read one simulated BMC; the serial they share is held
-# to the same rule, for the owner.
+# naming the others as candidates to a reader who can see them. (The demo's
+# multi-site profile runs four server nodes against one simulated BMC; the
+# gate runs the default profile, with one, so it seeds its own.)
 # ===========================================================================
-TX3_SITE=$(s1_sm "SELECT cc_site_id FROM sites WHERE name = 'site-1'" < /dev/null)
-[ -n "$TX3_SITE" ] && [ "$TX3_SITE" != "$SITE_B" ] || {
-  echo "the Site Manager's site-1 is not bound distinctly from site B" >&2; exit 1; }
-tx3_seed() {  # $1 key, $2 agent id, $3 agent name, $4 serial, $5 which SM site
-  docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-    "INSERT INTO devices (id, site_id, agent_id, agent_name, vendor, model,
-                          service_tag, device_class, first_seen_at, last_seen_at)
-     SELECT 'gatedevtx3${1}00000000000000000000', s.id, '$2', '$3', 'Dell', 'R750',
-            '$4', 'server', now(), now()
-     FROM sites s WHERE $5
-     ON CONFLICT (id) DO NOTHING" > /dev/null < /dev/null
-}
 tx3_lookup() {  # $1 token, $2 alias type, $3 value, $4 lifecycle -> resource ids
   curl -sf -G -H "Authorization: Bearer $1" "http://localhost:8090/api/resources/" \
     --data-urlencode "alias_type=$2" --data-urlencode "alias=$3" \
@@ -10789,12 +10796,33 @@ tx3_seeded() {  # the owner finds the three nodes sharing one serial, and z1
 }
 
 step "TX-3/EC: three Harken Nodes reporting ONE serial are three resources -- never merged -- each naming the others only to a reader who can see them"
-tx3_seed a1 gate-tx3-a1 tx3-a1 GATETX3SHARED "s.name = 'site-1'"
-tx3_seed a2 gate-tx3-a2 tx3-a2 " gatetx3shared " "s.name = 'site-1'"
-tx3_seed b1 gate-tx3-b1 tx3-b1 GATETX3SHARED "s.cc_site_id = '$SITE_B'"
-tx3_seed z1 gate-tx3-z1 tx3-z1 GATETX3Z1 "s.name = 'site-1'"
 wait_for "the seeded nodes and their serials to reach the catalogue" 240 tx3_seeded
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
+TX3_Z1=$(tx2_res "$TOKEN" harken_node gate-tx3-z1)
+[ -n "$TX3_Z1" ] || { echo "z1 is not in the catalogue" >&2; exit 1; }
+tx2_get "$TOKEN" "/api/resources/$TX3_Z1" | python3 -c "
+import json, sys
+from datetime import datetime
+d = json.load(sys.stdin)
+assert d['display_name'] == 'tx3-z1', d['display_name']
+p = d['provenance']
+assert (p['source_system'], p['source_namespace']) == ('harkeniq', 'fleet_snapshot'), p
+assert datetime.fromisoformat(p['first_observed_at']) <= datetime.fromisoformat(p['last_observed_at'])
+(b,) = d['external_ids']
+assert b['first_observed_at'] and b['last_observed_at'], b
+(a,) = [a for a in d['aliases'] if a['alias_type'] == 'service_tag']
+assert (a['value'], a['lifecycle_state']) == ('GATETX3Z1', 'active'), a
+assert a['provenance']['source_namespace'] == 'fleet_snapshot', a"
+tx2_get "$TOKEN" "/api/resources/$TX3_Z1/relationships" | python3 -c "
+import json, sys
+rels = json.load(sys.stdin)['relationships']
+assert rels and all(r['provenance']['source_system'] == 'harkeniq'
+                    and r['provenance']['last_observed_at'] for r in rels), rels"
+# The rename ED proves is issued now, and reaches the catalogue while the
+# checks below run.
+docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
+  "UPDATE devices SET agent_name = 'tx3-z1-renamed' WHERE agent_id = 'gate-tx3-z1'" \
+  > /dev/null < /dev/null
 tenant_realm_user "gate-tx3-a@demo" "gate-tx3-a" operator
 tenant_realm_user "gate-tx3-d@demo" "gate-tx3-d" viewer
 TX3_A=$(tenant_token gate-tx3-a@demo gate-tx3-a)
@@ -10858,64 +10886,31 @@ assert set(mine) == {"gate-tx3-a1"}, mine
 assert candidates(device, mine["gate-tx3-a1"]) == set()
 # A REAL machine token: refused, alias lookup included (human-only).
 assert call(machine, "/api/resources/", alias_type="service_tag", alias="gatetx3shared")[0] == 403
-# The demo's own server nodes: whichever serial the live fleet shares most.
-groups = {}
-for d in ok(owner, "/api/fleet/", page_size=200)["devices"]:
-    tag = " ".join((d.get("service_tag") or "").split()).casefold()
-    if tag and not d["agent_id"].startswith("gate-tx3-"):
-        groups.setdefault(tag, set()).add(d["agent_id"])
-demo = sorted(((len(a), t) for t, a in groups.items() if len(a) > 1), reverse=True)
-if demo:
-    tag = demo[0][1]
-    found = by_alias(owner, tag)
-    assert set(found) == groups[tag], (tag, found, groups[tag])
-    first = sorted(found.values())[0]
-    if len(found) <= 21:
-        assert candidates(owner, first) == set(found.values()) - {first}
-    print("  demo: %d Harken Nodes report serial %r -- %d resources, each the others' candidate"
-          % (len(found), tag, len(found)))
-else:
-    print("  demo: no serial is shared by two live nodes -- nothing to merge, nothing merged")
 print("  seeded: 3 nodes, 1 serial in 2 spellings, 3 resources; owner: each names the other two;"
       " site-A person: site A's two only; device person: none; a REAL machine token refused")
 PY
 
 step "TX-3/ED: a renamed node keeps its id and its former name; a removed one is a tombstone its id, identifier and aliases still find"
-TOKEN=$(tenant_token gate-owner@demo gate-owner)
-TX3_Z1=$(tx2_res "$TOKEN" harken_node gate-tx3-z1)
-[ -n "$TX3_Z1" ] || { echo "z1 is not in the catalogue" >&2; exit 1; }
-tx2_get "$TOKEN" "/api/resources/$TX3_Z1" | python3 -c "
-import json, sys
-from datetime import datetime
-d = json.load(sys.stdin)
-p = d['provenance']
-assert (p['source_system'], p['source_namespace']) == ('harkeniq', 'fleet_snapshot'), p
-assert datetime.fromisoformat(p['first_observed_at']) <= datetime.fromisoformat(p['last_observed_at'])
-(b,) = d['external_ids']
-assert b['first_observed_at'] and b['last_observed_at'], b
-(a,) = d['aliases']
-assert (a['alias_type'], a['value'], a['lifecycle_state']) == ('service_tag', 'GATETX3Z1', 'active'), a
-assert a['provenance']['source_namespace'] == 'fleet_snapshot', a"
-tx2_get "$TOKEN" "/api/resources/$TX3_Z1/relationships" | python3 -c "
-import json, sys
-rels = json.load(sys.stdin)['relationships']
-assert rels and all(r['provenance']['source_system'] == 'harkeniq'
-                    and r['provenance']['last_observed_at'] for r in rels), rels"
-docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-  "UPDATE devices SET agent_name = 'tx3-z1-renamed' WHERE agent_id = 'gate-tx3-z1'" \
-  > /dev/null < /dev/null
 tx3_renamed() {
   tx2_get "$(tenant_token gate-owner@demo gate-owner)" "/api/resources/$TX3_Z1" \
     | grep -q '"display_name": *"tx3-z1-renamed"'
 }
 wait_for "the rename to reach the catalogue under the same id" 240 tx3_renamed
+TOKEN=$(tenant_token gate-owner@demo gate-owner)
+[ "$(tx2_res "$TOKEN" harken_node gate-tx3-z1)" = "$TX3_Z1" ] || {
+  echo "a rename changed the id" >&2; exit 1; }
+[ "$(tx3_lookup "$TOKEN" historical_name TX3-Z1)" = "$TX3_Z1" ] || {
+  echo "the former name does not find the renamed node" >&2; exit 1; }
+# Every node this proof seeded leaves the Site Manager at once.
 docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-  "DELETE FROM devices WHERE agent_id = 'gate-tx3-z1'" > /dev/null < /dev/null
-tx3_tombstoned() {
-  tx2_get "$(tenant_token gate-owner@demo gate-owner)" "/api/resources/$TX3_Z1" \
-    | grep -q '"lifecycle_state": *"retired"'
+  "DELETE FROM devices WHERE agent_id IN
+     ('gate-tx3-a1', 'gate-tx3-a2', 'gate-tx3-b1', 'gate-tx3-z1')" \
+  > /dev/null < /dev/null
+tx3_gone() {
+  [ "$(s1_cc "SELECT count(*) FROM cc_resources WHERE lifecycle_state = 'active'
+              AND legacy_kind = 'device' AND legacy_ref LIKE 'gate-tx3-%'" < /dev/null)" = "0" ]
 }
-wait_for "the removed node to become a tombstone" 240 tx3_tombstoned
+wait_for "every node this proof seeded to be a tombstone" 240 tx3_gone
 TOKEN=$(tenant_token gate-owner@demo gate-owner)
 TX3_A=$(tenant_token gate-tx3-a@demo gate-tx3-a)
 python3 - "$TOKEN" "$TX3_A" "$TX3_Z1" <<'PY'
@@ -10956,14 +10951,8 @@ for TX3_GRANT in $TX3_GRANTS; do
         "http://localhost:8090/api/scope-grants/$TX3_GRANT")" = "200" ] || {
     echo "a TX-3 grant was not revoked" >&2; exit 1; }
 done
-docker compose exec -T postgres psql -U harkeniq -d harkeniq_sm -tAc \
-  "DELETE FROM devices WHERE agent_id IN ('gate-tx3-a1', 'gate-tx3-a2', 'gate-tx3-b1')" \
-  > /dev/null < /dev/null
-tx3_gone() {
-  [ "$(s1_cc "SELECT count(*) FROM cc_resources WHERE lifecycle_state = 'active'
-              AND legacy_kind = 'device' AND legacy_ref LIKE 'gate-tx3-%'" < /dev/null)" = "0" ]
-}
-wait_for "every node this proof seeded to be a tombstone" 240 tx3_gone
+# The seeded nodes left the Site Manager in ED and are tombstones here.
+tx3_gone || { echo "a node this proof seeded is still live" >&2; exit 1; }
 [ "$(s1_cc "SELECT version_num FROM alembic_version" < /dev/null)" = "0032" ] || {
   echo "Central Command is not at migration 0032" >&2; exit 1; }
 [ "$(s1_cc "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND convalidated AND conname IN
