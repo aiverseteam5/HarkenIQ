@@ -6982,3 +6982,104 @@ they are.
 | Precedence | none — one source per fact, no source overwrites another |
 | Routes | none added: resource detail gains provenance, aliases and candidates; the list gains an alias lookup |
 | Unchanged | authorization, `device_class`, capability, execution, correlation, machine plane (14) |
+
+## §38 — PX1A / Amendment A34: the frontend engineering and semantic foundation
+
+PX0 (§32) decided what the human surface must become. PX1A does not build
+any of it. It builds what every later PX slice stands on, and fixes the
+cases where the shared components already fall short of A28's
+non-negotiables. The rule that governs every line of it is P1: **the screen
+never decides.** A foundation that computed an answer would be the second
+authority §32 warns about, built in the one layer every later slice copies.
+
+### Why tests come first
+
+The provenance rule A27.14 shipped is protected by Vitest tests that no CI
+job runs. So the first change is to make a red Vitest run fail CI. The
+second is to give tests a DOM, because every A28.18 non-negotiable — focus
+trapped and restored, a live region announcing results, keyboard operation —
+is behaviour, and `renderToStaticMarkup` cannot observe behaviour.
+
+### Why the device URL is not the device's id
+
+The Fleet drawer fetched `/fleet/{id}`, where `id` is a `cc_fleet_cache` row
+that the poller deletes and re-inserts on every cycle. A link built from it
+works for one poll interval and then points at nothing. The device's stable
+identity is the Harken Node `agent_id`, the same key TX-1 chose for the
+catalogue. The URL carries `agent_id`, and the page resolves it to the
+current row through the fleet list read Central Command already scopes.
+That is a lookup, not a decision: a device the reader cannot see is simply
+not returned, and the page says "not found or not visible in your current
+scope". That is exactly what a 404 from Central Command means. The page
+never claims which of the two it is.
+
+### One page instance, one URL
+
+An object segment is optional on its page's own route
+(`/incidents/:incidentId?`). The list and the open object are therefore the
+same page instance. Opening a drawer does not reload the list behind it,
+Back closes the drawer, and every existing URL still resolves. Collection
+state (status, filters, tab, page) lives in the query string and is
+*replaced* as it changes, so the history holds places, not keystrokes.
+
+### The view-model rule, written down
+
+Five modules already did this properly. `proposalProvenance` is the
+reference (A28.12). Each one takes what the server sent, applies the
+server's own reading rule over a closed vocabulary, and turns anything
+unrecognised into a first-class unknown. PX1A moves them into
+`src/viewModel/` and adds the shared pieces: a closed-vocabulary reader, the
+async-state contract, and the operational context model. The rule now has a
+test: a view-model imports neither React nor the API client, and no module
+answers a scope, approval, autonomy or capability question.
+
+### The context model is evidence, not a verdict
+
+The A28.11 bar needs five facts, and all five already have a server
+contract. The design risk is in the wording, not the data:
+
+| Tempting | Honest |
+|---|---|
+| "Safe" / "Healthy" | "No stop in effect", the strongest clear statement the contract supports |
+| "Connected" | "Updated 14:02", or "Last update 14:02 — refresh failed" |
+| "You can see 3 sites" | "Scope: 3 sites", a description of grants; `/me`'s site set is permission-neutral and predicts no read |
+| a blank while loading | "Loading" / "Not reported" / "Not available to your role", each a distinct state |
+
+Platform staff are the edge case that would have hurt. Central Command
+refuses a platform-realm identity with 401, and the client treats a 401 as
+an expired session. A context bar requesting Central Command facts for a
+platform user would therefore sign them out from every tenant page,
+Console-native pages included. Those facts read *not applicable* for a
+platform identity and are never requested.
+
+### Accessibility, in the shared components rather than the pages
+
+Every fix lands in a component the pages already use:
+
+- **`DetailPanel` and `ConfirmDialog`** trap focus, restore it on close, and
+  stack, so Escape closes only the top one. A dialog opened from inside a
+  drawer previously closed both.
+- **`DataTable` rows** open by Enter and Space.
+- **The sidebar** renders links, so "open in new tab" and "copy link"
+  work.
+- **The Toast region** is mounted before its first message, which is
+  the only way a polite live region is reliably announced.
+
+Thirty-odd pages improve without being edited, which is D-M2's legitimate
+case: an accessibility correction that changes behaviour in the component
+that owns it.
+
+### Boundary
+
+| Concern | PX1A |
+|---|---|
+| Backend | unchanged: no file under `services/`, `src/`, `proto/`, `deploy/`, `scripts/` |
+| API contracts | unchanged: no route, no proxy prefix, no response shape, no permission |
+| Console routes | additive optional object segments; every existing URL resolves |
+| Object URLs | Incident, Device (by `agent_id`), Site (fleet filter), Operational Agent, Campaign, Approval item; Resource reserved |
+| View-model | `src/viewModel/`: five moved modules, plus vocabulary, data state and operational context |
+| Context | provider and pure model; first consumer is the existing tenant header, in plain text |
+| Terminology | canonical module and a label lint; ambiguous labels fixed |
+| Accessibility | skip link, landmarks, route focus and title, focus trap/restore, keyboard rows, persistent live region, axe on primitives |
+| CI | `ui-build` runs `npm test` |
+| Moved to PX1B | token architecture, token lint, semantic status module |
