@@ -1,5 +1,5 @@
 """The legacy mirror: the Resource Catalogue's one writer (TX-1 spec A31.5,
-TX-2 spec A32.4).
+TX-2 spec A32.4, TX-3 spec A33).
 
 Reconciles the catalogue FROM the authoritative objects -- `cc_sites`,
 `cc_fleet_cache`, and the racks each site's Site Manager reports
@@ -28,16 +28,24 @@ What it does, per pass:
 * a re-placement retires the old edge and creates or revives the new one,
   so a former placement survives as history (A32.2);
 * a resource whose canonical object has gone is RETIRED, never deleted: it
-  keeps its id, last placement and legacy link, so a historical deep link
-  still resolves; if the object comes back, the same resource revives;
+  keeps its id, last placement, legacy link, identifier, aliases and last
+  observation, so a historical deep link still resolves; if the object
+  comes back, the same resource revives;
 * the identifiers HarkenIQ issues itself are bound -- and a binding that
-  already names another resource is reported and left alone, never merged.
+  already names another resource is reported and left alone, never merged;
+* TX-3 (A33.3): a device's reported `service_tag` is recorded as an alias,
+  retired when the node reports another; a replaced display name is kept
+  as a `historical_name` alias. Neither is ever an identity;
+* TX-3 (A33.4): every fact it asserts carries its origin -- `harkeniq` and
+  the feed it came from -- and the canonical object's own observation
+  stamp, advanced at most once per OBSERVATION_REFRESH. A held placement is
+  not re-asserted, so it is not observed either.
 
-Idempotent: a pass over an unchanged estate writes nothing. Serialized
-across Central Command replicas by a transaction-scoped advisory lock,
-which every catalogue write runs inside. It writes no audit entry: the
-catalogue is a projection of state recorded at its source, not a governance
-action.
+Idempotent: a pass over an unchanged estate writes nothing within an
+observation refresh. Serialized across Central Command replicas by a
+transaction-scoped advisory lock, which every catalogue write runs inside.
+It writes no audit entry: the catalogue is a projection of state recorded
+at its source, not a governance action.
 """
 
 from __future__ import annotations
@@ -51,7 +59,11 @@ from sqlalchemy import select
 from harkeniq_cc.db.models import CCFleetCache, CCSite
 from harkeniq_cc.db.repos import ResourceRepo, SiteTopologyRepo, clean_topology_racks
 from harkeniq_cc.resource_catalogue import (
+    ALIAS_SERVICE_TAG,
     EXTERNAL_SOURCE_HARKENIQ,
+    FEED_FLEET_SNAPSHOT,
+    FEED_SITE_REGISTRY,
+    FEED_SITE_TOPOLOGY,
     KIND_PHYSICAL_CONTAINER,
     KIND_PHYSICAL_DEVICE,
     LEGACY_DEVICE,
@@ -68,11 +80,17 @@ from harkeniq_cc.resource_catalogue import (
     CatalogueError,
     IdentityConflict,
     device_type_for_class,
+    normalize_alias,
 )
 
 logger = logging.getLogger("harkeniq.cc.resource_mirror")
 
 _LOCK = "cc.resource_mirror:{tenant_id}"
+
+#: The mirror's three feeds, as fact origins (A33.4).
+_SITES = (EXTERNAL_SOURCE_HARKENIQ, FEED_SITE_REGISTRY)
+_FLEET = (EXTERNAL_SOURCE_HARKENIQ, FEED_FLEET_SNAPSHOT)
+_TOPOLOGY = (EXTERNAL_SOURCE_HARKENIQ, FEED_SITE_TOPOLOGY)
 
 
 @dataclass
@@ -92,12 +110,18 @@ class MirrorReport:
     #: Rack placements refused this pass -- a rack of another site, or two
     #: racks claiming one device; the device stays under its site (A32.4).
     refused: int = 0
+    #: Facts whose provenance was recorded or whose observation advanced
+    #: (A33.4).
+    observed: int = 0
+    #: Aliases recorded, revived or retired (A33.3).
+    aliased: int = 0
 
     @property
     def changed(self) -> bool:
         return bool(
             self.created or self.updated or self.retired
             or self.revived or self.reparented or self.bound
+            or self.observed or self.aliased
         )
 
 
@@ -107,6 +131,11 @@ async def _lock(session, tenant_id: str) -> bool:
     return await pg_advisory_chain_lock(session, _LOCK.format(tenant_id=tenant_id))
 
 
+async def _observe(repo: ResourceRepo, report: MirrorReport, row, stamp, origin=None) -> None:
+    if await repo.record_observation(row, stamp, origin=origin):
+        report.observed += 1
+
+
 async def _bind(
     repo: ResourceRepo,
     report: MirrorReport,
@@ -114,19 +143,21 @@ async def _bind(
     resource,
     namespace: str,
     external_id: str,
-    bound: dict[str, str],
+    bound: dict,
+    stamp,
 ) -> None:
-    owner = bound.get(external_id)
-    if owner == resource.id:
+    held = bound.get(external_id)
+    if held is not None and held.resource_id == resource.id:
+        await _observe(repo, report, held, stamp)
         return
-    if owner is None:
+    if held is None:
         try:
-            await repo.bind_external_id(
+            bound[external_id] = await repo.bind_external_id(
                 tenant_id, resource.id,
                 source_system=EXTERNAL_SOURCE_HARKENIQ, namespace=namespace,
                 external_id=external_id, source=SOURCE_LEGACY_MIRROR,
+                observed_at=stamp,
             )
-            bound[external_id] = resource.id
             report.bound += 1
             return
         except IdentityConflict:
@@ -147,20 +178,71 @@ async def _place(
     parent,
     placed: dict,
     what: str,
+    *,
+    origin: tuple[str, str],
+    stamp,
+    asserted: bool = True,
 ) -> None:
-    """Make `parent` the child's primary parent, unless it already is."""
+    """Make `parent` the child's primary parent, unless it already is.
+
+    An existing placement this pass re-asserts is observed; a HELD one --
+    `asserted` false -- is not, because nothing new is known about it."""
     edge = placed.get(child.id)
     if edge is not None and edge.from_resource_id == parent.id:
+        if asserted:
+            await _observe(repo, report, edge, stamp, origin)
         return
     try:
         placed[child.id] = await repo.set_primary_parent(
-            tenant_id, child.id, parent.id, source=SOURCE_LEGACY_MIRROR
+            tenant_id, child.id, parent.id, source=SOURCE_LEGACY_MIRROR,
+            origin=origin, observed_at=stamp,
         )
         report.reparented += 1
     except CatalogueError as exc:
         logger.warning(
             "Resource catalogue: %s not placed under %s: %s", what, parent.id, exc,
         )
+
+
+async def _service_tags(
+    repo: ResourceRepo,
+    report: MirrorReport,
+    tenant_id: str,
+    resource,
+    rows,
+    known: dict,
+    stamp,
+) -> None:
+    """The node's reported `service_tag`, as an alias -- never an identity
+    (A33.3). Retired when the node reports another; a tombstone keeps it."""
+    reported: dict[str, str] = {}
+    for row in rows:
+        shown = (row.service_tag or "").strip()
+        if shown:
+            reported.setdefault(normalize_alias(shown), shown)
+    for normalized, shown in sorted(reported.items()):
+        alias = known.get(normalized)
+        if alias is None:
+            try:
+                known[normalized] = await repo.create_alias(
+                    tenant_id, resource, alias_type=ALIAS_SERVICE_TAG, value=shown,
+                    origin=_FLEET, source=SOURCE_LEGACY_MIRROR, observed_at=stamp,
+                )
+                report.aliased += 1
+            except CatalogueError as exc:
+                logger.warning(
+                    "Resource catalogue: service tag of %s not recorded: %s",
+                    resource.id, exc,
+                )
+        elif alias.lifecycle_state != LIFECYCLE_ACTIVE or alias.value != shown:
+            await repo.revive_alias(alias, value=shown, observed_at=stamp)
+            report.aliased += 1
+        else:
+            await _observe(repo, report, alias, stamp)
+    for normalized, alias in sorted(known.items()):
+        if normalized not in reported and alias.lifecycle_state == LIFECYCLE_ACTIVE:
+            await repo.retire_alias(alias)
+            report.aliased += 1
 
 
 #: A claim made by a rack that is itself held this pass: the device's
@@ -192,28 +274,33 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
     sites_bound = await repo.bound_external_ids(
         tenant_id, EXTERNAL_SOURCE_HARKENIQ, NAMESPACE_SITE
     )
+    #: A site is observed at its last successful poll (A33.4).
+    site_seen = {site.id: site.last_seen_at for site in sites}
     for site in sites:
+        stamp = site_seen[site.id]
         resource = site_resources.get(site.id)
         if resource is None:
             resource = await repo.create_mirrored(
                 tenant_id,
                 legacy_kind=LEGACY_SITE, legacy_ref=site.id, legacy_site_id=site.id,
                 resource_kind=KIND_PHYSICAL_CONTAINER, resource_type=TYPE_SITE,
-                display_name=site.site_name,
+                display_name=site.site_name, observed_at=stamp,
             )
             site_resources[site.id] = resource
             report.created += 1
         else:
             if await repo.refresh_mirrored(
                 resource, display_name=site.site_name,
-                resource_type=TYPE_SITE, legacy_site_id=site.id,
+                resource_type=TYPE_SITE, legacy_site_id=site.id, observed_at=stamp,
             ):
                 report.updated += 1
             if resource.lifecycle_state == LIFECYCLE_RETIRED:
-                await repo.revive(resource)
+                await repo.revive(resource, observed_at=stamp)
                 report.revived += 1
+            await _observe(repo, report, resource, stamp, _SITES)
         await _bind(
-            repo, report, tenant_id, resource, NAMESPACE_SITE, site.id, sites_bound
+            repo, report, tenant_id, resource, NAMESPACE_SITE, site.id, sites_bound,
+            stamp,
         )
     present_sites = {site.id for site in sites}
     for ref, resource in site_resources.items():
@@ -257,6 +344,9 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
                     members.setdefault(agent_id, []).append((site_id, _HELD))
             continue
         site_id, rack = entries[0]
+        # A rack, and the containment its site's report states, is observed
+        # at that site's last successful poll, which carried the report.
+        stamp = site_seen[site_id]
         name = rack["name"] or rack_id
         resource = rack_resources.get(rack_id)
         if resource is None:
@@ -264,25 +354,27 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
                 tenant_id,
                 legacy_kind=LEGACY_RACK, legacy_ref=rack_id, legacy_site_id=site_id,
                 resource_kind=KIND_PHYSICAL_CONTAINER, resource_type=TYPE_RACK,
-                display_name=name,
+                display_name=name, observed_at=stamp,
             )
             rack_resources[rack_id] = resource
             report.created += 1
         else:
             if await repo.refresh_mirrored(
                 resource, display_name=name,
-                resource_type=TYPE_RACK, legacy_site_id=site_id,
+                resource_type=TYPE_RACK, legacy_site_id=site_id, observed_at=stamp,
             ):
                 report.updated += 1
             if resource.lifecycle_state == LIFECYCLE_RETIRED:
-                await repo.revive(resource)
+                await repo.revive(resource, observed_at=stamp)
                 report.revived += 1
+            await _observe(repo, report, resource, stamp, _TOPOLOGY)
         await _bind(
-            repo, report, tenant_id, resource, NAMESPACE_RACK, rack_id, racks_bound
+            repo, report, tenant_id, resource, NAMESPACE_RACK, rack_id, racks_bound,
+            stamp,
         )
         await _place(
             repo, report, tenant_id, resource, site_resources[site_id],
-            racks_placed, f"rack {rack_id}",
+            racks_placed, f"rack {rack_id}", origin=_TOPOLOGY, stamp=stamp,
         )
         for agent_id in rack["device_agent_ids"]:
             members.setdefault(agent_id, []).append((site_id, rack_id))
@@ -321,12 +413,19 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
     placed = await repo.primary_parent_edges(
         tenant_id, [r.id for r in device_resources.values()]
     )
+    tags = await repo.aliases_by_resource(
+        tenant_id, ALIAS_SERVICE_TAG,
+        source_system=_FLEET[0], source_namespace=_FLEET[1],
+    )
     for agent_id, rows in by_agent.items():
         at_sites = sorted({row.site_id for row in rows})
         single = len(at_sites) == 1
         row = rows[0]
         name = row.agent_name or agent_id
         resource_type = device_type_for_class(row.device_class)
+        # A device is observed when Central Command last refreshed its fleet
+        # row from a successful poll of its site (A33.4).
+        stamp = max(r.snapshot_at for r in rows)
         resource = device_resources.get(agent_id)
         if resource is None:
             resource = await repo.create_mirrored(
@@ -335,7 +434,7 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
                 # First seen mid-move: no placement until it resolves.
                 legacy_site_id=at_sites[0] if single else None,
                 resource_kind=KIND_PHYSICAL_DEVICE, resource_type=resource_type,
-                display_name=name,
+                display_name=name, observed_at=stamp,
             )
             device_resources[agent_id] = resource
             report.created += 1
@@ -343,14 +442,20 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
             if single and await repo.refresh_mirrored(
                 resource, display_name=name,
                 resource_type=resource_type, legacy_site_id=at_sites[0],
+                observed_at=stamp,
             ):
                 report.updated += 1
             if resource.lifecycle_state == LIFECYCLE_RETIRED:
-                await repo.revive(resource)
+                await repo.revive(resource, observed_at=stamp)
                 report.revived += 1
+            await _observe(repo, report, resource, stamp, _FLEET)
         await _bind(
             repo, report, tenant_id, resource,
-            NAMESPACE_HARKEN_NODE, agent_id, nodes_bound,
+            NAMESPACE_HARKEN_NODE, agent_id, nodes_bound, stamp,
+        )
+        await _service_tags(
+            repo, report, tenant_id, resource, rows,
+            tags.setdefault(resource.id, {}), stamp,
         )
         if not single:
             # Two sites at once is a move in flight. Hold the placement
@@ -359,7 +464,7 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
             report.ambiguous += 1
             continue
         site_id = at_sites[0]
-        parent = _device_parent(
+        parent, asserted = _device_parent(
             report, agent_id, site_id,
             site=site_resources[site_id],
             claims=members.get(agent_id, []),
@@ -368,8 +473,12 @@ async def reconcile(session, tenant_id: str) -> MirrorReport:
             racks_by_resource=racks_by_resource,
             rack_resources=rack_resources,
         )
+        in_rack = parent.legacy_kind == LEGACY_RACK
         await _place(
             repo, report, tenant_id, resource, parent, placed, f"device {agent_id}",
+            origin=_TOPOLOGY if in_rack else _FLEET,
+            stamp=site_seen[site_id] if in_rack else stamp,
+            asserted=asserted,
         )
     for ref, resource in device_resources.items():
         if ref not in by_agent and resource.lifecycle_state == LIFECYCLE_ACTIVE:
@@ -391,14 +500,16 @@ def _device_parent(
     racks_by_resource: dict,
     rack_resources: dict,
 ):
-    """Where one device, reported at exactly one site, is placed (A32.4).
+    """Where one device, reported at exactly one site, is placed (A32.4),
+    and whether this pass ASSERTS that placement (A33.4).
 
     Its rack, when its OWN site's report places it in exactly one rack of
     that site; its site otherwise. A claim from another site's report, or a
     second claim, refuses the rack placement -- the device stays under its
     site, which is always true. A site whose report is unknown, or a claim
     by a held rack, keeps a placement the device already has in a live rack
-    of this same site, because nothing new is known about it.
+    of this same site, because nothing new is known about it: that one is
+    held, not asserted.
     """
     own = [rack for claim_site, rack in claims if claim_site == site_id]
     foreign = [rack for claim_site, rack in claims if claim_site != site_id]
@@ -415,14 +526,14 @@ def _device_parent(
         )
     if decided:
         if refused or not own:
-            return site
-        return rack_resources[own[0]]
+            return site, True
+        return rack_resources[own[0]], True
     # Unknown: hold a live same-site rack placement, or fall back to the site.
     held = racks_by_resource.get(current.from_resource_id) if current is not None else None
     if (held is not None and held.lifecycle_state == LIFECYCLE_ACTIVE
             and held.legacy_site_id == site_id):
-        return held
-    return site
+        return held, False
+    return site, True
 
 
 async def resource_mirror_loop(state) -> None:

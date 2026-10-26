@@ -1091,10 +1091,11 @@ class TestNothingMoved:
         root = pathlib.Path(__file__).resolve().parents[3] / "services"
         # A30.41 added CC 0028 (indexes only), PB-0 CC 0029 + SM 0012 (the
         # dispatch claim and the directive key), TX-1 CC 0030 (the
-        # resource catalogue tables) and TX-2 CC 0031 (relationship
-        # lifecycle and the site topology); this slice added none.
+        # resource catalogue tables), TX-2 CC 0031 (relationship
+        # lifecycle and the site topology) and TX-3 CC 0032 (identity
+        # provenance and aliases); this slice added none.
         heads = {
-            "central_command/src/harkeniq_cc": "0031",
+            "central_command/src/harkeniq_cc": "0032",
             "site_manager/src/harkeniq_sm": "0012",
             "console/src/harkeniq_console": "0004",
         }

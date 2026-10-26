@@ -32,7 +32,11 @@ from sqlalchemy.orm import aliased
 
 from harkeniq_cc.scope import ReadReach
 from harkeniq_cc.resource_catalogue import (
+    ALIAS_HISTORICAL_NAME,
+    EXTERNAL_SOURCE_HARKENIQ,
+    IDENTITY_EVIDENCE_ALIAS_TYPES,
     LEGACY_DEVICE,
+    LEGACY_FEEDS,
     LEGACY_KINDS,
     LEGACY_RACK,
     LEGACY_SITE,
@@ -40,12 +44,16 @@ from harkeniq_cc.resource_catalogue import (
     LIFECYCLE_RETIRED,
     MAX_CONTAINMENT_DEPTH,
     MAX_CONTAINMENT_WALK,
+    MAX_IDENTITY_CANDIDATES,
     MAX_TOPOLOGY_DEPTH,
     MAX_TOPOLOGY_NODES,
+    OBSERVATION_REFRESH,
     REL_CONTAINS,
     SOURCE_LEGACY_MIRROR,
     CatalogueError,
     IdentityConflict,
+    normalize_alias,
+    validate_alias,
     validate_primary_containment,
     validate_relationship_type,
     validate_type,
@@ -88,6 +96,7 @@ from harkeniq_cc.db.models import (
     CCOperationalAgent,
     CCOutcomeHistory,
     CCResource,
+    CCResourceAlias,
     CCResourceExternalId,
     CCResourceRelationship,
     CCSafetyState,
@@ -934,8 +943,8 @@ class FleetCacheRepo:
 
 
 class ResourceRepo:
-    """The Resource Catalogue (TX-1 spec A31, TX-2 spec A32). Describes;
-    never authorizes.
+    """The Resource Catalogue (TX-1 spec A31, TX-2 spec A32, TX-3 spec A33).
+    Describes; never authorizes.
 
     Two kinds of read, deliberately apart. The `*_visible` reads take a
     permission-aware `ReadReach` (or None for an internal caller) and every
@@ -954,6 +963,12 @@ class ResourceRepo:
     deleted (A32.2). Every write runs inside the mirror's per-tenant
     advisory lock -- the mirror is the one writer -- so a check and the
     write it guards cannot interleave with another.
+
+    TX-3 (A33): one identifier per resource, for life; aliases that are
+    never unique and never identity; bounded provenance on every fact, its
+    observation taken from the canonical object and advanced at most once
+    per OBSERVATION_REFRESH; and nothing ever deleted -- no method here
+    removes a catalogue row.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -970,6 +985,7 @@ class ResourceRepo:
         resource_type: Optional[str] = None,
         lifecycle_state: Optional[str] = LIFECYCLE_ACTIVE,
         external: Optional[tuple[str, str, str]] = None,
+        alias: Optional[tuple[str, str]] = None,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[Sequence[CCResource], int]:
@@ -978,7 +994,12 @@ class ResourceRepo:
         `lifecycle_state=None` means any. `external` is an exact
         `(source_system, namespace, external_id)` lookup -- conjoined with
         visibility, so a hidden resource's identifier resolves to nothing.
-        The total is filtered by the SAME condition as the page.
+        `alias` is `(alias_type, value)`, matched on the normalized value
+        against an alias of ANY lifecycle -- a former name or a former
+        serial finds its resource -- and may find many: an alias is never
+        an identity (A33.3). It is conjoined with visibility exactly as the
+        identifier lookup is. The total is filtered by the SAME condition as
+        the page.
         """
         conditions = [CCResource.tenant_id == tenant_id]
         if resource_kind:
@@ -997,6 +1018,18 @@ class ResourceRepo:
                     CCResourceExternalId.source_system == source_system,
                     CCResourceExternalId.namespace == namespace,
                     CCResourceExternalId.external_id == external_id,
+                )
+                .correlate(CCResource)
+            )
+        if alias is not None:
+            alias_type, value = alias
+            conditions.append(
+                exists()
+                .where(
+                    CCResourceAlias.resource_id == CCResource.id,
+                    CCResourceAlias.tenant_id == tenant_id,
+                    CCResourceAlias.alias_type == alias_type,
+                    CCResourceAlias.normalized_value == normalize_alias(value),
                 )
                 .correlate(CCResource)
             )
@@ -1295,6 +1328,122 @@ class ResourceRepo:
             )
         ).scalars().all()
 
+    async def aliases(
+        self, tenant_id: str, resource_id: str
+    ) -> Sequence[CCResourceAlias]:
+        """Every alias of ONE resource, current and former (A33.3). The
+        caller must already have established that the resource is
+        visible."""
+        alias = CCResourceAlias
+        return (
+            await self.session.execute(
+                select(alias)
+                .where(alias.tenant_id == tenant_id, alias.resource_id == resource_id)
+                .order_by(
+                    alias.alias_type,
+                    case((alias.lifecycle_state == LIFECYCLE_ACTIVE, 0), else_=1),
+                    alias.normalized_value,
+                    alias.source_system,
+                    alias.source_namespace,
+                    alias.id,
+                )
+            )
+        ).scalars().all()
+
+    async def identity_candidates_visible(
+        self,
+        tenant_id: str,
+        resource_id: str,
+        *,
+        scope,
+        limit: int = MAX_IDENTITY_CANDIDATES,
+    ) -> tuple[list[tuple[CCResource, list[CCResourceAlias]]], bool]:
+        """The OTHER resources `scope` may read that share an ACTIVE
+        serial-like alias with `resource_id` -- reconciliation candidates
+        (A33.7), derived here and never stored.
+
+        A candidate "may be the same physical resource"; it is never a
+        match and nothing acts on it. Returns ``(other, [its shared
+        aliases])``, ordered by the other resource's id, at most `limit`,
+        and whether more VISIBLE candidates exist: a hidden counterpart is
+        neither returned nor counted. Names never make a candidate. The
+        caller must already have established that `resource_id` is
+        visible.
+        """
+        mine = aliased(CCResourceAlias)
+        theirs = aliased(CCResourceAlias)
+        other = aliased(CCResource)
+        joined = (
+            select(other.id)
+            .select_from(mine)
+            .join(
+                theirs,
+                and_(
+                    theirs.tenant_id == mine.tenant_id,
+                    theirs.alias_type == mine.alias_type,
+                    theirs.normalized_value == mine.normalized_value,
+                    theirs.resource_id != mine.resource_id,
+                ),
+            )
+            .join(other, other.id == theirs.resource_id)
+            .where(
+                mine.tenant_id == tenant_id,
+                mine.resource_id == resource_id,
+                mine.alias_type.in_(sorted(IDENTITY_EVIDENCE_ALIAS_TYPES)),
+                mine.lifecycle_state == LIFECYCLE_ACTIVE,
+                theirs.lifecycle_state == LIFECYCLE_ACTIVE,
+                other.tenant_id == tenant_id,
+            )
+        )
+        joined = _where(joined, scope_resources(scope, other))
+        ids = (
+            await self.session.execute(
+                joined.distinct().order_by(other.id).limit(limit + 1)
+            )
+        ).scalars().all()
+        truncated = len(ids) > limit
+        ids = list(ids[:limit])
+        if not ids:
+            return [], False
+        evidence = (
+            await self.session.execute(
+                select(theirs)
+                .select_from(mine)
+                .join(
+                    theirs,
+                    and_(
+                        theirs.tenant_id == mine.tenant_id,
+                        theirs.alias_type == mine.alias_type,
+                        theirs.normalized_value == mine.normalized_value,
+                    ),
+                )
+                .where(
+                    mine.tenant_id == tenant_id,
+                    mine.resource_id == resource_id,
+                    mine.alias_type.in_(sorted(IDENTITY_EVIDENCE_ALIAS_TYPES)),
+                    mine.lifecycle_state == LIFECYCLE_ACTIVE,
+                    theirs.lifecycle_state == LIFECYCLE_ACTIVE,
+                    theirs.resource_id.in_(ids),
+                )
+                .distinct()
+                .order_by(theirs.resource_id, theirs.alias_type, theirs.normalized_value,
+                          theirs.id)
+            )
+        ).scalars().all()
+        shared: dict[str, list[CCResourceAlias]] = {}
+        for row in evidence:
+            shared.setdefault(row.resource_id, []).append(row)
+        others = {
+            r.id: r for r in (
+                await self.session.execute(
+                    select(CCResource).where(
+                        CCResource.tenant_id == tenant_id, CCResource.id.in_(ids)
+                    )
+                )
+            ).scalars().all()
+        }
+        return [(others[i], shared.get(i, [])) for i in ids], truncated
+
     # -- unscoped reads, for the mirror only -----------------------------
 
     async def get(self, tenant_id: str, resource_id: str) -> Optional[CCResource]:
@@ -1372,21 +1521,40 @@ class ResourceRepo:
 
     async def bound_external_ids(
         self, tenant_id: str, source_system: str, namespace: str
-    ) -> dict[str, str]:
-        """external id -> resource id, for one namespace."""
+    ) -> dict[str, CCResourceExternalId]:
+        """external id -> its binding, for one namespace."""
         rows = (
             await self.session.execute(
-                select(
-                    CCResourceExternalId.external_id,
-                    CCResourceExternalId.resource_id,
-                ).where(
+                select(CCResourceExternalId).where(
                     CCResourceExternalId.tenant_id == tenant_id,
                     CCResourceExternalId.source_system == source_system,
                     CCResourceExternalId.namespace == namespace,
                 )
             )
-        ).all()
-        return {external_id: resource_id for external_id, resource_id in rows}
+        ).scalars().all()
+        return {row.external_id: row for row in rows}
+
+    async def aliases_by_resource(
+        self, tenant_id: str, alias_type: str, *, source_system: str,
+        source_namespace: str,
+    ) -> dict[str, dict[str, CCResourceAlias]]:
+        """resource id -> normalized value -> alias, every lifecycle, for one
+        alias type from one origin."""
+        alias = CCResourceAlias
+        rows = (
+            await self.session.execute(
+                select(alias).where(
+                    alias.tenant_id == tenant_id,
+                    alias.alias_type == alias_type,
+                    alias.source_system == source_system,
+                    alias.source_namespace == source_namespace,
+                )
+            )
+        ).scalars().all()
+        out: dict[str, dict[str, CCResourceAlias]] = {}
+        for row in rows:
+            out.setdefault(row.resource_id, {})[row.normalized_value] = row
+        return out
 
     # -- write primitives -------------------------------------------------
 
@@ -1400,18 +1568,21 @@ class ResourceRepo:
         resource_kind: str,
         resource_type: str,
         display_name: str,
+        observed_at: Optional[datetime] = None,
     ) -> CCResource:
         """A resource standing for one canonical object (A31.3).
 
         The legacy link is what visibility is derived from, so it is only
         ever written here, and only the mirror calls this (a structural
-        test pins the call site).
+        test pins the call site). Its provenance (A33.4) is the mirror's
+        feed for its legacy kind, observed when its canonical object was.
         """
         validate_type(resource_type, resource_kind)
         if legacy_kind not in LEGACY_KINDS:
             raise CatalogueError(f"unknown legacy kind {legacy_kind!r}")
         if not legacy_ref:
             raise CatalogueError("a legacy link names the object it mirrors")
+        stamp = self._aware(observed_at) or utcnow()
         row = CCResource(
             tenant_id=tenant_id,
             resource_kind=resource_kind,
@@ -1422,6 +1593,10 @@ class ResourceRepo:
             legacy_kind=legacy_kind,
             legacy_ref=legacy_ref,
             legacy_site_id=legacy_site_id,
+            source_system=EXTERNAL_SOURCE_HARKENIQ,
+            source_namespace=LEGACY_FEEDS[legacy_kind],
+            first_observed_at=stamp,
+            last_observed_at=stamp,
         )
         self.session.add(row)
         await self.session.flush()
@@ -1434,33 +1609,109 @@ class ResourceRepo:
         display_name: str,
         resource_type: str,
         legacy_site_id: Optional[str],
+        source: str = SOURCE_LEGACY_MIRROR,
+        observed_at: Optional[datetime] = None,
     ) -> bool:
         """Bring a mirrored resource's description up to date. True when
-        anything changed -- an unchanged resource is not written at all."""
+        anything changed -- an unchanged resource is not written at all.
+
+        A resource's description belongs to the source that created it
+        (A33.8): `source` must be that source. Every display name that is
+        replaced is kept as a `historical_name` alias (A33.3) -- whatever it
+        was, the resource was shown by it, and guessing which names "count"
+        would lose the real ones.
+        """
+        if resource.source != source:
+            raise CatalogueError(
+                f"resource {resource.id} was described by {resource.source!r}; "
+                f"{source!r} may not rewrite its description (A33.8)"
+            )
         validate_type(resource_type, resource.resource_kind)
+        name = display_name[:255]
+        former = resource.display_name
+        if former != name and former:
+            await self._historical_name(resource, former, observed_at)
         changed = False
-        for name, value in (
-            ("display_name", display_name[:255]),
+        for column, value in (
+            ("display_name", name),
             ("resource_type", resource_type),
             ("legacy_site_id", legacy_site_id),
         ):
-            if getattr(resource, name) != value:
-                setattr(resource, name, value)
+            if getattr(resource, column) != value:
+                setattr(resource, column, value)
                 changed = True
         if changed:
             await self.session.flush()
         return changed
 
     async def retire(self, resource: CCResource) -> None:
-        """A tombstone: the id, last placement and legacy link all stay."""
+        """A tombstone: the id, last placement, legacy link, identifier,
+        aliases and last observation all stay (A33.6)."""
         resource.lifecycle_state = LIFECYCLE_RETIRED
         resource.retired_at = utcnow()
         await self.session.flush()
 
-    async def revive(self, resource: CCResource) -> None:
+    async def revive(
+        self, resource: CCResource, *, observed_at: Optional[datetime] = None
+    ) -> None:
+        """The same resource, asserted again: observed now, not an hour on."""
         resource.lifecycle_state = LIFECYCLE_ACTIVE
         resource.retired_at = None
+        self._observe(resource, observed_at, force=True)
         await self.session.flush()
+
+    # -- provenance (A33.4) ------------------------------------------------
+
+    @staticmethod
+    def _aware(value: Optional[datetime]) -> Optional[datetime]:
+        """The platform stores UTC; sqlite hands back a naive value, which is
+        UTC, and is read as such rather than failing to compare."""
+        if value is None:
+            return None
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    @classmethod
+    def _observe(cls, row, observed_at: Optional[datetime], *, force: bool = False) -> bool:
+        """Advance a fact's observation from its canonical object's stamp.
+
+        `first_observed_at` is set once: for a row written before TX-3, the
+        earlier of its creation (the mirror creates on first sight) and this
+        observation. `last_observed_at` never moves backwards, and moves
+        forwards only once it is OBSERVATION_REFRESH stale -- or at once when
+        `force`d by a revival. True when anything changed.
+        """
+        stamp = cls._aware(observed_at)
+        if stamp is None:
+            return False
+        changed = False
+        if row.first_observed_at is None:
+            created = cls._aware(row.created_at) or stamp
+            row.first_observed_at = min(created, stamp)
+            changed = True
+        last = cls._aware(row.last_observed_at)
+        if last is None or (stamp > last and (force or stamp - last >= OBSERVATION_REFRESH)):
+            row.last_observed_at = stamp
+            changed = True
+        return changed
+
+    async def record_observation(
+        self,
+        row,
+        observed_at: Optional[datetime],
+        *,
+        origin: Optional[tuple[str, str]] = None,
+    ) -> bool:
+        """Record that a fact's source still asserts it (A33.4): its origin,
+        if the row predates TX-3, and its observation, within the bound. A
+        row that is not changed is not written. True when written."""
+        changed = False
+        if origin is not None and getattr(row, "source_system", "x") is None:
+            row.source_system, row.source_namespace = origin
+            changed = True
+        changed = self._observe(row, observed_at) or changed
+        if changed:
+            await self.session.flush()
+        return changed
 
     async def _edge(
         self, from_id: str, to_id: str, relationship_type: str
@@ -1548,14 +1799,56 @@ class ResourceRepo:
         edge.lifecycle_state = LIFECYCLE_RETIRED
         edge.retired_at = utcnow()
 
-    @staticmethod
-    def _revive_edge(edge: CCResourceRelationship, *, is_primary: bool) -> None:
+    @classmethod
+    def _revive_edge(
+        cls,
+        edge: CCResourceRelationship,
+        *,
+        is_primary: bool,
+        observed_at: Optional[datetime] = None,
+    ) -> None:
         edge.lifecycle_state = LIFECYCLE_ACTIVE
         edge.retired_at = None
         edge.is_primary = is_primary
+        cls._observe(edge, observed_at, force=True)
+
+    @classmethod
+    def _new_edge(
+        cls,
+        tenant_id: str,
+        from_id: str,
+        to_id: str,
+        relationship_type: str,
+        *,
+        is_primary: bool,
+        source: str,
+        origin: Optional[tuple[str, str]],
+        observed_at: Optional[datetime],
+    ) -> CCResourceRelationship:
+        stamp = cls._aware(observed_at) or utcnow()
+        return CCResourceRelationship(
+            tenant_id=tenant_id,
+            from_resource_id=from_id,
+            to_resource_id=to_id,
+            relationship_type=relationship_type,
+            is_primary=is_primary,
+            source=source,
+            lifecycle_state=LIFECYCLE_ACTIVE,
+            source_system=origin[0] if origin else None,
+            source_namespace=origin[1] if origin else None,
+            first_observed_at=stamp,
+            last_observed_at=stamp,
+        )
 
     async def set_primary_parent(
-        self, tenant_id: str, child_id: str, parent_id: str, *, source: str
+        self,
+        tenant_id: str,
+        child_id: str,
+        parent_id: str,
+        *,
+        source: str,
+        origin: Optional[tuple[str, str]] = None,
+        observed_at: Optional[datetime] = None,
     ) -> CCResourceRelationship:
         """Make `parent_id` the ONE active primary containment parent of
         `child_id`.
@@ -1567,7 +1860,8 @@ class ResourceRepo:
         edge and creates -- or revives -- the new one (A32.2), so the former
         placement survives as history; the old edge is retired and flushed
         before the new one is activated, and the partial unique index backs
-        "one active primary parent" against any race.
+        "one active primary parent" against any race. `origin` and
+        `observed_at` are the new or revived edge's provenance (A33.4).
         """
         parent, child = await self._ends(tenant_id, parent_id, child_id)
         validate_primary_containment(parent.resource_kind, child.resource_kind)
@@ -1594,17 +1888,14 @@ class ResourceRepo:
             self._retire_edge(existing)
             await self.session.flush()
         if prior is not None:
-            self._revive_edge(prior, is_primary=True)
+            if prior.source_system is None and origin is not None:
+                prior.source_system, prior.source_namespace = origin
+            self._revive_edge(prior, is_primary=True, observed_at=observed_at)
             await self.session.flush()
             return prior
-        edge = CCResourceRelationship(
-            tenant_id=tenant_id,
-            from_resource_id=parent.id,
-            to_resource_id=child.id,
-            relationship_type=REL_CONTAINS,
-            is_primary=True,
-            source=source,
-            lifecycle_state=LIFECYCLE_ACTIVE,
+        edge = self._new_edge(
+            tenant_id, parent.id, child.id, REL_CONTAINS, is_primary=True,
+            source=source, origin=origin, observed_at=observed_at,
         )
         self.session.add(edge)
         await self.session.flush()
@@ -1618,6 +1909,8 @@ class ResourceRepo:
         relationship_type: str,
         *,
         source: str,
+        origin: Optional[tuple[str, str]] = None,
+        observed_at: Optional[datetime] = None,
     ) -> CCResourceRelationship:
         """A SECONDARY typed edge. Idempotent; never primary; confers nothing.
 
@@ -1647,17 +1940,12 @@ class ResourceRepo:
         if relationship_type == REL_CONTAINS:
             await self._refuse_containment_cycle(tenant_id, from_id, to_id)
         if existing is not None:
-            self._revive_edge(existing, is_primary=False)
+            self._revive_edge(existing, is_primary=False, observed_at=observed_at)
             await self.session.flush()
             return existing
-        edge = CCResourceRelationship(
-            tenant_id=tenant_id,
-            from_resource_id=from_id,
-            to_resource_id=to_id,
-            relationship_type=relationship_type,
-            is_primary=False,
-            source=source,
-            lifecycle_state=LIFECYCLE_ACTIVE,
+        edge = self._new_edge(
+            tenant_id, from_id, to_id, relationship_type, is_primary=False,
+            source=source, origin=origin, observed_at=observed_at,
         )
         self.session.add(edge)
         await self.session.flush()
@@ -1686,13 +1974,16 @@ class ResourceRepo:
         namespace: str,
         external_id: str,
         source: str,
+        observed_at: Optional[datetime] = None,
     ) -> CCResourceExternalId:
-        """Bind one identifier to one resource -- or refuse (A31.2).
+        """Bind one identifier to one resource -- or refuse (A31.2, A33.2).
 
         Idempotent for the resource it already names. An identifier that
         names a DIFFERENT resource raises `IdentityConflict` and the
         existing mapping is left exactly as it was: no silent merge, and no
-        reassignment either.
+        reassignment either. A resource holds ONE identifier: attaching a
+        second is a reconciliation decision (A33.7), which is not built, so
+        it is refused the same way.
         """
         if not (source_system and namespace and external_id):
             raise CatalogueError(
@@ -1714,6 +2005,22 @@ class ResourceRepo:
             if existing.resource_id == resource_id:
                 return existing
             raise _conflict(existing.resource_id)
+        held = (
+            await self.session.execute(
+                select(CCResourceExternalId).where(
+                    CCResourceExternalId.tenant_id == tenant_id,
+                    CCResourceExternalId.resource_id == resource_id,
+                )
+            )
+        ).scalars().first()
+        if held is not None:
+            raise IdentityConflict(
+                f"resource {resource_id} is already identified by "
+                f"{held.source_system}/{held.namespace}/{held.external_id}; a "
+                "second identifier is a reconciliation decision, which is not "
+                "built (A33.2)"
+            )
+        stamp = self._aware(observed_at) or utcnow()
         row = CCResourceExternalId(
             tenant_id=tenant_id,
             resource_id=resource_id,
@@ -1721,6 +2028,8 @@ class ResourceRepo:
             namespace=namespace,
             external_id=external_id,
             source=source,
+            first_observed_at=stamp,
+            last_observed_at=stamp,
         )
         try:
             async with self.session.begin_nested():
@@ -1736,6 +2045,102 @@ class ResourceRepo:
                 return existing
             raise _conflict(existing.resource_id if existing else "unknown")
         return row
+
+    # -- aliases (A33.3) ----------------------------------------------------
+
+    async def create_alias(
+        self,
+        tenant_id: str,
+        resource: CCResource,
+        *,
+        alias_type: str,
+        value: str,
+        origin: tuple[str, str],
+        source: str,
+        observed_at: Optional[datetime] = None,
+    ) -> CCResourceAlias:
+        """Record a name or label a LIVE resource is known by.
+
+        Never unique across resources, and never an identity: nothing here
+        compares this alias with any other resource's. Nothing new is said
+        about a tombstone (A32.2). One row per (resource, type, normalized
+        value, origin) for life -- the database refuses a second.
+        """
+        shown, normalized = validate_alias(alias_type, value)
+        if resource.tenant_id != tenant_id:
+            raise CatalogueError("an alias names a resource of this tenant")
+        if resource.lifecycle_state != LIFECYCLE_ACTIVE:
+            raise CatalogueError(
+                f"resource {resource.id} is {resource.lifecycle_state}: an alias "
+                "is asserted only of a live resource"
+            )
+        stamp = self._aware(observed_at) or utcnow()
+        row = CCResourceAlias(
+            tenant_id=tenant_id,
+            resource_id=resource.id,
+            alias_type=alias_type,
+            value=shown,
+            normalized_value=normalized,
+            source_system=origin[0],
+            source_namespace=origin[1],
+            source=source,
+            lifecycle_state=LIFECYCLE_ACTIVE,
+            first_observed_at=stamp,
+            last_observed_at=stamp,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def retire_alias(self, alias: CCResourceAlias) -> None:
+        """Its source stopped asserting it: kept, never deleted."""
+        alias.lifecycle_state = LIFECYCLE_RETIRED
+        alias.retired_at = utcnow()
+        await self.session.flush()
+
+    async def revive_alias(
+        self, alias: CCResourceAlias, *, value: str,
+        observed_at: Optional[datetime] = None,
+    ) -> None:
+        """The same alias, asserted again -- as now reported."""
+        alias.lifecycle_state = LIFECYCLE_ACTIVE
+        alias.retired_at = None
+        alias.value = validate_alias(alias.alias_type, value)[0]
+        self._observe(alias, observed_at, force=True)
+        await self.session.flush()
+
+    async def _historical_name(
+        self, resource: CCResource, former: str, observed_at: Optional[datetime]
+    ) -> None:
+        """`former` was this resource's name and is being replaced: keep it.
+
+        A historical name is a permanent fact -- it is never retired -- so a
+        name already recorded is left as it is."""
+        origin = (
+            resource.source_system or EXTERNAL_SOURCE_HARKENIQ,
+            resource.source_namespace or LEGACY_FEEDS.get(resource.legacy_kind or "", ""),
+        )
+        if not origin[1]:
+            return
+        shown, normalized = validate_alias(ALIAS_HISTORICAL_NAME, former)
+        alias = CCResourceAlias
+        known = (
+            await self.session.execute(
+                select(alias).where(
+                    alias.resource_id == resource.id,
+                    alias.alias_type == ALIAS_HISTORICAL_NAME,
+                    alias.normalized_value == normalized,
+                    alias.source_system == origin[0],
+                    alias.source_namespace == origin[1],
+                )
+            )
+        ).scalars().first()
+        if known is None and resource.lifecycle_state == LIFECYCLE_ACTIVE:
+            await self.create_alias(
+                resource.tenant_id, resource, alias_type=ALIAS_HISTORICAL_NAME,
+                value=shown, origin=origin, source=resource.source,
+                observed_at=observed_at,
+            )
 
 
 class ApprovalRouteRepo:

@@ -121,6 +121,8 @@ async def _estate(maker, tenant: str) -> dict:
 async def _cleanup(maker, tenant: str) -> None:
     async with maker() as session:
         for stmt in (
+            # TX-3 (A33.3): aliases name a resource, so they go first.
+            "DELETE FROM cc_resource_aliases WHERE tenant_id = :t",
             "DELETE FROM cc_resource_external_ids WHERE tenant_id = :t",
             "DELETE FROM cc_resource_relationships WHERE tenant_id = :t",
             "DELETE FROM cc_resources WHERE tenant_id = :t",
@@ -308,6 +310,9 @@ async def test_cc_0029_to_0030_with_rows_backfills_nothing():
                 "SELECT (SELECT count(*) FROM cc_sites WHERE tenant_id = :t), "
                 "(SELECT count(*) FROM cc_fleet_cache f JOIN cc_sites s "
                 " ON s.id = f.site_id WHERE s.tenant_id = :t)"), {"t": tenant})).one()
+            # TX-3 (A33.3): the aliases table names cc_resources, and the
+            # 0029 shape has neither -- it goes first.
+            await conn.execute(sa.text("DROP TABLE IF EXISTS cc_resource_aliases"))
             for table in TABLES:
                 await conn.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
             await conn.execute(sa.text("UPDATE alembic_version SET version_num = '0029'"))
