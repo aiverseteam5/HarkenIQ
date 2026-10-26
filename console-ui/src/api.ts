@@ -3,12 +3,12 @@
  * Token stored in module scope (not sessionStorage) for security.
  */
 
-export class AuthError extends Error {
-  constructor(message = "unauthorized") {
-    super(message);
-    this.name = "AuthError";
-  }
-}
+/* A34.8: the error classes live in `apiErrors` so a view-model can read a
+   failure's status without importing the fetching client. Re-exported here
+   so every existing import is unchanged. */
+import { ApiError, AuthError } from "./apiErrors";
+
+export { ApiError, AuthError };
 
 let _accessToken = "";
 let _onAuthError: (() => void) | null = null;
@@ -41,21 +41,47 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   if (_accessToken) {
     headers.set("authorization", `Bearer ${_accessToken}`);
   }
-  const resp = await fetch(path, { ...init, headers });
+  let resp: Response;
+  try {
+    resp = await fetch(path, { ...init, headers });
+  } catch (err) {
+    // No response at all: the message stays the browser's own, so what a
+    // page shows is unchanged, and the status says nothing answered.
+    throw new ApiError(err instanceof Error ? err.message : String(err), 0);
+  }
   if (resp.status === 401) {
     if (_onAuthError) _onAuthError();
     throw new AuthError();
   }
   if (!resp.ok) {
-    let detail = resp.statusText;
+    let detail: unknown = resp.statusText;
     try {
       detail = (await resp.json()).detail ?? detail;
     } catch {
       /* non-JSON error body */
     }
-    throw new Error(detail);
+    throw new ApiError(detailText(detail), resp.status);
   }
   return resp;
+}
+
+/** The server's own reason, as text (P4: a refusal shows the server's
+ *  words). FastAPI sends a string for an HTTPException and a list of
+ *  `{msg}` for a validation failure; the list used to reach the screen
+ *  as "[object Object]". */
+function detailText(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (d && typeof d === "object" && "msg" in d ? String(d.msg) : ""))
+      .filter(Boolean);
+    if (msgs.length) return msgs.join("; ");
+  }
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
 }
 
 export async function getJson<T>(path: string): Promise<T> {

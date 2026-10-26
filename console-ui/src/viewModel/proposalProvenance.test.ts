@@ -13,7 +13,7 @@ import {
   provenanceView,
   type ProposalProvenance,
 } from "./proposalProvenance";
-import { ORIGIN_LABEL } from "./pages/ApprovalQueue";
+import { ORIGIN_LABEL } from "../pages/ApprovalQueue";
 
 describe("the three sources render distinctly", () => {
   it("names HarkenIQ's own evaluator", () => {
@@ -26,7 +26,7 @@ describe("the three sources render distinctly", () => {
 
   it("names an external agent runtime", () => {
     expect(provenanceView({ type: "external_ingress" }).label).toBe(
-      "External agent runtime",
+      "External Agent Runtime",
     );
   });
 
@@ -110,10 +110,12 @@ describe("the approval queue LANE is untouched", () => {
   // Provenance answers who caused it. Merging them is the defect A6-3
   // fixed, so this asserts they cannot have been merged since.
   it("still maps exactly the three lanes it always did", () => {
+    // A34.7: the words became the canonical actor names (A28.7); the
+    // lanes, and their separation from provenance, did not change.
     expect(ORIGIN_LABEL).toEqual({
-      node: "node",
-      agent: "agent",
-      agent_activation: "agent activation",
+      node: "Harken Node",
+      agent: "Operational Agent",
+      agent_activation: "Operational Agent activation",
     });
   });
 
@@ -138,9 +140,9 @@ describe("the approval queue LANE is untouched", () => {
       origin: "agent" as const,
       proposal: { provenance: { type: "external_ingress" } },
     };
-    expect(ORIGIN_LABEL[item.origin]).toBe("agent");
+    expect(ORIGIN_LABEL[item.origin]).toBe("Operational Agent");
     expect(provenanceView(item.proposal.provenance).label).toBe(
-      "External agent runtime",
+      "External Agent Runtime",
     );
   });
 });

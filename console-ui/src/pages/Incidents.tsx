@@ -8,11 +8,14 @@ import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
-import Spinner from "../components/Spinner";
 import { useToast } from "../components/useToast";
 import { getJson } from "../api";
-import { generatedView, type GeneratedBlock } from "../generatedContent";
-import { summarySourceView, type SummaryProvenance } from "../summaryTrust";
+import DataState from "../components/DataState";
+import { links } from "../routes";
+import { useObjectRoute, useQueryState } from "../useUrlState";
+import { classifyFailure, type Failure } from "../viewModel/dataState";
+import { generatedView, type GeneratedBlock } from "../viewModel/generatedContent";
+import { summarySourceView, type SummaryProvenance } from "../viewModel/summaryTrust";
 
 /* S4 — Incidents & Diagnosis.
  *
@@ -144,6 +147,9 @@ export function SummarySourceNote({ rec }: { rec: SummaryProvenance }) {
   );
 }
 
+/** A34.4: the list's collection state, in the query string. */
+const INCIDENT_QUERY = { status: "open" } as const satisfies Record<string, string>;
+
 function fmtDate(iso: string | null): string {
   if (!iso) return "--";
   return new Date(iso).toLocaleString("en-US", {
@@ -152,16 +158,19 @@ function fmtDate(iso: string | null): string {
 }
 
 export default function Incidents() {
-  const { tenantId = "" } = useParams<{ tenantId: string }>();
+  // A34.4: the open incident is the URL's optional segment, and the status
+  // filter is its query string -- so a reload, a bookmark or a link sent
+  // to a colleague opens exactly this.
+  const { tenantId = "", incidentId } = useParams<{ tenantId: string; incidentId?: string }>();
   const { toasts, toast, dismiss } = useToast();
+  const [filters, setFilter, resetFilters] = useQueryState(INCIDENT_QUERY);
+  const { open, close } = useObjectRoute(links.incidents(tenantId));
 
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [diagnosedCount, setDiagnosedCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState<Record<string, string>>({ status: "open" });
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailFailure, setDetailFailure] = useState<Failure | null>(null);
 
   const fetchIncidents = useCallback(async () => {
     try {
@@ -185,20 +194,28 @@ export default function Incidents() {
     return () => clearInterval(t);
   }, [fetchIncidents]);
 
-  const openDetail = useCallback(async (inc: Incident) => {
-    setDetailOpen(true);
-    setDetailLoading(true);
-    try {
-      setDetail(await getJson<IncidentDetail>(
-        `/api/t/${tenantId}/incidents/${inc.incident_id}`,
-      ));
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to load incident", "error");
-      setDetailOpen(false);
-    } finally {
-      setDetailLoading(false);
-    }
-  }, [tenantId, toast]);
+  // The incident named by the URL. A failure is shown IN the drawer as
+  // what it means -- not found, refused, unavailable -- rather than a toast
+  // and a drawer that closes on its own, because the URL still names it.
+  useEffect(() => {
+    setDetail(null);
+    setDetailFailure(null);
+    if (!incidentId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getJson<IncidentDetail>(
+          `/api/t/${tenantId}/incidents/${encodeURIComponent(incidentId)}`,
+        );
+        if (!cancelled) setDetail(res);
+      } catch (err) {
+        if (!cancelled) setDetailFailure(classifyFailure(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId, incidentId]);
 
   const filterDefs = useMemo<FilterDef[]>(() => [
     {
@@ -273,8 +290,8 @@ export default function Incidents() {
       <FilterBar
         filters={filterDefs}
         values={filters}
-        onChange={(k, v) => setFilters((p) => ({ ...p, [k]: v }))}
-        onClear={() => setFilters({ status: "open" })}
+        onChange={(k, v) => setFilter({ [k]: v })}
+        onClear={resetFilters}
       />
 
       {!loading && incidents.length === 0 ? (
@@ -286,22 +303,26 @@ export default function Incidents() {
       ) : (
         <DataTable<Incident>
           columns={columns} data={incidents} loading={loading}
-          emptyMessage="No incidents" onRowClick={openDetail} striped
+          emptyMessage="No incidents"
+          onRowClick={(r) => open(links.incident(tenantId, r.incident_id))}
+          striped
         />
       )}
 
       <DetailPanel
-        open={detailOpen}
-        onClose={() => { setDetailOpen(false); setDetail(null); }}
+        open={Boolean(incidentId)}
+        onClose={close}
         title={detail?.title ?? "Incident"}
         subtitle={detail ? `${KIND_LABEL[detail.kind] ?? detail.kind} · ${detail.site_name}` : undefined}
         width={560}
       >
-        {detailLoading ? (
-          <div style={{ display: "flex", justifyContent: "center", padding: "2rem" }}>
-            <Spinner size="md" />
-          </div>
-        ) : detail ? (
+        {!detail ? (
+          <DataState
+            status={detailFailure ? detailFailure.kind : "loading"}
+            subject="this incident"
+            failure={detailFailure}
+          />
+        ) : (
           <>
             <div style={sectionTitle}>What happened</div>
             <div style={detailRow}>
@@ -436,12 +457,12 @@ export default function Incidents() {
                 )}
               {detail.current_state.open_action_count > 0 && (
                 <div style={{ marginTop: "0.5rem" }}>
-                  <Link to={`/t/${tenantId}/approvals`}>Go to the approval queue</Link>
+                  <Link to={links.approvals(tenantId)}>Go to the approval queue</Link>
                 </div>
               )}
             </div>
           </>
-        ) : null}
+        )}
       </DetailPanel>
     </div>
   );

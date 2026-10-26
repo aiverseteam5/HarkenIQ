@@ -210,7 +210,7 @@ export default function Dashboard() {
         <div className="card">
           <EmptyState
             title="No devices yet"
-            description="Metrics populate once agents are registered and reporting."
+            description="Metrics populate once Harken Nodes register and report."
             icon="&#x25A6;"
           />
         </div>

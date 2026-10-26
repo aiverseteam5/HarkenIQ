@@ -9,7 +9,7 @@ import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { getJson } from "../api";
-import { candidateGeneratedView } from "../generatedContent";
+import { candidateGeneratedView } from "../viewModel/generatedContent";
 
 /* S3 — Learning: the governance surface over the learning substrate.
  *

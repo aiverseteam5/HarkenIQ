@@ -1,5 +1,5 @@
-import { useParams } from "react-router-dom";
-import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
@@ -11,13 +11,32 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
 import type { ApprovalAction } from "../types";
-import { provenanceView } from "../proposalProvenance";
-import { trackRecordView } from "../proposalEvidence";
+import { provenanceView } from "../viewModel/proposalProvenance";
+import { trackRecordView } from "../viewModel/proposalEvidence";
+import { APPROVAL_ORIGINS, links } from "../routes";
+import { useQueryState } from "../useUrlState";
+import { closedVocabulary } from "../viewModel/vocabulary";
 
 /* ── Constants ────────────────────────────────────── */
 
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
+
+/** A34.4: the queue's collection state, in the query string. `page` is the
+ *  history tab's. The two Site filters are not here: their option lists
+ *  are empty, so they can never be set (recorded in A34.12). */
+const APPROVAL_QUERY = {
+  tab: "pending",
+  type: "",
+  severity: "",
+  decided_by: "",
+  date_from: "",
+  date_to: "",
+  page: "1",
+} as const satisfies Record<string, string>;
+
+const TABS = closedVocabulary(["pending", "history"] as const);
+const ORIGINS = closedVocabulary(APPROVAL_ORIGINS);
 
 const DECISION_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
   approved: "success",
@@ -55,6 +74,15 @@ const tabActiveStyle: CSSProperties = {
   fontWeight: 600,
 };
 
+const missingNoticeStyle: CSSProperties = {
+  padding: "0.5rem 0.75rem",
+  marginBottom: "0.75rem",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--status-warning-bg)",
+  color: "var(--text-primary)",
+  fontSize: "0.8125rem",
+};
+
 const cardsGrid: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
@@ -65,9 +93,12 @@ const cardsGrid: CSSProperties = {
  * permission, the ledger, the completion rule and the audit trail are
  * identical for all three. Nothing here is an agent-only review path. */
 export const ORIGIN_LABEL: Record<string, string> = {
-  node: "node",
-  agent: "agent",
-  agent_activation: "agent activation",
+  // A34.7: the canonical actor names (A28.7). Still a LANE, never a
+  // provenance: an external runtime's submission sits in the Operational
+  // Agent lane, and `proposalProvenance` says who asked.
+  node: "Harken Node",
+  agent: "Operational Agent",
+  agent_activation: "Operational Agent activation",
 };
 
 const ORIGIN_VARIANT: Record<
@@ -179,20 +210,29 @@ function formatDate(iso: string): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function ApprovalQueue() {
-  const { tenantId = "" } = useParams<{ tenantId: string }>();
+  // A34.4: an approval item is addressed by its lane and id
+  // (`/approvals/{origin}/{itemId}`); the tab, filters and history page are
+  // the query string.
+  const { tenantId = "", origin, itemId } = useParams<{
+    tenantId: string;
+    origin?: string;
+    itemId?: string;
+  }>();
   const { toasts, toast, dismiss } = useToast();
+  const [query, setQuery] = useQueryState(APPROVAL_QUERY);
 
   /* ── Tab state ──────────────────────────────────── */
-  const [activeTab, setActiveTab] = useState<"pending" | "history">("pending");
+  const activeTab = TABS.read(query.tab) === "history" ? "history" : "pending";
 
   /* ── Pending state ─────────────────────────────── */
   const [pendingActions, setPendingActions] = useState<ApprovalAction[]>([]);
+  const [pendingTotal, setPendingTotal] = useState(0);
   const [pendingLoading, setPendingLoading] = useState(true);
-  const [pendingFilters, setPendingFilters] = useState<Record<string, string>>({
-    site_id: "",
-    type: "",
-    severity: "",
-  });
+  const [pendingSite, setPendingSite] = useState("");
+  const pendingFilters = useMemo(
+    () => ({ site_id: pendingSite, type: query.type, severity: query.severity }),
+    [pendingSite, query.type, query.severity],
+  );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
@@ -203,14 +243,18 @@ export default function ApprovalQueue() {
   /* ── History state ─────────────────────────────── */
   const [historyActions, setHistoryActions] = useState<ApprovalAction[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyPage, setHistoryPage] = useState(1);
+  const historyPage = Math.max(1, Number.parseInt(query.page, 10) || 1);
   const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyFilters, setHistoryFilters] = useState<Record<string, string>>({
-    site_id: "",
-    decided_by: "",
-    date_from: "",
-    date_to: "",
-  });
+  const [historySite, setHistorySite] = useState("");
+  const historyFilters = useMemo(
+    () => ({
+      site_id: historySite,
+      decided_by: query.decided_by,
+      date_from: query.date_from,
+      date_to: query.date_to,
+    }),
+    [historySite, query.decided_by, query.date_from, query.date_to],
+  );
 
   /* ── Pending filters ───────────────────────────── */
   const pendingFilterDefs = useMemo<FilterDef[]>(() => [
@@ -279,6 +323,7 @@ export default function ApprovalQueue() {
         `/api/t/${tenantId}/approvals?${params.toString()}`,
       );
       setPendingActions(res.actions ?? []);
+      setPendingTotal(res.total ?? (res.actions ?? []).length);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load pending approvals", "error");
     } finally {
@@ -458,23 +503,55 @@ export default function ApprovalQueue() {
   );
 
   /* ── Filter handlers ───────────────────────────── */
-  const handlePendingFilterChange = useCallback((key: string, value: string) => {
-    setPendingFilters((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  const handlePendingFilterChange = useCallback(
+    (key: string, value: string) => {
+      if (key === "site_id") setPendingSite(value);
+      else setQuery({ [key]: value });
+    },
+    [setQuery],
+  );
 
   const handlePendingFilterClear = useCallback(() => {
-    setPendingFilters({ site_id: "", type: "", severity: "" });
-  }, []);
+    setPendingSite("");
+    setQuery({ type: "", severity: "" });
+  }, [setQuery]);
 
-  const handleHistoryFilterChange = useCallback((key: string, value: string) => {
-    setHistoryFilters((prev) => ({ ...prev, [key]: value }));
-    setHistoryPage(1);
-  }, []);
+  const handleHistoryFilterChange = useCallback(
+    (key: string, value: string) => {
+      if (key === "site_id") {
+        setHistorySite(value);
+        setQuery({ page: "1" });
+      } else {
+        setQuery({ [key]: value, page: "1" });
+      }
+    },
+    [setQuery],
+  );
 
   const handleHistoryFilterClear = useCallback(() => {
-    setHistoryFilters({ site_id: "", decided_by: "", date_from: "", date_to: "" });
-    setHistoryPage(1);
-  }, []);
+    setHistorySite("");
+    setQuery({ decided_by: "", date_from: "", date_to: "", page: "1" });
+  }, [setQuery]);
+
+  /* ── The item the URL names ────────────────────── */
+  // Found in the caller's own pending queue (there is no single-item read):
+  // focused and marked when it is there, and when it is not, the page says
+  // what that can mean -- never which, because a 404-shaped absence covers
+  // "decided", "not visible in your scope" and, here, "filtered out".
+  const named = origin || itemId ? `${ORIGINS.read(origin)}:${itemId ?? ""}` : null;
+  const target = named
+    ? pendingActions.find((a) => `${a.origin}:${a.id}` === named)
+    : undefined;
+  const targetRef = useRef<HTMLDivElement | null>(null);
+  const focusedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!target || focusedFor.current === named || !targetRef.current) return;
+    focusedFor.current = named;
+    targetRef.current.scrollIntoView?.({ block: "center" });
+    targetRef.current.focus();
+  }, [target, named]);
+  const namedMissing = named !== null && activeTab === "pending" && !pendingLoading && !target;
+  const filtered = Boolean(pendingFilters.type || pendingFilters.severity || pendingFilters.site_id);
 
   /* ── Render ─────────────────────────────────────── */
   return (
@@ -489,8 +566,10 @@ export default function ApprovalQueue() {
       {/* Tabs */}
       <div style={tabBarStyle}>
         <button
+          type="button"
           style={activeTab === "pending" ? tabActiveStyle : tabStyle}
-          onClick={() => setActiveTab("pending")}
+          onClick={() => setQuery({ tab: "pending", page: "1" })}
+          aria-pressed={activeTab === "pending"}
         >
           Pending
           {pendingActions.length > 0 && (
@@ -508,8 +587,10 @@ export default function ApprovalQueue() {
           )}
         </button>
         <button
+          type="button"
           style={activeTab === "history" ? tabActiveStyle : tabStyle}
-          onClick={() => setActiveTab("history")}
+          onClick={() => setQuery({ tab: "history" })}
+          aria-pressed={activeTab === "history"}
         >
           History
         </button>
@@ -524,6 +605,21 @@ export default function ApprovalQueue() {
             onChange={handlePendingFilterChange}
             onClear={handlePendingFilterClear}
           />
+
+          {namedMissing && (
+            <div role="status" style={missingNoticeStyle}>
+              This approval is not in the pending queue shown here. It may already
+              have been decided, or it may not be visible in your current scope
+              {filtered ? "; the current filters may also hide it" : ""}
+              {pendingTotal > pendingActions.length
+                ? `; only the first ${pendingActions.length} of ${pendingTotal} waiting are shown`
+                : ""}
+              .{" "}
+              <Link to={links.approvals(tenantId, { tab: "history" })}>View history</Link>
+              {" · "}
+              <Link to={links.approvals(tenantId)}>Show the whole queue</Link>
+            </div>
+          )}
 
           {pendingLoading ? (
             <div style={{ display: "flex", justifyContent: "center", padding: "3rem" }}>
@@ -557,8 +653,17 @@ export default function ApprovalQueue() {
               </div>
 
               <div style={cardsGrid}>
-                {pendingActions.map((action) => (
-                  <div key={action.action_id} style={cardStyle}>
+                {pendingActions.map((action) => {
+                  const isTarget = target !== undefined && action === target;
+                  return (
+                  <div
+                    key={action.action_id}
+                    ref={isTarget ? targetRef : undefined}
+                    tabIndex={isTarget ? -1 : undefined}
+                    aria-current={isTarget ? "true" : undefined}
+                    data-focus-target={isTarget ? "" : undefined}
+                    style={isTarget ? { ...cardStyle, boxShadow: "0 0 0 2px var(--accent)" } : cardStyle}
+                  >
                     <div style={cardHeaderRow}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                         <input
@@ -578,7 +683,7 @@ export default function ApprovalQueue() {
                     </div>
 
                     <div style={cardDetailRow}>
-                      <span>{action.activation ? "Agent" : "Device"}</span>
+                      <span>{action.activation ? "Operational Agent" : "Device"}</span>
                       <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
                         {action.activation
                           ? action.activation.actor
@@ -589,7 +694,7 @@ export default function ApprovalQueue() {
                       <span>Requested by</span>
                       <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>
                         {action.activation
-                          ? "an operator configuring this agent"
+                          ? "an operator configuring this Operational Agent"
                           : action.proposal
                             ? action.proposal.actor
                             : "this device"}
@@ -597,7 +702,21 @@ export default function ApprovalQueue() {
                     </div>
                     <div style={cardDetailRow}>
                       <span>Waiting since</span>
-                      <span>{formatDate(action.routed_at ?? "")}</span>
+                      <span>
+                        {formatDate(action.routed_at ?? "")}
+                        {ORIGINS.has(action.origin) && (
+                          <>
+                            {" · "}
+                            {/* A34.4: P2 -- what an operator can see, they can link to. */}
+                            <Link
+                              to={links.approvalItem(tenantId, action.origin, action.id)}
+                              aria-label={`Link to this ${action.action_type} approval`}
+                            >
+                              Link
+                            </Link>
+                          </>
+                        )}
+                      </span>
                     </div>
 
                     {/* E0.1: how many humans this needs, and who has
@@ -756,7 +875,8 @@ export default function ApprovalQueue() {
                       </button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Batch action bar */}
@@ -823,7 +943,7 @@ export default function ApprovalQueue() {
             page={historyPage}
             pageSize={PAGE_SIZE}
             total={historyTotal}
-            onPageChange={setHistoryPage}
+            onPageChange={(p) => setQuery({ page: String(p) })}
             striped
           />
         </>

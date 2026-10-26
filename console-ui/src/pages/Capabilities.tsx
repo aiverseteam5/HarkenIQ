@@ -292,7 +292,7 @@ export default function Capabilities() {
           <span>
             {unimplemented.map((c) => c.action_type.replace(/_/g, " ")).join(", ")} — fully
             governed, with risk, preconditions and blast radius intact, and no
-            implementation behind them. No device can run them and no agent may be bound to
+            implementation behind them. No device can run them and no Operational Agent may be bound to
             them.
           </span>
         </div>
@@ -311,7 +311,7 @@ export default function Capabilities() {
             {fleet.undeclared} device{fleet.undeclared === 1 ? "" : "s"} has not declared.
           </strong>
           <span>
-            Their reach is unknown, not zero. Declarations arrive as agents re-register.
+            Their reach is unknown, not zero. Declarations arrive as Harken Nodes re-register.
           </span>
         </div>
       )}

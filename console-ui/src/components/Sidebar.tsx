@@ -1,4 +1,5 @@
 import { type CSSProperties } from "react";
+import { Link } from "react-router-dom";
 
 /* ── Types ────────────────────────────────────────── */
 
@@ -17,7 +18,9 @@ export interface SidebarSection {
 interface Props {
   sections: SidebarSection[];
   activeItem: string;
-  onNavigate: (key: string) => void;
+  /** The URL an item opens. A34.4: navigation is a real link, so "open in
+   *  new tab", "copy link" and a middle click all work. */
+  hrefFor: (key: string) => string;
   user: { name: string; email: string; role: string };
   onLogout?: () => void;
 }
@@ -74,6 +77,10 @@ const itemStyle: CSSProperties = {
   textAlign: "left",
   fontFamily: "inherit",
   borderRadius: 0,
+  // A link now, not a button: keep the button's line box and no underline,
+  // so the change is behaviour, not appearance.
+  lineHeight: "normal",
+  textDecoration: "none",
   transition: "background var(--transition), color var(--transition)",
 };
 
@@ -127,7 +134,7 @@ const roleTagStyle: CSSProperties = {
 
 /* ── Component ────────────────────────────────────── */
 
-export default function Sidebar({ sections, activeItem, onNavigate, user, onLogout }: Props) {
+export default function Sidebar({ sections, activeItem, hrefFor, user, onLogout }: Props) {
   const initials = user.name
     .split(" ")
     .map((w) => w[0])
@@ -138,7 +145,7 @@ export default function Sidebar({ sections, activeItem, onNavigate, user, onLogo
   return (
     <nav style={sidebarStyle} aria-label="Main navigation">
       <div style={logoStyle}>
-        <span style={{ fontSize: "1.25rem" }}>&#x2B22;</span>
+        <span aria-hidden="true" style={{ fontSize: "1.25rem" }}>&#x2B22;</span>
         HarkenIQ
       </div>
 
@@ -146,10 +153,10 @@ export default function Sidebar({ sections, activeItem, onNavigate, user, onLogo
         <div key={section.label}>
           <div style={sectionLabelStyle}>{section.label}</div>
           {section.items.map((item) => (
-            <button
+            <Link
               key={item.key}
+              to={hrefFor(item.key)}
               style={activeItem === item.key ? itemActiveStyle : itemStyle}
-              onClick={() => onNavigate(item.key)}
               onMouseEnter={(e) => {
                 if (activeItem !== item.key) {
                   e.currentTarget.style.background = "var(--sidebar-hover-bg)";
@@ -162,12 +169,16 @@ export default function Sidebar({ sections, activeItem, onNavigate, user, onLogo
               }}
               aria-current={activeItem === item.key ? "page" : undefined}
             >
-              {item.icon && <span style={{ fontSize: "1rem", width: 20, textAlign: "center" }}>{item.icon}</span>}
+              {item.icon && (
+                <span aria-hidden="true" style={{ fontSize: "1rem", width: 20, textAlign: "center" }}>
+                  {item.icon}
+                </span>
+              )}
               <span>{item.label}</span>
               {item.badge !== undefined && item.badge > 0 && (
                 <span style={badgeStyle}>{item.badge}</span>
               )}
-            </button>
+            </Link>
           ))}
         </div>
       ))}
@@ -182,6 +193,7 @@ export default function Sidebar({ sections, activeItem, onNavigate, user, onLogo
         </div>
         {onLogout && (
           <button
+            type="button"
             onClick={onLogout}
             aria-label="Sign out"
             style={{

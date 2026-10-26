@@ -1,5 +1,5 @@
-import { type CSSProperties } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { type CSSProperties, useRef } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import Sidebar, { type SidebarSection } from "../components/Sidebar";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -12,6 +12,8 @@ import {
 } from "../permissions";
 import RequirePermission from "../components/RequirePermission";
 import TenantContextHeader from "../components/TenantContextHeader";
+import { OperationalContextProvider } from "../context/OperationalContext";
+import { useRouteFocus } from "../a11y/useRouteFocus";
 
 /* ── Navigation structure ─────────────────────────── */
 
@@ -20,7 +22,7 @@ import TenantContextHeader from "../components/TenantContextHeader";
    list is what let "Tenants" sit beside "Users" as though they were the
    same kind of thing. */
 
-const PLATFORM_NAV: SidebarSection[] = [
+export const PLATFORM_NAV: SidebarSection[] = [
   {
     label: "Platform",
     items: [
@@ -45,7 +47,7 @@ const PLATFORM_NAV: SidebarSection[] = [
 
 /* Tenant-plane keys are bare; the layout prefixes them with the active
    /t/{tenantId} so one map cannot drift from the routes. */
-const TENANT_NAV: SidebarSection[] = [
+export const TENANT_NAV: SidebarSection[] = [
   {
     label: "Fleet",
     items: [
@@ -133,9 +135,10 @@ const contentStyle: CSSProperties = {
 
 export default function SidebarLayout() {
   const location = useLocation();
-  const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { toasts, dismiss } = useToast();
+  const mainRef = useRef<HTMLElement>(null);
+  useRouteFocus(mainRef);
 
   // Which plane are we on? The URL is the answer, so the sidebar and the
   // page can never disagree about it.
@@ -160,23 +163,15 @@ export default function SidebarLayout() {
     ),
   })).filter((section) => section.items.length > 0);
 
-  return (
-    <div style={layoutStyle}>
-      <Sidebar
-        sections={visibleSections}
-        activeItem={activeItem}
-        onNavigate={(key) => navigate(`${prefix}${key}`)}
-        user={{
-          name: user?.name ?? "Unknown",
-          email: user?.email ?? "",
-          role: user?.role ?? "viewer",
-        }}
-        onLogout={logout}
-      />
-      <main style={contentStyle}>
-        {/* Renders only inside a tenant, so the platform plane is visibly
-            not "in" any customer. */}
-        <TenantContextHeader />
+  const content = (
+    <div style={contentStyle}>
+      {/* Renders only inside a tenant, so the platform plane is visibly
+          not "in" any customer. A34.6: it states the operational context
+          from `OperationalContextProvider`, and sits BEFORE <main>, so "skip
+          to main content" skips it and a screen reader does not reread it
+          on every page. */}
+      <TenantContextHeader />
+      <main id="main-content" ref={mainRef} tabIndex={-1} data-focus-target="">
         {/* Inside the layout on purpose: a denied page keeps the sidebar so
             the user can navigate away, rather than being dropped onto a
             bare 403 with no way back. */}
@@ -190,6 +185,43 @@ export default function SidebarLayout() {
           <Outlet key={tenantId ?? "platform"} />
         </RequirePermission>
       </main>
+    </div>
+  );
+
+  return (
+    <div style={layoutStyle}>
+      {/* A34.8: the first thing Tab reaches, so a keyboard user does not
+          walk the whole sidebar to reach the page. */}
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={(e) => {
+          e.preventDefault();
+          mainRef.current?.focus();
+        }}
+      >
+        Skip to main content
+      </a>
+      <Sidebar
+        sections={visibleSections}
+        activeItem={activeItem}
+        hrefFor={(key) => `${prefix}${key}`}
+        user={{
+          name: user?.name ?? "Unknown",
+          email: user?.email ?? "",
+          role: user?.role ?? "viewer",
+        }}
+        onLogout={logout}
+      />
+      {inTenant ? (
+        // Keyed by tenant for the same reason the Outlet is: one tenant's
+        // context must never be shown while another tenant's page loads.
+        <OperationalContextProvider key={tenantId} tenantId={tenantId}>
+          {content}
+        </OperationalContextProvider>
+      ) : (
+        content
+      )}
       <Toast toasts={toasts} onDismiss={dismiss} />
     </div>
   );

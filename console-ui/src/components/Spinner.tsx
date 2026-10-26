@@ -2,7 +2,15 @@ import { type CSSProperties } from "react";
 
 const sizes = { sm: 16, md: 24, lg: 36 } as const;
 
-export default function Spinner({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
+interface Props {
+  size?: "sm" | "md" | "lg";
+  /** The spinner's own announcement. `null` when the spinner sits inside
+   *  something that already says what is loading (A34.8), so a screen
+   *  reader hears one message, not two. */
+  label?: string | null;
+}
+
+export default function Spinner({ size = "md", label = "Loading" }: Props) {
   const px = sizes[size];
   const style: CSSProperties = {
     width: px,
@@ -17,7 +25,11 @@ export default function Spinner({ size = "md" }: { size?: "sm" | "md" | "lg" }) 
   return (
     <>
       <style>{`@keyframes hiq-spin { to { transform: rotate(360deg); } }`}</style>
-      <span role="status" aria-label="Loading" style={style} />
+      {label === null ? (
+        <span aria-hidden="true" style={style} />
+      ) : (
+        <span role="status" aria-label={label} style={style} />
+      )}
     </>
   );
 }

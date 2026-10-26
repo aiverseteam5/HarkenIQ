@@ -246,7 +246,7 @@ export default function SupportTicketing() {
                 <option value="S1">S1 - Critical</option><option value="S2">S2 - High</option><option value="S3">S3 - Medium</option><option value="S4">S4 - Low</option>
               </select>
               <select value={createForm.component} onChange={(e) => setCreateForm(f => ({ ...f, component: e.target.value }))} style={{ flex: 1, padding: "0.5rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-light)" }}>
-                <option value="SM">Site Manager</option><option value="Agent">Agent</option><option value="Skill">Skill</option><option value="CC">Central Command</option><option value="Billing">Billing</option><option value="Other">Other</option>
+                <option value="SM">Site Manager</option><option value="Agent">Harken Node</option><option value="Skill">Skill</option><option value="CC">Central Command</option><option value="Billing">Billing</option><option value="Other">Other</option>
               </select>
             </div>
           </div>

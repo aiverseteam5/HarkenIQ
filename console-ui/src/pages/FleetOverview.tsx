@@ -1,4 +1,4 @@
-import { useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
@@ -8,9 +8,12 @@ import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
-import Spinner from "../components/Spinner";
+import DataState from "../components/DataState";
 import { useToast } from "../components/useToast";
-import { getJson } from "../api";
+import { ApiError, getJson } from "../api";
+import { links, queryString } from "../routes";
+import { useObjectRoute, useQueryState } from "../useUrlState";
+import { classifyFailure, type Failure } from "../viewModel/dataState";
 import type { PaginatedResponse, FleetDevice } from "../types";
 
 /* ── Extended types ───────────────────────────────── */
@@ -95,6 +98,58 @@ interface FleetRow extends FleetDevice {
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
 
+/** A34.4: the list's collection state, in the query string. */
+const FLEET_QUERY = {
+  site_id: "",
+  vendor: "",
+  health: "",
+  observation: "",
+  search: "",
+  page: "1",
+} as const satisfies Record<string, string>;
+
+type Resolved =
+  | { kind: "found"; device: FleetDeviceDetail }
+  | { kind: "ambiguous"; rows: FleetRow[] }
+  | { kind: "missing" };
+
+/** A34.4: a device link names its Harken Node `agent_id`, because the
+ *  `cc_fleet_cache` row id it used to name is deleted and re-inserted on
+ *  every poll (`clear_site`). The id is resolved to the CURRENT row through
+ *  the same scoped fleet read the list makes -- a lookup, not a decision: a
+ *  device the reader cannot see is simply not returned.
+ *
+ *  `atSiteId` picks one site's report when a node is reported at two sites
+ *  at once (a transient ambiguity B2-2 records); without it, two rows are
+ *  stated as two rows rather than one being chosen silently. */
+async function resolveDevice(
+  tenantId: string,
+  agentId: string,
+  atSiteId: string,
+): Promise<Resolved> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const res = await getJson<PaginatedResponse<FleetRow>>(
+      `/api/t/${tenantId}/fleet${queryString({ search: agentId, page_size: 200 })}`,
+    );
+    const rows = (res.items ?? []).filter((r) => r.agent_id === agentId);
+    if (rows.length === 0) return { kind: "missing" };
+    const here = atSiteId ? rows.filter((r) => r.site_id === atSiteId) : rows;
+    if (here.length !== 1) return { kind: "ambiguous", rows };
+    try {
+      const device = await getJson<FleetDeviceDetail>(
+        `/api/t/${tenantId}/fleet/${encodeURIComponent(here[0].id)}`,
+      );
+      return { kind: "found", device };
+    } catch (err) {
+      // The poll may have replaced the row between the two reads: read the
+      // list once more rather than report a device that is there as gone.
+      if (attempt === 0 && err instanceof ApiError && err.status === 404) continue;
+      throw err;
+    }
+  }
+  return { kind: "missing" };
+}
+
 const HEALTH_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
   ok: "success",
   warning: "warning",
@@ -178,7 +233,14 @@ function formatDate(iso: string | null | undefined): string {
 /* ── Component ────────────────────────────────────── */
 
 export default function FleetOverview() {
-  const { tenantId = "" } = useParams<{ tenantId: string }>();
+  // A34.4: the open device is the URL's optional segment (its Harken Node
+  // id), and the filters and page are its query string.
+  const { tenantId = "", agentId } = useParams<{ tenantId: string; agentId?: string }>();
+  const [query, setQuery, resetQuery] = useQueryState(FLEET_QUERY);
+  const filters = query;
+  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
+  const atSiteId = new URLSearchParams(useLocation().search).get("at") ?? "";
+  const { open, close } = useObjectRoute(links.fleet(tenantId));
   const { toasts, toast, dismiss } = useToast();
 
   /* ── Summary state ─────────────────────────────── */
@@ -187,22 +249,15 @@ export default function FleetOverview() {
   /* ── List state ────────────────────────────────── */
   const [devices, setDevices] = useState<FleetRow[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [sortColumn, setSortColumn] = useState("health");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const [filters, setFilters] = useState<Record<string, string>>({
-    site_id: "",
-    vendor: "",
-    health: "",
-    observation: "",
-    search: "",
-  });
 
   /* ── Detail state ──────────────────────────────── */
   const [selectedDevice, setSelectedDevice] = useState<FleetDeviceDetail | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [deviceFailure, setDeviceFailure] = useState<Failure | null>(null);
+  /** The rows reporting this Harken Node when it is at more than one site. */
+  const [atSites, setAtSites] = useState<FleetRow[]>([]);
   const [deviceRisk, setDeviceRisk] = useState<DeviceRisk | null>(null);
   const [deviceCves, setDeviceCves] = useState<CveExposure[]>([]);
   const [sites, setSites] = useState<SiteRow[]>([]);
@@ -323,15 +378,28 @@ export default function FleetOverview() {
     return () => clearInterval(timer);
   }, [fetchDevices, fetchSummary]);
 
-  /* ── Fetch detail ──────────────────────────────── */
-  const openDetail = useCallback(
-    async (device: FleetRow) => {
-      setDetailOpen(true);
-      setDetailLoading(true);
-      setDeviceRisk(null);
-      setDeviceCves([]);
+  /* ── Fetch detail: the device the URL names ─────── */
+  useEffect(() => {
+    setSelectedDevice(null);
+    setDeviceFailure(null);
+    setAtSites([]);
+    setDeviceRisk(null);
+    setDeviceCves([]);
+    if (!agentId) return;
+    let cancelled = false;
+    void (async () => {
       try {
-        const detail = await getJson<FleetDeviceDetail>(`/api/t/${tenantId}/fleet/${device.id}`);
+        const resolved = await resolveDevice(tenantId, agentId, atSiteId);
+        if (cancelled) return;
+        if (resolved.kind === "missing") {
+          setDeviceFailure({ kind: "not_found", status: 404, message: "" });
+          return;
+        }
+        if (resolved.kind === "ambiguous") {
+          setAtSites(resolved.rows);
+          return;
+        }
+        const detail = resolved.device;
         setSelectedDevice(detail);
         // S1: risk + CVE exposure for THIS device. Both are fleet-wide
         // endpoints filtered client-side by agent_id; each failure is
@@ -341,11 +409,13 @@ export default function FleetOverview() {
             const res = await getJson<{ risks: DeviceRisk[] }>(
               `/api/t/${tenantId}/predictive/risk`,
             );
-            setDeviceRisk(
-              (res.risks ?? []).find((r) => r.agent_id === detail.agent_id) ?? null,
-            );
+            if (!cancelled) {
+              setDeviceRisk(
+                (res.risks ?? []).find((r) => r.agent_id === detail.agent_id) ?? null,
+              );
+            }
           } catch {
-            setDeviceRisk(null);
+            if (!cancelled) setDeviceRisk(null);
           }
         })();
         void (async () => {
@@ -353,22 +423,23 @@ export default function FleetOverview() {
             const res = await getJson<{ exposures: CveExposure[] }>(
               `/api/t/${tenantId}/firmware/exposure`,
             );
-            setDeviceCves(
-              (res.exposures ?? []).filter((e) => e.agent_id === detail.agent_id),
-            );
+            if (!cancelled) {
+              setDeviceCves(
+                (res.exposures ?? []).filter((e) => e.agent_id === detail.agent_id),
+              );
+            }
           } catch {
-            setDeviceCves([]);
+            if (!cancelled) setDeviceCves([]);
           }
         })();
       } catch (err) {
-        toast(err instanceof Error ? err.message : "Failed to load device detail", "error");
-        setDetailOpen(false);
-      } finally {
-        setDetailLoading(false);
+        if (!cancelled) setDeviceFailure(classifyFailure(err));
       }
-    },
-    [toast, tenantId],
-  );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId, agentId, atSiteId]);
 
   /* ── Sort handler ──────────────────────────────── */
   const handleSort = useCallback(
@@ -388,7 +459,7 @@ export default function FleetOverview() {
     () => [
       {
         key: "agent_id",
-        header: "Agent ID",
+        header: "Harken Node ID",
         sortKey: "agent_id",
         render: (r) => (
           <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
@@ -442,15 +513,12 @@ export default function FleetOverview() {
   );
 
   /* ── Filter handlers ───────────────────────────── */
-  const handleFilterChange = useCallback((key: string, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
-    setPage(1);
-  }, []);
+  const handleFilterChange = useCallback(
+    (key: string, value: string) => setQuery({ [key]: value, page: "1" }),
+    [setQuery],
+  );
 
-  const handleFilterClear = useCallback(() => {
-    setFilters({ site_id: "", vendor: "", health: "", observation: "", search: "" });
-    setPage(1);
-  }, []);
+  const handleFilterClear = resetQuery;
 
   /* ── Render ─────────────────────────────────────── */
   return (
@@ -495,7 +563,7 @@ export default function FleetOverview() {
       {!loading && devices.length === 0 && !filters.search && !filters.health && !filters.vendor && !filters.observation ? (
         <EmptyState
           title="No devices in fleet"
-          description="Devices will appear here once agents are registered and reporting."
+          description="Devices appear here once their Harken Nodes register and report."
           icon="&#x2318;"
         />
       ) : (
@@ -510,30 +578,55 @@ export default function FleetOverview() {
           page={page}
           pageSize={PAGE_SIZE}
           total={total}
-          onPageChange={setPage}
-          onRowClick={openDetail}
+          onPageChange={(p) => setQuery({ page: String(p) })}
+          onRowClick={(r) =>
+            open(
+              links.device(
+                tenantId,
+                r.agent_id,
+                // Only when this node is on the page twice: otherwise the
+                // id alone names it, and the URL stays clean.
+                devices.filter((d) => d.agent_id === r.agent_id).length > 1 ? r.site_id : undefined,
+              ),
+            )
+          }
           striped
         />
       )}
 
       {/* ── Detail Panel ──────────────────────────── */}
       <DetailPanel
-        open={detailOpen}
-        onClose={() => {
-          setDetailOpen(false);
-          setSelectedDevice(null);
-          setDeviceRisk(null);
-          setDeviceCves([]);
-        }}
-        title={selectedDevice?.name || selectedDevice?.agent_id || "Device Details"}
+        open={Boolean(agentId)}
+        onClose={close}
+        title={selectedDevice?.name || selectedDevice?.agent_id || agentId || "Device Details"}
         subtitle={selectedDevice?.agent_id}
         width={520}
       >
-        {detailLoading ? (
-          <div style={{ display: "flex", justifyContent: "center", padding: "2rem" }}>
-            <Spinner size="md" />
-          </div>
-        ) : selectedDevice ? (
+        {!selectedDevice ? (
+          atSites.length > 0 ? (
+            <div role="status">
+              <p style={{ fontSize: "0.875rem", marginBottom: "0.75rem" }}>
+                This Harken Node is reported at more than one site right now. Each
+                site's report is shown separately; choose one.
+              </p>
+              <ul style={{ paddingLeft: "1.1rem", lineHeight: 1.8 }}>
+                {atSites.map((row) => (
+                  <li key={`${row.site_id}:${row.id}`}>
+                    <Link to={links.device(tenantId, row.agent_id, row.site_id)}>
+                      {row.site_name || row.site_id}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <DataState
+              status={deviceFailure ? deviceFailure.kind : "loading"}
+              subject="this device"
+              failure={deviceFailure}
+            />
+          )
+        ) : (
           <>
             <div style={sectionTitle}>Device Info</div>
             <div style={detailRow}>
@@ -712,7 +805,7 @@ export default function FleetOverview() {
             )}
 
           </>
-        ) : null}
+        )}
       </DetailPanel>
     </div>
   );

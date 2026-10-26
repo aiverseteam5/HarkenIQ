@@ -1,5 +1,5 @@
-import type { ProposalProvenance } from "./proposalProvenance";
-import type { OutcomeEvidence, ViewerProjectedEvidence } from "./proposalEvidence";
+import type { ProposalProvenance } from "./viewModel/proposalProvenance";
+import type { OutcomeEvidence, ViewerProjectedEvidence } from "./viewModel/proposalEvidence";
 
 /** Paginated API response wrapper. */
 export interface PaginatedResponse<T> {

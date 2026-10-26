@@ -35,8 +35,8 @@ const noteBlock: CSSProperties = {
 
 const COMPONENTS: Record<string, { label: string; description: string }> = {
   site_manager: { label: "Site Manager", description: "Per-site multi-device correlation and command brokering" },
-  agent: { label: "Harken Agent", description: "Per-device embedded agent for hardware diagnostics" },
-  cli: { label: "CLI", description: "Command-line interface for agent and site operations" },
+  agent: { label: "Harken Node", description: "Per-device Harken Node software for hardware diagnostics" },
+  cli: { label: "CLI", description: "Command-line interface for Harken Node and site operations" },
   skill_packs: { label: "Skill Packs", description: "Diagnostic and remediation skill modules" },
 };
 

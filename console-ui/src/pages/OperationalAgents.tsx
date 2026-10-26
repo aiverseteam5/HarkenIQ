@@ -1,5 +1,5 @@
 import { useParams } from "react-router-dom";
-import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
@@ -11,7 +11,11 @@ import { useToast } from "../components/useToast";
 import { getJson, patchJson, postJson } from "../api";
 import { useAuth } from "../useAuth";
 import type { AgentProposal } from "../types";
-import { provenanceView } from "../proposalProvenance";
+import { provenanceView } from "../viewModel/proposalProvenance";
+import DataState from "../components/DataState";
+import { links } from "../routes";
+import { useObjectRoute } from "../useUrlState";
+import { classifyFailure, type Failure } from "../viewModel/dataState";
 
 /* A0+A1 — Operational Agents: the product noun, under existing governance.
  *
@@ -363,7 +367,7 @@ const DIMENSION_LABEL: Record<string, string> = {
 const PROVENANCE_NOTE: Record<string, string> = {
   recorded: "the configuration that is running is recorded",
   unknown:
-    "this agent was activated before the platform recorded activation versions, so what is running cannot be named — re-run preflight and activate to record it",
+    "this Operational Agent was activated before the platform recorded activation versions, so what is running cannot be named — re-run preflight and activate to record it",
   inactive: "not running, so there is nothing to drift",
 };
 
@@ -487,7 +491,12 @@ interface DryRun {
 /* ── Page ─────────────────────────────────────────── */
 
 export default function OperationalAgents() {
-  const { tenantId = "" } = useParams<{ tenantId: string }>();
+  // A34.4: the open Operational Agent is the URL's optional segment.
+  const { tenantId = "", agentId } = useParams<{ tenantId: string; agentId?: string }>();
+  const { open, close } = useObjectRoute(links.operationalAgents(tenantId));
+  const openAgentId = useRef(agentId);
+  openAgentId.current = agentId;
+  const [agentFailure, setAgentFailure] = useState<Failure | null>(null);
   const { toasts, toast, dismiss } = useToast();
   const { user } = useAuth();
 
@@ -527,7 +536,7 @@ export default function OperationalAgents() {
       setAgents(list.agents ?? []);
       setCatalogue(cat);
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to load agents", "error");
+      toast(err instanceof Error ? err.message : "Failed to load Operational Agents", "error");
     } finally {
       setLoading(false);
     }
@@ -552,6 +561,9 @@ export default function OperationalAgents() {
         // doing without needing approval authority.
         getJson<IngressHealth>(`${base}/ingress`),
       ]);
+      // The URL moved on while these were in flight: they describe an
+      // agent nobody is looking at any more.
+      if (openAgentId.current !== agentId) return;
       setView(detail);
       setPreflight(pre);
       setRuntime(run);
@@ -565,16 +577,24 @@ export default function OperationalAgents() {
     [tenantId],
   );
 
-  const openAgent = useCallback(
-    async (row: AgentRow) => {
-      try {
-        await loadAgent(row.id);
-      } catch (err) {
-        toast(err instanceof Error ? err.message : "Failed to load agent", "error");
-      }
-    },
-    [loadAgent, toast],
-  );
+  // The Operational Agent the URL names. A failure is stated in the drawer,
+  // where the URL still points, instead of a toast over an empty page.
+  useEffect(() => {
+    setView(null);
+    setPreflight(null);
+    setRuntime(null);
+    setIngress(null);
+    setDryRun(null);
+    setAgentFailure(null);
+    if (!agentId) return;
+    let cancelled = false;
+    loadAgent(agentId).catch((err) => {
+      if (!cancelled) setAgentFailure(classifyFailure(err));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, loadAgent]);
 
   const refreshOpen = useCallback(
     async (agentId: string) => {
@@ -616,7 +636,7 @@ export default function OperationalAgents() {
     try {
       await postJson(`/api/t/${tenantId}/operational-agents/${agentId}/acknowledge`, {});
       toast(
-        "Warnings accepted against this configuration version. Editing the agent invalidates this.",
+        "Warnings accepted against this configuration version. Editing the Operational Agent invalidates this.",
         "success",
       );
       await refreshOpen(agentId);
@@ -646,15 +666,15 @@ export default function OperationalAgents() {
       await postJson(`/api/t/${tenantId}/operational-agents/${agentId}/${action}`, {});
       toast(
         action === "activate"
-          ? "Agent active. It evaluates its scope on the next pass and proposes; nothing runs without the governance it already faces."
-          : `Agent ${action}d`,
+          ? "Operational Agent active. It evaluates its scope on the next pass and proposes; nothing runs without the governance it already faces."
+          : `Operational Agent ${action}d`,
         action === "activate" ? "success" : "info",
       );
       await refreshOpen(agentId);
     } catch (err) {
       // The server is the authority on activation. When it refuses, its
       // reason is the message — this page does not invent one.
-      toast(err instanceof Error ? err.message : `Could not ${action} the agent`, "error");
+      toast(err instanceof Error ? err.message : `Could not ${action} the Operational Agent`, "error");
     } finally {
       setBusy(false);
     }
@@ -682,7 +702,7 @@ export default function OperationalAgents() {
       setClassRefs([]);
       await fetchAll();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Could not create the agent", "error");
+      toast(err instanceof Error ? err.message : "Could not create the Operational Agent", "error");
     } finally {
       setBusy(false);
     }
@@ -695,7 +715,7 @@ export default function OperationalAgents() {
     () => [
       {
         key: "name",
-        header: "Agent",
+        header: "Operational Agent",
         render: (r) => (
           <span style={{ fontWeight: 600, fontSize: "0.8125rem" }}>
             {r.name}
@@ -824,10 +844,10 @@ export default function OperationalAgents() {
   const activationBlocker: string | null = useMemo(() => {
     if (!view || view.agent.status === "active") return null;
     if (!preflight?.exists) {
-      return "Run preflight first — an agent cannot be activated without a reviewable readiness result.";
+      return "Run preflight first — an Operational Agent cannot be activated without a reviewable readiness result.";
     }
     if (!preflightCurrent) {
-      return `The stored preflight is for version ${preflight.configuration_version}; this agent is now v${view.agent.version}. Re-run it.`;
+      return `The stored preflight is for version ${preflight.configuration_version}; this Operational Agent is now v${view.agent.version}. Re-run it.`;
     }
     if (preflight.overall === "blocked") {
       return `Blocked by ${(preflight.blocked_dimensions ?? [])
@@ -871,12 +891,12 @@ export default function OperationalAgents() {
 
       <PageHeader
         title="Operational Agents"
-        breadcrumbs={[{ label: "HarkenIQ" }, { label: "Governance" }, { label: "Agents" }]}
+        breadcrumbs={[{ label: "HarkenIQ" }, { label: "Governance" }, { label: "Operational Agents" }]}
         actions={
           canManage
             ? [
                 {
-                  label: creating ? "Cancel" : "New agent",
+                  label: creating ? "Cancel" : "New Operational Agent",
                   onClick: () => setCreating((c) => !c),
                   variant: "primary" as const,
                 },
@@ -895,7 +915,7 @@ export default function OperationalAgents() {
       </p>
 
       <div style={metricsGrid}>
-        <MetricCard title="Agents" value={agents.length} />
+        <MetricCard title="Operational Agents" value={agents.length} />
         <MetricCard title="Active" value={totals.active} />
         <MetricCard title="Waiting on a human" value={totals.waiting} />
         <MetricCard title="May act unattended" value={totals.autonomous} />
@@ -971,7 +991,7 @@ export default function OperationalAgents() {
           {!alwaysApprove ? (
             <div>
               <label style={labelStyle} htmlFor="agent-ceiling">
-                Autonomy ceiling for this agent (never above the tenant's own level)
+                Autonomy ceiling for this Operational Agent (never above the tenant's own level)
               </label>
               <select
                 id="agent-ceiling"
@@ -1016,21 +1036,15 @@ export default function OperationalAgents() {
           columns={columns}
           data={agents}
           loading={loading}
-          onRowClick={(r) => void openAgent(r)}
-          emptyMessage="No agents"
+          onRowClick={(r) => open(links.operationalAgent(tenantId, r.id))}
+          emptyMessage="No Operational Agents"
         />
       )}
 
       <DetailPanel
-        open={view !== null}
-        onClose={() => {
-          setView(null);
-          setPreflight(null);
-          setRuntime(null);
-          setIngress(null);
-          setDryRun(null);
-        }}
-        title={view?.agent.name ?? ""}
+        open={Boolean(agentId)}
+        onClose={close}
+        title={view?.agent.name ?? "Operational Agent"}
         subtitle={view?.agent.actor}
         width={780}
       >
@@ -1087,10 +1101,10 @@ export default function OperationalAgents() {
                   </button>
                   <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                     {!preflight?.exists
-                      ? "No readiness result yet. An agent cannot be activated without one."
+                      ? "No readiness result yet. An Operational Agent cannot be activated without one."
                       : preflightCurrent
                         ? `Checked by ${preflight.produced_by} for version ${preflight.configuration_version}.`
-                        : `The stored result is for version ${preflight.configuration_version}; this agent is now v${view.agent.version}. Re-run it.`}
+                        : `The stored result is for version ${preflight.configuration_version}; this Operational Agent is now v${view.agent.version}. Re-run it.`}
                   </span>
                 </div>
 
@@ -1411,7 +1425,7 @@ export default function OperationalAgents() {
                   <span>
                     {runtime.budget.limit > 0
                       ? `${runtime.budget.executions_used} of ${runtime.budget.limit} this ${runtime.budget.period}`
-                      : `${runtime.budget.executions_used} · no per-agent limit set`}
+                      : `${runtime.budget.executions_used} · no limit set for this Operational Agent`}
                     {runtime.budget.exhausted ? (
                       <span style={{ color: "var(--status-warning, #b45309)" }}> · spent</span>
                     ) : null}
@@ -1420,7 +1434,7 @@ export default function OperationalAgents() {
                 {runtime.budget.exhausted ? (
                   <div style={{ ...blockStyle, borderLeftColor: "var(--status-warning, #b45309)" }}>
                     The budget is spent, so nothing runs unattended until it resets. This
-                    agent keeps observing, keeps proposing, and still executes whatever a
+                    Operational Agent keeps observing, keeps proposing, and still executes whatever a
                     person approves.
                   </div>
                 ) : null}
@@ -1428,7 +1442,7 @@ export default function OperationalAgents() {
                   <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "0.75rem" }}>
                     <div>
                       <label style={labelStyle} htmlFor="budget-limit">
-                        Executions allowed unattended (0 = no per-agent limit)
+                        Executions allowed unattended (0 = no limit for this Operational Agent)
                       </label>
                       <input
                         id="budget-limit"
@@ -1486,7 +1500,7 @@ export default function OperationalAgents() {
                   <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", flexWrap: "wrap" }}>
                     <div style={{ flex: "1 1 16rem" }}>
                       <label style={labelStyle} htmlFor="pause-reason">
-                        Hold this agent (a reason pauses it; clearing it resumes)
+                        Hold this Operational Agent (a reason pauses it; clearing it resumes)
                       </label>
                       <input
                         id="pause-reason"
@@ -1517,7 +1531,7 @@ export default function OperationalAgents() {
                 <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
                   A hold is a runtime control, so it does not change the configuration
                   version or invalidate an approval. It can only tighten — it cannot
-                  resume an agent this tenant or site has stopped.
+                  resume an Operational Agent this tenant or site has stopped.
                 </div>
               </div>
             ) : null}
@@ -1532,13 +1546,13 @@ export default function OperationalAgents() {
                   gap: "0.5rem",
                 }}
               >
-                <div style={sectionTitle}>What would this agent do?</div>
+                <div style={sectionTitle}>What would this Operational Agent do?</div>
                 <button className="btn" disabled={dryRunning} onClick={() => void runDryRun()}>
                   {dryRunning ? "Reasoning…" : "Dry run"}
                 </button>
               </div>
               <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
-                Ask the agent what it would propose against the estate as it stands right
+                Ask the Operational Agent what it would propose against the estate as it stands right
                 now. Nothing is created, nothing is dispatched, no budget is spent and no
                 decision is recorded.
               </div>
@@ -1560,7 +1574,7 @@ export default function OperationalAgents() {
                       }}
                     >
                       Nothing to propose. That is a real answer, not a failure — the estate
-                      shows nothing this agent is bound to act on.
+                      shows nothing this Operational Agent is bound to act on.
                     </div>
                   ) : null}
 
@@ -1673,9 +1687,9 @@ export default function OperationalAgents() {
                   </div>
                 ))}
                 <div style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
-                  A skill composes capabilities this agent already holds. It never widens
+                  A skill composes capabilities this Operational Agent already holds. It never widens
                   permission, scope, capability, autonomy or approval authority, and it
-                  installs only onto devices in this agent's own scope that can run what it
+                  installs only onto devices in this Operational Agent's own scope that can run what it
                   recommends.
                 </div>
               </div>
@@ -1813,7 +1827,13 @@ export default function OperationalAgents() {
               )}
             </div>
           </div>
-        ) : null}
+        ) : (
+          <DataState
+            status={agentFailure ? agentFailure.kind : "loading"}
+            subject="this Operational Agent"
+            failure={agentFailure}
+          />
+        )}
       </DetailPanel>
     </div>
   );
