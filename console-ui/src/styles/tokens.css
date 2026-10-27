@@ -1,0 +1,278 @@
+/* A35 (PX1B): HarkenIQ's design tokens.
+ *
+ * Two tiers. The REFERENCE palette (--ref-*) is the only place a raw colour
+ * may appear; the token lint refuses one anywhere else. The SEMANTIC roles
+ * below it are the only tokens components and pages name. Deprecated names
+ * live in variables.css and resolve to these roles.
+ *
+ * Light theme only. Dark mode is PX8's (D-DS5): it adds a second value set
+ * for the semantic tier and changes no component.
+ */
+
+:root {
+  /* ── Reference palette: raw values live here and nowhere else ───────── */
+  --ref-white: #ffffff;
+  --ref-neutral-50: #f5f6f8;
+  --ref-neutral-75: #eef0f3;
+  --ref-neutral-100: #ebeef2;
+  --ref-neutral-200: #d8dce3;
+  --ref-neutral-300: #a8b1c1;
+  --ref-neutral-350: #8e98aa;
+  --ref-neutral-400: #838c9c;
+  --ref-neutral-500: #626c7e;
+  --ref-neutral-600: #525c6e;
+  --ref-neutral-700: #3d4657;
+  --ref-neutral-900: #1c2330;
+
+  /* D1: the owned accent family. It is never a status colour. */
+  --ref-teal-50: #e7f4f2;
+  --ref-teal-200: #8fe3d9;
+  --ref-teal-600: #0e7a73;
+  --ref-teal-700: #0b625c;
+  --ref-teal-800: #084c47;
+
+  --ref-red-50: #fdecea;
+  --ref-red-200: #f3bcb7;
+  --ref-red-700: #b3261e;
+  --ref-red-800: #9c2018;
+
+  --ref-orange-50: #fff0e6;
+  --ref-orange-200: #f5c6a5;
+  --ref-orange-700: #b33f00;
+
+  --ref-amber-50: #fdf4dc;
+  --ref-amber-200: #eccf86;
+  --ref-amber-400: #c8962e;
+  --ref-amber-800: #855400;
+
+  --ref-blue-50: #e8f1fb;
+  --ref-blue-200: #b7d0ee;
+  --ref-blue-300: #8fb4e3;
+  --ref-blue-700: #1565c0;
+  --ref-blue-800: #0f4c8a;
+
+  --ref-green-50: #e8f5e9;
+  --ref-green-200: #b6dbb8;
+  --ref-green-700: #2b6e2f;
+
+  --ref-ink-a06: rgba(28, 35, 48, 0.06);
+  --ref-ink-a10: rgba(28, 35, 48, 0.1);
+  --ref-ink-a14: rgba(28, 35, 48, 0.14);
+  --ref-ink-a50: rgba(28, 35, 48, 0.5);
+  --ref-white-a06: rgba(255, 255, 255, 0.06);
+  --ref-white-a10: rgba(255, 255, 255, 0.1);
+  --ref-white-a12: rgba(255, 255, 255, 0.12);
+
+  /* ── Surfaces ───────────────────────────────────────────────────────── */
+  --surface-canvas: var(--ref-neutral-50);
+  --surface-raised: var(--ref-white);
+  --surface-sunken: var(--ref-neutral-50);
+  --surface-hover: var(--ref-neutral-75);
+  --surface-selected: var(--ref-teal-50);
+  --surface-scrim: var(--ref-ink-a50);
+  --surface-inverse: var(--ref-neutral-900);
+  --surface-inverse-hover: var(--ref-white-a06);
+  --surface-inverse-selected: var(--ref-white-a10);
+
+  /* ── Text (A35.7: every pair is held by design/contrast.test.ts) ────── */
+  --text-primary: var(--ref-neutral-900);
+  --text-secondary: var(--ref-neutral-600);
+  --text-muted: var(--ref-neutral-500);
+  --text-disabled: var(--ref-neutral-400);
+  --text-link: var(--ref-teal-600);
+  --text-link-hover: var(--ref-teal-700);
+  --text-on-emphasis: var(--ref-white);
+  --text-inverse: var(--ref-white);
+  --text-inverse-secondary: var(--ref-neutral-300);
+  --text-inverse-muted: var(--ref-neutral-350);
+
+  /* ── Borders: subtle and default divide; control identifies a control ─ */
+  --border-subtle: var(--ref-neutral-100);
+  --border-default: var(--ref-neutral-200);
+  --border-control: var(--ref-neutral-400);
+  --border-strong: var(--ref-neutral-500);
+  --border-inverse: var(--ref-white-a12);
+  --border-width: 1px;
+  --border-width-strong: 2px;
+  --border-width-emphasis: 3px;
+
+  /* ── Actions ────────────────────────────────────────────────────────── */
+  --action-primary-bg: var(--ref-teal-600);
+  --action-primary-bg-hover: var(--ref-teal-700);
+  --action-primary-bg-active: var(--ref-teal-800);
+  --action-primary-fg: var(--ref-white);
+  --action-secondary-bg: var(--ref-white);
+  --action-secondary-bg-hover: var(--ref-neutral-50);
+  --action-secondary-bg-active: var(--ref-neutral-75);
+  --action-secondary-fg: var(--ref-neutral-900);
+  --action-secondary-border: var(--ref-neutral-400);
+  --action-danger-bg: var(--ref-red-700);
+  --action-danger-bg-hover: var(--ref-red-800);
+  --action-danger-fg: var(--ref-white);
+  --action-ghost-bg-hover: var(--ref-ink-a06);
+  --action-ghost-bg-active: var(--ref-ink-a10);
+
+  /* ── Brand (A35.8): the mark in one colour ──────────────────────────── */
+  --brand-mark: var(--ref-teal-600);
+  --brand-mark-inverse: var(--ref-teal-200);
+
+  /* ── Focus ──────────────────────────────────────────────────────────── */
+  --focus-ring-color: var(--ref-teal-600);
+  --focus-ring-color-inverse: var(--ref-teal-200);
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* ── Severity: an observed condition (A35.5), filled tints ──────────── */
+  --severity-critical-fg: var(--ref-red-700);
+  --severity-critical-bg: var(--ref-red-50);
+  --severity-critical-border: var(--ref-red-200);
+  --severity-high-fg: var(--ref-orange-700);
+  --severity-high-bg: var(--ref-orange-50);
+  --severity-high-border: var(--ref-orange-200);
+  --severity-warning-fg: var(--ref-amber-800);
+  --severity-warning-bg: var(--ref-amber-50);
+  --severity-warning-border: var(--ref-amber-200);
+  --severity-informational-fg: var(--ref-blue-700);
+  --severity-informational-bg: var(--ref-blue-50);
+  --severity-informational-border: var(--ref-blue-200);
+  --severity-healthy-fg: var(--ref-green-700);
+  --severity-healthy-bg: var(--ref-green-50);
+  --severity-healthy-border: var(--ref-green-200);
+  --severity-neutral-fg: var(--ref-neutral-600);
+  --severity-neutral-bg: var(--ref-neutral-75);
+  --severity-neutral-border: var(--ref-neutral-200);
+
+  /* ── State: a governance or lifecycle position, outlined on white ───── */
+  --state-pending-fg: var(--ref-amber-800);
+  --state-pending-bg: var(--ref-white);
+  --state-pending-border: var(--ref-amber-400);
+  --state-approved-fg: var(--ref-blue-800);
+  --state-approved-bg: var(--ref-white);
+  --state-approved-border: var(--ref-blue-300);
+  --state-denied-fg: var(--ref-neutral-700);
+  --state-denied-bg: var(--ref-white);
+  --state-denied-border: var(--ref-neutral-400);
+  --state-blocked-fg: var(--ref-red-800);
+  --state-blocked-bg: var(--ref-white);
+  --state-blocked-border: var(--ref-red-200);
+  --state-stale-fg: var(--ref-amber-800);
+  --state-stale-bg: var(--ref-white);
+  --state-stale-border: var(--ref-amber-200);
+  --state-unknown-fg: var(--ref-neutral-600);
+  --state-unknown-bg: var(--ref-white);
+  --state-unknown-border: var(--ref-neutral-400);
+
+  /* ── Typography (A35.4) ─────────────────────────────────────────────── */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* D2: JetBrains Mono is bundled (main.tsx), so 0/O and 1/l/I never depend
+     on the operator's machine. */
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --type-page-title-size: 1.25rem;
+  --type-page-title-line: 1.75rem;
+  --type-page-title-weight: 600;
+  --type-section-size: 0.9375rem;
+  --type-section-line: 1.375rem;
+  --type-section-weight: 600;
+  --type-object-title-size: 1.0625rem;
+  --type-object-title-line: 1.5rem;
+  --type-object-title-weight: 600;
+  --type-body-size: 0.875rem;
+  --type-body-line: 1.25rem;
+  --type-support-size: 0.8125rem;
+  --type-support-line: 1.125rem;
+  --type-table-size: 0.8125rem;
+  --type-table-line: 1.125rem;
+  --type-label-size: 0.8125rem;
+  --type-label-line: 1.125rem;
+  --type-label-weight: 500;
+  --type-column-header-size: 0.75rem;
+  --type-column-header-line: 1rem;
+  --type-column-header-weight: 600;
+  --type-column-header-tracking: 0.04em;
+  --type-meta-size: 0.75rem;
+  --type-meta-line: 1rem;
+  --type-code-size: 0.8125rem;
+  --type-code-line: 1.125rem;
+  --type-code-inline-size: 0.92em;
+  --type-kpi-size: 1.5rem;
+  --type-kpi-line: 2rem;
+  --type-kpi-weight: 600;
+  --type-badge-size: 0.6875rem;
+  --type-badge-line: 1rem;
+  --type-badge-weight: 600;
+  --type-wordmark-size: 1rem;
+  --type-wordmark-weight: 700;
+  --type-wordmark-tracking: -0.02em;
+
+  /* ── Spacing: a 4px grid with 2px and 6px half-steps ────────────────── */
+  --space-0: 0;
+  --space-0-5: 0.125rem;
+  --space-1: 0.25rem;
+  --space-1-5: 0.375rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* ── Sizes ──────────────────────────────────────────────────────────── */
+  --size-sidebar: 240px;
+  --size-control-default: 2rem;
+  --size-control-compact: 1.75rem;
+  --size-target-min: 1.5rem;
+  --size-icon-sm: 0.75rem;
+  --size-icon-md: 1rem;
+  --size-icon-lg: 1.25rem;
+  --size-dialog: 26.25rem;
+  --size-drawer: 30rem;
+  --size-measure: 72ch;
+
+  /* ── Radius ─────────────────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+  --radius-round: 50%;
+
+  /* ── Elevation: overlays only, plus a hairline on raised cards ──────── */
+  --elevation-1: 0 1px 2px var(--ref-ink-a06);
+  --elevation-2: 0 2px 8px var(--ref-ink-a10);
+  --elevation-3: 0 4px 16px var(--ref-ink-a14);
+
+  /* ── Layers ─────────────────────────────────────────────────────────── */
+  --z-sidebar: 100;
+  --z-sticky: 200;
+  --z-drawer: 1000;
+  --z-dialog: 2000;
+  --z-toast: 3000;
+  --z-skip-link: 4000;
+
+  /* ── Motion: a state change or nothing (A28.20) ─────────────────────── */
+  --motion-duration-fast: 120ms;
+  --motion-duration-base: 200ms;
+  --motion-duration-spin: 600ms;
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ── Density (A35.4): two fixed contexts, not a user setting ────────── */
+  --density-default-control-height: var(--size-control-default);
+  --density-compact-control-height: var(--size-control-compact);
+  --density-compact-cell-py: var(--space-2);
+  --density-compact-cell-px: var(--space-3);
+  --density-compact-row-py: var(--space-1-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-duration-fast: 0ms;
+    --motion-duration-base: 0ms;
+  }
+}

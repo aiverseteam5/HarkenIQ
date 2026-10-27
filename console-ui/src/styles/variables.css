@@ -1,46 +1,61 @@
+/* A35.3: DEPRECATED names.
+ *
+ * Each resolves to a semantic role in tokens.css, so every existing
+ * reference renders the corrected value without a page edit. New code names
+ * the semantic roles (or design/tokens.ts); the token lint lets references
+ * to these names only fall (design/token-baseline.json).
+ *
+ * Still canonical, so not listed here: --text-primary, --text-secondary,
+ * --text-muted, --radius-sm/md/lg, --font-sans, --font-mono.
+ */
+
 :root {
-  --sidebar-width: 240px;
-  --sidebar-bg: #1c2330;
-  --sidebar-text: #a8b1c1;
-  --sidebar-active: #fff;
-  --sidebar-active-bg: rgba(255, 255, 255, 0.08);
-  --sidebar-hover-bg: rgba(255, 255, 255, 0.04);
+  --sidebar-width: var(--size-sidebar);
+  --sidebar-bg: var(--surface-inverse);
+  --sidebar-text: var(--text-inverse-secondary);
+  --sidebar-active: var(--text-inverse);
+  --sidebar-active-bg: var(--surface-inverse-selected);
+  --sidebar-hover-bg: var(--surface-inverse-hover);
 
-  --bg-primary: #f5f6f8;
-  --bg-card: #fff;
-  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --bg-primary: var(--surface-canvas);
+  --bg-card: var(--surface-raised);
+  --bg-overlay: var(--surface-scrim);
 
-  --border-color: #d8dce3;
-  --border-light: #ebeef2;
+  --border-color: var(--border-default);
+  --border-light: var(--border-subtle);
 
-  --text-primary: #1c2330;
-  --text-secondary: #6a7488;
-  --text-muted: #9aa2b1;
+  --status-ok: var(--severity-healthy-fg);
+  --status-ok-bg: var(--severity-healthy-bg);
+  --status-warning: var(--severity-warning-fg);
+  --status-warning-bg: var(--severity-warning-bg);
+  --status-critical: var(--severity-critical-fg);
+  --status-critical-bg: var(--severity-critical-bg);
+  --status-info: var(--severity-informational-fg);
+  --status-info-bg: var(--severity-informational-bg);
+  --status-neutral: var(--severity-neutral-fg);
+  --status-neutral-bg: var(--severity-neutral-bg);
 
-  --status-ok: #2e7d32;
-  --status-ok-bg: #e8f5e9;
-  --status-warning: #ef6c00;
-  --status-warning-bg: #fff3e0;
-  --status-critical: #b3261e;
-  --status-critical-bg: #fdecea;
-  --status-info: #1565c0;
-  --status-info-bg: #e3f2fd;
-  --status-neutral: #6a7488;
-  --status-neutral-bg: #f0f1f4;
+  --accent: var(--action-primary-bg);
+  --accent-hover: var(--action-primary-bg-hover);
 
-  --accent: #632ca6;
-  --accent-hover: #7b3fc7;
+  --shadow-sm: var(--elevation-1);
+  --shadow-md: var(--elevation-2);
+  --shadow-lg: var(--elevation-3);
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+  --transition: var(--motion-duration-fast) var(--motion-ease-standard);
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.12);
-
-  --transition: 150ms ease;
+  /* Names pages referenced before A35 that nobody had defined (A35.1).
+     Without a fallback they rendered nothing; with one, a stray literal. */
+  --border: var(--border-default);
+  --surface: var(--surface-raised);
+  --text: var(--text-primary);
+  --critical: var(--severity-critical-fg);
+  --critical-bg: var(--severity-critical-bg);
+  --warning: var(--severity-warning-fg);
+  --warning-bg: var(--severity-warning-bg);
+  --danger: var(--severity-critical-fg);
+  --success: var(--severity-healthy-fg);
+  --color-primary: var(--action-primary-bg);
+  --color-text-muted: var(--text-muted);
+  --bg-subtle: var(--surface-sunken);
 }
