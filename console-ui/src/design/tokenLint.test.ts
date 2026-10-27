@@ -343,7 +343,10 @@ describe("zero tolerance (A35.9)", () => {
   });
 
   it("5a. every StatusBadge tone comes from statusTone", () => {
-    expect(ALL_FACTS.flatMap((f) => f.badStatusBadges)).toEqual([]);
+    // The gallery's tone specimen shows each of the twelve tones by name;
+    // it is a dev-only review page, never product UI (A35.11).
+    const product = Object.entries(FACTS).filter(([file]) => !file.startsWith("design/gallery/"));
+    expect(product.flatMap(([, f]) => f.badStatusBadges)).toEqual([]);
   });
 
   it("5b. no page-local status table survives", () => {

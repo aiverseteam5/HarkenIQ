@@ -1036,6 +1036,22 @@ input[type="checkbox"] {
   white-space: nowrap;
 }
 
+/* A destructive action repeated down a table is outlined until it is
+   aimed at: a column of solid red competes with the severities the table
+   exists to show (A28.20: severity dominates). */
+.data-table__actions .btn-danger {
+  color: var(--action-danger-bg);
+  background: var(--action-secondary-bg);
+  border-color: var(--action-secondary-border);
+}
+
+.data-table__actions .btn-danger:hover,
+.data-table__actions .btn-danger:active {
+  color: var(--action-danger-fg);
+  background: var(--action-danger-bg);
+  border-color: var(--action-danger-bg);
+}
+
 .data-table__actions .btn + .btn {
   margin-left: var(--space-1-5);
 }

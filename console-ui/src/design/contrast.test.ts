@@ -120,6 +120,7 @@ const PAIRS: [string, string[], number, string][] = [
     (bg) => ["--action-secondary-fg", [bg], TEXT, "a secondary button"] as [string, string[], number, string],
   ),
   ["--action-secondary-fg", ["--action-ghost-bg-hover", "--surface-raised"], TEXT, "a ghost button, hovered"],
+  ["--action-danger-bg", ["--action-secondary-bg"], TEXT, "an outlined danger action in a table"],
   // Toasts: the message on its own fill.
   ...["--severity-healthy-fg", "--severity-critical-fg", "--surface-inverse"].map(
     (bg) => ["--text-on-emphasis", [bg], TEXT, "a toast"] as [string, string[], number, string],
