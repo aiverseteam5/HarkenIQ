@@ -1,11 +1,13 @@
 import { Link, useLocation, useParams } from "react-router-dom";
-import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import SectionHeading from "../components/SectionHeading";
+import { MetadataList, MetadataRow } from "../components/MetadataList";
 import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
@@ -147,46 +149,6 @@ const HEALTH_SORT_ORDER: Record<string, number> = {
   warning: 1,
   unknown: 2,
   ok: 3,
-};
-
-/* ── Styles ───────────────────────────────────────── */
-
-const metricsRow: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-  gap: "1rem",
-  marginBottom: "1.5rem",
-};
-
-const sectionTitle: CSSProperties = {
-  fontSize: "0.8125rem",
-  fontWeight: 600,
-  color: "var(--text-secondary)",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-  marginBottom: "0.75rem",
-  marginTop: "1.25rem",
-  borderBottom: "1px solid var(--border-light)",
-  paddingBottom: "0.375rem",
-};
-
-const detailRow: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  padding: "0.375rem 0",
-  fontSize: "0.8125rem",
-  borderBottom: "1px solid var(--border-light)",
-};
-
-const detailLabel: CSSProperties = {
-  color: "var(--text-secondary)",
-  fontWeight: 500,
-};
-
-const detailValue: CSSProperties = {
-  color: "var(--text-primary)",
-  fontWeight: 500,
-  textAlign: "right",
 };
 
 /* ── Helpers ──────────────────────────────────────── */
@@ -433,9 +395,7 @@ export default function FleetOverview() {
         header: "Harken Node ID",
         sortKey: "agent_id",
         render: (r) => (
-          <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
-            {r.agent_id}
-          </code>
+          <code className="t-code">{r.agent_id}</code>
         ),
       },
       { key: "name", header: "Name", sortKey: "name", render: (r) => r.name || r.service_tag || "--" },
@@ -502,7 +462,7 @@ export default function FleetOverview() {
       />
 
       {/* Summary cards */}
-      <div style={metricsRow}>
+      <div className="metric-grid">
         <MetricCard
           title="Total Nodes"
           value={summary?.total_nodes ?? "--"}
@@ -550,6 +510,7 @@ export default function FleetOverview() {
           pageSize={PAGE_SIZE}
           total={total}
           onPageChange={(p) => setQuery({ page: String(p) })}
+          isRowSelected={(r) => r.agent_id === agentId}
           onRowClick={(r) =>
             open(
               links.device(
@@ -575,12 +536,12 @@ export default function FleetOverview() {
       >
         {!selectedDevice ? (
           atSites.length > 0 ? (
-            <div role="status">
-              <p style={{ fontSize: "0.875rem", marginBottom: "0.75rem" }}>
+            <div role="status" className="stack">
+              <p>
                 This Harken Node is reported at more than one site right now. Each
                 site's report is shown separately; choose one.
               </p>
-              <ul style={{ paddingLeft: "1.1rem", lineHeight: 1.8 }}>
+              <ul className="bullet-list">
                 {atSites.map((row) => (
                   <li key={`${row.site_id}:${row.id}`}>
                     <Link to={links.device(tenantId, row.agent_id, row.site_id)}>
@@ -599,49 +560,32 @@ export default function FleetOverview() {
           )
         ) : (
           <>
-            <div style={sectionTitle}>Device Info</div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Vendor</span>
-              <span style={detailValue}>{selectedDevice.vendor}</span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Model</span>
-              <span style={detailValue}>{selectedDevice.model}</span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Service Tag</span>
-              <span style={detailValue}>
+            <SectionHeading level={3}>Device info</SectionHeading>
+            <MetadataList>
+              <MetadataRow label="Vendor">{selectedDevice.vendor}</MetadataRow>
+              <MetadataRow label="Model">{selectedDevice.model}</MetadataRow>
+              <MetadataRow label="Service Tag">
                 <code>{selectedDevice.service_tag}</code>
-              </span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Site</span>
-              <span style={detailValue}>{selectedDevice.site_name}</span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Health</span>
-              <span style={detailValue}>
+              </MetadataRow>
+              <MetadataRow label="Site">{selectedDevice.site_name}</MetadataRow>
+              <MetadataRow label="Health">
                 <StatusBadge
                   status={selectedDevice.health}
                   tone={statusTone("device.health", selectedDevice.health)}
                   size="sm"
                 />
-              </span>
-            </div>
-            <div style={detailRow}>
-              <span style={detailLabel}>Last Seen</span>
-              <span style={detailValue}>{formatDate(selectedDevice.last_seen_at)}</span>
-            </div>
+              </MetadataRow>
+              <MetadataRow label="Last Seen">{formatDate(selectedDevice.last_seen_at)}</MetadataRow>
+            </MetadataList>
 
             {/* S1: predictive risk — deterministic scoring that already
                 existed with no consumer. "insufficient_data" is rendered
                 as exactly that, never as a fabricated number. */}
-            <div style={sectionTitle}>Failure Risk</div>
-            {deviceRisk ? (
-              <>
-                <div style={detailRow}>
-                  <span style={detailLabel}>Band</span>
-                  <span style={detailValue}>
+            <SectionHeading level={3}>Failure risk</SectionHeading>
+            <MetadataList>
+              {deviceRisk ? (
+                <>
+                  <MetadataRow label="Band">
                     <StatusBadge
                       status={
                         deviceRisk.band === "insufficient_data"
@@ -651,78 +595,58 @@ export default function FleetOverview() {
                       tone={statusTone("risk.band", deviceRisk.band)}
                       size="sm"
                     />
-                  </span>
-                </div>
-                {deviceRisk.band !== "insufficient_data" && (
-                  <div style={detailRow}>
-                    <span style={detailLabel}>Score</span>
-                    <span style={detailValue}>
-                      {Math.round(deviceRisk.risk_score * 100)}%
-                    </span>
-                  </div>
-                )}
-                {Object.entries(deviceRisk.factors ?? {}).map(([key, value]) => (
-                  <div key={key} style={detailRow}>
-                    <span style={detailLabel}>{key.replace(/_/g, " ")}</span>
-                    <span style={detailValue}>
+                  </MetadataRow>
+                  {deviceRisk.band !== "insufficient_data" && (
+                    <MetadataRow label="Score">{Math.round(deviceRisk.risk_score * 100)}%</MetadataRow>
+                  )}
+                  {Object.entries(deviceRisk.factors ?? {}).map(([key, value]) => (
+                    <MetadataRow key={key} label={key.replace(/_/g, " ")}>
                       {typeof value === "number"
                         ? Number.isInteger(value)
                           ? value
                           : value.toFixed(3)
                         : String(value)}
-                    </span>
-                  </div>
-                ))}
-              </>
-            ) : (
-              <div style={detailRow}>
-                <span style={detailLabel}>Band</span>
-                <span style={detailValue}>
+                    </MetadataRow>
+                  ))}
+                </>
+              ) : (
+                <MetadataRow label="Band">
                   <StatusBadge status="unavailable" tone={statusTone("risk.band", "unavailable")} size="sm" />
-                </span>
-              </div>
-            )}
+                </MetadataRow>
+              )}
+            </MetadataList>
 
-            <div style={sectionTitle}>Warranty & Lifecycle</div>
-            {selectedDevice.warranty ? (
-              <>
-                <div style={detailRow}>
-                  <span style={detailLabel}>Status</span>
-                  <span style={detailValue}>
+            <SectionHeading level={3}>Warranty &amp; lifecycle</SectionHeading>
+            <MetadataList>
+              {selectedDevice.warranty ? (
+                <>
+                  <MetadataRow label="Status">
                     <StatusBadge
                       status={selectedDevice.warranty.status}
                       tone={statusTone("device.warranty", selectedDevice.warranty.status)}
                       size="sm"
                     />
-                  </span>
-                </div>
-                <div style={detailRow}>
-                  <span style={detailLabel}>Service Level</span>
-                  <span style={detailValue}>{selectedDevice.warranty.service_level || "--"}</span>
-                </div>
-                <div style={detailRow}>
-                  <span style={detailLabel}>Expires</span>
-                  <span style={detailValue}>{selectedDevice.warranty.end_date || "--"}</span>
-                </div>
-              </>
-            ) : (
-              <div style={detailRow}>
-                <span style={detailLabel}>Status</span>
-                <span style={detailValue}>
+                  </MetadataRow>
+                  <MetadataRow label="Service Level">{selectedDevice.warranty.service_level || "--"}</MetadataRow>
+                  <MetadataRow label="Expires">{selectedDevice.warranty.end_date || "--"}</MetadataRow>
+                </>
+              ) : (
+                <MetadataRow label="Status">
                   <StatusBadge status="unknown" tone={statusTone("device.warranty", "unknown")} size="sm" />
-                </span>
-              </div>
-            )}
+                </MetadataRow>
+              )}
+            </MetadataList>
 
             {selectedDevice.firmware && selectedDevice.firmware.length > 0 && (
               <>
-                <div style={sectionTitle}>Firmware</div>
-                {selectedDevice.firmware.map((fw, i) => (
-                  <div key={`${fw.component}-${i}`} style={detailRow}>
-                    <span style={detailLabel}>{fw.name || fw.component}</span>
-                    <span style={detailValue}><code>{fw.version}</code></span>
-                  </div>
-                ))}
+                <SectionHeading level={3}>Firmware</SectionHeading>
+                <MetadataList>
+                  {selectedDevice.firmware.map((fw, i) => (
+                    <MetadataRow key={`${fw.component}-${i}`} label={fw.name || fw.component}>
+                      <code>{fw.version}</code>
+                    </MetadataRow>
+                  ))}
+                </MetadataList>
               </>
             )}
 
@@ -731,47 +655,42 @@ export default function FleetOverview() {
                 feed is loaded — so say which. */}
             {deviceCves.length > 0 && (
               <>
-                <div style={sectionTitle}>CVE Exposure ({deviceCves.length})</div>
-                {deviceCves.map((cve, i) => (
-                  <div key={`${cve.cve_id}-${i}`} style={detailRow}>
-                    <span style={detailLabel}>
-                      <code>{cve.cve_id}</code>
-                      <span style={{ color: "var(--text-muted)", marginLeft: "0.5rem" }}>
-                        {cve.component_name || cve.component} {cve.version}
-                      </span>
-                    </span>
-                    <span style={detailValue}>
+                <SectionHeading level={3}>CVE exposure ({deviceCves.length})</SectionHeading>
+                <MetadataList>
+                  {deviceCves.map((cve, i) => (
+                    <MetadataRow
+                      key={`${cve.cve_id}-${i}`}
+                      label={
+                        <>
+                          <code>{cve.cve_id}</code>{" "}
+                          <span className="text-muted">
+                            {cve.component_name || cve.component} {cve.version}
+                          </span>
+                        </>
+                      }
+                    >
                       <StatusBadge
                         status={cve.severity || "unknown"}
                         tone={statusTone("cve.severity", (cve.severity || "").toLowerCase())}
                         size="sm"
                       />
-                      {cve.fixed_version && (
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                          fixed in {cve.fixed_version}
-                        </div>
-                      )}
-                    </span>
-                  </div>
-                ))}
+                      {cve.fixed_version && <div className="t-meta">fixed in {cve.fixed_version}</div>}
+                    </MetadataRow>
+                  ))}
+                </MetadataList>
               </>
             )}
 
             {selectedDevice.subsystems_json && Object.keys(selectedDevice.subsystems_json).length > 0 && (
               <>
-                <div style={sectionTitle}>Subsystem States</div>
-                {Object.entries(selectedDevice.subsystems_json).map(([subsystem, severity]) => (
-                  <div key={subsystem} style={detailRow}>
-                    <span style={detailLabel}>{subsystem}</span>
-                    <span style={detailValue}>
-                      <StatusBadge
-                        status={severity}
-                        tone={statusTone("device.health", severity)}
-                        size="sm"
-                      />
-                    </span>
-                  </div>
-                ))}
+                <SectionHeading level={3}>Subsystem states</SectionHeading>
+                <MetadataList>
+                  {Object.entries(selectedDevice.subsystems_json).map(([subsystem, severity]) => (
+                    <MetadataRow key={subsystem} label={subsystem}>
+                      <StatusBadge status={severity} tone={statusTone("device.health", severity)} size="sm" />
+                    </MetadataRow>
+                  ))}
+                </MetadataList>
               </>
             )}
 
