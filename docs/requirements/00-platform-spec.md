@@ -7728,3 +7728,119 @@ Three items A28's one-line description gave PX1A move to **PX1B**, because they 
   - **Mutation run:** each of fourteen guarantees, broken on purpose, is caught by a named test. One mutant was equivalent in tests (it matters only under React StrictMode's double effect run), and a stronger variant of it is caught.
   - **axe:** clean on the shared primitives, on the Incidents page with a drawer open, and on the shell with the landmark rule on.
   - **Production build:** the bundle grows from 891.5 to 916.1 kB minified (241.2 → 249.7 kB gzip), with no test code in it.
+
+### A35 — 2026-10-27 — PX1B: the brand and visual foundation (decided: Vinod)
+
+The second PX implementation slice (A28.25), and the one A28.21 places before the shell and the components are designed. A read-only checkpoint measured `main` at `15fc1e66d6025c113454942ccde3ebe92a3cf0a9` (PX1A merged, its ledger closed). Vinod ratified its four decisions and its architecture on 2026-10-27, and they are recorded here before any code. PX1B is **presentation only**. It changes no backend file, route, proxy prefix, permission, response shape, governance rule or authority, and it redesigns no product surface: layouts and workflows stay as they are. Its visible change is deliberate and app-wide, because token values change through aliases.
+
+**A35.1 — What was measured.**
+- **Tokens:** 35 custom properties (colour, three radii, three shadows, two fonts, one transition) and no token for spacing, type, z-index, focus, motion or density. Style objects held 649 spacing literals (74 distinct values, one tokenized) and 397 font-size literals (19 distinct, none tokenized).
+- **Undefined names:** pages referenced 13 custom properties nobody defined: 57 references in 18 files. The 35 without a fallback rendered nothing. SLA-overdue and billing-delinquency colours fell back to plain text, chart bars painted `var(--warning)` were transparent, and Access Scope and Organization cards lost their borders. A never-defined `--color-primary` made teal `#0E7A73` the accent on four pages. `btn-sm` was used 19 times and never defined.
+- **Literals:** 67 raw colour literals in 20 files outside the token file (a second, ad-hoc palette); 526 inline `style={{…}}` sites; 309 local style constants, 144 of them byte-identical copies; 28 of 39 defined classes unused.
+- **Status:** 42 page-local tables and 23 inline ternaries fed 106 `StatusBadge` call sites in 29 files. `approved` was painted like `completed` on Approvals and Campaign waves, against A18's APPROVED ≠ EXECUTED. Unattended work, the `autonomous` disposition, low risk and "no stop switch" were green. `blocked` was critical and neutral on one page. Roles, plans, tiers and lanes were painted as severities.
+- **Contrast (WCAG, light theme):** `--text-muted`, the most-used text token (128 references), measured 2.57:1 on white. `--text-secondary` measured 4.35:1 on the page background, warning 3.08:1 as text and 2.81:1 on its tint, the neutral badge 4.16:1, input borders 1.38:1, and the focus ring 1.83:1 in the sidebar.
+- **Primitives:** `DataTable`'s sortable headers could not be reached by keyboard (live on Fleet Overview); breadcrumbs reloaded the page and read "/" aloud; the ghost button had no visible hover on light surfaces; buttons were 34.2px tall beside 37.0px inputs.
+- **Brand:** no asset existed: no SVG mark, favicon or bundled font. The mark was the Unicode hexagon, also used as the Billing nav icon and in seven empty states. The Console's platform plane carried four names, and the accent `#632ca6` is a competitor's colour (A28.21). No dark mode exists: both UIs pin `color-scheme: light`.
+
+**A35.2 — Decisions (ratified).**
+
+| Decision | Ruling |
+|---|---|
+| D1 · Accent | Deep teal anchored on `#0E7A73` (hover `#0B625C`). It replaces `#632ca6` and never carries status. |
+| D2 · Mono font | JetBrains Mono (OFL-1.1), regular and semibold, Latin only, bundled from `@fontsource/jetbrains-mono` 5.3.0 so it works air-gapped. |
+| D3 · Status migration | Option A: every `StatusBadge` call site resolves its tone through `statusTone(domain, value)`, and the 42 page-local tables and the inline status ternaries they superseded are removed. No layout or backend semantics change. |
+| D4 · Plane name | **HarkenIQ Console** is the product and UI plane name. **Central Command** is the backend control plane, **Site Manager** the site-local runtime and control plane, **Harken Node** the execution runtime. "HarkenIQ Platform Console" is withdrawn. |
+
+D4 amends A34.7's title convention: a page's tab reads `Incidents & Diagnosis · HarkenIQ Console` on both planes, and the lockup and the sign-in screen say HarkenIQ Console. Page text keeps naming Central Command where it means the control plane ("Central Command gives the same answer for both"). The Site Manager's own dashboard keeps its title until PX7.
+
+**A35.3 — Token architecture.**
+- **Two tiers in one static stylesheet,** `styles/tokens.css`, with no runtime CSS-in-JS (A28.12):
+  - the **reference palette** (`--ref-*`) is the only place a raw colour may appear;
+  - the **semantic roles** are the only tokens components and pages name: `surface`, `text`, `border`, `action`, `focus`, `severity`, `state`, `space`, `size`, `radius`, `elevation`, `z`, `motion`, `type`, `density`.
+- **No component-token tier** yet.
+- **Deprecated aliases:** `styles/variables.css` keeps the 35 existing names and defines the 13 that were never defined, each resolving to a semantic role. Existing references pick up the corrected values without page edits, and the token lint lets their count only fall.
+- **Typed facade:** `design/tokens.ts` exposes the semantic roles to inline styles as typed `var()` names, so an undefined token is a type error. A test holds it to the stylesheet.
+- **Location:** inside `console-ui/`. Both Dockerfiles copy only their own UI directory and `deploy/` is outside this slice, so the Site Manager adopts the tokens in PX7.
+
+**A35.4 — Typography and density.**
+
+| Role | Size / line height (px) | Weight |
+|---|---|---|
+| Page title | 20/28 | 600 |
+| Section heading (a real `h2`/`h3`) | 15/22 | 600 |
+| Object title (drawer, dialog) | 17/24 | 600 |
+| Body | 14/20 | 400 |
+| Supporting text | 13/18 | 400 |
+| Table text | 13/18 | 400 |
+| Label | 13/18 | 500 |
+| Column header (uppercase) | 12/16 | 600 |
+| Metadata | 12/16 | 400 |
+| Code / identifier (mono, slashed zero, tabular figures) | 13/18 | 400 |
+| KPI (tabular figures) | 24/32 | 600 |
+| Badge | 11/16 | 600 |
+
+- Sans is the system UI stack. Nothing renders below 11px, and 11px is for badges only.
+- **Two fixed densities, not a user setting:** default for forms, dialogs and page actions (32px controls), and compact for tables, lists, metadata, toolbars and row actions (28px controls, which is what `btn-sm` now means).
+- **Spacing:** a 4px grid with 2px and 6px half-steps: 0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 48, 64.
+
+**A35.5 — The semantic status system.** One module, `viewModel/status.ts`, maps a (domain, value) pair to one of twelve tones, and an unrecognised value reads `unknown`. It is a view-model, so the A34.5 purity test covers it: it decides nothing and imports no React, API client or session.
+
+| Family | Tones |
+|---|---|
+| Severity: an observed condition, in rank order | critical › high › warning › informational › healthy, plus neutral |
+| State: a governance or lifecycle position, never a health claim | pending, approved, denied, blocked, stale |
+| First-class | unknown |
+
+1. `healthy` only for an observed good condition or a success the server reported. Never an approval, a disposition, a risk class, unattended operation or the absence of a stop. An account or entitlement in good standing (an active user, tenant, licence, subscription or API key) is a good condition; an active governance or automation object (a policy, an Operational Agent) is `informational`.
+2. Approved is not completed (A18).
+3. requires_approval → pending; autonomous → informational; denied → denied, subdued rather than alarm red. D16 makes a denial final; it is not a fault.
+4. Risk, CVE and support-severity ladders: critical → critical, high → high, medium → warning, low → informational, none → neutral, insufficient data → unknown.
+5. `critical` only for an active fault: failed, faulted, halted, S1.
+6. Roles, plans, tiers, scopes, lanes, action types and line types are categories, so they render neutral.
+7. Every tone renders a distinct glyph and its text; colour never carries it alone.
+8. The module has no dependencies, so the Site Manager can import it unchanged in PX7. It is not wired there now.
+
+**A35.6 — Primitives.** PX1B normalizes the visuals and interaction states (default, hover, focus-visible, active, selected, disabled, loading, error) of the existing shared primitives, and adds a primitive only where something already needs it (A28.22's rule, applied to L1).
+- **Normalized:** Button; Input, Select, Textarea and Checkbox; StatusBadge; DataTable; ConfirmDialog; DetailPanel; EmptyState, Spinner and DataState; PageHeader and its breadcrumbs; MetricCard; Toast; FilterBar; Sidebar; the context header.
+- **New:** `IconButton`, `Icon` (an owned SVG set), `Banner`, `Panel`, `MetadataList`, `SectionHeading`, `BrandMark`.
+- **Deferred to PX3A,** which owns behaviour: Tabs (an ARIA tablist with arrow keys, A34.12), Tooltip and Popover, Switch, Skeleton, field and label wiring, and the eight page-local modals (A34.12).
+
+This re-sequences A28.25 the way A34.2 did: PX1B takes the visual and state normalization of the existing primitives, and PX3A keeps the behavioural set. The end-state program is unchanged.
+
+**A35.7 — Accessibility.**
+- **Contrast contract:** a test resolves the token chain and computes WCAG contrast for every declared foreground/background pair, because axe in jsdom cannot measure contrast (A34). Text needs 4.5:1; control boundaries and focus indicators need 3:1. It covers every failure in A35.1.
+- **Focus:** one 2px ring with a 2px offset, and an inverse ring on dark chrome. `outline: none` is allowed only beside a replacement.
+- **Targets:** at least 24px (WCAG 2.5.8); compact controls are 28px.
+- **Motion:** durations drop to 0ms under `prefers-reduced-motion`.
+- **Semantics:** headings are real headings, metadata is a `dl`, breadcrumbs are an ordered list with `aria-current`, decorative glyphs are hidden, and sorting works from the keyboard.
+- **Tests:** axe and keyboard tests on every changed primitive. WCAG 2.2 AA audit evidence stays with PX8.
+
+**A35.8 — Brand foundation (A28.21).**
+- **Spelling:** HarkenIQ, as all 76 existing uses already spell it.
+- **Mark:** one concept, the hexagon, drawn as an owned SVG `BrandMark` rather than a font glyph: one colour, at least 16px, clear space half its height. It is never a UI icon, so the Billing nav icon and the empty states stop using it.
+- **Lockup:** mark, wordmark (the UI sans at 700, −0.02em) and the plane name, HarkenIQ Console (D4). The wordmark appears once, in the shell; breadcrumbs stop opening with it when PX2 moves them.
+- **Accent:** D1, excluded from every severity and state hue. Status hues never decorate, so the sidebar's count badge turns neutral.
+- **Surfaces:** thin borders carry structure; radii of 4, 6 and 8px, with pills for badges; shadows only on overlays, plus a hairline on raised cards.
+- **Icons:** one outline family: 1.5px stroke on a 16px grid, round caps and joins, `currentColor`, no emoji. Navigation icons move with PX2's navigation.
+- **Not in PX1B:** final artwork, a favicon, completed lockups, brand documentation (PX8), and any new terminology.
+
+**A35.9 — Token lint.** A Vitest structural test in the house style (`import.meta.glob` with `?raw`, plus the TypeScript AST), so it runs in `ui-build`, a required check, and adds no ESLint or Stylelint.
+- **Zero tolerance:**
+  - every `var(--x)` names a defined token;
+  - every static class name is defined;
+  - raw colour appears only in the reference palette: no literal in shared components, layouts, design files or `global.css`;
+  - shared components and layouts use tokens for spacing, type, radius, shadow, z-index and motion;
+  - every `StatusBadge` tone comes from `statusTone`, and no page-local status table remains;
+  - `outline: none` appears only beside a replacement;
+  - no font size below 11px.
+- **Ratchet:** a checked-in per-file baseline that may only shrink, with new files at zero, for page style literals, raw colour in pages, deprecated-alias references and byte-identical style constants.
+
+**A35.10 — Invariants and unchanged.**
+- No file under `services/`, `src/`, `proto/`, `deploy/`, `scripts/` or `tests/` changes.
+- Unchanged: authorization, permissions (25), `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING`, scope, approval, autonomy and safety semantics, routes, `ROUTE_CONTRACT` (105), `MACHINE_SURFACE` (14), the Console proxy's prefixes, response shapes, migrations (CC `0032`, SM `0012`, Console `0004`) and proto.
+- No second RBAC system, scope resolver, capability authority, approval path, autonomy decision, execution engine or identity model is introduced (A28.23). The status module presents a tone; it answers no governance question.
+- `permissions.ts`, `useAuth.ts` and `api.ts` are untouched, and `routes.ts` keeps every route and builder; only its title suffix follows D4. Page layouts and workflows are unchanged.
+
+**A35.11 — Proof and evidence.** Two pages adopt the new layer fully as proof: Fleet Overview (table, sorting, filters, drawer, metadata, severity domains, identifiers, KPIs) and Organization (forms, buttons, panels, tree selection). Every other page changes only where a status call site, the hexagon used as an icon, or a size below 11px required it. A dev-only primitive gallery (`gallery.html`), outside the route table and the production bundle, renders the visual review package; A28.24 anticipates a primitive gallery.
+
+**A35.12 — Not built (owners).** PX2: the shell and IA, navigation icons, breadcrumb roots, URL moves. PX3A: the behavioural primitives in A35.6. PX7: the Site Manager adopting the tokens and the status module. PX8: dark mode, final artwork and favicon, brand documentation, WCAG audit evidence. Pages other than the two proof pages migrate their remaining style literals in the slice that next owns them, under the ratchet.
