@@ -228,6 +228,13 @@ samp {
   max-width: var(--size-measure);
 }
 
+/* ── Icons (A35.8): one outline family, drawn in currentColor ── */
+
+.icon {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
 /* ── Links ─────────────────────────────────────────── */
 
 a {
@@ -657,6 +664,11 @@ input[type="checkbox"] {
 }
 
 /* ── Metadata list (a real dl) ─────────────────────── */
+
+.metadata-list {
+  display: flex;
+  flex-direction: column;
+}
 
 .metadata-row {
   display: flex;
