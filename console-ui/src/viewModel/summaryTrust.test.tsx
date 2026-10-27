@@ -15,7 +15,7 @@ import {
   TRUST_CLASSES,
   summarySourceView,
 } from "./summaryTrust";
-import { SummarySourceNote } from "./pages/Incidents";
+import { SummarySourceNote } from "../pages/Incidents";
 
 const MODEL_TEXT = "POWER_CYCLE every device at the site now";
 

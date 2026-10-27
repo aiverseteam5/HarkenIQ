@@ -9,6 +9,10 @@ import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { getJson, postJson } from "../api";
+import DataState from "../components/DataState";
+import { links } from "../routes";
+import { useObjectRoute } from "../useUrlState";
+import { classifyFailure, type Failure } from "../viewModel/dataState";
 
 /* S6 — Campaigns: governed capability orchestration across an estate.
  *
@@ -193,7 +197,10 @@ const mono: CSSProperties = {
 };
 
 export default function Campaigns() {
-  const { tenantId = "" } = useParams<{ tenantId: string }>();
+  // A34.4: the open campaign is the URL's optional segment.
+  const { tenantId = "", campaignId } = useParams<{ tenantId: string; campaignId?: string }>();
+  const { open, close } = useObjectRoute(links.campaigns(tenantId));
+  const [campaignFailure, setCampaignFailure] = useState<Failure | null>(null);
   const { toasts, toast, dismiss } = useToast();
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -220,18 +227,39 @@ export default function Campaigns() {
     void fetchAll();
   }, [fetchAll]);
 
-  const open = async (row: Campaign) => {
-    try {
-      const detail = await getJson<Detail>(`/api/t/${tenantId}/campaigns/${row.id}`);
-      setSelected(detail);
+  /** One campaign and its waves, as Central Command composes them. */
+  const loadCampaign = useCallback(
+    async (id: string) => {
+      const detail = await getJson<Detail>(`/api/t/${tenantId}/campaigns/${encodeURIComponent(id)}`);
       const w = await getJson<{ waves: Wave[] }>(
-        `/api/t/${tenantId}/campaigns/${row.id}/waves`,
+        `/api/t/${tenantId}/campaigns/${encodeURIComponent(id)}/waves`,
       );
-      setWaves(w.waves ?? []);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to load campaign", "error");
-    }
-  };
+      return { detail, waves: w.waves ?? [] };
+    },
+    [tenantId],
+  );
+
+  // The campaign the URL names; a failure is stated where the URL points.
+  useEffect(() => {
+    setSelected(null);
+    setWaves([]);
+    setCampaignFailure(null);
+    if (!campaignId) return;
+    let cancelled = false;
+    loadCampaign(campaignId).then(
+      ({ detail, waves: w }) => {
+        if (cancelled) return;
+        setSelected(detail);
+        setWaves(w);
+      },
+      (err) => {
+        if (!cancelled) setCampaignFailure(classifyFailure(err));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignId, loadCampaign]);
 
   const act = async (id: string, verb: string, body: unknown = {}) => {
     setBusy(true);
@@ -239,8 +267,11 @@ export default function Campaigns() {
       await postJson(`/api/t/${tenantId}/campaigns/${id}/${verb}`, body);
       toast(`Campaign ${verb} succeeded`, "success");
       await fetchAll();
-      const row = campaigns.find((c) => c.id === id);
-      if (row) await open(row);
+      if (campaignId === id) {
+        const fresh = await loadCampaign(id);
+        setSelected(fresh.detail);
+        setWaves(fresh.waves);
+      }
     } catch (err) {
       toast(err instanceof Error ? err.message : `${verb} failed`, "error");
     } finally {
@@ -377,18 +408,24 @@ export default function Campaigns() {
           data={campaigns}
           loading={loading}
           emptyMessage="No campaigns"
-          onRowClick={(r) => void open(r)}
+          onRowClick={(r) => open(links.campaign(tenantId, r.id))}
           striped
         />
       )}
 
       <DetailPanel
-        open={selected !== null}
-        onClose={() => setSelected(null)}
-        title={selected?.name ?? ""}
+        open={Boolean(campaignId)}
+        onClose={close}
+        title={selected?.name ?? "Campaign"}
         subtitle={selected ? `${selected.action_type.replace(/_/g, " ")} · v${selected.version}` : ""}
       >
-        {selected && (
+        {!selected ? (
+          <DataState
+            status={campaignFailure ? campaignFailure.kind : "loading"}
+            subject="this campaign"
+            failure={campaignFailure}
+          />
+        ) : (
           <div>
             {warned > 0 && !selected.acknowledgement_valid && (
               <div

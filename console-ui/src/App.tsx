@@ -143,22 +143,27 @@ function AppRoutes() {
         {/* ── Tenant plane: context is the URL ───────────────
             Not a header, not localStorage. The tenant is visible,
             bookmarkable, survives the back button, and two tabs can
-            hold two different tenants. */}
+            hold two different tenants.
+
+            A34.4: an object is an optional segment on its page's own
+            route, so the list and the open object are one page instance
+            and every older URL still resolves. Every path here is held to
+            `routes.ts` by `routes.test.ts`, in both directions. */}
         <Route path="/t/:tenantId/dashboard" element={<Dashboard />} />
         <Route path="/t/:tenantId/users" element={<UserManagement />} />
         <Route path="/t/:tenantId/licenses" element={<LicenseManagement />} />
-        <Route path="/t/:tenantId/incidents" element={<Incidents />} />
-        <Route path="/t/:tenantId/fleet" element={<FleetOverview />} />
+        <Route path="/t/:tenantId/incidents/:incidentId?" element={<Incidents />} />
+        <Route path="/t/:tenantId/fleet/:agentId?" element={<FleetOverview />} />
         <Route path="/t/:tenantId/risk" element={<RiskExposure />} />
         <Route path="/t/:tenantId/learning" element={<Learning />} />
         <Route path="/t/:tenantId/autonomy" element={<Autonomy />} />
         <Route path="/t/:tenantId/capabilities" element={<Capabilities />} />
-        <Route path="/t/:tenantId/campaigns" element={<Campaigns />} />
+        <Route path="/t/:tenantId/campaigns/:campaignId?" element={<Campaigns />} />
         <Route path="/t/:tenantId/organization" element={<Organization />} />
         <Route path="/t/:tenantId/access-scope" element={<AccessScope />} />
-        <Route path="/t/:tenantId/operational-agents" element={<OperationalAgents />} />
+        <Route path="/t/:tenantId/operational-agents/:agentId?" element={<OperationalAgents />} />
         <Route path="/t/:tenantId/reliability" element={<VendorReliability />} />
-        <Route path="/t/:tenantId/approvals" element={<ApprovalQueue />} />
+        <Route path="/t/:tenantId/approvals/:origin?/:itemId?" element={<ApprovalQueue />} />
         <Route path="/t/:tenantId/agents" element={<AgentManagement />} />
         <Route path="/t/:tenantId/policies" element={<ApprovalPolicies />} />
         <Route path="/t/:tenantId/billing" element={<BillingDashboard />} />

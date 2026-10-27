@@ -59,8 +59,11 @@ const closeBtnStyle: CSSProperties = {
 };
 
 export default function Toast({ toasts, onDismiss }: Props) {
-  if (toasts.length === 0) return null;
-
+  // A34.8: the live region is ALWAYS in the document. It used to mount
+  // together with its first message, and a region that appears already
+  // holding its text is often not announced at all -- so the one live
+  // region in the Console frequently said nothing. An error interrupts
+  // (alert); everything else waits its turn (status).
   return (
     <>
       <style>{`
@@ -69,11 +72,16 @@ export default function Toast({ toasts, onDismiss }: Props) {
           to { opacity: 1; transform: translateX(0); }
         }
       `}</style>
-      <div style={containerStyle} aria-live="polite">
+      <div style={containerStyle} aria-live="polite" data-testid="toast-region">
         {toasts.map((t) => (
-          <div key={t.id} style={{ ...toastStyle, ...variantStyles[t.variant] }} role="alert">
+          <div
+            key={t.id}
+            style={{ ...toastStyle, ...variantStyles[t.variant] }}
+            role={t.variant === "error" ? "alert" : "status"}
+          >
             <span>{t.message}</span>
             <button
+              type="button"
               style={closeBtnStyle}
               onClick={() => onDismiss(t.id)}
               aria-label="Dismiss"

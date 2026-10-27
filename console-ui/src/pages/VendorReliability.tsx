@@ -205,7 +205,7 @@ export default function VendorReliability() {
       {/* Failure rate comparison — single measure, one hue; table below is the data view */}
       <div style={sectionHeader}>Failure Rate by Vendor / Model</div>
       {byFailureRate.length === 0 ? (
-        <EmptyState title="No outcome data yet" description="Reliability comparisons appear once agents report action outcomes." icon="&#x2318;" />
+        <EmptyState title="No outcome data yet" description="Reliability comparisons appear once Harken Nodes report action outcomes." icon="&#x2318;" />
       ) : (
         <div style={cardStyle}>
           {byFailureRate.map((m) => (

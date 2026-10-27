@@ -430,7 +430,7 @@ export default function RiskExposure() {
           description={
             siteFilter || filters.band
               ? "Clear the filters to see the whole fleet."
-              : "Devices appear here once agents report outcomes or a CVE feed is loaded."
+              : "Devices appear here once Harken Nodes report outcomes or a CVE feed is loaded."
           }
           icon="&#x26A0;"
         />

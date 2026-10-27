@@ -21,6 +21,9 @@ jobs:
       - run: pytest --cov=harkeniq --cov-report=xml tests/
 
   # QA-030: the UIs are part of the product; CI must build them.
+  # A34.3 (A28.24): and the Console's own tests must run, or the rules they
+  # pin -- provenance, generated content, the URL contract -- hold only
+  # when somebody remembers to run them by hand.
   ui-build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -31,6 +34,8 @@ jobs:
           node-version: 22
       - name: Console UI
         run: cd console-ui && npm ci && npm run build
+      - name: Console UI tests
+        run: cd console-ui && npm test
       - name: SM dashboard
         run: cd services/site_manager/ui && npm ci && npm run build
 

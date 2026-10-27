@@ -46,7 +46,8 @@ export interface ProposalProvenance {
 
 const LABEL: Record<ProvenanceType, string> = {
   evaluator: "HarkenIQ evaluator",
-  external_ingress: "External agent runtime",
+  // A34.7: the canonical name of the actor class (A28.7).
+  external_ingress: "External Agent Runtime",
   unknown: "Unknown historical source",
 };
 

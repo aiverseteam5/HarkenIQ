@@ -1,4 +1,5 @@
-import { type CSSProperties, type ReactNode, useEffect } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef } from "react";
+import { useOverlay } from "../a11y/overlay";
 
 interface Props {
   open: boolean;
@@ -55,15 +56,11 @@ const closeBtn: CSSProperties = {
 };
 
 export default function DetailPanel({ open, onClose, title, subtitle, width = 480, children }: Props) {
-  // Trap Escape key
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+  // A34.8: focus moves in on open, Tab stays inside, Escape closes only the
+  // topmost overlay, and focus returns to whatever opened the panel.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useOverlay(panelRef, open, { onEscape: onClose });
 
   // Prevent body scroll when open
   useEffect(() => {
@@ -86,10 +83,16 @@ export default function DetailPanel({ open, onClose, title, subtitle, width = 48
         onClick={onClose}
         aria-hidden="true"
       />
-      <aside
+      {/* A34.8: a div, not an aside -- `aside` may not take the dialog role
+          (axe: aria-allowed-role), so assistive technology was told two
+          contradictory things about what this is. */}
+      <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        data-focus-target=""
         style={{
           ...panelBase,
           width,
@@ -98,7 +101,7 @@ export default function DetailPanel({ open, onClose, title, subtitle, width = 48
       >
         <div style={headerStyle}>
           <div>
-            <h2 style={{ margin: 0, fontSize: "1.125rem" }}>{title}</h2>
+            <h2 id={titleId} style={{ margin: 0, fontSize: "1.125rem" }}>{title}</h2>
             {subtitle && (
               <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "0.25rem" }}>
                 {subtitle}
@@ -106,6 +109,7 @@ export default function DetailPanel({ open, onClose, title, subtitle, width = 48
             )}
           </div>
           <button
+            type="button"
             style={closeBtn}
             onClick={onClose}
             aria-label="Close panel"
@@ -114,7 +118,7 @@ export default function DetailPanel({ open, onClose, title, subtitle, width = 48
           </button>
         </div>
         <div style={bodyStyle}>{children}</div>
-      </aside>
+      </div>
     </>
   );
 }

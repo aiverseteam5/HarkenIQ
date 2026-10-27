@@ -1,4 +1,5 @@
-import { type CSSProperties, type ReactNode, useEffect } from "react";
+import { type CSSProperties, type ReactNode, useId, useRef } from "react";
+import { useOverlay } from "../a11y/overlay";
 import Spinner from "./Spinner";
 
 interface Props {
@@ -64,34 +65,46 @@ export default function ConfirmDialog({
   onCancel,
   loading,
 }: Props) {
-  // Trap Escape key
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open, onCancel]);
+  // A34.8: the dialog takes the keyboard while open. Focus starts in the
+  // first field when the dialog asks for input, and otherwise on Cancel --
+  // the choice that changes nothing -- so an Enter meant for the page behind
+  // can never confirm a governance action by accident. Ids are per
+  // instance: two dialogs on one page no longer share `confirm-title`.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+  useOverlay(dialogRef, open, {
+    onEscape: onCancel,
+    initialFocus: () =>
+      dialogRef.current?.querySelector<HTMLElement>(
+        "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
+      ) ?? cancelRef.current,
+  });
 
   if (!open) return null;
 
   return (
     <div style={overlayStyle} onClick={onCancel} role="presentation">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="confirm-title"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
+        tabIndex={-1}
+        data-focus-target=""
         style={cardStyle}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id="confirm-title" style={titleStyle}>{title}</h3>
-        <div style={messageStyle}>{message ?? children}</div>
+        <h3 id={titleId} style={titleStyle}>{title}</h3>
+        <div id={messageId} style={messageStyle}>{message ?? children}</div>
         <div style={actionsStyle}>
-          <button className="btn" onClick={onCancel} disabled={loading}>
+          <button ref={cancelRef} type="button" className="btn" onClick={onCancel} disabled={loading}>
             {cancelLabel}
           </button>
           <button
+            type="button"
             className={`btn ${variant === "danger" ? "btn-danger" : "btn-primary"}`}
             onClick={onConfirm}
             disabled={loading}

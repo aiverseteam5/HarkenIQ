@@ -6,7 +6,7 @@ import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { deleteJson, getJson, postJson, putJson } from "../api";
 import { useAuth } from "../useAuth";
-import { authoritativeSites, type MaybeContextualSite } from "../siteContext";
+import { authoritativeSites, type MaybeContextualSite } from "../viewModel/siteContext";
 
 /* E1.2 — Access Scope: who may reach what.
  *

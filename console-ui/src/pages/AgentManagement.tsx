@@ -159,7 +159,7 @@ export default function AgentManagement() {
       key: "search",
       label: "Search",
       type: "text",
-      placeholder: "Search agents...",
+      placeholder: "Search Harken Nodes...",
     },
   ], [sites]);
 
@@ -195,7 +195,7 @@ export default function AgentManagement() {
       setAgents(res.agents ?? []);
       setTotal(res.total ?? 0);
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to load agents", "error");
+      toast(err instanceof Error ? err.message : "Failed to load Harken Nodes", "error");
     } finally {
       setLoading(false);
     }
@@ -223,7 +223,7 @@ export default function AgentManagement() {
         );
         setSelectedAgent(detail);
       } catch (err) {
-        toast(err instanceof Error ? err.message : "Failed to load agent detail", "error");
+        toast(err instanceof Error ? err.message : "Failed to load Harken Node detail", "error");
         setDetailOpen(false);
       } finally {
         setDetailLoading(false);
@@ -248,7 +248,7 @@ export default function AgentManagement() {
     () => [
       {
         key: "agent_id",
-        header: "Agent ID",
+        header: "Harken Node ID",
         render: (r) => (
           <code style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
             {r.agent_id}
@@ -303,12 +303,11 @@ export default function AgentManagement() {
           conflating them is how a product grows a second runtime. Say which
           one this page is (p1-agentic-product.md §2). */}
       <div style={framingNote}>
-        <strong>Harken Nodes</strong> are the deployed agents: one per device,
-        each with its own cryptographic identity, and the final safety gate on
-        every action. They are not the same as <em>operational agents</em>
-        (named, scoped bundles a tenant configures) or{" "}
-        <em>external agents</em> (your own software calling HarkenIQ with its
-        own credential) — both arrive in later releases.
+        <strong>Harken Nodes</strong> run on the devices: one per device, each
+        with its own cryptographic identity, and the final safety gate on every
+        action. They are not <em>Operational Agents</em> (named, scoped bundles
+        a tenant configures) or <em>External Agent Runtimes</em> (your own
+        software calling HarkenIQ with an Operational Agent's credential).
       </div>
 
       <FilterBar
@@ -320,8 +319,8 @@ export default function AgentManagement() {
 
       {!loading && agents.length === 0 && !filters.search && !filters.site_id ? (
         <EmptyState
-          title="No agents registered"
-          description="Agents will appear here once they are deployed and connected."
+          title="No Harken Nodes registered"
+          description="Harken Nodes appear here once a Site Manager reports them."
           icon="&#x2699;"
         />
       ) : (
@@ -329,7 +328,7 @@ export default function AgentManagement() {
           columns={columns}
           data={agents}
           loading={loading}
-          emptyMessage="No agents match your filters"
+          emptyMessage="No Harken Nodes match your filters"
           page={page}
           pageSize={PAGE_SIZE}
           total={total}
@@ -346,7 +345,7 @@ export default function AgentManagement() {
           setDetailOpen(false);
           setSelectedAgent(null);
         }}
-        title={selectedAgent?.agent_name || selectedAgent?.agent_id || "Agent Details"}
+        title={selectedAgent?.agent_name || selectedAgent?.agent_id || "Harken Node Details"}
         subtitle={selectedAgent ? `${selectedAgent.vendor} ${selectedAgent.model}` : undefined}
         width={480}
       >
@@ -356,9 +355,9 @@ export default function AgentManagement() {
           </div>
         ) : selectedAgent ? (
           <>
-            <div style={sectionTitle}>Agent Info</div>
+            <div style={sectionTitle}>Harken Node</div>
             <div style={detailRow}>
-              <span style={detailLabel}>Agent ID</span>
+              <span style={detailLabel}>Harken Node ID</span>
               <span style={detailValue}>
                 <code style={{ fontFamily: "var(--font-mono, monospace)" }}>{selectedAgent.agent_id}</code>
               </span>

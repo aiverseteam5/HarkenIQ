@@ -44,7 +44,7 @@ const toggleStyle: CSSProperties = {
 };
 
 const FEATURES = [
-  { name: "autonomy_mode", description: "Enable autonomy tier for agents", category: "Core" },
+  { name: "autonomy_mode", description: "Enable the autonomy tier", category: "Core" },
   { name: "credential_rotation", description: "Automatic credential rotation", category: "Security" },
   { name: "peer_diagnostics", description: "Cross-device peer diagnostic checks", category: "Core" },
   { name: "premium_reporting", description: "Advanced analytics and reporting", category: "Premium" },

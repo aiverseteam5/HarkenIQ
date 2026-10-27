@@ -7569,3 +7569,162 @@ policy; and everything A32.11 lists.
   entry now also carries its observation; TX-1's catalogue-file allow-list
   gains `0032`; the PostgreSQL proofs delete or drop aliases before
   resources, because an alias names one.
+
+### A34 — 2026-10-26 — PX1A: the frontend engineering and semantic foundation (decided: Vinod)
+
+The first PX implementation slice (A28.25). A6-4 is complete (A29, A30),
+and so is the taxonomy foundation (A31–A33). A28.5's condition holds: no
+PX work runs alongside a backend boundary slice. The boundary was checked on
+`main` at `9ed3515c1ef45c4b6afa8d20956726c1fc085176` (PR #88 merged, main
+verified) and is recorded here before any code. PX1A is
+**frontend engineering only**. It changes no backend file, route, proxy
+prefix, permission, response shape or authority. It does not redesign any
+product surface: Attention, Incidents, Approvals, Operational Agents, Site
+Manager and topology keep their layout and their behaviour. The only
+behaviour changes are the URL, keyboard and focus changes listed below.
+
+**A34.1 — What was measured.**
+- **Tests:** Console Vitest — 6 files, 84 tests — ran in no CI job; `ui-build` ran only `npm ci && npm run build` (A28.24). Every test was a pure function or `renderToStaticMarkup`. There was no DOM environment, no interaction testing and no accessibility tooling.
+- **URLs:** `useSearchParams` appeared zero times. Every open drawer, tab, filter and page number lived in component state, so a reload lost it and nobody could share it.
+- **Device ids:** the Fleet device drawer fetched by `cc_fleet_cache.id`, a row id the poller deletes and re-inserts on every cycle (`clear_site`). That id cannot be linked to.
+- **Errors:** `api.ts` threw `Error(detail)` and dropped the HTTP status, so no page could tell denied from not found from unavailable.
+- **Dead code:** `usePoll` had no caller.
+- **Accessibility gaps:**
+  - The overlays (`DetailPanel`, `ConfirmDialog`) neither trapped nor restored focus, and both closed on one Escape.
+  - Clickable table rows could not be reached by keyboard.
+  - The sidebar navigated with buttons.
+  - The one live region (Toast) mounted together with its first message, so it was often not announced.
+  - `ConfirmDialog` hard-coded its title id.
+  - Nothing set `document.title` or moved focus on navigation.
+  - There was no skip link.
+- **Terminology:** the Harken Nodes page labelled Harken Nodes "agents", and the Operational Agent page's labels used a bare "Agent".
+
+**A34.2 — Re-sequencing (amends A28.25).** The decision brief puts the *foundation* of four later concerns into PX1A:
+
+| Concern | Foundation, now | Stays with |
+|---|---|---|
+| Operational context bar | the shared data and state model | PX2: the bar's design |
+| Accessible interaction | keyboard-safe and focus-managed behaviour of the existing shared components | PX3A: the full primitive set |
+| Object URLs and filters | the deep-link contract, plus its adoption where a page already has an object view | PX4A: everything else |
+| Cross-surface links | link builders, so any surface can link to an object | PX4B: the cross-surface and audit links themselves |
+
+Three items A28's one-line description gave PX1A move to **PX1B**, because they set the visual-semantic vocabulary whose values PX1B's brand foundation decides: the complete token architecture, the token lint, and the semantic status module (domain status → severity). The end-state program is unchanged.
+
+**A34.3 — Test foundation.**
+- **CI:** `ui-build` runs the Console's tests (`npm test`) after its build, so a red Vitest run fails CI.
+- **Dev dependencies,** chosen as releases at least two months old:
+
+| Package | Version |
+|---|---|
+| jsdom | 29.1.1 |
+| @testing-library/react | 16.3.2 |
+| @testing-library/dom | 10.4.1 |
+| @testing-library/user-event | 14.6.1 |
+| axe-core | 4.13.0 |
+
+  jsdom 30 needs Node 22.22.2 or later.
+- **Environments:** Node stays the default test environment. A test that needs a DOM opts in per file.
+- **One pattern of each kind:**
+  - **View-model:** a pure function asserted over the server's closed vocabulary.
+  - **Component:** rendered in a DOM, driven by keyboard, checked by axe.
+  - **Route:** rendered through a memory router over the real route table.
+
+**A34.4 — The deep-link contract.**
+- **One module, `routes.ts`, owns every object URL.** It holds a builder and a parser per object, so a link and the page that opens it cannot disagree.
+- **Object paths:** the object segment is optional on the page's own route, so the list and the open object share one page instance, and every existing URL still resolves.
+- **Navigation history:** opening an object pushes a history entry, so Back closes it. Changing a filter replaces the entry.
+- **Collection state:** status, filters, tab and page live in the query string, through one hook.
+- **Not found:** an object the server does not return reads as "not found or not visible in your current scope". That is exactly what Central Command's 404 means, and the page never claims which of the two it is.
+
+| Object | URL | Opens |
+|---|---|---|
+| Incident | `/t/{tenant}/incidents/{incidentId}` | Incidents, with its detail drawer |
+| Device | `/t/{tenant}/fleet/{agentId}` | Fleet, with its device drawer. The stable key is the Harken Node `agent_id`; it is resolved to the current row through the existing scoped fleet read. `?at={siteId}` is added only while one node is reported at two sites at once (A34.12). |
+| Site | `/t/{tenant}/fleet?site_id={siteId}` | Fleet, filtered to the site. No site page exists yet. |
+| Operational Agent | `/t/{tenant}/operational-agents/{agentId}` | Operational Agents, with its drawer |
+| Campaign | `/t/{tenant}/campaigns/{campaignId}` | Campaigns, with its drawer |
+| Approval / proposal | `/t/{tenant}/approvals/{origin}/{itemId}` | The pending queue with that item focused. An item that is not pending, or not visible, is stated as such and links to history. |
+| Resource Catalogue resource | `/t/{tenant}/resources/{resourceId}` | **Reserved.** No route and no page yet: the Console proxy does not forward `resources`, and enabling it is a Console backend change with its own boundary. |
+
+- **Route-contract test:** every builder resolves to a declared route, and every declared object route has a builder.
+- **Sidebar:** sidebar items become real links.
+
+**A34.5 — The view-model layer.**
+- **Location:** `src/viewModel/` holds every module that turns a server contract into something renderable. The five existing ones move there unchanged: `proposalProvenance`, `proposalEvidence`, `summaryTrust`, `generatedContent` and `siteContext`.
+- **New modules:**
+  - **`vocabulary`:** a closed-vocabulary reader, where an unrecognised value reads as unknown (A28.12's reference shape, made reusable).
+  - **`dataState`:** the async-state contract (A34.8).
+  - **`operationalContext`:** the context model (A34.6).
+- **Rule:** a view-model is a pure function of what the server sent. It imports neither React nor the API client, and it never answers an authorization, scope, approval, autonomy or capability question. A structural test pins both.
+- **Server boundary:** the server remains the only authority. The Console reflects nominal permissions to avoid offering a control the server will refuse (spec S4), and nothing more.
+
+**A34.6 — The operational context model.** One provider sits at the tenant layout, with one hook and one pure view-model. Every fact comes from an existing contract:
+
+| Fact | Source | Never says |
+|---|---|---|
+| Tenant | the URL, with its name from `/api/me/tenants` (platform staff: `/api/admin/tenants/{id}`) | a raw id as a name, to a tenant user |
+| Effective scope | `/api/t/{t}/scope-grants/me` | what a principal can *read*: its site set is permission-neutral (S2's recorded `/me` follow-up) and is a self-description only |
+| Enforcement posture | the same read's `enforcement` | anything outside its closed vocabulary |
+| Safety | `/api/t/{t}/autonomy/` → `posture.stop_switch` and `safety_state`, already narrowed to the reader's reach (A30.26) | "safe" or "healthy": the strongest clear statement is that no stop is in effect, and a site not reporting is unknown (S5) |
+| Freshness | the contract's `generated_at`, and the client's own last successful and failed exchanges | "connected" or "online" (A28.16): it states when it last heard, and that a refresh failed |
+
+- **First consumer:** the existing tenant context header, as plain text with no new visual design.
+- **Platform staff:** Central Command does not accept a platform-realm identity (E1.4). So the three Central Command facts read *not applicable* and are never requested, which also means a request can never sign them out.
+- **Cadence:** 60 s, paused while the tab is hidden. The autonomy contract tallies outcome history on every request (A30.41), so a lighter safety read is a recorded PX2 follow-up, which would need a backend boundary of its own.
+
+**A34.7 — Canonical terminology.**
+- `terminology.ts` holds HarkenIQ, Central Command, Site Manager, Harken Node, Operational Agent and External Agent Runtime (A28.7).
+- An AST lint over user-facing labels — headings, titles, labels, column headers, placeholders, accessible names, empty-state titles and navigation — refuses a bare "Agent".
+- Ambiguous labels are corrected, and so is running text: the lint reads every user-facing string position, so the Operational Agent page's prose was corrected with its labels rather than left for PX6 (A34.12).
+- No route is renamed: URLs move once, with redirects, in PX2 (A28.7).
+
+**A34.8 — State contracts and the accessibility baseline.**
+- **Errors:** `ApiError` keeps the HTTP status. It is still an `Error`, so every existing handler is unchanged, and 401 keeps its session behaviour.
+- **One async-state contract:** loading · ready · stale (data shown, with its age and the failed refresh) · denied · not found · refused (the server's own reason, P4) · partial · unavailable. It comes with one accessible component that renders each state.
+- **The accessibility baseline:**
+  - a skip link, and landmarks;
+  - focus moves to the page heading on navigation, and `document.title` names the page;
+  - the overlays trap focus, restore it on close, and the topmost one alone handles Escape;
+  - table rows open by Enter and Space;
+  - the toast live region is always present;
+  - dialog title ids are unique;
+  - axe runs on the shared primitives and the shell.
+- **Not a certification:** this is a baseline, not an audit. WCAG 2.2 AA evidence remains PX8's.
+
+**A34.9 — Invariants (asserted, A28.23).**
+- No second RBAC system, scope resolver, capability authority, approval path, autonomy decision, execution engine or identity model is introduced.
+- The client resolves no scope and predicts no read.
+- Every governance answer on screen is still the server's.
+- No file under `services/`, `src/`, `proto/`, `deploy/` or `scripts/` changes.
+
+**A34.10 — Unchanged.**
+- **Every backend contract:** routes, the Console proxy's prefixes, permissions (25), `ROLE_PERMISSIONS`, `MACHINE_PRINCIPAL_CEILING`, `MACHINE_SURFACE` (14), `ROUTE_CONTRACT` (105), response shapes, migrations (CC `0032`, SM `0012`, Console `0004`) and proto.
+- **The Site Manager dashboard** (PX7).
+- **Every existing Console URL.**
+
+**A34.11 — Not built (each belongs to a named later slice).**
+- **PX1B:** tokens, the token lint and the semantic status module.
+- **PX2:** the shell and IA, the context bar's design, the Attention home, responsive layout, and moving URLs with redirects.
+- **PX3A:** the full accessible primitive set.
+- **PX4A:** object URLs on the remaining pages (Attention, Organization, Learning, Autonomy, Capabilities, Audit, Harken Nodes and others).
+- **PX4B:** cross-surface and audit links.
+- **A slice of its own, with a Console backend boundary:** the Resource Catalogue page and its proxy prefix.
+- **PX5A / PX5B:** a Governed Operation identity.
+- **PX8:** WCAG audit evidence.
+
+**A34.12 — Found while implementing (recorded).**
+- **The drawer was an `<aside role="dialog">`.** axe's first run on the new overlay test refused it (`aria-allowed-role`): `aside` may not take the dialog role, so every drawer told assistive technology two contradictory things about what it was. It is a `div` now.
+- **One Escape closed two overlays.** The Users page's "Disable User" opens a confirmation over the open user drawer, and both listened for Escape on the whole document. They stack now, and a test pins that one Escape closes only the top one.
+- **A device's site hint is not the list's site filter.** The first cut put the disambiguating site in `?site_id=`, which also narrows the list behind the drawer. It is `?at=` now, added only when the node appears twice on the page. A row the poll replaced between the two reads is read once more rather than reported gone. A node reported at two sites is shown as two choices, never one chosen silently.
+- **The Approvals page's two Site filters can never be set.** Their option lists are empty, so they stay in component state and are not put in the URL. Populating them is product behaviour, recorded and not changed.
+- **A validation refusal reached the screen as `[object Object]`.** FastAPI sends a list for a 422. `ApiError` now carries the server's own messages (P4).
+- **Dialogs that ask for input.** Releases, Support and the unrouted API Keys page put a field inside `ConfirmDialog`. Focus starts in the first field there, and on Cancel everywhere else.
+- **Stale page text.** The Harken Nodes page said Operational Agents and External Agent Runtimes "arrive in later releases". Both shipped (A0, A6-1). Corrected.
+- **Dead code.** `usePoll` had no caller, and was retired for `useDataState`.
+- **Pins moved, intent kept.** A27.14's lane labels (`node`, `agent`, `agent activation`) and its provenance label (`External agent runtime`) became the canonical terms. They are still exactly three lanes, and still never a provenance.
+- **Not migrated (PX3A).** The eight page-local modals built inline (Users 3, Approval Policies 3, Tenants 1, Licenses 1) keep their own markup. The Approvals tabs are buttons with `aria-pressed`, not an ARIA tablist, because the full tab pattern needs arrow-key behaviour.
+- **Proof:**
+  - **Tests:** Console Vitest goes from 6 files / 84 tests to 18 files / 264.
+  - **Mutation run:** each of fourteen guarantees, broken on purpose, is caught by a named test. One mutant was equivalent in tests (it matters only under React StrictMode's double effect run), and a stronger variant of it is caught.
+  - **axe:** clean on the shared primitives, on the Incidents page with a drawer open, and on the shell with the landmark rule on.
+  - **Production build:** the bundle grows from 891.5 to 916.1 kB minified (241.2 → 249.7 kB gzip), with no test code in it.

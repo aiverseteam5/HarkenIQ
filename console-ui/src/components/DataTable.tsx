@@ -176,6 +176,21 @@ export default function DataTable<T extends object>({
               <tr
                 key={ri}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
+                // A34.8: a row that opens something on click opens it from
+                // the keyboard too. Only the row itself answers Enter and
+                // Space, so a button inside it keeps its own meaning.
+                tabIndex={onRowClick ? 0 : undefined}
+                onKeyDown={
+                  onRowClick
+                    ? (e) => {
+                        if (e.target !== e.currentTarget) return;
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onRowClick(row);
+                        }
+                      }
+                    : undefined
+                }
                 style={{
                   cursor: onRowClick ? "pointer" : "default",
                   background: striped && ri % 2 === 1 ? "var(--bg-primary)" : undefined,

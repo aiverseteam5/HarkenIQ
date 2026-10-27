@@ -225,7 +225,7 @@ export default function UsageChargeback() {
       {/* Node usage trending */}
       <div style={sectionHeader}>Daily Node Usage</div>
       {dailyCounts.length === 0 ? (
-        <EmptyState title="No usage data" description="Usage events will appear once agents report." icon="&#x2B22;" />
+        <EmptyState title="No usage data" description="Usage events will appear once Harken Nodes report." icon="&#x2B22;" />
       ) : (
         <div style={chartContainer}>
           <div style={trendRow}>
@@ -277,7 +277,7 @@ export default function UsageChargeback() {
       {/* Per-site breakdown */}
       <div style={sectionHeader}>Per-Site Breakdown</div>
       {(usage?.per_site ?? []).length === 0 ? (
-        <EmptyState title="No site data" description="Per-site usage will appear once agents report." icon="&#x2B22;" />
+        <EmptyState title="No site data" description="Per-site usage will appear once Harken Nodes report." icon="&#x2B22;" />
       ) : (
         <DataTable<SiteUsage>
           columns={siteColumns}

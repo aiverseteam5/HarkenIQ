@@ -287,7 +287,7 @@ export default function Autonomy() {
       );
       toast(
         activate
-          ? "Stop switch active — agents drop to observe-only on the next lease"
+          ? "Stop switch active — Harken Nodes drop to observe-only on their next lease"
           : "Stop switch cleared",
         activate ? "info" : "success",
       );
@@ -408,7 +408,7 @@ export default function Autonomy() {
         >
           <strong>Stop switch active.</strong>
           <span>
-            Every autonomous action is denied fleet-wide. Agents drop to observe-only as
+            Every autonomous action is denied fleet-wide. Harken Nodes drop to observe-only as
             their leases renew. Activated by {stop.changed_by || "an operator"}
             {stop.changed_at ? ` at ${fmtDate(stop.changed_at)}` : ""}.
           </span>
@@ -634,7 +634,7 @@ export default function Autonomy() {
         title={confirmStop === "on" ? "Activate the stop switch?" : "Clear the stop switch?"}
         message={
           confirmStop === "on"
-            ? "Every autonomous action across the fleet is denied until this is cleared. Agents drop to observe-only as their leases renew. Diagnosis continues."
+            ? "Every autonomous action across the fleet is denied until this is cleared. Harken Nodes drop to observe-only as their leases renew. Diagnosis continues."
             : "Autonomous action resumes at the tenant's configured level. Classes withdrawn on evidence stay withdrawn."
         }
         variant={confirmStop === "on" ? "danger" : "default"}

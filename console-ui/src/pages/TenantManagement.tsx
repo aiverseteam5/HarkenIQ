@@ -670,7 +670,7 @@ export default function TenantManagement() {
         title="Suspend Tenant"
         message={
           suspendReason.trim()
-            ? `Suspend "${selectedTenant?.name}"? This will restrict console access. Diagnosis agents remain active.`
+            ? `Suspend "${selectedTenant?.name}"? This will restrict console access. Diagnosis continues on every Harken Node and Site Manager.`
             : `Suspend "${selectedTenant?.name}"? Please provide a reason below.`
         }
         confirmLabel="Suspend"
