@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -62,17 +63,7 @@ const sectionHeader: CSSProperties = {
   marginTop: "1.5rem",
 };
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  draft: "neutral",
-  issued: "info",
-  paid: "success",
-  void: "neutral",
-};
 
-const TYPE_VARIANT: Record<string, "info" | "warning"> = {
-  commit: "info",
-  overage: "warning",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -159,13 +150,13 @@ export default function BillingDashboard() {
     {
       key: "type",
       header: "Type",
-      render: (r) => <StatusBadge status={r.type} variant={TYPE_VARIANT[r.type] ?? "neutral"} size="sm" />,
+      render: (r) => <StatusBadge status={r.type} tone={statusTone("invoice.line_type", r.type)} size="sm" />,
     },
     { key: "total_cents", header: "Amount", render: (r) => formatCents(r.total_cents, r.currency) },
     {
       key: "status",
       header: "Status",
-      render: (r) => <StatusBadge status={r.status} variant={STATUS_VARIANT[r.status] ?? "neutral"} size="sm" />,
+      render: (r) => <StatusBadge status={r.status} tone={statusTone("invoice.status", r.status)} size="sm" />,
     },
     { key: "issued_at", header: "Issued", render: (r) => formatDate(r.issued_at) },
     { key: "due_at", header: "Due", render: (r) => formatDate(r.due_at) },
@@ -197,7 +188,7 @@ export default function BillingDashboard() {
       render: (r) => (
         <StatusBadge
           status={r.status}
-          variant={r.status === "completed" ? "success" : r.status === "failed" ? "critical" : "neutral"}
+          tone={statusTone("payment.status", r.status)}
           size="sm"
         />
       ),
@@ -223,7 +214,7 @@ export default function BillingDashboard() {
         <EmptyState
           title="No subscription"
           description="No active subscription found for this tenant."
-          icon="&#x2B22;"
+         
         />
       </div>
     );
@@ -282,7 +273,7 @@ export default function BillingDashboard() {
         <div style={infoRow}>
           <span style={infoLabel}>Status</span>
           <span style={infoValue}>
-            <StatusBadge status={sub.status} variant={sub.status === "active" ? "success" : "warning"} size="sm" />
+            <StatusBadge status={sub.status} tone={statusTone("subscription.status", sub.status)} size="sm" />
           </span>
         </div>
         <div style={infoRow}>
@@ -294,7 +285,7 @@ export default function BillingDashboard() {
       {/* Invoices */}
       <div style={sectionHeader}>Invoices</div>
       {invoices.length === 0 ? (
-        <EmptyState title="No invoices yet" description="Invoices will appear here once generated." icon="&#x2B22;" />
+        <EmptyState title="No invoices yet" description="Invoices will appear here once generated." />
       ) : (
         <DataTable<Invoice>
           columns={invoiceColumns}
@@ -313,7 +304,7 @@ export default function BillingDashboard() {
       {/* Payments */}
       <div style={sectionHeader}>Payment History</div>
       {payments.length === 0 ? (
-        <EmptyState title="No payments" description="Payment records will appear here." icon="&#x2B22;" />
+        <EmptyState title="No payments" description="Payment records will appear here." />
       ) : (
         <DataTable<PaymentRecord>
           columns={paymentColumns}

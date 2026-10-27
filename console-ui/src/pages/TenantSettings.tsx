@@ -1,6 +1,7 @@
 import { type CSSProperties, useCallback, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 
@@ -85,7 +86,7 @@ export default function TenantSettings() {
         </div>
         <div style={fieldRow}>
           <span style={label}>Teams integration</span>
-          <StatusBadge status="not configured" variant="neutral" size="sm" />
+          <StatusBadge status="not configured" tone={statusTone("integration.state", "not_configured")} size="sm" />
         </div>
       </div>
 
@@ -122,7 +123,7 @@ export default function TenantSettings() {
         <div style={cardTitle}>SSO / Identity Federation</div>
         <div style={fieldRow}>
           <span style={label}>SAML/OIDC provider</span>
-          <StatusBadge status="not configured" variant="neutral" size="sm" />
+          <StatusBadge status="not configured" tone={statusTone("integration.state", "not_configured")} size="sm" />
         </div>
         <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "0.25rem 0" }}>
           Configure Keycloak identity federation with your organization's IdP.

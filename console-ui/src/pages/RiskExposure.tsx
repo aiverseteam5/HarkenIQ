@@ -6,6 +6,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -116,12 +117,6 @@ interface AttentionResponse {
 
 /* ── Presentation ─────────────────────────────────── */
 
-const BAND_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  high: "critical",
-  medium: "warning",
-  low: "success",
-  insufficient_data: "neutral",
-};
 
 const BAND_LABEL: Record<string, string> = {
   high: "high",
@@ -130,22 +125,9 @@ const BAND_LABEL: Record<string, string> = {
   insufficient_data: "insufficient data",
 };
 
-const CVE_VARIANT: Record<string, "warning" | "critical" | "info" | "neutral"> = {
-  critical: "critical",
-  high: "critical",
-  medium: "warning",
-  low: "info",
-};
 
 /* Why a row sits where it sits. Ranking is not the risk band alone: a
    device failing NOW outranks a healthy one with worse predicted risk. */
-const DRIVER_VARIANT: Record<string, "critical" | "warning" | "info" | "neutral"> = {
-  current_failure: "critical",
-  awaiting_approval: "info",
-  degraded_now: "warning",
-  predicted_risk: "neutral",
-  insufficient_evidence: "neutral",
-};
 
 /** What each recommended capability means to a human, and where it leads.
  *  `to` is null when the capability is not reachable from this console yet;
@@ -299,7 +281,7 @@ export default function RiskExposure() {
       render: (r) => (
         <StatusBadge
           status={r.attention_driver_label}
-          variant={DRIVER_VARIANT[r.attention_driver] ?? "neutral"}
+          tone={statusTone("attention.driver", r.attention_driver)}
           size="sm"
         />
       ),
@@ -310,7 +292,7 @@ export default function RiskExposure() {
       render: (r) => (
         <StatusBadge
           status={BAND_LABEL[r.band] ?? r.band}
-          variant={BAND_VARIANT[r.band] ?? "neutral"}
+          tone={statusTone("attention.band", r.band)}
           size="sm"
         />
       ),
@@ -396,14 +378,14 @@ export default function RiskExposure() {
                   {s.needs_attention > 0 ? (
                     <StatusBadge
                       status={`${s.needs_attention} need attention`}
-                      variant="critical"
+                      tone={statusTone("attention.summary", "needs_attention")}
                       size="sm"
                     />
                   ) : (
-                    <StatusBadge status="nothing needs attention" variant="success" size="sm" />
+                    <StatusBadge status="nothing needs attention" tone={statusTone("attention.summary", "clear")} size="sm" />
                   )}
                   {s.by_band.high > 0 && (
-                    <StatusBadge status={`${s.by_band.high} high risk`} variant="warning" size="sm" />
+                    <StatusBadge status={`${s.by_band.high} high risk`} tone={statusTone("attention.summary", "high_risk")} size="sm" />
                   )}
                 </div>
                 <div style={siteMeta}>
@@ -465,7 +447,7 @@ export default function RiskExposure() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selected.attention_driver_label}
-                  variant={DRIVER_VARIANT[selected.attention_driver] ?? "neutral"}
+                  tone={statusTone("attention.driver", selected.attention_driver)}
                   size="sm"
                 />
               </span>
@@ -475,7 +457,7 @@ export default function RiskExposure() {
               <span style={detailValue}>
                 <StatusBadge
                   status={BAND_LABEL[selected.band] ?? selected.band}
-                  variant={BAND_VARIANT[selected.band] ?? "neutral"}
+                  tone={statusTone("attention.band", selected.band)}
                   size="sm"
                 />
               </span>
@@ -520,7 +502,7 @@ export default function RiskExposure() {
                     <span style={detailValue}>
                       <StatusBadge
                         status={c.severity || "unknown"}
-                        variant={CVE_VARIANT[(c.severity || "").toLowerCase()] ?? "neutral"}
+                        tone={statusTone("cve.severity", (c.severity || "").toLowerCase())}
                         size="sm"
                       />
                       {c.fixed_version && (

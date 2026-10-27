@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -79,9 +80,6 @@ const quickActions: CSSProperties = {
   display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.5rem",
 };
 
-const DELINQUENCY_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  current: "success", overdue: "warning", restricted: "critical", suspended: "critical",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -133,10 +131,10 @@ export default function AdminDashboard() {
   const tenantColumns: Column<TenantHealth>[] = [
     { key: "name", header: "Tenant" },
     { key: "slug", header: "Slug", render: (r) => <code>{r.slug}</code> },
-    { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} variant={r.status === "active" ? "success" : "critical"} size="sm" /> },
+    { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} tone={statusTone("tenant.status", r.status)} size="sm" /> },
     { key: "plan", header: "Plan" },
     { key: "node_commit", header: "Nodes", render: (r) => String(r.node_commit) },
-    { key: "delinquency_status", header: "Billing", render: (r) => <StatusBadge status={r.delinquency_status} variant={DELINQUENCY_VARIANT[r.delinquency_status] ?? "neutral"} size="sm" /> },
+    { key: "delinquency_status", header: "Billing", render: (r) => <StatusBadge status={r.delinquency_status} tone={statusTone("billing.delinquency", r.delinquency_status)} size="sm" /> },
     { key: "open_tickets", header: "Tickets", render: (r) => String(r.open_tickets) },
   ];
 
@@ -175,9 +173,9 @@ export default function AdminDashboard() {
       <div style={healthGrid}>
         {system && Object.entries(system.services).map(([name, info]) => (
           <div key={name} style={healthCard}>
-            <StatusBadge status={info.status} variant={info.status === "healthy" ? "success" : info.status === "unhealthy" ? "critical" : "neutral"} />
+            <StatusBadge status={info.status} tone={statusTone("platform.health", info.status)} />
             <div style={{ fontSize: "0.75rem", fontWeight: 600, marginTop: "0.375rem", textTransform: "capitalize" }}>{name}</div>
-            {info.version && <div style={{ fontSize: "0.625rem", color: "var(--text-muted)" }}>v{info.version}</div>}
+            {info.version && <div style={{ fontSize: "var(--type-badge-size)", color: "var(--text-muted)" }}>v{info.version}</div>}
           </div>
         ))}
       </div>

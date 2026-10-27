@@ -6,6 +6,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -249,7 +250,7 @@ export default function Incidents() {
       header: "Diagnosis",
       render: (r) =>
         r.diagnosis ? (
-          <StatusBadge status="explained" variant="info" size="sm" />
+          <StatusBadge status="explained" tone={statusTone("incident.diagnosis", "explained")} size="sm" />
         ) : (
           <span style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>
             gathering evidence
@@ -262,7 +263,7 @@ export default function Incidents() {
       render: (r) => (
         <StatusBadge
           status={r.status}
-          variant={r.status === "open" ? "warning" : "success"}
+          tone={statusTone("incident.status", r.status)}
           size="sm"
         />
       ),
@@ -330,7 +331,7 @@ export default function Incidents() {
               <span style={detailValue}>
                 <StatusBadge
                   status={detail.status}
-                  variant={detail.status === "open" ? "warning" : "success"}
+                  tone={statusTone("incident.status", detail.status)}
                   size="sm"
                 />
               </span>

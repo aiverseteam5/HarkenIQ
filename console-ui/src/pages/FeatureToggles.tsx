@@ -2,6 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -131,7 +132,7 @@ export default function FeatureToggles() {
   const globalColumns: Column<typeof FEATURES[0]>[] = [
     { key: "name", header: "Feature", render: (r) => <code>{r.name}</code> },
     { key: "description", header: "Description" },
-    { key: "category", header: "Category", render: (r) => <StatusBadge status={r.category} variant="neutral" size="sm" /> },
+    { key: "category", header: "Category", render: (r) => <StatusBadge status={r.category} tone={statusTone("feature.category", r.category)} size="sm" /> },
     { key: "enabled", header: "Default", render: (r) => {
       const on = globalMap.get(r.name) ?? false;
       return <Toggle on={on} onClick={() => void handleToggleGlobal(r.name, !on)} disabled={toggling === r.name} />;

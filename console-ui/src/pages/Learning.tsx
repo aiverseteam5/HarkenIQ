@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -87,12 +88,6 @@ const SCOPE_LABEL: Record<string, string> = {
   site: "site",
 };
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "info" | "neutral"> = {
-  open: "neutral",
-  measuring: "info",
-  promotion_recommended: "warning",
-  closed: "success",
-};
 
 const tabRow: CSSProperties = {
   display: "flex", gap: "0.5rem", marginBottom: "0.75rem", flexWrap: "wrap",
@@ -220,7 +215,7 @@ export default function Learning() {
       render: (r) => (
         <StatusBadge
           status={r.status.replace(/_/g, " ")}
-          variant={STATUS_VARIANT[r.status] ?? "neutral"}
+          tone={statusTone("learning.cycle", r.status)}
           size="sm"
         />
       ),
@@ -247,7 +242,7 @@ export default function Learning() {
       key: "validation_state",
       header: "Validation",
       render: (r) => (
-        <StatusBadge status={r.validation_state} variant="info" size="sm" />
+        <StatusBadge status={r.validation_state} tone={statusTone("learning.validation", r.validation_state)} size="sm" />
       ),
     },
     {
@@ -256,7 +251,7 @@ export default function Learning() {
       render: (r) => (
         <StatusBadge
           status={r.status === "promoted" ? "recommended for review" : r.status}
-          variant={r.status === "promoted" ? "warning" : "neutral"}
+          tone={statusTone("learning.candidate", r.status)}
           size="sm"
         />
       ),

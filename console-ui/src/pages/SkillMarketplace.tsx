@@ -3,6 +3,7 @@ import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -62,11 +63,6 @@ const neutralButton: CSSProperties = {
   border: "1px solid var(--border-light)",
 };
 
-const TIER_VARIANT: Record<string, "success" | "info" | "neutral"> = {
-  core: "success",
-  verified: "info",
-  community: "neutral",
-};
 
 function pct(rate: number | null): string {
   return rate === null ? "--" : `${(rate * 100).toFixed(1)}%`;
@@ -158,7 +154,7 @@ export default function SkillMarketplace() {
     { key: "skill_name", header: "Skill" },
     { key: "target", header: "Target" },
     { key: "tier", header: "Tier", render: (s) => (
-      <StatusBadge status={s.tier} variant={TIER_VARIANT[s.tier] ?? "neutral"} size="sm" />
+      <StatusBadge status={s.tier} tone={statusTone("skill.tier", s.tier)} size="sm" />
     )},
     { key: "success_rate", header: "Success", render: (s) => pct(s.success_rate) },
     { key: "total_executions", header: "Runs", render: (s) => String(s.total_executions) },

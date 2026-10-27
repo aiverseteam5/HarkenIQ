@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
@@ -31,9 +32,6 @@ const keyRevealBox: CSSProperties = {
   padding: "1rem", marginBottom: "1rem", fontSize: "0.8125rem",
 };
 
-const SCOPE_VARIANT: Record<string, "success" | "warning" | "critical" | "info"> = {
-  read: "info", write: "warning", admin: "critical",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -110,8 +108,8 @@ export default function ApiKeys() {
   const columns: Column<ApiKeyRow>[] = [
     { key: "name", header: "Name" },
     { key: "key_prefix", header: "Key", render: (r) => <code>{r.key_prefix}...</code> },
-    { key: "scope", header: "Scope", render: (r) => <StatusBadge status={r.scope} variant={SCOPE_VARIANT[r.scope] ?? "neutral"} size="sm" /> },
-    { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} variant={r.status === "active" ? "success" : "neutral"} size="sm" /> },
+    { key: "scope", header: "Scope", render: (r) => <StatusBadge status={r.scope} tone={statusTone("api_key.scope", r.scope)} size="sm" /> },
+    { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} tone={statusTone("api_key.status", r.status)} size="sm" /> },
     { key: "created_at", header: "Created", render: (r) => formatDate(r.created_at) },
     { key: "expires_at", header: "Expires", render: (r) => formatDate(r.expires_at) },
     { key: "last_used_at", header: "Last Used", render: (r) => formatDate(r.last_used_at) },

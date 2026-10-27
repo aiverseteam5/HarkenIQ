@@ -6,6 +6,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import ConfirmDialog from "../components/ConfirmDialog";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
@@ -47,18 +48,7 @@ interface ValidateResult {
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  active: "success",
-  revoked: "critical",
-  expired: "warning",
-};
 
-const PLAN_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  observe: "info",
-  approve: "warning",
-  autonomy: "success",
-  enterprise: "success",
-};
 
 const VALIDITY_OPTIONS = [
   { value: "6", label: "6 months" },
@@ -392,7 +382,7 @@ export default function LicenseManagement() {
         render: (r) => (
           <StatusBadge
             status={r.plan}
-            variant={PLAN_VARIANT[r.plan] ?? "neutral"}
+            tone={statusTone("license.plan", r.plan)}
             size="sm"
           />
         ),
@@ -412,7 +402,7 @@ export default function LicenseManagement() {
         key: "status",
         header: "Status",
         render: (r) => (
-          <StatusBadge status={r.status} variant={STATUS_VARIANT[r.status] ?? "neutral"} size="sm" />
+          <StatusBadge status={r.status} tone={statusTone("license.status", r.status)} size="sm" />
         ),
       },
     ],
@@ -541,7 +531,7 @@ export default function LicenseManagement() {
               <div style={{ marginBottom: "0.75rem" }}>
                 <StatusBadge
                   status={validateResult.valid ? "Valid" : "Invalid"}
-                  variant={validateResult.valid ? "success" : "critical"}
+                  tone={statusTone("license.validation", validateResult.valid ? "valid" : "invalid")}
                 />
               </div>
               {validateResult.valid && validateResult.payload && (
@@ -608,7 +598,7 @@ export default function LicenseManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedLicense.plan}
-                  variant={PLAN_VARIANT[selectedLicense.plan] ?? "neutral"}
+                  tone={statusTone("license.plan", selectedLicense.plan)}
                   size="sm"
                 />
               </span>
@@ -630,7 +620,7 @@ export default function LicenseManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedLicense.status}
-                  variant={STATUS_VARIANT[selectedLicense.status] ?? "neutral"}
+                  tone={statusTone("license.status", selectedLicense.status)}
                   size="sm"
                 />
               </span>

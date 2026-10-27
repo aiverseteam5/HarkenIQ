@@ -5,6 +5,7 @@ import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
@@ -45,17 +46,7 @@ interface SiteRow {
 const PAGE_SIZE = 20;
 const POLL_INTERVAL = 30000;
 
-const HEALTH_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  ok: "success",
-  warning: "warning",
-  critical: "critical",
-  unknown: "neutral",
-};
 
-const OBSERVATION_VARIANT: Record<string, "success" | "neutral"> = {
-  observed: "success",
-  unobserved: "neutral",
-};
 
 /* ── Styles ───────────────────────────────────────── */
 
@@ -264,7 +255,7 @@ export default function AgentManagement() {
         render: (r) => (
           <StatusBadge
             status={r.health || "unknown"}
-            variant={HEALTH_VARIANT[r.health] ?? "neutral"}
+            tone={statusTone("device.health", r.health)}
             size="sm"
           />
         ),
@@ -275,7 +266,7 @@ export default function AgentManagement() {
         render: (r) => (
           <StatusBadge
             status={r.observation || "unknown"}
-            variant={OBSERVATION_VARIANT[r.observation] ?? "neutral"}
+            tone={statusTone("node.observation", r.observation)}
             size="sm"
           />
         ),
@@ -381,7 +372,7 @@ export default function AgentManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedAgent.health || "unknown"}
-                  variant={HEALTH_VARIANT[selectedAgent.health] ?? "neutral"}
+                  tone={statusTone("device.health", selectedAgent.health)}
                   size="sm"
                 />
               </span>
@@ -391,7 +382,7 @@ export default function AgentManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedAgent.observation || "unknown"}
-                  variant={OBSERVATION_VARIANT[selectedAgent.observation] ?? "neutral"}
+                  tone={statusTone("node.observation", selectedAgent.observation)}
                   size="sm"
                 />
               </span>
@@ -411,7 +402,7 @@ export default function AgentManagement() {
                       <span style={detailValue}>
                         <StatusBadge
                           status={String(severity)}
-                          variant={HEALTH_VARIANT[String(severity)] ?? "neutral"}
+                          tone={statusTone("device.health", String(severity))}
                           size="sm"
                         />
                       </span>

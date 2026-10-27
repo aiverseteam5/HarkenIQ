@@ -6,6 +6,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import DataState from "../components/DataState";
@@ -73,19 +74,7 @@ interface SiteRow {
   site_name: string;
 }
 
-const RISK_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  low: "success",
-  medium: "warning",
-  high: "critical",
-  insufficient_data: "neutral",
-};
 
-const CVE_VARIANT: Record<string, "warning" | "critical" | "info" | "neutral"> = {
-  critical: "critical",
-  high: "critical",
-  medium: "warning",
-  low: "info",
-};
 
 interface FleetRow extends FleetDevice {
   name: string;
@@ -150,26 +139,8 @@ async function resolveDevice(
   return { kind: "missing" };
 }
 
-const HEALTH_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  ok: "success",
-  warning: "warning",
-  critical: "critical",
-  unknown: "neutral",
-};
 
-const OBSERVATION_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  normal: "success",
-  degraded: "warning",
-  faulted: "critical",
-  unknown: "neutral",
-};
 
-const WARRANTY_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  active: "success",
-  expiring: "warning",
-  expired: "critical",
-  unknown: "neutral",
-};
 
 const HEALTH_SORT_ORDER: Record<string, number> = {
   critical: 0,
@@ -483,7 +454,7 @@ export default function FleetOverview() {
         render: (r) => (
           <StatusBadge
             status={r.health}
-            variant={HEALTH_VARIANT[r.health] ?? "neutral"}
+            tone={statusTone("device.health", r.health)}
             size="sm"
           />
         ),
@@ -494,7 +465,7 @@ export default function FleetOverview() {
         render: (r) => (
           <StatusBadge
             status={r.observation || "unknown"}
-            variant={OBSERVATION_VARIANT[r.observation] ?? "neutral"}
+            tone={statusTone("device.observation", r.observation)}
             size="sm"
           />
         ),
@@ -652,7 +623,7 @@ export default function FleetOverview() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedDevice.health}
-                  variant={HEALTH_VARIANT[selectedDevice.health] ?? "neutral"}
+                  tone={statusTone("device.health", selectedDevice.health)}
                   size="sm"
                 />
               </span>
@@ -677,7 +648,7 @@ export default function FleetOverview() {
                           ? "insufficient data"
                           : deviceRisk.band
                       }
-                      variant={RISK_VARIANT[deviceRisk.band] ?? "neutral"}
+                      tone={statusTone("risk.band", deviceRisk.band)}
                       size="sm"
                     />
                   </span>
@@ -707,7 +678,7 @@ export default function FleetOverview() {
               <div style={detailRow}>
                 <span style={detailLabel}>Band</span>
                 <span style={detailValue}>
-                  <StatusBadge status="unavailable" variant="neutral" size="sm" />
+                  <StatusBadge status="unavailable" tone={statusTone("risk.band", "unavailable")} size="sm" />
                 </span>
               </div>
             )}
@@ -720,7 +691,7 @@ export default function FleetOverview() {
                   <span style={detailValue}>
                     <StatusBadge
                       status={selectedDevice.warranty.status}
-                      variant={WARRANTY_VARIANT[selectedDevice.warranty.status] ?? "neutral"}
+                      tone={statusTone("device.warranty", selectedDevice.warranty.status)}
                       size="sm"
                     />
                   </span>
@@ -738,7 +709,7 @@ export default function FleetOverview() {
               <div style={detailRow}>
                 <span style={detailLabel}>Status</span>
                 <span style={detailValue}>
-                  <StatusBadge status="unknown" variant="neutral" size="sm" />
+                  <StatusBadge status="unknown" tone={statusTone("device.warranty", "unknown")} size="sm" />
                 </span>
               </div>
             )}
@@ -772,7 +743,7 @@ export default function FleetOverview() {
                     <span style={detailValue}>
                       <StatusBadge
                         status={cve.severity || "unknown"}
-                        variant={CVE_VARIANT[(cve.severity || "").toLowerCase()] ?? "neutral"}
+                        tone={statusTone("cve.severity", (cve.severity || "").toLowerCase())}
                         size="sm"
                       />
                       {cve.fixed_version && (
@@ -795,7 +766,7 @@ export default function FleetOverview() {
                     <span style={detailValue}>
                       <StatusBadge
                         status={severity}
-                        variant={HEALTH_VARIANT[severity] ?? "neutral"}
+                        tone={statusTone("device.health", severity)}
                         size="sm"
                       />
                     </span>

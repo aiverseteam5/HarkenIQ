@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -96,19 +97,6 @@ interface Detail extends Campaign {
   targets: Target[];
 }
 
-const STATUS_VARIANT: Record<
-  string,
-  "success" | "warning" | "critical" | "info" | "neutral"
-> = {
-  draft: "neutral",
-  preflighted: "info",
-  acknowledged: "info",
-  awaiting_approval: "warning",
-  running: "info",
-  completed: "success",
-  halted: "critical",
-  cancelled: "neutral",
-};
 
 const APPLICABILITY_LABEL: Record<string, string> = {
   eligible: "Eligible",
@@ -118,30 +106,7 @@ const APPLICABILITY_LABEL: Record<string, string> = {
   excluded_by_operator: "Excluded by an operator",
 };
 
-const APPLICABILITY_VARIANT: Record<
-  string,
-  "success" | "warning" | "critical" | "neutral"
-> = {
-  eligible: "success",
-  warn_not_permitted: "warning",
-  unknown: "neutral",
-  excluded_unimplemented: "critical",
-  excluded_by_operator: "neutral",
-};
 
-const WAVE_VARIANT: Record<
-  string,
-  "success" | "warning" | "critical" | "info" | "neutral"
-> = {
-  autonomous: "info",
-  pending_approval: "warning",
-  approved: "success",
-  denied: "critical",
-  voided: "critical",
-  dispatched: "info",
-  completed: "success",
-  failed: "critical",
-};
 
 const metricsRow: CSSProperties = {
   display: "grid",
@@ -298,7 +263,7 @@ export default function Campaigns() {
       render: (r) => (
         <StatusBadge
           status={r.status.replace(/_/g, " ")}
-          variant={STATUS_VARIANT[r.status] ?? "neutral"}
+          tone={statusTone("campaign.status", r.status)}
           size="sm"
         />
       ),
@@ -344,7 +309,7 @@ export default function Campaigns() {
       header: "Outcome",
       render: (r) =>
         r.progress.partial_success ? (
-          <StatusBadge status="partial success" variant="warning" size="sm" />
+          <StatusBadge status="partial success" tone={statusTone("campaign.outcome", "partial_success")} size="sm" />
         ) : r.halt_reason ? (
           <span style={{ fontSize: "0.78rem", color: "var(--status-critical)" }}>
             {r.halt_reason}
@@ -487,7 +452,7 @@ export default function Campaigns() {
                 <span style={detailValue}>
                   <StatusBadge
                     status={s.status}
-                    variant={STATUS_VARIANT[s.status] ?? "neutral"}
+                    tone={statusTone("campaign.status", s.status)}
                     size="sm"
                   />
                   {s.wave_count > 0 && ` wave ${s.current_wave + 1}/${s.wave_count}`}
@@ -526,7 +491,7 @@ export default function Campaigns() {
                 <span style={detailValue}>
                   <StatusBadge
                     status={w.status.replace(/_/g, " ")}
-                    variant={WAVE_VARIANT[w.status] ?? "neutral"}
+                    tone={statusTone("campaign.wave", w.status)}
                     size="sm"
                   />
                   <div style={{ ...mono, color: "var(--text-muted)" }}>
@@ -555,7 +520,7 @@ export default function Campaigns() {
                 <span style={detailValue}>
                   <StatusBadge
                     status={APPLICABILITY_LABEL[t.applicability] ?? t.applicability}
-                    variant={APPLICABILITY_VARIANT[t.applicability] ?? "neutral"}
+                    tone={statusTone("campaign.applicability", t.applicability)}
                     size="sm"
                   />
                 </span>

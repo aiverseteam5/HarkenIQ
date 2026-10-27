@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -77,22 +78,7 @@ const REACH_LABEL: Record<string, string> = {
   unknown: "Unknown",
 };
 
-const REACH_VARIANT: Record<
-  string,
-  "success" | "warning" | "critical" | "info" | "neutral"
-> = {
-  available: "success",
-  unimplemented: "critical",
-  no_effective_reach: "warning",
-  unknown: "neutral",
-};
 
-const RISK_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  none: "neutral",
-  low: "success",
-  medium: "warning",
-  high: "critical",
-};
 
 /* Plain language for the contract's codes. An operator should never have
    to read an enum to learn why something cannot run. */
@@ -209,7 +195,7 @@ export default function Capabilities() {
       key: "risk",
       header: "Risk",
       render: (r) => (
-        <StatusBadge status={r.risk} variant={RISK_VARIANT[r.risk] ?? "neutral"} size="sm" />
+        <StatusBadge status={r.risk} tone={statusTone("action.risk", r.risk)} size="sm" />
       ),
     },
     {
@@ -218,7 +204,7 @@ export default function Capabilities() {
       render: (r) => (
         <StatusBadge
           status={r.reversibility.replace(/_/g, " ")}
-          variant={r.reversibility === "irreversible" ? "critical" : "neutral"}
+          tone={statusTone("action.reversibility", r.reversibility)}
           size="sm"
         />
       ),
@@ -229,7 +215,7 @@ export default function Capabilities() {
       render: (r) => (
         <StatusBadge
           status={REACH_LABEL[r.reach] ?? r.reach}
-          variant={REACH_VARIANT[r.reach] ?? "neutral"}
+          tone={statusTone("capability.reach", r.reach)}
           size="sm"
         />
       ),

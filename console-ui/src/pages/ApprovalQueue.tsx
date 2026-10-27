@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
@@ -38,12 +39,6 @@ const APPROVAL_QUERY = {
 const TABS = closedVocabulary(["pending", "history"] as const);
 const ORIGINS = closedVocabulary(APPROVAL_ORIGINS);
 
-const DECISION_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  approved: "success",
-  denied: "critical",
-  expired: "neutral",
-  pending: "info",
-};
 
 /* ── Styles ───────────────────────────────────────── */
 
@@ -101,14 +96,6 @@ export const ORIGIN_LABEL: Record<string, string> = {
   agent_activation: "Operational Agent activation",
 };
 
-const ORIGIN_VARIANT: Record<
-  string,
-  "success" | "warning" | "critical" | "info" | "neutral"
-> = {
-  node: "neutral",
-  agent: "warning",
-  agent_activation: "info",
-};
 
 const activationBlockStyle: CSSProperties = {
   marginTop: "0.625rem",
@@ -449,7 +436,7 @@ export default function ApprovalQueue() {
         key: "action_type",
         header: "Action Type",
         render: (r) => (
-          <StatusBadge status={r.action_type} variant="info" size="sm" />
+          <StatusBadge status={r.action_type} tone={statusTone("action.type", r.action_type)} size="sm" />
         ),
       },
       {
@@ -467,7 +454,7 @@ export default function ApprovalQueue() {
         render: (r) => (
           <StatusBadge
             status={ORIGIN_LABEL[r.origin] ?? r.origin}
-            variant={ORIGIN_VARIANT[r.origin] ?? "neutral"}
+            tone={statusTone("approval.lane", r.origin)}
             size="sm"
           />
         ),
@@ -478,7 +465,7 @@ export default function ApprovalQueue() {
         render: (r) => (
           <StatusBadge
             status={r.decision ?? "pending"}
-            variant={DECISION_VARIANT[r.decision ?? "pending"] ?? "neutral"}
+            tone={statusTone("approval.decision", r.decision ?? "pending")}
             size="sm"
           />
         ),
@@ -673,11 +660,11 @@ export default function ApprovalQueue() {
                           onChange={() => toggleSelection(action.action_id)}
                           aria-label={`Select ${action.action_type}`}
                         />
-                        <StatusBadge status={action.action_type} variant="info" size="sm" />
+                        <StatusBadge status={action.action_type} tone={statusTone("action.type", action.action_type)} size="sm" />
                       </div>
                       <StatusBadge
                         status={ORIGIN_LABEL[action.origin] ?? action.origin}
-                        variant={ORIGIN_VARIANT[action.origin] ?? "neutral"}
+                        tone={statusTone("approval.lane", action.origin)}
                         size="sm"
                       />
                     </div>

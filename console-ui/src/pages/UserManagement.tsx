@@ -6,6 +6,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import ConfirmDialog from "../components/ConfirmDialog";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
@@ -52,21 +53,7 @@ const ASSIGNABLE_ROLES = [
   { value: "viewer", label: "Viewer" },
 ];
 
-const USER_STATUS_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  active: "success",
-  invited: "info",
-  disabled: "critical",
-};
 
-const ROLE_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  platform_admin: "critical",
-  tenant_owner: "warning",
-  site_admin: "info",
-  operator: "success",
-  auditor: "neutral",
-  viewer: "neutral",
-  billing_admin: "warning",
-};
 
 const ALL_PERMISSIONS: PermissionDef[] = [
   { key: "tenant.manage", label: "Manage", domain: "Tenant" },
@@ -622,7 +609,7 @@ export default function UserManagement() {
         render: (r) => (
           <StatusBadge
             status={roleLabel(r.role)}
-            variant={ROLE_VARIANT[r.role] ?? "neutral"}
+            tone={statusTone("user.role", r.role)}
             size="sm"
           />
         ),
@@ -633,7 +620,7 @@ export default function UserManagement() {
         render: (r) => (
           <StatusBadge
             status={r.status}
-            variant={USER_STATUS_VARIANT[r.status] ?? "neutral"}
+            tone={statusTone("user.status", r.status)}
             size="sm"
           />
         ),
@@ -921,7 +908,7 @@ export default function UserManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={roleLabel(selectedUser.role)}
-                  variant={ROLE_VARIANT[selectedUser.role] ?? "neutral"}
+                  tone={statusTone("user.role", selectedUser.role)}
                   size="sm"
                 />
               </span>
@@ -931,7 +918,7 @@ export default function UserManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedUser.status}
-                  variant={USER_STATUS_VARIANT[selectedUser.status] ?? "neutral"}
+                  tone={statusTone("user.status", selectedUser.status)}
                   size="sm"
                 />
               </span>

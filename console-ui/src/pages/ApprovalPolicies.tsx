@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import ConfirmDialog from "../components/ConfirmDialog";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
@@ -91,18 +92,14 @@ interface BudgetFormData {
 
 const PAGE_SIZE = 20;
 
-const RISK_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  low: "info",
-  medium: "warning",
-  high: "critical",
-  critical: "critical",
-};
 
-const LEVEL_CONFIG: Record<number, { label: string; variant: "neutral" | "info" | "warning" | "success" }> = {
-  0: { label: "Observe", variant: "neutral" },
-  1: { label: "Suggest", variant: "info" },
-  2: { label: "Batch", variant: "warning" },
-  3: { label: "Autonomous", variant: "success" },
+// A35.5: the level's tone comes from statusTone("autonomy.level"); this
+// table only names it.
+const LEVEL_CONFIG: Record<number, { label: string }> = {
+  0: { label: "Observe" },
+  1: { label: "Suggest" },
+  2: { label: "Batch" },
+  3: { label: "Autonomous" },
 };
 
 const DEVICE_TYPE_OPTIONS = [
@@ -453,7 +450,7 @@ export default function ApprovalPolicies() {
         render: (r) => (
           <StatusBadge
             status={r.risk_level}
-            variant={RISK_VARIANT[r.risk_level] ?? "neutral"}
+            tone={statusTone("action.risk", r.risk_level)}
             size="sm"
           />
         ),
@@ -469,7 +466,7 @@ export default function ApprovalPolicies() {
         render: (r) => (
           <StatusBadge
             status={r.status}
-            variant={r.status === "active" ? "success" : "neutral"}
+            tone={statusTone("policy.status", r.status)}
             size="sm"
           />
         ),
@@ -696,7 +693,7 @@ export default function ApprovalPolicies() {
         header: "Level",
         render: (r) => {
           const cfg = LEVEL_CONFIG[r.level] ?? LEVEL_CONFIG[0];
-          return <StatusBadge status={cfg.label} variant={cfg.variant} size="sm" />;
+          return <StatusBadge status={cfg.label} tone={statusTone("autonomy.level", r.level)} size="sm" />;
         },
       },
       { key: "budget_limit", header: "Budget Limit", render: (r) => String(r.budget_limit) },
@@ -1246,7 +1243,7 @@ export default function ApprovalPolicies() {
                 setBudEditing(null);
                 setBudModalOpen(true);
               }}
-              icon="&#x2B22;"
+             
             />
           ) : (
             <DataTable<AutonomyBudget>

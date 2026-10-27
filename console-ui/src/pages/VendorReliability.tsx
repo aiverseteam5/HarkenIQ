@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -76,12 +77,6 @@ const barValue: CSSProperties = {
   textAlign: "right", fontVariantNumeric: "tabular-nums",
 };
 
-const PATTERN_VARIANT: Record<string, "critical" | "warning" | "neutral"> = {
-  cross_site_batch: "critical",
-  batch_failure: "critical",
-  anomaly: "warning",
-  reliability: "warning",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -153,7 +148,7 @@ export default function VendorReliability() {
     { key: "pattern_type", header: "Type", render: (p) => (
       <StatusBadge
         status={p.pattern_type.replace(/_/g, " ")}
-        variant={PATTERN_VARIANT[p.pattern_type] ?? "neutral"}
+        tone={statusTone("fleet.pattern", p.pattern_type)}
         size="sm"
       />
     )},

@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
@@ -114,22 +115,7 @@ const DISPOSITION_LABEL: Record<string, string> = {
   not_budget_mapped: "Not mapped",
 };
 
-const DISPOSITION_VARIANT: Record<
-  string,
-  "success" | "warning" | "critical" | "info" | "neutral"
-> = {
-  autonomous: "success",
-  requires_approval: "warning",
-  denied: "critical",
-  not_budget_mapped: "neutral",
-};
 
-const RISK_VARIANT: Record<string, "success" | "warning" | "critical" | "neutral"> = {
-  none: "neutral",
-  low: "success",
-  medium: "warning",
-  high: "critical",
-};
 
 /* Plain language for the codes the contract returns. An operator should
    never have to read an enum to learn why something is blocked. */
@@ -321,7 +307,7 @@ export default function Autonomy() {
       key: "risk",
       header: "Risk",
       render: (r) => (
-        <StatusBadge status={r.risk} variant={RISK_VARIANT[r.risk] ?? "neutral"} size="sm" />
+        <StatusBadge status={r.risk} tone={statusTone("action.risk", r.risk)} size="sm" />
       ),
     },
     {
@@ -330,7 +316,7 @@ export default function Autonomy() {
       render: (r) => (
         <StatusBadge
           status={DISPOSITION_LABEL[r.disposition] ?? r.disposition}
-          variant={DISPOSITION_VARIANT[r.disposition] ?? "neutral"}
+          tone={statusTone("autonomy.disposition", r.disposition)}
           size="sm"
         />
       ),
@@ -357,11 +343,11 @@ export default function Autonomy() {
       header: "Safety",
       render: (r) =>
         !r.safety.reported ? (
-          <StatusBadge status="unknown" variant="neutral" size="sm" />
+          <StatusBadge status="unknown" tone={statusTone("autonomy.safety", "not_reported")} size="sm" />
         ) : r.safety.error_budget?.dropped_back ? (
-          <StatusBadge status="dropped back" variant="critical" size="sm" />
+          <StatusBadge status="dropped back" tone={statusTone("autonomy.safety", "dropped_back")} size="sm" />
         ) : (
-          <StatusBadge status="ok" variant="success" size="sm" />
+          <StatusBadge status="ok" tone={statusTone("autonomy.safety", "clear")} size="sm" />
         ),
     },
     {
