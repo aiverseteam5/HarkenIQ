@@ -7844,3 +7844,19 @@ This re-sequences A28.25 the way A34.2 did: PX1B takes the visual and state norm
 **A35.11 — Proof and evidence.** Two pages adopt the new layer fully as proof: Fleet Overview (table, sorting, filters, drawer, metadata, severity domains, identifiers, KPIs) and Organization (forms, buttons, panels, tree selection). Every other page changes only where a status call site, the hexagon used as an icon, or a size below 11px required it. A dev-only primitive gallery (`gallery.html`), outside the route table and the production bundle, renders the visual review package; A28.24 anticipates a primitive gallery.
 
 **A35.12 — Not built (owners).** PX2: the shell and IA, navigation icons, breadcrumb roots, URL moves. PX3A: the behavioural primitives in A35.6. PX7: the Site Manager adopting the tokens and the status module. PX8: dark mode, final artwork and favicon, brand documentation, WCAG audit evidence. Pages other than the two proof pages migrate their remaining style literals in the slice that next owns them, under the ratchet.
+
+**A35.13 — Found while implementing (recorded).**
+- **The bundled mono has no slashed zero.** The Fontsource subset of JetBrains Mono carries only the `calt`, `ccmp`, `frac` and `locl` features; `zero` is stripped, so `slashed-zero` cannot apply to it. D2's requirement still holds: at 3× the zero is a narrow oval beside a round O, and 1/l/I are distinct (`docs/px1b/visual-review/10-identifiers-3x.png`). A35.4's "slashed zero" therefore means JetBrains Mono's own shapes; `slashed-zero` stays declared for fallback faces that support it.
+- **Vitest empties every CSS import, `?raw` included.** The contrast contract and the token lint read the stylesheets as text, so `vite.config.ts` passes `src/styles/*.css` through Vitest, with a pattern that allows the `?raw` query on the module id.
+- **Two more hidden status mappings.** Approval Policies' `LEVEL_CONFIG` carried a variant per autonomy level and painted Autonomous green; it now holds labels only and takes its tone from `autonomy.level`. The 42nd table was Platform Health's map from health to raw hex for status dots; the dots now take `data-tone` from `statusTone`.
+- **The lint caught this slice's own mistakes on its first run:** three classes used without a definition (`icon`, `metadata-list`, `tree`), and the retired "Platform Console" on Support Access's breadcrumb (now "Platform").
+- **`aria-selected` on a plain table row** risks axe's conditional-attribute rule. The row whose detail is open is marked `aria-current="true"` instead.
+- **A solid red danger action on every table row** competed with the severities the table exists to show. Inside a table, a danger action is outlined until it is hovered.
+- **ConfirmDialog's loading spinner** put "Loading" into the confirm button's accessible name. The button now carries `aria-busy`, and the spinner is hidden.
+- **Navigation icons (PX2):** U+26BF renders as an empty box with the Linux default fonts, and ⚡ as a colour emoji. Recorded, not changed: PX2 replaces navigation icons with the owned set.
+- **Screenshots** were rendered by headless Chromium on a host whose only sans face is DejaVu Sans. macOS and Windows render the same stack in SF and Segoe UI.
+- **Proof:**
+  - **Tests:** Console Vitest goes from 18 files / 265 tests to 23 / 576: the token lint, the contrast contract (85 foreground/background pairs), the status rules, the facade check and primitive tests with axe.
+  - **Status:** 106 of 106 page call sites resolve through `statusTone`, and no page-local status table remains.
+  - **Ratchet baseline:** 1,082 page style literals in 35 files, 50 raw colours in 15 page files, 283 deprecated-alias references in 34 files, 126 byte-identical style constants.
+  - **Production build:** 909.8 kB JS (249.4 kB gzip), against 916.1 kB after PX1A; 38.9 kB CSS. JetBrains Mono adds 21.2 + 21.9 kB of woff2, plus woff fallbacks. The gallery is not in `dist`.
