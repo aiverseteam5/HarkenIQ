@@ -1,4 +1,5 @@
-import { type CSSProperties, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import Banner from "./Banner";
 import Spinner from "./Spinner";
 import type { DataStatus, Failure } from "../viewModel/dataState";
 
@@ -29,30 +30,6 @@ interface Props {
   children?: ReactNode;
 }
 
-const blockStyle: CSSProperties = {
-  padding: "1.5rem 1rem",
-  textAlign: "center",
-  color: "var(--text-secondary)",
-  fontSize: "0.875rem",
-  lineHeight: 1.5,
-};
-
-const titleStyle: CSSProperties = {
-  display: "block",
-  color: "var(--text-primary)",
-  fontWeight: 600,
-  marginBottom: "0.25rem",
-};
-
-const noticeStyle: CSSProperties = {
-  padding: "0.5rem 0.75rem",
-  marginBottom: "0.75rem",
-  borderRadius: "var(--radius-sm)",
-  background: "var(--status-warning-bg)",
-  color: "var(--text-primary)",
-  fontSize: "0.8125rem",
-};
-
 function capitalize(text: string): string {
   return text ? text[0].toUpperCase() + text.slice(1) : text;
 }
@@ -81,19 +58,19 @@ export default function DataState({
 
     case "loading":
       return (
-        <div role="status" aria-busy="true" style={blockStyle}>
+        <div role="status" aria-busy="true" className="data-state">
           <Spinner size="md" label={null} />
-          <span style={{ display: "block", marginTop: "0.5rem" }}>Loading {subject}…</span>
+          <span className="data-state__loading-text">Loading {subject}…</span>
         </div>
       );
 
     case "stale":
       return (
         <>
-          <div role="status" style={noticeStyle}>
+          <Banner tone="stale" role="status" className="data-state__notice">
             Showing {subject} as of {at(lastSuccessAt) || "an earlier refresh"}.{" "}
             {failure ? `The latest refresh failed: ${reason(failure)}.` : "It has not refreshed since."}
-          </div>
+          </Banner>
           {children}
         </>
       );
@@ -101,19 +78,19 @@ export default function DataState({
     case "partial":
       return (
         <>
-          <div role="status" style={noticeStyle}>
+          <Banner tone="warning" role="status" className="data-state__notice">
             Part of {subject} could not be loaded
             {missing.length ? `: ${missing.join(", ")}` : ""}. What is shown is complete for
             the parts that did load.
-          </div>
+          </Banner>
           {children}
         </>
       );
 
     case "not_found":
       return (
-        <div role="status" style={blockStyle}>
-          <strong style={titleStyle}>Not found, or not visible in your current scope</strong>
+        <div role="status" className="data-state">
+          <strong className="data-state__title">Not found, or not visible in your current scope</strong>
           {capitalize(subject)} was not returned. Central Command gives the same answer for
           both, so this page cannot say which.
         </div>
@@ -121,8 +98,8 @@ export default function DataState({
 
     case "denied":
       return (
-        <div role="status" style={blockStyle}>
-          <strong style={titleStyle}>Not available to you</strong>
+        <div role="status" className="data-state">
+          <strong className="data-state__title">Not available to you</strong>
           The server refused to show {subject} to your identity
           {failure?.message ? `: ${failure.message}` : "."}
         </div>
@@ -130,16 +107,16 @@ export default function DataState({
 
     case "refused":
       return (
-        <div role="status" style={blockStyle}>
-          <strong style={titleStyle}>Request refused</strong>
+        <div role="status" className="data-state">
+          <strong className="data-state__title">Request refused</strong>
           {reason(failure) || "The server refused this request."}
         </div>
       );
 
     case "unavailable":
       return (
-        <div role="status" style={blockStyle}>
-          <strong style={titleStyle}>Unavailable</strong>
+        <div role="status" className="data-state">
+          <strong className="data-state__title">Unavailable</strong>
           {capitalize(subject)} could not be loaded ({reason(failure)}).
           {lastSuccessAt ? ` Last loaded at ${at(lastSuccessAt)}.` : ""}
         </div>

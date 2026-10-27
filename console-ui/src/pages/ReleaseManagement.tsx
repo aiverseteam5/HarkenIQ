@@ -1,6 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import ConfirmDialog from "../components/ConfirmDialog";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -129,7 +130,7 @@ export default function ReleaseManagement() {
               <div style={{ marginTop: "0.375rem" }}>
                 <StatusBadge
                   status={isUpToDate ? "up to date" : `${info?.latest ?? "?"} available`}
-                  variant={isUpToDate ? "success" : "warning"}
+                  tone={statusTone("release.currency", isUpToDate ? "current" : "update_available")}
                   size="sm"
                 />
               </div>

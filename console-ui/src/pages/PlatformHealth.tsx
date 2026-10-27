@@ -2,6 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -44,20 +45,12 @@ const serviceCard: CSSProperties = {
   ...cardStyle, textAlign: "center", padding: "1.5rem 1rem", marginBottom: 0,
 };
 
-const statusDot: CSSProperties = {
-  width: 12, height: 12, borderRadius: "50%", display: "inline-block", marginRight: "0.5rem",
-};
-
 const checkRow: CSSProperties = {
   display: "flex", justifyContent: "space-between", padding: "0.5rem 0",
   borderBottom: "1px solid var(--border-light)", fontSize: "0.8125rem",
 };
 
 const POLL_INTERVAL = 30000;
-
-const STATUS_COLOR: Record<string, string> = {
-  healthy: "#22c55e", unhealthy: "#ef4444", unknown: "#9ca3af", degraded: "#f59e0b",
-};
 
 /* ── Component ────────────────────────────────────── */
 
@@ -101,7 +94,7 @@ export default function PlatformHealth() {
 
       {/* Overall status */}
       <div style={{ ...cardStyle, display: "flex", alignItems: "center", gap: "0.75rem" }}>
-        <span style={{ ...statusDot, background: allHealthy ? STATUS_COLOR.healthy : STATUS_COLOR.unhealthy, width: 16, height: 16 }} />
+        <span className="tone-dot" data-tone={statusTone("platform.health", allHealthy ? "healthy" : "unhealthy")} aria-hidden="true" />
         <span style={{ fontSize: "1rem", fontWeight: 600 }}>
           {allHealthy ? "All systems operational" : "Some services need attention"}
         </span>
@@ -112,9 +105,9 @@ export default function PlatformHealth() {
       <div style={serviceGrid}>
         {Object.entries(services).map(([name, info]) => (
           <div key={name} style={serviceCard}>
-            <span style={{ ...statusDot, background: STATUS_COLOR[info.status] ?? STATUS_COLOR.unknown }} />
+            <span className="tone-dot" data-tone={statusTone("platform.health", info.status)} aria-hidden="true" />
             <div style={{ fontSize: "0.9375rem", fontWeight: 600, marginTop: "0.5rem", textTransform: "capitalize" }}>{name.replace(/_/g, " ")}</div>
-            <StatusBadge status={info.status} variant={info.status === "healthy" ? "success" : info.status === "unhealthy" ? "critical" : "neutral"} size="sm" />
+            <StatusBadge status={info.status} tone={statusTone("platform.health", info.status)} size="sm" />
             {info.version && <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>v{info.version}</div>}
             {info.note && <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>{info.note}</div>}
           </div>
@@ -128,7 +121,7 @@ export default function PlatformHealth() {
           <div style={cardStyle}>
             <div style={checkRow}>
               <span>Connectivity</span>
-              <StatusBadge status={checks.database.status} variant={checks.database.status === "healthy" ? "success" : "critical"} size="sm" />
+              <StatusBadge status={checks.database.status} tone={statusTone("platform.health", checks.database.status)} size="sm" />
             </div>
             {checks.database.latency_ms !== undefined && (
               <div style={checkRow}>

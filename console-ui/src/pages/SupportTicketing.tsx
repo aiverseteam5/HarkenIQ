@@ -5,6 +5,7 @@ import FilterBar, { type FilterDef } from "../components/FilterBar";
 import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import ConfirmDialog from "../components/ConfirmDialog";
 import Spinner from "../components/Spinner";
@@ -61,14 +62,7 @@ const replyBox: CSSProperties = {
   display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "1rem",
 };
 
-const SEVERITY_VARIANT: Record<string, "critical" | "warning" | "info" | "neutral"> = {
-  S1: "critical", S2: "warning", S3: "info", S4: "neutral",
-};
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "info" | "neutral" | "critical"> = {
-  open: "info", acknowledged: "warning", in_progress: "warning",
-  waiting_on_tenant: "neutral", closed: "success",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -206,8 +200,8 @@ export default function SupportTicketing() {
   const columns: Column<Ticket>[] = [
     { key: "ticket_number", header: "#", render: (r) => <code>#{r.ticket_number}</code> },
     { key: "subject", header: "Subject" },
-    { key: "severity", header: "Severity", render: (r) => <StatusBadge status={r.severity} variant={SEVERITY_VARIANT[r.severity] ?? "neutral"} size="sm" /> },
-    { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status.replace(/_/g, " ")} variant={STATUS_VARIANT[r.status] ?? "neutral"} size="sm" /> },
+    { key: "severity", header: "Severity", render: (r) => <StatusBadge status={r.severity} tone={statusTone("support.severity", r.severity)} size="sm" /> },
+    { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status.replace(/_/g, " ")} tone={statusTone("support.status", r.status)} size="sm" /> },
     { key: "component", header: "Component" },
     { key: "created_at", header: "Created", render: (r) => formatDate(r.created_at) },
     { key: "updated_at", header: "Updated", render: (r) => formatDate(r.updated_at) },
@@ -268,9 +262,9 @@ export default function SupportTicketing() {
           <>
             <div style={cardStyle}>
               <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem" }}>
-                <StatusBadge status={selectedTicket.severity} variant={SEVERITY_VARIANT[selectedTicket.severity] ?? "neutral"} size="sm" />
-                <StatusBadge status={selectedTicket.status.replace(/_/g, " ")} variant={STATUS_VARIANT[selectedTicket.status] ?? "neutral"} size="sm" />
-                <StatusBadge status={selectedTicket.component} variant="neutral" size="sm" />
+                <StatusBadge status={selectedTicket.severity} tone={statusTone("support.severity", selectedTicket.severity)} size="sm" />
+                <StatusBadge status={selectedTicket.status.replace(/_/g, " ")} tone={statusTone("support.status", selectedTicket.status)} size="sm" />
+                <StatusBadge status={selectedTicket.component} tone={statusTone("support.component", selectedTicket.component)} size="sm" />
               </div>
               <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                 Created {formatDate(selectedTicket.created_at)}

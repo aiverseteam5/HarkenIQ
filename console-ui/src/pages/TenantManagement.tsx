@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import ConfirmDialog from "../components/ConfirmDialog";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import Spinner from "../components/Spinner";
@@ -68,12 +69,6 @@ const PLAN_OPTIONS = [
   { value: "enterprise", label: "Enterprise" },
 ];
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  active: "success",
-  pending: "info",
-  suspended: "critical",
-  delinquent: "warning",
-};
 
 /* ── Filter definitions ─────────────────────────── */
 
@@ -425,7 +420,7 @@ export default function TenantManagement() {
         key: "status",
         header: "Status",
         render: (r) => (
-          <StatusBadge status={r.status} variant={STATUS_VARIANT[r.status] ?? "neutral"} size="sm" />
+          <StatusBadge status={r.status} tone={statusTone("tenant.status", r.status)} size="sm" />
         ),
       },
       { key: "plan", header: "Plan", render: (r) => <span style={{ textTransform: "capitalize" }}>{r.plan}</span> },
@@ -548,7 +543,7 @@ export default function TenantManagement() {
               <span style={detailValue}>
                 <StatusBadge
                   status={selectedTenant.status}
-                  variant={STATUS_VARIANT[selectedTenant.status] ?? "neutral"}
+                  tone={statusTone("tenant.status", selectedTenant.status)}
                   size="sm"
                 />
               </span>

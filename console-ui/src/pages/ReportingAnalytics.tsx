@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -68,9 +69,6 @@ const trendBar: CSSProperties = {
   display: "flex", alignItems: "flex-end", gap: "3px", height: 80,
 };
 
-const TREND_VARIANT: Record<string, "success" | "critical" | "neutral"> = {
-  improving: "success", degrading: "critical", stable: "neutral",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -136,7 +134,7 @@ export default function ReportingAnalytics() {
     { key: "device", header: "Device" },
     { key: "site", header: "Site" },
     { key: "result", header: "Result", render: (r) => (
-      <StatusBadge status={r.result} variant={r.result === "success" ? "success" : r.result === "failed" ? "critical" : "neutral"} size="sm" />
+      <StatusBadge status={r.result} tone={statusTone("outcome.result", r.result)} size="sm" />
     )},
     { key: "executed_at", header: "Date", render: (r) => formatDate(r.executed_at) },
   ];
@@ -147,7 +145,7 @@ export default function ReportingAnalytics() {
     { key: "incident_count", header: "Incidents", render: (r) => String(r.incident_count) },
     { key: "mttr_hours", header: "MTTR", render: (r) => `${r.mttr_hours.toFixed(1)}h` },
     { key: "recurring_issues", header: "Recurring Issues" },
-    { key: "trend", header: "Trend", render: (r) => <StatusBadge status={r.trend} variant={TREND_VARIANT[r.trend] ?? "neutral"} size="sm" /> },
+    { key: "trend", header: "Trend", render: (r) => <StatusBadge status={r.trend} tone={statusTone("trend.direction", r.trend)} size="sm" /> },
   ];
 
   const maxIncidents = Math.max(...trends.map(t => t.incidents), 1);
@@ -184,7 +182,7 @@ export default function ReportingAnalytics() {
       {/* Month-over-month trends */}
       <div style={sectionHeader}>Month-over-Month Trends</div>
       {trends.length === 0 ? (
-        <EmptyState title="No trend data" description="Trends will appear once incidents are tracked over time." icon="&#x2B22;" />
+        <EmptyState title="No trend data" description="Trends will appear once incidents are tracked over time." />
       ) : (
         <div style={cardStyle}>
           <div style={trendBar}>
@@ -198,7 +196,7 @@ export default function ReportingAnalytics() {
                   }}
                   title={`${t.month}: ${t.incidents} incidents, ${t.resolved} resolved, MTTR ${t.mttr_hours.toFixed(1)}h`}
                 />
-                <div style={{ fontSize: "0.5625rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>{t.month}</div>
+                <div style={{ fontSize: "var(--type-badge-size)", color: "var(--text-muted)", marginTop: "0.25rem" }}>{t.month}</div>
               </div>
             ))}
           </div>

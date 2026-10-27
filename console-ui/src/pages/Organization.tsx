@@ -1,7 +1,9 @@
 import { useParams } from "react-router-dom";
-import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useId, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
+import Banner from "../components/Banner";
+import DataState from "../components/DataState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
 import { deleteJson, getJson, patchJson, postJson, putJson } from "../api";
@@ -62,101 +64,6 @@ interface SiteRow extends MaybeContextualSite {
   org_unit_id: string | null;
 }
 
-/* ── Styles ───────────────────────────────────────── */
-
-const layout: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr)",
-  gap: "1.25rem",
-  alignItems: "start",
-};
-
-const card: CSSProperties = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "8px",
-  padding: "1rem 1.125rem",
-};
-
-const noteStyle: CSSProperties = {
-  ...card,
-  marginBottom: "1.25rem",
-  borderLeft: "3px solid var(--accent, #3b82f6)",
-  fontSize: "0.8125rem",
-  color: "var(--text-muted)",
-  lineHeight: 1.55,
-};
-
-const rowStyle = (selected: boolean, depth: number): CSSProperties => ({
-  display: "flex",
-  alignItems: "center",
-  gap: "0.5rem",
-  padding: "0.375rem 0.5rem",
-  paddingLeft: `${0.5 + (depth - 1) * 1.125}rem`,
-  borderRadius: "6px",
-  cursor: "pointer",
-  background: selected ? "var(--surface-hover, rgba(59,130,246,.10))" : "transparent",
-  fontSize: "0.875rem",
-});
-
-const typeChip: CSSProperties = {
-  fontSize: "0.6875rem",
-  letterSpacing: "0.04em",
-  textTransform: "uppercase",
-  color: "var(--text-muted)",
-  border: "1px solid var(--border)",
-  borderRadius: "4px",
-  padding: "0 0.3125rem",
-  whiteSpace: "nowrap",
-};
-
-const countChip: CSSProperties = {
-  ...typeChip,
-  textTransform: "none",
-  letterSpacing: 0,
-};
-
-const labelStyle: CSSProperties = {
-  display: "block",
-  fontSize: "0.75rem",
-  color: "var(--text-muted)",
-  marginBottom: "0.25rem",
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "0.375rem 0.5rem",
-  fontSize: "0.8125rem",
-  borderRadius: "6px",
-  border: "1px solid var(--border)",
-  background: "var(--surface)",
-  color: "var(--text)",
-  marginBottom: "0.625rem",
-};
-
-const buttonStyle = (kind: "primary" | "quiet" | "danger"): CSSProperties => ({
-  padding: "0.375rem 0.75rem",
-  fontSize: "0.8125rem",
-  borderRadius: "6px",
-  cursor: "pointer",
-  border: "1px solid var(--border)",
-  background:
-    kind === "primary" ? "var(--accent, #3b82f6)" : "transparent",
-  color:
-    kind === "primary"
-      ? "#fff"
-      : kind === "danger"
-        ? "var(--danger, #ef4444)"
-        : "var(--text)",
-});
-
-const pathStyle: CSSProperties = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: "0.6875rem",
-  color: "var(--text-muted)",
-  wordBreak: "break-all",
-};
-
 /* ── Helpers ──────────────────────────────────────── */
 
 function flatten(nodes: UnitNode[]): UnitNode[] {
@@ -181,6 +88,7 @@ export default function Organization() {
   const [renameTo, setRenameTo] = useState("");
   const [moveTo, setMoveTo] = useState("");
   const [attachSite, setAttachSite] = useState("");
+  const fieldId = useId();
 
   // The server is the authorization boundary; this only decides whether
   // to render controls that would 403 anyway.
@@ -287,7 +195,7 @@ export default function Organization() {
       setAttachSite("");
     }, "Site attached");
 
-  if (loading) return <div style={{ padding: "1rem" }}>Loading…</div>;
+  if (loading) return <DataState status="loading" subject="the organization" />;
 
   return (
     <div>
@@ -296,14 +204,14 @@ export default function Organization() {
         breadcrumbs={[{ label: "Tenant" }, { label: "Organization" }]}
       />
 
-      <div style={noteStyle}>
-        <strong>Containment, not permission.</strong> This tree describes how
-        the estate is organized and which unit each site belongs to. It grants
-        nobody access to anything: who may reach a site is a separate scope
-        grant. Depth is bounded at {tree?.max_depth ?? 8} levels, a unit cannot
-        be moved beneath itself, and a unit holding children or sites is not
-        deletable — every one of those is refused at Central Command, not here.
-      </div>
+      <Banner tone="informational" title="Containment, not permission." className="page-notice">
+        This tree describes how the estate is organized and which unit each
+        site belongs to. It grants nobody access to anything: who may reach a
+        site is a separate scope grant. Depth is bounded at{" "}
+        {tree?.max_depth ?? 8} levels, a unit cannot be moved beneath itself,
+        and a unit holding children or sites is not deletable — every one of
+        those is refused at Central Command, not here.
+      </Banner>
 
       {!tree || tree.tree.length === 0 ? (
         <EmptyState
@@ -316,75 +224,58 @@ export default function Organization() {
         />
       ) : null}
 
-      <div style={layout}>
-        <div style={card}>
-          <div
-            style={{
-              fontSize: "0.75rem",
-              color: "var(--text-muted)",
-              marginBottom: "0.625rem",
-            }}
-          >
+      <div className="split">
+        <div className="card">
+          <p className="t-meta">
             {tree?.unit_count ?? 0} unit{tree?.unit_count === 1 ? "" : "s"}
             {" · "}
             {sites.length} site{sites.length === 1 ? "" : "s"}
-            {unattached.length > 0
-              ? ` · ${unattached.length} unattached`
-              : ""}
+            {unattached.length > 0 ? ` · ${unattached.length} unattached` : ""}
+          </p>
+
+          <div className="tree" role="group" aria-label="Organizational units">
+            {flat.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                className="tree-row"
+                aria-pressed={node.id === selected}
+                style={{ "--tree-depth": node.depth - 1 } as CSSProperties}
+                onClick={() => setSelected(node.id === selected ? "" : node.id)}
+              >
+                <span className="tree-row__name">{node.name}</span>
+                <span className="chip">{node.unit_type}</span>
+                {node.site_count > 0 ? (
+                  <span className="chip">
+                    {node.site_count} site{node.site_count === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </button>
+            ))}
           </div>
 
-          {flat.map((node) => (
-            <div
-              key={node.id}
-              style={rowStyle(node.id === selected, node.depth)}
-              onClick={() => setSelected(node.id === selected ? "" : node.id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setSelected(node.id === selected ? "" : node.id);
-                }
-              }}
-            >
-              <span style={{ flex: 1, minWidth: 0 }}>{node.name}</span>
-              <span style={typeChip}>{node.unit_type}</span>
-              {node.site_count > 0 ? (
-                <span style={countChip}>
-                  {node.site_count} site{node.site_count === 1 ? "" : "s"}
-                </span>
-              ) : null}
-            </div>
-          ))}
-
           {canManage ? (
-            <div
-              style={{
-                marginTop: "1rem",
-                paddingTop: "0.875rem",
-                borderTop: "1px solid var(--border)",
-              }}
-            >
-              <span style={labelStyle}>
-                New unit{" "}
-                {selected && detail
-                  ? `under ${detail.unit.name}`
-                  : "at the root"}
-              </span>
+            <div className="form-section">
+              <div className="t-label">
+                New unit {selected && detail ? `under ${detail.unit.name}` : "at the root"}
+              </div>
               <input
-                style={inputStyle}
+                className="input"
+                aria-label="Unit name"
                 placeholder="Name, e.g. Region West"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
               />
               <input
-                style={inputStyle}
+                className="input"
+                aria-label="Unit type"
                 placeholder="Your word for this level, e.g. region"
                 value={newType}
                 onChange={(e) => setNewType(e.target.value)}
               />
               <button
-                style={buttonStyle("primary")}
+                type="button"
+                className="btn btn-primary"
                 disabled={!newName.trim()}
                 onClick={create}
               >
@@ -394,157 +285,125 @@ export default function Organization() {
           ) : null}
         </div>
 
-        <div style={card}>
+        <div className="card">
           {!detail ? (
-            <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>
-              Select a unit to see what it contains.
-            </div>
+            <p className="t-support">Select a unit to see what it contains.</p>
           ) : (
             <>
-              <div
-                style={{
-                  fontSize: "0.75rem",
-                  color: "var(--text-muted)",
-                  marginBottom: "0.25rem",
-                }}
-              >
+              <div className="t-meta">
                 {detail.ancestors.map((a) => a.name).join(" › ") || "root"}
               </div>
-              <div style={{ fontSize: "1rem", fontWeight: 600 }}>
-                {detail.unit.name}
-              </div>
-              <div style={{ ...pathStyle, margin: "0.375rem 0 0.875rem" }}>
-                level {detail.unit.depth} · {detail.unit.path}
+              <h2 className="t-object-title">{detail.unit.name}</h2>
+              <div className="t-meta">
+                level {detail.unit.depth} · <code>{detail.unit.path}</code>
               </div>
 
-              <div
-                style={{
-                  fontSize: "0.8125rem",
-                  marginBottom: "0.875rem",
-                }}
-              >
+              <p className="t-support org-detail__counts">
                 {detail.children.length} child unit
                 {detail.children.length === 1 ? "" : "s"} ·{" "}
                 {detail.sites.length} site
                 {detail.sites.length === 1 ? "" : "s"} here ·{" "}
                 {detail.subtree_site_count} in this subtree
-              </div>
+              </p>
 
               {detail.sites.length > 0 ? (
-                <ul
-                  style={{
-                    margin: "0 0 0.875rem",
-                    paddingLeft: "1.125rem",
-                    fontSize: "0.8125rem",
-                  }}
-                >
+                <ul className="bullet-list t-support">
                   {detail.sites.map((s) => (
                     <li key={s.id}>
-                      {s.site_name}{" "}
-                      <span style={{ color: "var(--text-muted)" }}>
-                        ({s.status})
-                      </span>
+                      {s.site_name} <span className="text-muted">({s.status})</span>
                     </li>
                   ))}
                 </ul>
               ) : null}
 
               {canManage ? (
-                <div
-                  style={{
-                    paddingTop: "0.875rem",
-                    borderTop: "1px solid var(--border)",
-                  }}
-                >
-                  <span style={labelStyle}>Rename</span>
-                  <input
-                    style={inputStyle}
-                    value={renameTo}
-                    onChange={(e) => setRenameTo(e.target.value)}
-                  />
-                  <button
-                    style={buttonStyle("quiet")}
-                    disabled={!renameTo.trim() || renameTo === detail.unit.name}
-                    onClick={rename}
-                  >
-                    Rename
-                  </button>
+                <>
+                  <div className="form-section">
+                    <label className="t-label" htmlFor={`${fieldId}-rename`}>
+                      Rename
+                    </label>
+                    <input
+                      id={`${fieldId}-rename`}
+                      className="input"
+                      value={renameTo}
+                      onChange={(e) => setRenameTo(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={!renameTo.trim() || renameTo === detail.unit.name}
+                      onClick={rename}
+                    >
+                      Rename
+                    </button>
+                  </div>
 
-                  <span style={{ ...labelStyle, marginTop: "0.875rem" }}>
-                    Move under
-                  </span>
-                  <select
-                    style={inputStyle}
-                    value={moveTo}
-                    onChange={(e) => setMoveTo(e.target.value)}
-                  >
-                    <option value="">(make this a root unit)</option>
-                    {flat
-                      .filter((n) => !n.path.startsWith(detail.unit.path))
-                      .map((n) => (
-                        <option key={n.id} value={n.id}>
-                          {"— ".repeat(n.depth - 1)}
-                          {n.name}
-                        </option>
-                      ))}
-                  </select>
-                  <button
-                    style={buttonStyle("quiet")}
-                    disabled={moveTo === (detail.unit.parent_id ?? "")}
-                    onClick={move}
-                  >
-                    Move
-                  </button>
+                  <div className="form-section">
+                    <label className="t-label" htmlFor={`${fieldId}-move`}>
+                      Move under
+                    </label>
+                    <select
+                      id={`${fieldId}-move`}
+                      className="select"
+                      value={moveTo}
+                      onChange={(e) => setMoveTo(e.target.value)}
+                    >
+                      <option value="">(make this a root unit)</option>
+                      {flat
+                        .filter((n) => !n.path.startsWith(detail.unit.path))
+                        .map((n) => (
+                          <option key={n.id} value={n.id}>
+                            {"— ".repeat(n.depth - 1)}
+                            {n.name}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={moveTo === (detail.unit.parent_id ?? "")}
+                      onClick={move}
+                    >
+                      Move
+                    </button>
+                  </div>
 
-                  <span style={{ ...labelStyle, marginTop: "0.875rem" }}>
-                    Attach a site
-                  </span>
-                  <select
-                    style={inputStyle}
-                    value={attachSite}
-                    onChange={(e) => setAttachSite(e.target.value)}
-                  >
-                    <option value="">Select a site…</option>
-                    {sites
-                      .filter((s) => s.org_unit_id !== detail.unit.id)
-                      .map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.site_name}
-                          {s.org_unit_id ? " (move here)" : ""}
-                        </option>
-                      ))}
-                  </select>
-                  <button
-                    style={buttonStyle("quiet")}
-                    disabled={!attachSite}
-                    onClick={attach}
-                  >
-                    Attach
-                  </button>
+                  <div className="form-section">
+                    <label className="t-label" htmlFor={`${fieldId}-attach`}>
+                      Attach a site
+                    </label>
+                    <select
+                      id={`${fieldId}-attach`}
+                      className="select"
+                      value={attachSite}
+                      onChange={(e) => setAttachSite(e.target.value)}
+                    >
+                      <option value="">Select a site…</option>
+                      {sites
+                        .filter((s) => s.org_unit_id !== detail.unit.id)
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.site_name}
+                            {s.org_unit_id ? " (move here)" : ""}
+                          </option>
+                        ))}
+                    </select>
+                    <button type="button" className="btn" disabled={!attachSite} onClick={attach}>
+                      Attach
+                    </button>
+                  </div>
 
-                  <div
-                    style={{
-                      marginTop: "1rem",
-                      paddingTop: "0.875rem",
-                      borderTop: "1px solid var(--border)",
-                    }}
-                  >
-                    <button style={buttonStyle("danger")} onClick={remove}>
+                  <div className="form-section">
+                    <button type="button" className="btn btn-danger" onClick={remove}>
                       Delete unit
                     </button>
-                    <div
-                      style={{
-                        fontSize: "0.75rem",
-                        color: "var(--text-muted)",
-                        marginTop: "0.375rem",
-                      }}
-                    >
+                    <p className="t-meta">
                       Refused while it holds child units or sites. Move them
                       first — a site with no organizational path is a site
                       nobody owns.
-                    </div>
+                    </p>
                   </div>
-                </div>
+                </>
               ) : null}
             </>
           )}

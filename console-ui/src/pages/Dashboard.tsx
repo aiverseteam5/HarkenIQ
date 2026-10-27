@@ -5,6 +5,7 @@ import MetricCard from "../components/MetricCard";
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import { getJson } from "../api";
 import { useAuth } from "../useAuth";
 import { can } from "../permissions";
@@ -144,7 +145,7 @@ export default function Dashboard() {
         ) : (
           <StatusBadge
             status={stopSwitch ? "ACTIVE — autonomy halted" : "inactive"}
-            variant={stopSwitch ? "critical" : "success"}
+            tone={statusTone("safety.stop_switch", stopSwitch ? "active" : "inactive")}
             size="sm"
           />
         )}
@@ -157,7 +158,7 @@ export default function Dashboard() {
           <Link to={`/t/${tenantId}/autonomy`} style={{ textDecoration: "none" }}>
             <StatusBadge
               status={AUTONOMY_LABELS[autonomyLevel] ?? `level ${autonomyLevel}`}
-              variant={autonomyLevel >= 2 ? "info" : "neutral"}
+              tone={statusTone("autonomy.level", autonomyLevel)}
               size="sm"
             />
           </Link>
@@ -171,7 +172,7 @@ export default function Dashboard() {
               <Link to={`/t/${tenantId}/approvals`} style={{ textDecoration: "none" }}>
                 <StatusBadge
                   status={`${pendingApprovals} pending`}
-                  variant={pendingApprovals > 0 ? "warning" : "neutral"}
+                  tone={statusTone("approval.queue", pendingApprovals > 0 ? "waiting" : "clear")}
                   size="sm"
                 />
               </Link>

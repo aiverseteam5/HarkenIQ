@@ -1,4 +1,4 @@
-import { type CSSProperties } from "react";
+import Icon from "./Icon";
 
 /* ── Types ────────────────────────────────────────── */
 
@@ -17,42 +17,18 @@ interface Props {
   onClear: () => void;
 }
 
-/* ── Styles ───────────────────────────────────────── */
-
-const barStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "0.5rem",
-  flexWrap: "wrap",
-  marginBottom: "1rem",
-};
-
-const searchWrap: CSSProperties = {
-  position: "relative",
-  display: "flex",
-  alignItems: "center",
-};
-
-const searchIcon: CSSProperties = {
-  position: "absolute",
-  left: "0.625rem",
-  color: "var(--text-muted)",
-  fontSize: "0.8125rem",
-  pointerEvents: "none",
-};
-
 /* ── Component ────────────────────────────────────── */
 
 export default function FilterBar({ filters, values, onChange, onClear }: Props) {
   const hasValues = Object.values(values).some((v) => v !== "");
 
   return (
-    <div style={barStyle}>
+    <div className="filter-bar">
       {filters.map((f) => {
         if (f.type === "text") {
           return (
-            <div key={f.key} style={searchWrap}>
-              <span style={searchIcon} aria-hidden="true">&#x1F50D;</span>
+            <div key={f.key} className="filter-bar__search">
+              <Icon name="search" size={14} className="filter-bar__search-icon" />
               <input
                 className="input"
                 type="text"
@@ -60,7 +36,6 @@ export default function FilterBar({ filters, values, onChange, onClear }: Props)
                 value={values[f.key] ?? ""}
                 onChange={(e) => onChange(f.key, e.target.value)}
                 aria-label={f.label}
-                style={{ paddingLeft: "2rem", width: 220 }}
               />
             </div>
           );
@@ -73,7 +48,6 @@ export default function FilterBar({ filters, values, onChange, onClear }: Props)
               value={values[f.key] ?? ""}
               onChange={(e) => onChange(f.key, e.target.value)}
               aria-label={f.label}
-              style={{ width: "auto", minWidth: 140 }}
             >
               <option value="">{f.label}: All</option>
               {f.options.map((opt) => (
@@ -93,18 +67,13 @@ export default function FilterBar({ filters, values, onChange, onClear }: Props)
               value={values[f.key] ?? ""}
               onChange={(e) => onChange(f.key, e.target.value)}
               aria-label={f.label}
-              style={{ width: "auto" }}
             />
           );
         }
         return null;
       })}
       {hasValues && (
-        <button
-          className="btn btn-ghost"
-          onClick={onClear}
-          style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}
-        >
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onClear}>
           Clear all
         </button>
       )}

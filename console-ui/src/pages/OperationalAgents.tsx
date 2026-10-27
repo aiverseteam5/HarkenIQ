@@ -5,6 +5,7 @@ import DataTable, { type Column } from "../components/DataTable";
 import DetailPanel from "../components/DetailPanel";
 import MetricCard from "../components/MetricCard";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -309,12 +310,6 @@ interface Catalogue {
 
 /* ── Presentation maps ────────────────────────────── */
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  active: "success",
-  draft: "neutral",
-  paused: "warning",
-  retired: "neutral",
-};
 
 const DISPOSITION_LABEL: Record<string, string> = {
   autonomous: "runs unattended",
@@ -323,22 +318,10 @@ const DISPOSITION_LABEL: Record<string, string> = {
   not_budget_mapped: "not mapped",
 };
 
-const DISPOSITION_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  autonomous: "success",
-  requires_approval: "warning",
-  denied: "critical",
-  not_budget_mapped: "neutral",
-};
 
 /* Four verdicts, and UNKNOWN is one of them. A fleet mid-upgrade is
  * unknown, not incapable, and colouring the two alike would make an
  * agent look broken for the duration of an upgrade. */
-const VERDICT_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  ready: "success",
-  warn: "warning",
-  blocked: "critical",
-  unknown: "neutral",
-};
 
 const VERDICT_LABEL: Record<string, string> = {
   ready: "ready",
@@ -371,15 +354,6 @@ const PROVENANCE_NOTE: Record<string, string> = {
   inactive: "not running, so there is nothing to drift",
 };
 
-const PROPOSAL_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  completed: "success",
-  dispatched: "info",
-  approved: "info",
-  awaiting_approval: "warning",
-  blocked: "neutral",
-  denied: "critical",
-  failed: "critical",
-};
 
 /* ── Styles ───────────────────────────────────────── */
 
@@ -738,7 +712,7 @@ export default function OperationalAgents() {
         render: (r) => (
           <StatusBadge
             status={r.status}
-            variant={STATUS_VARIANT[r.status] ?? "neutral"}
+            tone={statusTone("operational_agent.status", r.status)}
             size="sm"
           />
         ),
@@ -1053,10 +1027,10 @@ export default function OperationalAgents() {
             <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
               <StatusBadge
                 status={view.agent.status}
-                variant={STATUS_VARIANT[view.agent.status] ?? "neutral"}
+                tone={statusTone("operational_agent.status", view.agent.status)}
                 size="sm"
               />
-              <StatusBadge status={`v${view.agent.version}`} variant="neutral" size="sm" />
+              <StatusBadge status={`v${view.agent.version}`} tone={statusTone("version.label", view.agent.version)} size="sm" />
               {/* A19.9: the version being EDITED and the version that is
                   RUNNING are the same number until somebody edits an
                   active agent — and the moment they differ is exactly
@@ -1064,21 +1038,21 @@ export default function OperationalAgents() {
               {runtime?.configuration_drifted ? (
                 <StatusBadge
                   status={`running v${runtime.activated_version}`}
-                  variant="warning"
+                  tone={statusTone("operational_agent.runtime", "drifted")}
                   size="sm"
                 />
               ) : null}
               {runtime?.activation_provenance === "unknown" ? (
-                <StatusBadge status="running version unknown" variant="neutral" size="sm" />
+                <StatusBadge status="running version unknown" tone={statusTone("operational_agent.runtime", "version_unknown")} size="sm" />
               ) : null}
               {runtime?.paused_reason ? (
-                <StatusBadge status="held" variant="warning" size="sm" />
+                <StatusBadge status="held" tone={statusTone("operational_agent.runtime", "held")} size="sm" />
               ) : null}
               {runtime?.budget.exhausted ? (
-                <StatusBadge status="budget spent" variant="warning" size="sm" />
+                <StatusBadge status="budget spent" tone={statusTone("operational_agent.runtime", "budget_spent")} size="sm" />
               ) : null}
               {view.posture.stop_switch.active ? (
-                <StatusBadge status="stop switch active" variant="critical" size="sm" />
+                <StatusBadge status="stop switch active" tone={statusTone("safety.stop_switch", "active")} size="sm" />
               ) : null}
             </div>
 
@@ -1245,7 +1219,7 @@ export default function OperationalAgents() {
                   {preflight.overall ? (
                     <StatusBadge
                       status={VERDICT_LABEL[preflight.overall] ?? preflight.overall}
-                      variant={VERDICT_VARIANT[preflight.overall] ?? "neutral"}
+                      tone={statusTone("preflight.verdict", preflight.overall)}
                       size="sm"
                     />
                   ) : null}
@@ -1265,7 +1239,7 @@ export default function OperationalAgents() {
                       </span>
                       <StatusBadge
                         status={VERDICT_LABEL[d.verdict] ?? d.verdict}
-                        variant={VERDICT_VARIANT[d.verdict] ?? "neutral"}
+                        tone={statusTone("preflight.verdict", d.verdict)}
                         size="sm"
                       />
                     </div>
@@ -1591,7 +1565,7 @@ export default function OperationalAgents() {
                         </span>
                         <StatusBadge
                           status={p.requires_human ? "needs a human" : "unattended"}
-                          variant={p.requires_human ? "warning" : "success"}
+                          tone={statusTone("proposal.attendance", p.requires_human ? "requires_human" : "unattended")}
                           size="sm"
                         />
                       </div>
@@ -1652,9 +1626,7 @@ export default function OperationalAgents() {
                         status={
                           s.usable === true ? "usable" : s.usable === false ? "unusable" : "unknown"
                         }
-                        variant={
-                          s.usable === true ? "success" : s.usable === false ? "critical" : "neutral"
-                        }
+                        tone={statusTone("skill.usability", s.usable === true ? "usable" : s.usable === false ? "unusable" : "unknown")}
                         size="sm"
                       />
                     </div>
@@ -1728,7 +1700,7 @@ export default function OperationalAgents() {
                     </span>
                     <StatusBadge
                       status={DISPOSITION_LABEL[c.disposition] ?? c.disposition}
-                      variant={DISPOSITION_VARIANT[c.disposition] ?? "neutral"}
+                      tone={statusTone("autonomy.disposition", c.disposition)}
                       size="sm"
                     />
                   </div>
@@ -1793,7 +1765,7 @@ export default function OperationalAgents() {
                       </span>
                       <StatusBadge
                         status={p.status.replace(/_/g, " ")}
-                        variant={PROPOSAL_VARIANT[p.status] ?? "neutral"}
+                        tone={statusTone("proposal.status", p.status)}
                         size="sm"
                       />
                     </div>

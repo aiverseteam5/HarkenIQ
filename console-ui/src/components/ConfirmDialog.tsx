@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useId, useRef } from "react";
+import { type ReactNode, useId, useRef } from "react";
 import { useOverlay } from "../a11y/overlay";
 import Spinner from "./Spinner";
 
@@ -14,44 +14,6 @@ interface Props {
   onCancel: () => void;
   loading?: boolean;
 }
-
-const overlayStyle: CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  background: "var(--bg-overlay)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  zIndex: 2000,
-};
-
-const cardStyle: CSSProperties = {
-  background: "var(--bg-card)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow-lg)",
-  padding: "1.5rem",
-  maxWidth: 420,
-  width: "90vw",
-};
-
-const titleStyle: CSSProperties = {
-  fontSize: "1rem",
-  fontWeight: 600,
-  margin: "0 0 0.5rem 0",
-};
-
-const messageStyle: CSSProperties = {
-  fontSize: "0.875rem",
-  color: "var(--text-secondary)",
-  lineHeight: 1.5,
-  margin: "0 0 1.25rem 0",
-};
-
-const actionsStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "flex-end",
-  gap: "0.5rem",
-};
 
 export default function ConfirmDialog({
   open = true,
@@ -85,7 +47,7 @@ export default function ConfirmDialog({
   if (!open) return null;
 
   return (
-    <div style={overlayStyle} onClick={onCancel} role="presentation">
+    <div className="dialog-scrim" onClick={onCancel} role="presentation">
       <div
         ref={dialogRef}
         role="dialog"
@@ -94,12 +56,12 @@ export default function ConfirmDialog({
         aria-describedby={messageId}
         tabIndex={-1}
         data-focus-target=""
-        style={cardStyle}
+        className="dialog"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id={titleId} style={titleStyle}>{title}</h3>
-        <div id={messageId} style={messageStyle}>{message ?? children}</div>
-        <div style={actionsStyle}>
+        <h3 id={titleId} className="dialog__title">{title}</h3>
+        <div id={messageId} className="dialog__body">{message ?? children}</div>
+        <div className="dialog__actions">
           <button ref={cancelRef} type="button" className="btn" onClick={onCancel} disabled={loading}>
             {cancelLabel}
           </button>
@@ -108,8 +70,9 @@ export default function ConfirmDialog({
             className={`btn ${variant === "danger" ? "btn-danger" : "btn-primary"}`}
             onClick={onConfirm}
             disabled={loading}
+            aria-busy={loading || undefined}
           >
-            {loading && <Spinner size="sm" />}
+            {loading && <Spinner size="sm" label={null} />}
             {confirmLabel}
           </button>
         </div>

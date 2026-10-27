@@ -2,6 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
 import { useToast } from "../components/useToast";
@@ -89,7 +90,7 @@ export default function Downloads() {
               <div style={labelSmall}>{meta.label}</div>
               <div style={versionBig}>{info?.current ?? "N/A"}</div>
               <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", margin: "0.25rem 0 0.5rem" }}>{meta.description}</div>
-              <StatusBadge status={upToDate ? "up to date" : `${info?.latest ?? "?"} available`} variant={upToDate ? "success" : "warning"} size="sm" />
+              <StatusBadge status={upToDate ? "up to date" : `${info?.latest ?? "?"} available`} tone={statusTone("release.currency", upToDate ? "current" : "update_available")} size="sm" />
               {/* P0 2026-08-29: the Download/Upgrade buttons did nothing
                   (no artifact store exists yet) — removed rather than
                   shipped as dead controls. Version + notes are real. */}

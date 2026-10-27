@@ -114,7 +114,7 @@ export default function SupportAccessRequests() {
       <PageHeader
         title="Support Access"
         breadcrumbs={[
-          { label: "Platform Console" },
+          { label: "Platform" },
           { label: "Support Access" },
         ]}
       />

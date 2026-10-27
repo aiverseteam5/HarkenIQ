@@ -7083,3 +7083,89 @@ that owns it.
 | Accessibility | skip link, landmarks, route focus and title, focus trap/restore, keyboard rows, persistent live region, axe on primitives |
 | CI | `ui-build` runs `npm test` |
 | Moved to PX1B | token architecture, token lint, semantic status module |
+
+## §39 — PX1B / Amendment A35: the brand and visual foundation
+
+PX1A made the Console addressable, testable and keyboard-safe. PX1B decides
+what it looks like, and A28.21 put that decision here deliberately: PX2 to
+PX7 design a shell, a component layer and six surfaces against some accent,
+some type scale and some density. If those stay provisional, the work is done
+twice.
+
+### Why the tokens are aliases, not a rewrite
+
+The checkpoint found 13 custom properties that pages referenced and nobody
+defined. Thirty-five of those references had no fallback, so the declaration
+was invalid and rendered nothing: an overdue SLA lost its red, chart bars
+painted `var(--warning)` vanished, two governance pages lost their borders.
+No lint existed to stop it, so each slice that reached for a plausible name
+added another one.
+
+Renaming 700-odd references across 37 pages would make the fix a rewrite
+(D-M1 says migrate in place). So the 35 existing names and the 13 imagined
+ones become aliases of the semantic roles. One edit to the token file corrects
+every page at once, and the lint lets the alias count only fall. New code
+names the semantic roles directly, and the typed facade turns a misspelled
+token into a type error rather than an invisible border.
+
+### Why a status is looked up by domain
+
+"approved" is not one fact. On the Approvals page it is a recorded human
+decision; on a Campaign wave it was painted the same green as `completed`,
+which says the work ran when it may not have (A18: approved ≠ executable ≠
+executed). "expired" means three different things on a licence, an approval
+and a warranty. A lookup keyed by the bare word cannot tell them apart, so
+the module is keyed by (domain, value), and each domain mirrors the server's
+own closed vocabulary. A value the server sends that the module does not know
+reads `unknown`: P3's first-class unknown, never a guess.
+
+### Why green never means "go"
+
+The most consequential finding was not a contrast ratio. The Console painted
+unattended execution, the `autonomous` disposition, low risk and "no stop
+switch" green. Green is the colour an operator reads as "fine, proceed", so
+the screen was quietly endorsing autonomy, which is exactly the colour
+standing in for authority that P1 forbids. `healthy` is now reserved for an
+observed good condition or a success the server reported. Governance states
+have their own family (pending, approved, denied, blocked, stale), and a
+denial renders subdued rather than alarm red: D16 makes it final, but a
+decision is not a fault, and a decision history should not read as a wall of
+alarms.
+
+### Why HarkenIQ Console
+
+The UI had four names for one plane. D4 settles the vocabulary by what each
+thing is: the product a person signs in to is HarkenIQ Console; Central
+Command is the control plane it talks to; the Site Manager is the site-local
+runtime and control plane; a Harken Node is the execution runtime. The page
+text still says Central Command where it means the control plane, because
+that is a statement about which system answered.
+
+### Why bundle a font
+
+Identifiers are load-bearing in this product: service tags, agent ids, plan
+hashes, SHAs and IPs. A28.21 requires 0/O and 1/l/I to be unambiguous, and no
+system mono stack guarantees that across the operating systems operators run.
+The existing token already named JetBrains Mono first; it was simply never
+loaded. Bundling it through Vite keeps it working air-gapped, and two Latin
+weights cost a few tens of kilobytes.
+
+### Why a ratchet and not a rule
+
+Five hundred inline style sites cannot reach zero in one slice without
+rebuilding every page, which D-M2 and the slice's own brief forbid. So the
+lint has two strengths. The rules that catch defects (an undefined token, an
+undefined class, raw colour in a shared component, a status table outside
+the module, text below 11px) are zero-tolerance from the first commit. The
+rules that measure legacy (page literals, alias references, duplicated
+constants) ratchet: a checked-in baseline that may only shrink, with new
+files at zero, so every later slice leaves its pages better than it found
+them.
+
+| Concern | PX1B | Later |
+|---|---|---|
+| Tokens | two tiers, aliases, typed facade, contrast contract | dark value set (PX8) |
+| Status | one module, 12 tones, every call site | Site Manager import (PX7) |
+| Primitives | visuals and states normalized; 7 new where already needed | behavioural set (PX3A) |
+| Brand | mark concept, lockup, accent, type, icon direction | artwork, favicon, documentation (PX8) |
+| Pages | Fleet Overview and Organization as proof | the rest under the ratchet |

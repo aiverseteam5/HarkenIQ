@@ -3,6 +3,7 @@ import PageHeader from "../components/PageHeader";
 import MetricCard from "../components/MetricCard";
 import DataTable, { type Column } from "../components/DataTable";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import EmptyState from "../components/EmptyState";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -91,11 +92,6 @@ const barLabel: CSSProperties = {
   textTransform: "uppercase",
 };
 
-const DELINQUENCY_VARIANT: Record<string, "warning" | "critical" | "neutral"> = {
-  overdue: "warning",
-  restricted: "critical",
-  suspended: "critical",
-};
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -173,7 +169,7 @@ export default function AdminBillingStats() {
       render: (r) => (
         <StatusBadge
           status={r.delinquency_status}
-          variant={DELINQUENCY_VARIANT[r.delinquency_status] ?? "neutral"}
+          tone={statusTone("billing.delinquency", r.delinquency_status)}
           size="sm"
         />
       ),
@@ -261,7 +257,7 @@ export default function AdminBillingStats() {
                     justifyContent: "center",
                     paddingTop: "0.25rem",
                     color: "#fff",
-                    fontSize: "0.625rem",
+                    fontSize: "var(--type-badge-size)",
                     fontWeight: 700,
                   }}
                 >
@@ -270,7 +266,7 @@ export default function AdminBillingStats() {
                 <div style={barLabel}>
                   {r.type} ({r.currency})
                 </div>
-                <div style={{ fontSize: "0.625rem", color: "var(--text-muted)" }}>{r.count} inv</div>
+                <div style={{ fontSize: "var(--type-badge-size)", color: "var(--text-muted)" }}>{r.count} inv</div>
               </div>
             ))}
           </div>

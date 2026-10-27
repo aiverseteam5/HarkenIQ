@@ -1,4 +1,3 @@
-import { type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../useAuth";
 import { useOperationalContext } from "../context/OperationalContext";
@@ -19,49 +18,18 @@ import type { Fact, SafetyFact } from "../viewModel/operationalContext";
  *   returns {} -- so the tenant comes from the path, via the provider.
  * - The tenant NAME comes from /api/me/tenants for tenant users and from
  *   the platform registry only for platform staff.
- * - Tokens below are the real ones from variables.css.
+ * - A35: its colours are semantic tokens (global.css `.context-bar`).
  */
 
-const barStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  flexWrap: "wrap",
-  gap: "0.5rem",
-  padding: "0.5rem 0.75rem",
-  marginBottom: "1rem",
-  borderRadius: "var(--radius-sm)",
-  background: "var(--bg-card)",
-  border: "1px solid var(--border-light)",
-  fontSize: "0.8125rem",
-};
-
-const crumbMuted: CSSProperties = {
-  color: "var(--text-secondary)",
-};
-
-const tenantNameStyle: CSSProperties = {
-  fontWeight: 600,
-  color: "var(--text-primary)",
-};
-
-const factsStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "0.25rem 1rem",
-  marginLeft: "1rem",
-};
-
-const factStyle: CSSProperties = { display: "flex", gap: "0.375rem" };
-
-const spacerStyle: CSSProperties = { marginLeft: "auto" };
+type Emphasis = "critical" | "warning";
 
 /** Safety states that must be noticed are said in words AND colour
  *  (A28.18: status is never colour alone). */
-const SAFETY_EMPHASIS: Partial<Record<SafetyFact["state"], CSSProperties>> = {
-  tenant_stop: { color: "var(--status-critical)", fontWeight: 700 },
-  site_halt: { color: "var(--status-critical)", fontWeight: 700 },
-  not_reported: { color: "var(--status-warning)", fontWeight: 600 },
-  partially_reported: { color: "var(--status-warning)", fontWeight: 600 },
+const SAFETY_EMPHASIS: Partial<Record<SafetyFact["state"], Emphasis>> = {
+  tenant_stop: "critical",
+  site_halt: "critical",
+  not_reported: "warning",
+  partially_reported: "warning",
 };
 
 function ContextFact({
@@ -72,13 +40,18 @@ function ContextFact({
 }: {
   label: string;
   fact: Fact<string>;
-  emphasis?: CSSProperties;
+  emphasis?: Emphasis;
   live?: boolean;
 }) {
   return (
-    <div style={factStyle} data-fact={label.toLowerCase()} data-state={fact.state}>
-      <dt style={crumbMuted}>{label}</dt>
-      <dd title={fact.detail} style={emphasis} aria-live={live ? "polite" : undefined}>
+    <div
+      className="context-bar__fact"
+      data-fact={label.toLowerCase()}
+      data-state={fact.state}
+      data-emphasis={emphasis}
+    >
+      <dt>{label}</dt>
+      <dd title={fact.detail} aria-live={live ? "polite" : undefined}>
         {fact.text}
       </dd>
     </div>
@@ -96,18 +69,19 @@ export default function TenantContextHeader() {
   const { view } = context;
 
   return (
-    <section aria-label="Operational context" style={barStyle}>
+    <section aria-label="Operational context" className="context-bar">
       {isPlatform ? (
         <>
-          <span style={crumbMuted}>Platform Console</span>
-          <span style={crumbMuted} aria-hidden="true">›</span>
-          <span style={crumbMuted}>Tenants</span>
-          <span style={crumbMuted} aria-hidden="true">›</span>
+          {/* D4 (A35.2): the product is HarkenIQ Console; this names the plane. */}
+          <span className="context-bar__crumb">Platform</span>
+          <span className="context-bar__crumb" aria-hidden="true">›</span>
+          <span className="context-bar__crumb">Tenants</span>
+          <span className="context-bar__crumb" aria-hidden="true">›</span>
         </>
       ) : (
-        <span style={crumbMuted}>Tenant</span>
+        <span className="context-bar__crumb">Tenant</span>
       )}
-      <span style={tenantNameStyle} title={view.tenant.detail}>
+      <span className="context-bar__tenant" title={view.tenant.detail}>
         {view.tenant.text}
       </span>
 
@@ -115,7 +89,7 @@ export default function TenantContextHeader() {
           it), so its four facts are all "not applicable" -- said once by
           leaving them out, not four times. */}
       {!isPlatform && (
-        <dl style={factsStyle}>
+        <dl className="context-bar__facts">
           <ContextFact label="Scope" fact={view.scope} />
           <ContextFact label="Enforcement" fact={view.posture} />
           <ContextFact
@@ -128,14 +102,14 @@ export default function TenantContextHeader() {
             label="Data"
             fact={view.freshness}
             emphasis={view.freshness.state === "stale" || view.freshness.state === "never"
-              ? { color: "var(--status-warning)", fontWeight: 600 }
+              ? "warning"
               : undefined}
           />
         </dl>
       )}
 
       {isPlatform && (
-        <span style={spacerStyle}>
+        <span className="context-bar__spacer">
           <button
             type="button"
             className="btn btn-sm"

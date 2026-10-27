@@ -2,6 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
+import { statusTone } from "../viewModel/status";
 import DataTable, { type Column } from "../components/DataTable";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
@@ -84,12 +85,6 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "critical" | "info" | "neutral"> = {
-  draft: "neutral",
-  issued: "info",
-  paid: "success",
-  void: "neutral",
-};
 
 /* ── Component ────────────────────────────────────── */
 
@@ -186,7 +181,7 @@ export default function InvoiceDetail() {
       render: (r) => (
         <StatusBadge
           status={r.line_type}
-          variant={r.line_type === "commit" ? "info" : r.line_type === "overage" ? "warning" : "neutral"}
+          tone={statusTone("invoice.line_type", r.line_type)}
           size="sm"
         />
       ),
@@ -208,7 +203,7 @@ export default function InvoiceDetail() {
       render: (r) => (
         <StatusBadge
           status={r.status}
-          variant={r.status === "completed" ? "success" : r.status === "failed" ? "critical" : "neutral"}
+          tone={statusTone("payment.status", r.status)}
           size="sm"
         />
       ),
@@ -243,7 +238,7 @@ export default function InvoiceDetail() {
       <div style={headerCard}>
         <div style={statBlock}>
           <div style={statValue}>
-            <StatusBadge status={invoice.status} variant={STATUS_VARIANT[invoice.status] ?? "neutral"} />
+            <StatusBadge status={invoice.status} tone={statusTone("invoice.status", invoice.status)} />
           </div>
           <div style={statLabel}>Status</div>
         </div>

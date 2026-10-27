@@ -1,5 +1,6 @@
-import { type CSSProperties } from "react";
 import { Link } from "react-router-dom";
+import { BrandLockup } from "./BrandMark";
+import IconButton from "./IconButton";
 
 /* ── Types ────────────────────────────────────────── */
 
@@ -25,115 +26,11 @@ interface Props {
   onLogout?: () => void;
 }
 
-/* ── Styles ───────────────────────────────────────── */
-
-const sidebarStyle: CSSProperties = {
-  width: "var(--sidebar-width)",
-  minWidth: "var(--sidebar-width)",
-  height: "100vh",
-  background: "var(--sidebar-bg)",
-  color: "var(--sidebar-text)",
-  display: "flex",
-  flexDirection: "column",
-  position: "fixed",
-  top: 0,
-  left: 0,
-  zIndex: 100,
-  overflowY: "auto",
-  overflowX: "hidden",
-};
-
-const logoStyle: CSSProperties = {
-  padding: "1.25rem 1rem 0.75rem",
-  fontSize: "1rem",
-  fontWeight: 700,
-  color: "#fff",
-  letterSpacing: "-0.02em",
-  display: "flex",
-  alignItems: "center",
-  gap: "0.5rem",
-};
-
-const sectionLabelStyle: CSSProperties = {
-  padding: "1rem 1rem 0.375rem",
-  fontSize: "0.625rem",
-  fontWeight: 700,
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  color: "rgba(168, 177, 193, 0.6)",
-};
-
-const itemStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "0.625rem",
-  padding: "0.4375rem 1rem",
-  fontSize: "0.8125rem",
-  color: "var(--sidebar-text)",
-  cursor: "pointer",
-  border: "none",
-  background: "transparent",
-  width: "100%",
-  textAlign: "left",
-  fontFamily: "inherit",
-  borderRadius: 0,
-  // A link now, not a button: keep the button's line box and no underline,
-  // so the change is behaviour, not appearance.
-  lineHeight: "normal",
-  textDecoration: "none",
-  transition: "background var(--transition), color var(--transition)",
-};
-
-const itemActiveStyle: CSSProperties = {
-  ...itemStyle,
-  color: "var(--sidebar-active)",
-  background: "var(--sidebar-active-bg)",
-};
-
-const badgeStyle: CSSProperties = {
-  marginLeft: "auto",
-  background: "var(--accent)",
-  color: "#fff",
-  fontSize: "0.6875rem",
-  fontWeight: 700,
-  padding: "0.0625rem 0.4375rem",
-  borderRadius: "999px",
-  lineHeight: 1.5,
-};
-
-const userAreaStyle: CSSProperties = {
-  marginTop: "auto",
-  padding: "0.75rem 1rem",
-  borderTop: "1px solid rgba(255,255,255,0.08)",
-  display: "flex",
-  alignItems: "center",
-  gap: "0.625rem",
-};
-
-const avatarStyle: CSSProperties = {
-  width: 32,
-  height: 32,
-  borderRadius: "50%",
-  background: "var(--accent)",
-  color: "#fff",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontSize: "0.75rem",
-  fontWeight: 700,
-  flexShrink: 0,
-};
-
-const roleTagStyle: CSSProperties = {
-  fontSize: "0.625rem",
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-  color: "rgba(168, 177, 193, 0.7)",
-};
-
 /* ── Component ────────────────────────────────────── */
 
+/** A35: dark chrome drawn from tokens. Hover and the current page are CSS
+ *  states, so a keyboard user sees the same thing a pointer does, and focus
+ *  takes the inverse ring the light-surface ring could not provide here. */
 export default function Sidebar({ sections, activeItem, hrefFor, user, onLogout }: Props) {
   const initials = user.name
     .split(" ")
@@ -143,72 +40,44 @@ export default function Sidebar({ sections, activeItem, hrefFor, user, onLogout 
     .toUpperCase();
 
   return (
-    <nav style={sidebarStyle} aria-label="Main navigation">
-      <div style={logoStyle}>
-        <span aria-hidden="true" style={{ fontSize: "1.25rem" }}>&#x2B22;</span>
-        HarkenIQ
+    <nav className="sidebar" aria-label="Main navigation">
+      <div className="sidebar__brand">
+        <BrandLockup inverse />
       </div>
 
       {sections.map((section) => (
         <div key={section.label}>
-          <div style={sectionLabelStyle}>{section.label}</div>
+          <div className="sidebar__section-label">{section.label}</div>
           {section.items.map((item) => (
             <Link
               key={item.key}
               to={hrefFor(item.key)}
-              style={activeItem === item.key ? itemActiveStyle : itemStyle}
-              onMouseEnter={(e) => {
-                if (activeItem !== item.key) {
-                  e.currentTarget.style.background = "var(--sidebar-hover-bg)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (activeItem !== item.key) {
-                  e.currentTarget.style.background = "transparent";
-                }
-              }}
+              className="sidebar__item"
               aria-current={activeItem === item.key ? "page" : undefined}
             >
               {item.icon && (
-                <span aria-hidden="true" style={{ fontSize: "1rem", width: 20, textAlign: "center" }}>
+                <span className="sidebar__item-icon" aria-hidden="true">
                   {item.icon}
                 </span>
               )}
               <span>{item.label}</span>
               {item.badge !== undefined && item.badge > 0 && (
-                <span style={badgeStyle}>{item.badge}</span>
+                <span className="sidebar__badge">{item.badge}</span>
               )}
             </Link>
           ))}
         </div>
       ))}
 
-      <div style={userAreaStyle}>
-        <div style={avatarStyle} aria-hidden="true">{initials}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "0.8125rem", color: "#fff", fontWeight: 500 }} className="truncate">
-            {user.name}
-          </div>
-          <div style={roleTagStyle}>{user.role.replace(/_/g, " ")}</div>
+      <div className="sidebar__user">
+        <div className="sidebar__avatar" aria-hidden="true">
+          {initials}
         </div>
-        {onLogout && (
-          <button
-            type="button"
-            onClick={onLogout}
-            aria-label="Sign out"
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--sidebar-text)",
-              cursor: "pointer",
-              fontSize: "1rem",
-              padding: "0.25rem",
-            }}
-            title="Sign out"
-          >
-            &#x23FB;
-          </button>
-        )}
+        <div className="sidebar__user-text">
+          <div className="sidebar__user-name truncate">{user.name}</div>
+          <div className="sidebar__user-role">{user.role.replace(/_/g, " ")}</div>
+        </div>
+        {onLogout && <IconButton icon="sign-out" label="Sign out" inverse onClick={onLogout} />}
       </div>
     </nav>
   );
