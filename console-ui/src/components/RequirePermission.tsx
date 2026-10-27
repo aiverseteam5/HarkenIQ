@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "../useAuth";
 import { canAccess, ruleFor } from "../permissions";
@@ -16,31 +16,6 @@ import { canAccess, ruleFor } from "../permissions";
  * does not lie about what the user can do.
  */
 
-const wrapStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  justifyContent: "center",
-  minHeight: "60vh",
-  gap: "0.75rem",
-  textAlign: "center",
-  padding: "2rem",
-};
-
-const codeStyle: CSSProperties = {
-  fontSize: "3rem",
-  fontWeight: 700,
-  color: "var(--color-text-muted, #888)",
-  lineHeight: 1,
-};
-
-const titleStyle: CSSProperties = { fontSize: "1.125rem", fontWeight: 600 };
-
-const bodyStyle: CSSProperties = {
-  color: "var(--color-text-muted, #888)",
-  maxWidth: "34rem",
-};
-
 export default function RequirePermission({
   children,
 }: {
@@ -54,10 +29,10 @@ export default function RequirePermission({
   }
 
   return (
-    <div style={wrapStyle}>
-      <div style={codeStyle}>403</div>
-      <div style={titleStyle}>You don't have access to this page</div>
-      <p style={bodyStyle}>
+    <div className="access-denied">
+      <div className="access-denied__code" aria-hidden="true">403</div>
+      <div className="access-denied__title">You don't have access to this page</div>
+      <p className="access-denied__body">
         Your role{user?.role ? ` (${user.role.replace(/_/g, " ")})` : ""} does
         not include this area. A tenant owner can grant it, or extend a custom
         role with the matching permission.

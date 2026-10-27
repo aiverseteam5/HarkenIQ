@@ -1,7 +1,3 @@
-import { type CSSProperties } from "react";
-
-const sizes = { sm: 16, md: 24, lg: 36 } as const;
-
 interface Props {
   size?: "sm" | "md" | "lg";
   /** The spinner's own announcement. `null` when the spinner sits inside
@@ -10,26 +6,13 @@ interface Props {
   label?: string | null;
 }
 
+/** A35.6: the one loading mark. Its motion is a state, not decoration, and
+ *  it stops for anyone who asked for reduced motion (global.css). */
 export default function Spinner({ size = "md", label = "Loading" }: Props) {
-  const px = sizes[size];
-  const style: CSSProperties = {
-    width: px,
-    height: px,
-    border: `${Math.max(2, px / 8)}px solid var(--border-color)`,
-    borderTopColor: "var(--accent)",
-    borderRadius: "50%",
-    animation: "hiq-spin 0.6s linear infinite",
-    display: "inline-block",
-  };
-
-  return (
-    <>
-      <style>{`@keyframes hiq-spin { to { transform: rotate(360deg); } }`}</style>
-      {label === null ? (
-        <span aria-hidden="true" style={style} />
-      ) : (
-        <span role="status" aria-label={label} style={style} />
-      )}
-    </>
+  const className = `spinner spinner--${size}`;
+  return label === null ? (
+    <span aria-hidden="true" className={className} />
+  ) : (
+    <span role="status" aria-label={label} className={className} />
   );
 }

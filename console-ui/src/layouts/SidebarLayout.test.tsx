@@ -117,7 +117,8 @@ describe("the operational context, stated from Central Command's contracts", () 
     shellAt("/t/acme/incidents");
     const bar = screen.getByRole("region", { name: "Operational context" });
     await within(bar).findByText("Acme Corp");
-    expect(within(bar).getByText("Platform Console")).toBeTruthy();
+    // D4 (A35.2): the bar names the plane; the product is HarkenIQ Console.
+    expect(within(bar).getByText("Platform")).toBeTruthy();
     expect(calls.filter((c) => c.startsWith("/api/t/"))).toEqual([]);
   });
 
@@ -156,7 +157,7 @@ describe("landmarks, skip link and navigation", () => {
 describe("arriving on a page", () => {
   it("names the page in the document title", async () => {
     shellAt("/t/acme/incidents/inc-1");
-    await waitFor(() => expect(document.title).toBe("Incidents & Diagnosis · HarkenIQ Central Command"));
+    await waitFor(() => expect(document.title).toBe("Incidents & Diagnosis · HarkenIQ Console"));
   });
 
   it("moves focus to the new page's heading when the page changes", async () => {
@@ -165,7 +166,7 @@ describe("arriving on a page", () => {
     await user.click(within(nav).getByRole("link", { name: "Fleet Overview" }));
     expect(screen.getByTestId("location").textContent).toBe("/t/acme/fleet");
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "Fleet Overview" }));
-    expect(document.title).toBe("Fleet Overview · HarkenIQ Central Command");
+    expect(document.title).toBe("Fleet Overview · HarkenIQ Console");
   });
 
   it("does not move focus when an object opens on the same page", async () => {

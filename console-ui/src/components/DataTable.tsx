@@ -1,4 +1,5 @@
-import { type CSSProperties, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import Icon from "./Icon";
 import Spinner from "./Spinner";
 
 /* ── Types ────────────────────────────────────────── */
@@ -33,58 +34,19 @@ interface Props<T> {
   onPageChange?: (page: number) => void;
   rowActions?: RowAction<T>[];
   onRowClick?: (row: T) => void;
+  /** Marks the row whose detail is open, so the reader keeps their place. */
+  isRowSelected?: (row: T) => boolean;
   striped?: boolean;
 }
 
-/* ── Styles ───────────────────────────────────────── */
-
-const tableWrap: CSSProperties = {
-  background: "var(--bg-card)",
-  border: "1px solid var(--border-color)",
-  borderRadius: "var(--radius-lg)",
-  overflow: "hidden",
-  boxShadow: "var(--shadow-sm)",
-};
-
-const tableStyle: CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  fontSize: "0.8125rem",
-};
-
-const thStyle: CSSProperties = {
-  textAlign: "left",
-  padding: "0.625rem 0.75rem",
-  fontWeight: 600,
-  fontSize: "0.75rem",
-  color: "var(--text-secondary)",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-  borderBottom: "1px solid var(--border-color)",
-  background: "var(--bg-primary)",
-  userSelect: "none",
-  whiteSpace: "nowrap",
-};
-
-const tdStyle: CSSProperties = {
-  padding: "0.5625rem 0.75rem",
-  borderBottom: "1px solid var(--border-light)",
-  color: "var(--text-primary)",
-};
-
-const paginationStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  padding: "0.5rem 0.75rem",
-  borderTop: "1px solid var(--border-color)",
-  fontSize: "0.75rem",
-  color: "var(--text-secondary)",
-  background: "var(--bg-primary)",
-};
-
 /* ── Component ────────────────────────────────────── */
 
+/** A35.6: the table primitive, at compact density.
+ *
+ *  A sortable header is a real button, so sorting works from the keyboard
+ *  (the checkpoint found Fleet Overview's sort unreachable by keyboard).
+ *  Hover, selection and focus are drawn by global.css from tokens; hover
+ *  never carries information a keyboard user would miss. */
 export default function DataTable<T extends object>({
   columns,
   data,
@@ -100,6 +62,7 @@ export default function DataTable<T extends object>({
   onPageChange,
   rowActions,
   onRowClick,
+  isRowSelected,
   striped,
 }: Props<T>) {
   const totalPages = page !== undefined && pageSize && total !== undefined
@@ -111,62 +74,62 @@ export default function DataTable<T extends object>({
     ? Math.min(page * pageSize, total)
     : 0;
 
+  const span = columns.length + (rowActions && rowActions.length > 0 ? 1 : 0);
+
   return (
-    <div style={tableWrap}>
-      <table style={tableStyle}>
+    <div className={striped ? "data-table data-table--striped" : "data-table"}>
+      <table>
         <thead>
           <tr>
             {columns.map((col) => {
               const sortable = !!col.sortKey && !!onSort;
-              const isActive = sortColumn === col.sortKey;
+              const isActive = sortable && sortColumn === col.sortKey;
               return (
                 <th
                   key={col.key}
-                  style={{
-                    ...thStyle,
-                    width: col.width,
-                    textAlign: col.align ?? "left",
-                    cursor: sortable ? "pointer" : "default",
-                  }}
-                  onClick={sortable ? () => onSort(col.sortKey!) : undefined}
+                  style={col.width !== undefined ? { width: col.width } : undefined}
+                  data-align={col.align && col.align !== "left" ? col.align : undefined}
                   aria-sort={
-                    isActive
-                      ? sortDirection === "asc" ? "ascending" : "descending"
-                      : undefined
+                    isActive ? (sortDirection === "asc" ? "ascending" : "descending") : undefined
                   }
                 >
-                  {col.header}
-                  {isActive && (
-                    <span style={{ marginLeft: "0.25rem" }}>
-                      {sortDirection === "asc" ? "\u25B2" : "\u25BC"}
-                    </span>
+                  {sortable ? (
+                    <button type="button" className="data-table__sort" onClick={() => onSort(col.sortKey!)}>
+                      {col.header}
+                      <Icon
+                        name={isActive ? (sortDirection === "asc" ? "chevron-up" : "chevron-down") : "sort-none"}
+                        size={12}
+                      />
+                    </button>
+                  ) : (
+                    col.header
                   )}
                 </th>
               );
             })}
             {rowActions && rowActions.length > 0 && (
-              <th style={{ ...thStyle, width: "1%", textAlign: "right" }}>Actions</th>
+              <th className="data-table__actions" style={{ width: "1%" }}>
+                Actions
+              </th>
             )}
           </tr>
         </thead>
         <tbody>
           {loading && (
             <tr>
-              <td
-                colSpan={columns.length + (rowActions ? 1 : 0)}
-                style={{ ...tdStyle, textAlign: "center", padding: "2rem" }}
-              >
+              <td colSpan={span} className="data-table__message">
                 <Spinner size="md" />
               </td>
             </tr>
           )}
           {!loading && data.length === 0 && (
             <tr>
-              <td
-                colSpan={columns.length + (rowActions ? 1 : 0)}
-                style={{ ...tdStyle, textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}
-              >
-                {emptyIcon && <span style={{ display: "block", fontSize: "1.5rem", marginBottom: "0.375rem" }}>{emptyIcon}</span>}
+              <td colSpan={span} className="data-table__message">
+                {emptyIcon && (
+                  <span className="data-table__message-icon" aria-hidden="true">
+                    {emptyIcon}
+                  </span>
+                )}
                 {emptyMessage}
               </td>
             </tr>
@@ -175,6 +138,8 @@ export default function DataTable<T extends object>({
             data.map((row, ri) => (
               <tr
                 key={ri}
+                data-clickable={onRowClick ? "" : undefined}
+                aria-current={isRowSelected?.(row) ? "true" : undefined}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 // A34.8: a row that opens something on click opens it from
                 // the keyboard too. Only the row itself answers Enter and
@@ -191,33 +156,21 @@ export default function DataTable<T extends object>({
                       }
                     : undefined
                 }
-                style={{
-                  cursor: onRowClick ? "pointer" : "default",
-                  background: striped && ri % 2 === 1 ? "var(--bg-primary)" : undefined,
-                  transition: "background var(--transition)",
-                }}
-                onMouseEnter={(e) => {
-                  if (onRowClick) e.currentTarget.style.background = "var(--status-info-bg)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background =
-                    striped && ri % 2 === 1 ? "var(--bg-primary)" : "";
-                }}
               >
                 {columns.map((col) => (
-                  <td key={col.key} style={{ ...tdStyle, textAlign: col.align ?? "left" }}>
+                  <td key={col.key} data-align={col.align && col.align !== "left" ? col.align : undefined}>
                     {col.render
                       ? col.render(row)
                       : String((row as Record<string, unknown>)[col.key] ?? "")}
                   </td>
                 ))}
                 {rowActions && rowActions.length > 0 && (
-                  <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
+                  <td className="data-table__actions">
                     {rowActions.map((action, ai) => (
                       <button
                         key={ai}
-                        className={`btn ${action.variant === "danger" ? "btn-danger" : ""}`}
-                        style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem", marginLeft: ai > 0 ? "0.375rem" : 0 }}
+                        type="button"
+                        className={action.variant === "danger" ? "btn btn-sm btn-danger" : "btn btn-sm"}
                         onClick={(e) => {
                           e.stopPropagation();
                           action.onClick(row);
@@ -234,14 +187,14 @@ export default function DataTable<T extends object>({
       </table>
 
       {page !== undefined && pageSize && total !== undefined && onPageChange && (
-        <div style={paginationStyle}>
+        <div className="data-table__pagination">
           <span>
             Showing {total > 0 ? start : 0}–{end} of {total}
           </span>
-          <div style={{ display: "flex", gap: "0.375rem", alignItems: "center" }}>
+          <div className="data-table__pagination-controls">
             <button
-              className="btn"
-              style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+              type="button"
+              className="btn btn-sm"
               disabled={page <= 1}
               onClick={() => onPageChange(page - 1)}
               aria-label="Previous page"
@@ -252,8 +205,8 @@ export default function DataTable<T extends object>({
               Page {page} of {totalPages}
             </span>
             <button
-              className="btn"
-              style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+              type="button"
+              className="btn btn-sm"
               disabled={page >= totalPages}
               onClick={() => onPageChange(page + 1)}
               aria-label="Next page"

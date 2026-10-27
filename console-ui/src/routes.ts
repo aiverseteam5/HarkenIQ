@@ -24,7 +24,7 @@
  */
 
 import { matchPath } from "react-router-dom";
-import { PLANES } from "./terminology";
+import { PLANES, TERMS } from "./terminology";
 
 export type Plane = "tenant" | "platform";
 
@@ -171,12 +171,7 @@ export function pageForPath(pathname: string): PageRoute | null {
   return null;
 }
 
-const PLANE_NAME: Record<Plane, string> = {
-  tenant: PLANES.centralCommand,
-  platform: "HarkenIQ Platform Console",
-};
-
-/** `Incidents & Diagnosis · HarkenIQ Central Command`. */
+/** `Incidents & Diagnosis · HarkenIQ Console`, on either plane (D4, A35.2). */
 export function documentTitle(page: PageRoute | null): string {
-  return page ? `${page.title} · ${PLANE_NAME[page.plane]}` : "HarkenIQ";
+  return page ? `${page.title} · ${PLANES.console}` : TERMS.product;
 }

@@ -13,6 +13,7 @@
 
 export const TERMS = {
   product: "HarkenIQ",
+  console: "Console",
   centralCommand: "Central Command",
   siteManager: "Site Manager",
   harkenNode: "Harken Node",
@@ -23,13 +24,18 @@ export const TERMS = {
   externalAgentRuntimes: "External Agent Runtimes",
 } as const;
 
-/** The customer-facing planes, as a browser tab names them. */
+/** D4 (A35.2): the product a person signs in to is HarkenIQ Console, on
+ *  both planes; its tab says so, and the context bar says which plane.
+ *  Central Command is the control plane it talks to, the Site Manager the
+ *  site-local runtime and control plane, a Harken Node the execution
+ *  runtime. Text still names Central Command where it means that system. */
 export const PLANES = {
-  centralCommand: `${TERMS.product} ${TERMS.centralCommand}`,
+  console: `${TERMS.product} ${TERMS.console}`,
   siteManager: `${TERMS.product} ${TERMS.siteManager}`,
 } as const;
 
 /** Names the product has retired, and what replaced them. */
 export const RETIRED_TERMS: Readonly<Record<string, string>> = {
   "Cluster Manager": TERMS.centralCommand,
+  "Platform Console": PLANES.console,
 };

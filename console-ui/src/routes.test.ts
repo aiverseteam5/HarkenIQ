@@ -165,11 +165,11 @@ describe("query strings and titles", () => {
     expect(queryString({})).toBe("");
   });
 
-  it("a page's document title is its heading and its plane", () => {
+  it("a page's document title is its heading and the product, on either plane (D4, A35.2)", () => {
     expect(documentTitle(pageForPath("/t/acme/incidents/inc-1"))).toBe(
-      "Incidents & Diagnosis · HarkenIQ Central Command",
+      "Incidents & Diagnosis · HarkenIQ Console",
     );
-    expect(documentTitle(pageForPath("/admin/health"))).toBe("Platform Health · HarkenIQ Platform Console");
+    expect(documentTitle(pageForPath("/admin/health"))).toBe("Platform Health · HarkenIQ Console");
     expect(documentTitle(null)).toBe("HarkenIQ");
   });
 });

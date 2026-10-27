@@ -1,5 +1,6 @@
-import { type CSSProperties, type ReactNode, useEffect, useId, useRef } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 import { useOverlay } from "../a11y/overlay";
+import IconButton from "./IconButton";
 
 interface Props {
   open: boolean;
@@ -9,51 +10,6 @@ interface Props {
   width?: number;
   children: ReactNode;
 }
-
-const overlayStyle: CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  background: "var(--bg-overlay)",
-  zIndex: 1000,
-  transition: "opacity var(--transition)",
-};
-
-const panelBase: CSSProperties = {
-  position: "fixed",
-  top: 0,
-  right: 0,
-  bottom: 0,
-  background: "var(--bg-card)",
-  boxShadow: "var(--shadow-lg)",
-  zIndex: 1001,
-  display: "flex",
-  flexDirection: "column",
-  transition: "transform 200ms ease",
-};
-
-const headerStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  padding: "1.25rem 1.5rem 1rem",
-  borderBottom: "1px solid var(--border-color)",
-};
-
-const bodyStyle: CSSProperties = {
-  flex: 1,
-  overflow: "auto",
-  padding: "1.25rem 1.5rem",
-};
-
-const closeBtn: CSSProperties = {
-  background: "none",
-  border: "none",
-  fontSize: "1.25rem",
-  cursor: "pointer",
-  color: "var(--text-secondary)",
-  padding: "0.25rem",
-  lineHeight: 1,
-};
 
 export default function DetailPanel({ open, onClose, title, subtitle, width = 480, children }: Props) {
   // A34.8: focus moves in on open, Tab stays inside, Escape closes only the
@@ -78,11 +34,7 @@ export default function DetailPanel({ open, onClose, title, subtitle, width = 48
 
   return (
     <>
-      <div
-        style={overlayStyle}
-        onClick={onClose}
-        aria-hidden="true"
-      />
+      <div className="drawer-scrim" onClick={onClose} aria-hidden="true" />
       {/* A34.8: a div, not an aside -- `aside` may not take the dialog role
           (axe: aria-allowed-role), so assistive technology was told two
           contradictory things about what this is. */}
@@ -93,31 +45,17 @@ export default function DetailPanel({ open, onClose, title, subtitle, width = 48
         aria-labelledby={titleId}
         tabIndex={-1}
         data-focus-target=""
-        style={{
-          ...panelBase,
-          width,
-          transform: open ? "translateX(0)" : `translateX(${width}px)`,
-        }}
+        className="drawer"
+        style={{ width }}
       >
-        <div style={headerStyle}>
+        <div className="drawer__header">
           <div>
-            <h2 id={titleId} style={{ margin: 0, fontSize: "1.125rem" }}>{title}</h2>
-            {subtitle && (
-              <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "0.25rem" }}>
-                {subtitle}
-              </div>
-            )}
+            <h2 id={titleId} className="drawer__title">{title}</h2>
+            {subtitle && <div className="drawer__subtitle">{subtitle}</div>}
           </div>
-          <button
-            type="button"
-            style={closeBtn}
-            onClick={onClose}
-            aria-label="Close panel"
-          >
-            &#x2715;
-          </button>
+          <IconButton icon="close" label="Close panel" onClick={onClose} />
         </div>
-        <div style={bodyStyle}>{children}</div>
+        <div className="drawer__body">{children}</div>
       </div>
     </>
   );

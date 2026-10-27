@@ -1,4 +1,4 @@
-import { type CSSProperties, useRef } from "react";
+import { useRef } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import Sidebar, { type SidebarSection } from "../components/Sidebar";
 import Toast from "../components/Toast";
@@ -100,7 +100,8 @@ export const TENANT_NAV: SidebarSection[] = [
   {
     label: "Billing",
     items: [
-      { key: "/billing", label: "Billing", icon: "\u2B22" },
+      // A35.8: the hexagon is the HarkenIQ mark and never a UI icon.
+      { key: "/billing", label: "Billing", icon: "\u00A4" },
       { key: "/usage", label: "Usage & Chargeback", icon: "\u2261" },
     ],
   },
@@ -114,22 +115,6 @@ export const TENANT_NAV: SidebarSection[] = [
     ],
   },
 ];
-
-/* ── Styles ───────────────────────────────────────── */
-
-const layoutStyle: CSSProperties = {
-  display: "flex",
-  minHeight: "100vh",
-};
-
-const contentStyle: CSSProperties = {
-  marginLeft: "var(--sidebar-width)",
-  flex: 1,
-  padding: "1.5rem 2rem",
-  minWidth: 0,
-  background: "var(--bg-primary)",
-  overflow: "auto",
-};
 
 /* ── Component ────────────────────────────────────── */
 
@@ -164,7 +149,7 @@ export default function SidebarLayout() {
   })).filter((section) => section.items.length > 0);
 
   const content = (
-    <div style={contentStyle}>
+    <div className="app-content">
       {/* Renders only inside a tenant, so the platform plane is visibly
           not "in" any customer. A34.6: it states the operational context
           from `OperationalContextProvider`, and sits BEFORE <main>, so "skip
@@ -189,7 +174,7 @@ export default function SidebarLayout() {
   );
 
   return (
-    <div style={layoutStyle}>
+    <div className="app-layout">
       {/* A34.8: the first thing Tab reaches, so a keyboard user does not
           walk the whole sidebar to reach the page. */}
       <a

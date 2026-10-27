@@ -1,5 +1,5 @@
-import { type CSSProperties } from "react";
 import { AreaChart, Area, ResponsiveContainer } from "recharts";
+import { action } from "../design/tokens";
 
 interface Props {
   title: string;
@@ -10,93 +10,46 @@ interface Props {
   sparklineData?: number[];
 }
 
-const cardStyle: CSSProperties = {
-  background: "var(--bg-card)",
-  border: "1px solid var(--border-color)",
-  borderRadius: "var(--radius-lg)",
-  padding: "1rem 1.25rem",
-  boxShadow: "var(--shadow-sm)",
-  display: "flex",
-  flexDirection: "column",
-  gap: "0.375rem",
+const TREND_ARROW = {
+  up: "↑",
+  down: "↓",
+  flat: "→",
 };
 
-const titleStyle: CSSProperties = {
-  fontSize: "0.75rem",
-  fontWeight: 500,
-  color: "var(--text-muted)",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
+const TREND_WORD = {
+  up: "up",
+  down: "down",
+  flat: "flat",
 };
 
-const valueRowStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "baseline",
-  gap: "0.5rem",
-};
-
-const valueStyle: CSSProperties = {
-  fontSize: "1.75rem",
-  fontWeight: 700,
-  lineHeight: 1.2,
-  color: "var(--text-primary)",
-};
-
-const unitStyle: CSSProperties = {
-  fontSize: "0.875rem",
-  color: "var(--text-secondary)",
-};
-
-const trendColors = {
-  up: "var(--status-ok)",
-  down: "var(--status-critical)",
-  flat: "var(--text-muted)",
-};
-
-const trendArrows = {
-  up: "\u2191",
-  down: "\u2193",
-  flat: "\u2192",
-};
-
+/** A35.6: a KPI. Its trend shows a direction and never a verdict: an
+ *  arrow up is not good and an arrow down is not bad until the server says
+ *  which is which, so neither is coloured (A35.5). */
 export default function MetricCard({ title, value, unit, trend, trendValue, sparklineData }: Props) {
   return (
-    <div style={cardStyle}>
-      <div style={titleStyle}>{title}</div>
-      <div style={valueRowStyle}>
-        <span style={valueStyle}>{value}</span>
-        {unit && <span style={unitStyle}>{unit}</span>}
+    <div className="metric-card">
+      <div className="metric-card__title">{title}</div>
+      <div className="metric-card__value-row">
+        <span className="metric-card__value">{value}</span>
+        {unit && <span className="metric-card__unit">{unit}</span>}
         {trend && (
-          <span
-            style={{
-              fontSize: "0.8125rem",
-              fontWeight: 600,
-              color: trendColors[trend],
-              display: "flex",
-              alignItems: "center",
-              gap: "0.125rem",
-            }}
-          >
-            {trendArrows[trend]} {trendValue}
+          <span className="metric-card__trend">
+            <span aria-hidden="true">{TREND_ARROW[trend]}</span>
+            <span className="sr-only">{TREND_WORD[trend]}</span> {trendValue}
           </span>
         )}
       </div>
       {sparklineData && sparklineData.length > 1 && (
-        <div style={{ height: 40, marginTop: "0.25rem" }}>
+        <div className="metric-card__spark" aria-hidden="true">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={sparklineData.map((v, i) => ({ i, v }))}>
-              <defs>
-                <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.15} />
-                  <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
               <Area
                 type="monotone"
                 dataKey="v"
-                stroke="var(--accent)"
+                stroke={action.primaryBg}
                 strokeWidth={1.5}
-                fill="url(#sparkGrad)"
+                fill={action.primaryBg}
+                fillOpacity={0.08}
                 dot={false}
                 isAnimationActive={false}
               />
